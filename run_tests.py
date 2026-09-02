@@ -1,7 +1,7 @@
 """
 run_tests.py —— 统一测试入口
 
-一次跑完七组测试：
+一次跑完八组测试：
   1. MCP server 端到端（scripts.mcp_client_test）     —— 33 项
   2. 图库层（tests.test_graph）                       —— 12 项
   3. 庙算假设引擎（tests.test_miaosuan）              —— 18 项
@@ -9,12 +9,14 @@ run_tests.py —— 统一测试入口
   4. 组织层级对齐（tests.test_org_alignment）        —— 11 项
   5. 人工确认工作台（tests.test_review_queue）       —— 10 项
   6. 处置状态机 + 审计链（test_disposal.py 脚本式）   —— 20+ 断言
-  7. 端到端集成（tests.test_run_all）                —— 10 项
+  7. 语义层（tests.test_ontology）                    —— 18 项
+     （声明式编译 / 代理键幂等 / 溯源红线 / Action 注册表）
+  8. 端到端集成（tests.test_run_all）                —— 10 项
 
 用法：
     python run_tests.py              # 跑全部
     python run_tests.py --fast       # 跳过端到端（最快反馈）
-    python run_tests.py --only org   # 只跑指定组（mcp/miaosuan/graph/org/review/disposal/e2e）
+    python run_tests.py --only org   # 只跑指定组（mcp/miaosuan/graph/org/review/disposal/ontology/e2e）
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ GROUPS = {
     "org":      ("组织层级对齐", [sys.executable, "-m", "unittest", "tests.test_org_alignment"]),
     "review":   ("人工确认工作台", [sys.executable, "-m", "unittest", "tests.test_review_queue"]),
     "disposal": ("处置状态机+审计链", [sys.executable, "test_disposal.py"]),
+    "ontology": ("语义层 Object/Link/Action", [sys.executable, "-m", "unittest", "tests.test_ontology"]),
     "e2e":      ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 

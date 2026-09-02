@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "links": [
+    {
+      "name": "transfers",
+      "title": "转账关系",
+      "from_obj": "account",
+      "to_obj": "account",
+      "build_sql": "SELECT txn_id, from_raw AS from_account, to_raw AS to_account, amount, date FROM obj_transaction",
+      "properties": {"amount": "amount", "date": "date"}
+    },
+    {
+      "name": "calls_to",
+      "title": "通话关系",
+      "from_obj": "person",
+      "to_obj": "person",
+      "build_sql": "SELECT c.call_id, p1.person_id AS from_person, p2.person_id AS to_person FROM obj_call c LEFT JOIN obj_person p1 ON p1.raw_name = c.caller_raw LEFT JOIN obj_person p2 ON p2.raw_name = c.callee_raw",
+      "properties": {}
+    },
+    {
+      "name": "owns",
+      "title": "持有账户",
+      "from_obj": "account",
+      "to_obj": "person",
+      "build_sql": "SELECT a.account_id, p.person_id AS owner_person, a.raw_name AS owner_raw FROM obj_account a JOIN obj_person p ON p.raw_name = a.raw_name",
+      "properties": {}
+    },
+    {
+      "name": "involved_in",
+      "title": "中标参与",
+      "from_obj": "org",
+      "to_obj": "bid_project",
+      "build_sql": "SELECT o.org_id, b.project_id, b.winner_raw FROM obj_bid_project b JOIN obj_org o ON o.raw_name = b.winner_raw",
+      "properties": {}
+    },
+    {
+      "name": "co_located",
+      "title": "同地点出现",
+      "from_obj": "person",
+      "to_obj": "person",
+      "build_sql": "SELECT t1.track_id AS track_id_1, t2.track_id AS track_id_2, p1.person_id AS person_1, p2.person_id AS person_2, t1.location, t1.date FROM obj_trackpoint t1 JOIN obj_trackpoint t2 ON t1.location = t2.location AND t1.person_raw <> t2.person_raw AND ABS(date_diff('day', CAST(t1.date AS DATE), CAST(t2.date AS DATE))) <= 1 LEFT JOIN obj_person p1 ON p1.raw_name = t1.person_raw LEFT JOIN obj_person p2 ON p2.raw_name = t2.person_raw",
+      "properties": {"location": "location", "date": "date"}
+    },
+    {
+      "name": "time_window",
+      "title": "时间窗碰撞",
+      "from_obj": "bid_project",
+      "to_obj": "transaction",
+      "build_sql": "SELECT b.project_id, t.txn_id, b.title, t.from_raw AS owner_raw, t.amount, date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE)) AS offset_days FROM obj_bid_project b JOIN obj_transaction t ON ABS(date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE))) <= 20 AND CAST(t.amount AS BIGINT) % 10000 = 0 AND t.from_raw NOT LIKE '%公司%'",
+      "properties": {"amount": "amount", "offset_days": "offset_days"}
+    },
+    {
+      "name": "decision_for",
+      "title": "决定针对线索",
+      "from_obj": "decision",
+      "to_obj": "clue",
+      "runtime": true,
+      "build_sql": "",
+      "_note": "运行期链接：Action 执行器创建 obj_decision 时同步写入 lnk_decision_for，不参与编译期物化",
+      "properties": {}
+    },
+    {
+      "name": "tipoff_targets_person",
+      "title": "举报针对人员",
+      "from_obj": "tipoff",
+      "to_obj": "person",
+      "build_sql": "SELECT t.tipoff_id, p.person_id, t.target_raw, t.title AS tip_type, t.submit_date FROM obj_tipoff t JOIN obj_person p ON p.raw_name = t.target_raw",
+      "properties": {"tip_type": "tip_type", "submit_date": "submit_date"}
+    },
+    {
+      "name": "osint_mentions",
+      "title": "OSINT提及主体",
+      "from_obj": "osint_article",
+      "to_obj": "person",
+      "build_sql": "SELECT a.article_id, p.person_id, a.raw_name AS subject_raw, a.source_name, a.pub_date FROM obj_osint_article a JOIN obj_person p ON p.raw_name = a.raw_name",
+      "properties": {"source_name": "source_name", "pub_date": "pub_date"}
+    }
+  ]
+}

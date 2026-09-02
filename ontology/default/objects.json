@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "objects": [
+    {
+      "name": "person",
+      "title": "自然人",
+      "pk": "person_id",
+      "name_col": "raw_name",
+      "source_table": "通话记录",
+      "source_sql": "SELECT 主体 AS raw_name FROM 通话记录 UNION SELECT 对端 FROM 通话记录 UNION SELECT 主体 FROM 轨迹出行 UNION SELECT 主体 FROM 公开OSINT UNION SELECT 主体 FROM 银行流水 UNION SELECT 被举报人 AS raw_name FROM 举报材料",
+      "properties": {"raw_name": "raw_name"},
+      "clean": ["strip", "exclude_org_tokens"]
+    },
+    {
+      "name": "org",
+      "title": "组织",
+      "pk": "org_id",
+      "name_col": "raw_name",
+      "source": {
+        "table": "工商信息",
+        "columns": {"raw_name": "主体", "legal_rep": "法人", "status": "状态", "relation": "关联"}
+      },
+      "properties": {"raw_name": "raw_name", "legal_rep": "法人", "status": "状态", "relation": "关联"}
+    },
+    {
+      "name": "account",
+      "title": "账户",
+      "pk": "account_id",
+      "name_col": "raw_name",
+      "source_table": "银行流水",
+      "source_sql": "SELECT 主体 AS raw_name FROM 银行流水 UNION SELECT 对方 FROM 银行流水",
+      "properties": {"raw_name": "raw_name"}
+    },
+    {
+      "name": "transaction",
+      "title": "交易",
+      "pk": "txn_id",
+      "name_col": "from_raw",
+      "row_key": true,
+      "source": {
+        "table": "银行流水",
+        "columns": {"from_raw": "主体", "to_raw": "对方", "amount": "金额", "date": "日期"}
+      },
+      "properties": {"from_raw": "主体", "to_raw": "对方", "amount": "金额", "date": "日期"}
+    },
+    {
+      "name": "call",
+      "title": "通话",
+      "pk": "call_id",
+      "name_col": "caller_raw",
+      "row_key": true,
+      "source": {
+        "table": "通话记录",
+        "columns": {"caller_raw": "主体", "callee_raw": "对端", "date": "日期", "times": "次数"}
+      },
+      "properties": {"caller_raw": "主体", "callee_raw": "对端", "date": "日期", "times": "次数"}
+    },
+    {
+      "name": "trackpoint",
+      "title": "轨迹点",
+      "pk": "track_id",
+      "name_col": "person_raw",
+      "row_key": true,
+      "source": {
+        "table": "轨迹出行",
+        "columns": {"person_raw": "主体", "location": "地点", "date": "日期"}
+      },
+      "properties": {"person_raw": "主体", "location": "地点", "date": "日期"}
+    },
+    {
+      "name": "bid_project",
+      "title": "招投标项目",
+      "pk": "project_id",
+      "name_col": "title",
+      "source": {
+        "table": "招投标档案",
+        "columns": {"title": "项目", "winner_raw": "中标方", "pub_date": "中标公示日", "leader": "分管领导"}
+      },
+      "properties": {"title": "项目", "winner_raw": "中标方", "pub_date": "中标公示日", "leader": "分管领导"}
+    },
+    {
+      "name": "clue",
+      "title": "线索",
+      "pk": "clue_id",
+      "name_col": "clue_id",
+      "optional": true,
+      "source": {
+        "table": "clue_disposal_status",
+        "columns": {"clue_id": "clue_id", "status": "status", "last_operator": "operator", "note": "note", "updated_at": "updated_at"}
+      },
+      "properties": {"status": "status", "last_operator": "operator", "note": "note", "updated_at": "updated_at"}
+    },
+    {
+      "name": "decision",
+      "title": "处置决定",
+      "pk": "decision_id",
+      "name_col": "decision_id",
+      "runtime": true,
+      "properties": {},
+      "_note": "运行期对象：不由编译器从 L2 物化，由 Action 执行器在 file 动作时创建（obj_decision / lnk_decision_for）"
+    },
+    {
+      "name": "tipoff",
+      "title": "举报线索（内间）",
+      "pk": "tipoff_id",
+      "name_col": "title",
+      "row_key": true,
+      "optional": true,
+      "source": {
+        "table": "举报材料",
+        "columns": {
+          "title": "分类",
+          "submit_date": "举报日期",
+          "target_raw": "被举报人",
+          "reporter_raw": "举报人",
+          "content_raw": "内容"
+        }
+      },
+      "properties": {
+        "title": "分类", "submit_date": "举报日期", "target_raw": "被举报人",
+        "reporter_raw": "举报人", "content_raw": "内容"
+      },
+      "_note": "五间映射：内间（内部线索/举报材料）。接入后 jian_cross_level 内间自动从缺口变命中。"
+    },
+    {
+      "name": "osint_article",
+      "title": "公开OSINT文章（死间）",
+      "pk": "article_id",
+      "name_col": "raw_name",
+      "row_key": true,
+      "optional": true,
+      "source": {
+        "table": "公开OSINT",
+        "columns": {
+          "raw_name": "主体",
+          "info_text": "公开信息",
+          "pub_date": "发布日期",
+          "source_name": "来源"
+        }
+      },
+      "properties": {
+        "raw_name": "主体", "info_text": "公开信息", "pub_date": "发布日期", "source_name": "来源"
+      },
+      "_note": "五间映射：死间（公开OSINT交叉验证）。原死间仅靠工商信息，新增后多一条公开渠道。"
+    }
+  ]
+}

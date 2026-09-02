@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "actions": [
+    {
+      "name": "verify",
+      "title": "标记查证中",
+      "target_status": "查证中",
+      "derive": "reverse_reach",
+      "parameters": [],
+      "requires_role": "any",
+      "terminal": false,
+      "side_effects": ["set_clue_status"],
+      "description": "标记查证中（AI/正兵均可执行）"
+    },
+    {
+      "name": "reset",
+      "title": "回退待查",
+      "target_status": "待查",
+      "derive": "reverse_reach",
+      "parameters": [],
+      "requires_role": "any",
+      "terminal": false,
+      "side_effects": ["set_clue_status"],
+      "description": "重开/回退待查"
+    },
+    {
+      "name": "exclude",
+      "title": "排除线索",
+      "target_status": "已排除",
+      "derive": "reverse_reach",
+      "parameters": [
+        {"name": "reason", "type": "string", "required": true, "description": "排除理由（写入审计链，可追溯）"}
+      ],
+      "requires_role": "any",
+      "terminal": false,
+      "side_effects": ["set_clue_status"],
+      "description": "排除必须给理由"
+    },
+    {
+      "name": "confirm",
+      "title": "固证",
+      "target_status": "已固证",
+      "derive": "reverse_reach",
+      "parameters": [],
+      "requires_role": "any",
+      "terminal": false,
+      "side_effects": ["set_clue_status"],
+      "description": "经查证成立，形成稳定证据"
+    },
+    {
+      "name": "file",
+      "title": "立案",
+      "target_status": "已立案",
+      "derive": "reverse_reach",
+      "parameters": [
+        {"name": "legal_basis", "type": "string", "required": true, "description": "法定依据：案号/审批文号"}
+      ],
+      "requires_role": "human",
+      "terminal": true,
+      "side_effects": ["set_clue_status", "create_decision"],
+      "description": "受控终态：仅已固证可迁移、须法定依据、仅具名正兵；副作用创建 obj_decision 决策对象"
+    }
+  ]
+}

@@ -134,6 +134,17 @@ def main():
     if pre["overall_verdict"] == "方向否定":
         print("  ⚠ 方向否定，停止全量扫描（演示中仍继续以展示完整管线）")
 
+    # ===== 6.5 语义层（Palantir Ontology 风格：Object/Link 语义表）=====
+    step("6.5 语义层构建：obj_*/lnk_* 语义表（声明式编译，代理键幂等）")
+    from core.ontology import build_ontology
+    ontology_stats = build_ontology(store.conn)
+    for name, n in ontology_stats["objects"].items():
+        print(f"  obj_{name:<12} {n} 行")
+    for name, n in ontology_stats["links"].items():
+        print(f"  lnk_{name:<12} {n} 行")
+    for s in ontology_stats["skipped"]:
+        print(f"  ⚠ 跳过 {s}")
+
     # ===== 7-8. 侦查主流程（skill_invoke 驱动）=====
     step("7-8. 侦查主流程：庙算→知己→虚实/奇正/用间 + 血缘去重 + 优先级")
     registry = get_registry()
@@ -186,7 +197,10 @@ def main():
     for c in merged[1:]:
         board.transition(c.clue_id, "查证中", operator="system")
     written = board.persist()
-    print(f"  处置状态落 DuckDB：{written} 行")
+    # obj_clue 是处置快照：persist 后重建语义层，避免语义表停留旧状态
+    from core.ontology import build_ontology as _rebuild_ontology
+    _rebuild_ontology(store.conn)
+    print(f"  处置状态落 DuckDB：{written} 行（语义层 obj_clue 已同步刷新）")
     board.print_report()
 
     # ===== 10. 导出操作台数据 =====
@@ -199,6 +213,8 @@ def main():
         report["graph_overpass"] = graph_report
     # 庙算覆盖完整性报告（维度/数据源/间类/冲突/枚举候补）
     report["miao_coverage"] = miao.report(ctx["可用数据"])
+    # 语义层统计（对象/链接行数）
+    report["ontology"] = ontology_stats
     (out_dir / "lineage_clues.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     # 合并 person/org 映射供操作台展示

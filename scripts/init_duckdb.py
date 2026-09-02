@@ -27,11 +27,40 @@ def main():
     # 用 CTAS 实体表而非视图：apply_org_to_duckdb 需要 ALTER TABLE 加 canonical_org_* 列，
     # 视图只能走 ALTER VIEW，无法承载写入。
     # 注：2000 亿行场景应改为「视图 + 旁路映射表 join」避免物化开销，此处演示数据直接 CTAS。
-    for name in ["银行流水", "通话记录", "招投标档案", "工商信息", "轨迹出行", "公开OSINT", "举报材料"]:
+    for name in ["银行流水", "通话记录", "招投标档案", "工商信息", "轨迹出行"]:
         p = DATA / f"{name}.parquet"
         if not p.exists():
             continue
         con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
+
+    # ── 后期接入型数据源：缺文件时按约定 schema 建空表（保证语义层编译不中断），
+    #    数据到达后重跑 init_duckdb 即可自动替换；旧版本「仅 内容」列 parquet 向后兼容。 ──
+    _FALLBACK_SCHEMAS = {
+        "公开OSINT": """CREATE OR REPLACE TABLE "公开OSINT" (
+            主体 VARCHAR, 公开信息 VARCHAR, 发布日期 DATE, 来源 VARCHAR
+        )""",
+        "举报材料": """CREATE OR REPLACE TABLE "举报材料" (
+            举报日期 DATE, 分类 VARCHAR, 被举报人 VARCHAR, 举报人 VARCHAR, 内容 VARCHAR
+        )""",
+    }
+    for name, ddl in _FALLBACK_SCHEMAS.items():
+        p = DATA / f"{name}.parquet"
+        if p.exists():
+            # 真实数据优先，但列可能少于 schema（向后兼容单列表）：
+            # 先用 parquet 列建表，再 ALTER 补齐缺失列（不影响已存数据），
+            # 这样「内容」旧版本 parquet 也能兼容。
+            con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
+            # 拿实际列集：DESCRIBE 列顺序 (column_name, column_type, null, key, default, extra)
+            actual = {row[0] for row in con.execute(f'DESCRIBE "{name}"').fetchall()}
+            expected_types = {
+                "公开OSINT": {"主体":"VARCHAR","公开信息":"VARCHAR","发布日期":"DATE","来源":"VARCHAR"},
+                "举报材料": {"举报日期":"DATE","分类":"VARCHAR","被举报人":"VARCHAR","举报人":"VARCHAR","内容":"VARCHAR"},
+            }[name]
+            for col, typ in expected_types.items():
+                if col not in actual:
+                    con.execute(f'ALTER TABLE "{name}" ADD COLUMN "{col}" {typ}')
+        else:
+            con.execute(ddl)
 
     # 预聚合表：主体×月（温层核心，替代 StarRocks mv）
     con.execute("""

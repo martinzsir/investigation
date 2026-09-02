@@ -179,6 +179,32 @@ def _tools() -> list[dict]:
             },
             "annotations": {"readOnlyHint": False, "destructiveHint": True},
         },
+        {
+            "name": "function_list",
+            "description": (
+                "Ontology Function 目录：列出所有只读计算函数（名称/输入语义表/输出类型/"
+                "参数/说明）。Function 只读不改对象，与可写的 clue_transition（Action）相对。"
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "function_invoke",
+            "description": (
+                "调用 Ontology Function（只读）：按 functions.json 声明执行 SQL/py 计算，"
+                "返回 rows 或 report。SQL 实现强制 SELECT/WITH 白名单，禁止任何写操作。"
+                "需先跑过管线（语义表 obj_*/lnk_* 已构建）。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "函数名（见 function_list）"},
+                    "params": {"type": "object", "description": "函数参数（可选）"},
+                },
+                "required": ["name"],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
     ]
 
 
@@ -437,6 +463,40 @@ def tool_run_pipeline(args: dict) -> dict:
     })
 
 
+def tool_function_list(args: dict) -> dict:
+    """Ontology Function 目录（只读声明，不碰数据）。"""
+    from core.functions import FunctionExecutor
+
+    try:
+        catalog = FunctionExecutor(store=None).catalog()
+    except Exception as e:
+        return _redline({"ok": False, "error": f"Function 目录装载失败：{e}"})
+    return _redline({"count": len(catalog), "functions": catalog})
+
+
+def tool_function_invoke(args: dict) -> dict:
+    """调用只读 Function。语义表缺失时提示先跑管线。"""
+    from core import Store
+    from core.functions import FunctionExecutor
+
+    name = args.get("name")
+    if not name:
+        return _redline({"ok": False, "error": "必填参数 name"})
+    store = Store()
+    try:
+        r = FunctionExecutor(store).invoke(name, args.get("params") or {})
+        return _redline({"ok": True, **r})
+    except KeyError as e:
+        return _redline({"ok": False, "error": str(e)})
+    except Exception as e:
+        return _redline({
+            "ok": False, "error": str(e),
+            "提示": "若报语义表不存在，先跑 run_pipeline(confirm=true) 构建 obj_*/lnk_*",
+        })
+    finally:
+        store.close()
+
+
 _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "scan_anomaly": tool_scan_anomaly,
     "cross_jian": tool_cross_jian,
@@ -444,6 +504,8 @@ _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "clue_list": tool_clue_list,
     "clue_transition": tool_clue_transition,
     "run_pipeline": tool_run_pipeline,
+    "function_list": tool_function_list,
+    "function_invoke": tool_function_invoke,
 }
 
 

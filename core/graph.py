@@ -97,7 +97,10 @@ class GraphBackend:
     def build_from_duckdb(self, conn, flow_table: str = "银行流水",
                           rebuild: bool = True) -> Dict[str, int]:
         """
-        从 DuckDB 银行流水建图（导出 CSV → COPY 进图库）。
+        从 DuckDB 建图（导出 CSV → COPY 进图库）。
+
+        数据入口语义层优先：存在 lnk_transfers（obj/lnk 语义表）则从语义层取边，
+        否则回落 flow_table（L2 银行流水，列 主体/对方/金额/日期）。
 
         坑位记录（实测）：COPY 边表时若引用了节点表中不存在的节点，
         会抛 "Unable to find primary key value X" —— 因此必须
@@ -107,8 +110,9 @@ class GraphBackend:
             return {"nodes": 0, "edges": 0, "skipped": True}
 
         c = getattr(conn, "conn", conn)
+        table, (c_from, c_to, c_amt, c_date) = _flow_source(c, flow_table)
         rows = c.execute(
-            f'SELECT 主体, 对方, 金额, 日期 FROM "{flow_table}"'
+            f'SELECT "{c_from}", "{c_to}", "{c_amt}", "{c_date}" FROM "{table}"'
         ).fetchall()
 
         # 节点 = 主体 ∪ 对方（去重，保证边表引用的节点全部存在）
@@ -195,30 +199,45 @@ class GraphBackend:
 
 
 # ----------------------------------------------------------------------
+# 数据入口：语义层优先（lnk_transfers），未构建语义层时回落 L2 银行流水
+# ----------------------------------------------------------------------
+def _flow_source(c, flow_table: str = "银行流水") -> tuple[str, tuple[str, str, str, str]]:
+    """返回 (表名, (from列, to列, 金额列, 日期列))。"""
+    has_sem = c.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'lnk_transfers'"
+    ).fetchone()[0] > 0
+    if has_sem:
+        return "lnk_transfers", ("from_account", "to_account", "amount", "date")
+    return flow_table, ("主体", "对方", "金额", "日期")
+
+
+# ----------------------------------------------------------------------
 # SQL 对照（同一问题的关系型解法，用于双轨一致性比对）
 # ----------------------------------------------------------------------
 def overpass_two_hop_sql(conn, flow_table: str = "银行流水") -> List[OverpassPath]:
     """
     Q2 过桥的 SQL 解法：流表自连接。
     与 Cypher 版互为校验 —— 两者结果必须一致，否则说明某一侧口径有误。
+    数据入口与建图同源（_flow_source），保证双轨口径一致。
     """
     c = getattr(conn, "conn", conn)
+    table, (c_from, c_to, c_amt, c_date) = _flow_source(c, flow_table)
     rows = c.execute(f"""
-        SELECT a.主体 AS src, a.对方 AS mid, b.对方 AS dst,
-               a.金额 AS amt1, b.金额 AS amt2,
-               a.日期 AS d1, b.日期 AS d2
-        FROM "{flow_table}" a
-        JOIN "{flow_table}" b ON a.对方 = b.主体
-        WHERE a.主体 <> b.对方
-          AND a.主体 <> a.对方
-          AND b.主体 <> b.对方
+        SELECT a."{c_from}" AS src, a."{c_to}" AS mid, b."{c_to}" AS dst,
+               a."{c_amt}" AS amt1, b."{c_amt}" AS amt2,
+               a."{c_date}" AS d1, b."{c_date}" AS d2
+        FROM "{table}" a
+        JOIN "{table}" b ON a."{c_to}" = b."{c_from}"
+        WHERE a."{c_from}" <> b."{c_to}"
+          AND a."{c_from}" <> a."{c_to}"
+          AND b."{c_from}" <> b."{c_to}"
     """).fetchall()
     return [
         OverpassPath(
             source=r[0], bridge=r[1], dest=r[2],
             amount_in=float(r[3]), amount_out=float(r[4]),
             engine="sql",
-            source_rows=[f"银行流水({r[0]}→{r[1]}@{r[5]})", f"银行流水({r[1]}→{r[2]}@{r[6]})"],
+            source_rows=[f"{table}({r[0]}→{r[1]}@{r[5]})", f"{table}({r[1]}→{r[2]}@{r[6]})"],
         )
         for r in rows
     ]

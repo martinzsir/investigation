@@ -1,76 +1,49 @@
-"""skill: xu_shi 虚实扫描 —— DuckDB 直接扫 Parquet 分区，只标反常不给定性。
+"""skill: xu_shi 虚实扫描 —— 从语义层 Function 扫反常，只标反常不给定性。
 
-模式库（按侦查学维度组织，覆盖 5 维中的 4 类数据）：
-  资金：季度末整数存入 / 过桥结构
-  通讯：频次突增
-  行为：轨迹同框
-  关系：工商登记利益关联
+v3（Ontology Function 化）：检测器是 Function 的薄编排层——
+计算逻辑全部声明在 ontology/default/functions.json + core/functions.py，
+本文件只负责把 Function 结果组织为 findings（候选虚处/依据/溯源行）。
+换数据源/改算法只动 Function 声明，检测器零改动。
+
+模式库（按侦查学维度组织）：
+  资金：quarter_end_integer_deposits / integer_transfer_aggregates
+  通讯：call_frequency_spike
+  行为：co_located_pairs
+  关系：org_interest_links
 """
 
 from core import Store
+from core.functions import invoke_function
 
 
 def run(ctx: dict, store: Store | None = None) -> dict:
     store = store or Store()
-
     findings: list[dict] = []
 
-    # ---- 资金维度 ----
-    # Q1：时间窗碰撞（DuckDB 窗口函数，直接读 Parquet，零 ETL）
-    flow = store.query(
-        "SELECT date_trunc('quarter', 日期::DATE) AS q, COUNT(*) AS cnt, SUM(金额) AS amt "
-        "FROM read_parquet('data/银行流水.parquet') "
-        "WHERE CAST(金额 AS BIGINT) % 10000 = 0 "
-        "GROUP BY q ORDER BY q"
-    )
+    # ---- 资金维度：季度末整数存入 ----
+    flow = invoke_function(store, "quarter_end_integer_deposits")["rows"]
     findings.append({"候选虚处": "季度末整数现金存入", "依据": "与工资非整数规律不符",
-                     "级别": "待核实", "source_rows": [r for r in flow]})
+                     "级别": "待核实", "source_rows": flow})
 
-    # Q2：过桥结构检测（整数转账 + 跨主体）
-    overpass = store.query(
-        "SELECT 主体, 对方, SUM(金额) AS total FROM read_parquet('data/银行流水.parquet') "
-        "WHERE CAST(金额 AS BIGINT) % 10000 = 0 GROUP BY 主体, 对方"
-    )
+    # ---- 资金维度：过桥结构 ----
+    overpass = invoke_function(store, "integer_transfer_aggregates")["rows"]
     findings.append({"候选虚处": "第三方过桥结构", "依据": "宏业→A建材→配偶资金链",
                      "级别": "待核实",
-                     "source_rows": [{"主体": o["主体"], "对方": o["对方"],
+                     "source_rows": [{"主体": o["from_raw"], "对方": o["to_raw"],
                                       "total": o["total"]} for o in overpass]})
 
-    # ---- 通讯维度：频次突增检测（头部对端 ≥ 2 倍常态中位数） ----
-    pairs = store.query(
-        "SELECT 主体, 对端, COUNT(*) AS c FROM read_parquet('data/通话记录.parquet') "
-        "GROUP BY 主体, 对端 ORDER BY c DESC"
-    )
-    if pairs:
-        import statistics
-        top, rest = pairs[0], pairs[1:]
-        if rest:
-            median = statistics.median(r["c"] for r in rest)
-            hit = median > 0 and top["c"] >= 2 * median
-            basis = (f"{top['主体']}→{top['对端']} 通话 {top['c']} 次，"
-                     f"为其他对端常态中位数 {median} 的 {top['c'] / median:.1f} 倍")
-        else:
-            # 无对照对端时退化为绝对频次判据（单一对端高频密切）
-            hit = top["c"] >= 30
-            basis = (f"{top['主体']}→{top['对端']} 单一对端通话 {top['c']} 次"
-                     f"（无其他对端可比，按绝对频次判据 ≥30 次）")
-        if hit:
-            findings.append({
-                "候选虚处": "招投标公示期通话频次突增",
-                "依据": basis,
-                "级别": "待核实",
-                "source_rows": [{"主体": r["主体"], "对端": r["对端"], "次数": r["c"]}
-                                for r in pairs[:5]],
-            })
+    # ---- 通讯维度：频次突增 ----
+    spike = invoke_function(store, "call_frequency_spike")["result"]
+    if spike["hit"]:
+        findings.append({
+            "候选虚处": "招投标公示期通话频次突增",
+            "依据": spike["basis"],
+            "级别": "待核实",
+            "source_rows": spike["pairs"],
+        })
 
-    # ---- 行为维度：轨迹同框检测（不同主体同地点 ±1 天） ----
-    co_locate = store.query(
-        "SELECT a.主体 AS 主体a, b.主体 AS 主体b, a.地点, a.日期 "
-        "FROM read_parquet('data/轨迹出行.parquet') a "
-        "JOIN read_parquet('data/轨迹出行.parquet') b "
-        "  ON a.地点 = b.地点 AND a.主体 <> b.主体 "
-        " AND abs(date_diff('day', a.日期, b.日期)) <= 1"
-    )
+    # ---- 行为维度：轨迹同框 ----
+    co_locate = invoke_function(store, "co_located_pairs")["rows"]
     if co_locate:
         findings.append({
             "候选虚处": "二人公示期轨迹同框",
@@ -79,12 +52,8 @@ def run(ctx: dict, store: Store | None = None) -> dict:
             "source_rows": [dict(r) for r in co_locate],
         })
 
-    # ---- 关系维度：工商登记利益关联（法人/关联人重叠） ----
-    linked = store.query(
-        "SELECT 主体, 法人, 关联 FROM read_parquet('data/工商信息.parquet') "
-        "WHERE (法人 IS NOT NULL AND (法人 LIKE '%李志强%' OR 法人 LIKE '%妻弟%')) "
-        "   OR (关联 IS NOT NULL AND 关联 LIKE '%张卫国%')"
-    )
+    # ---- 关系维度：工商登记利益关联 ----
+    linked = invoke_function(store, "org_interest_links")["rows"]
     if linked:
         findings.append({
             "候选虚处": "工商登记利益关联",

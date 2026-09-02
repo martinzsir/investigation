@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "functions": [
+    {
+      "name": "quarter_end_integer_deposits",
+      "title": "季度末整数存入聚合",
+      "inputs": ["obj_transaction"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT date_trunc('quarter', CAST(date AS DATE)) AS q, COUNT(*) AS cnt, SUM(CAST(amount AS DOUBLE)) AS amt FROM obj_transaction WHERE CAST(amount AS BIGINT) % 10000 = 0 GROUP BY q ORDER BY q",
+      "description": "资金维度：整万元资金按季度聚合（季度末整数现金存入候选反常）"
+    },
+    {
+      "name": "integer_transfer_aggregates",
+      "title": "整数转账聚合（过桥结构）",
+      "inputs": ["obj_transaction"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT from_raw, to_raw, SUM(CAST(amount AS DOUBLE)) AS total FROM obj_transaction WHERE CAST(amount AS BIGINT) % 10000 = 0 GROUP BY from_raw, to_raw",
+      "description": "资金维度：整数转账 from→to 聚合，第三方过桥结构识别"
+    },
+    {
+      "name": "call_frequency_spike",
+      "title": "通话频次突增检测",
+      "inputs": ["obj_call"],
+      "parameters": {"absolute_threshold": {"type": "integer", "required": false, "default": 30}},
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "call_frequency_spike",
+      "description": "通讯维度：头部对端频次 ≥2 倍常态中位数（无对照对端时退化为绝对频次判据）"
+    },
+    {
+      "name": "co_located_pairs",
+      "title": "轨迹同框对",
+      "inputs": ["lnk_co_located"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT person_1, person_2, location, date FROM lnk_co_located",
+      "description": "行为维度：不同主体同地点 ±1 天内先后出现（语义链接直接消费）"
+    },
+    {
+      "name": "org_interest_links",
+      "title": "工商登记利益关联",
+      "inputs": ["obj_org"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT raw_name, legal_rep, relation FROM obj_org WHERE (legal_rep IS NOT NULL AND (legal_rep LIKE '%李志强%' OR legal_rep LIKE '%妻弟%')) OR (relation IS NOT NULL AND relation LIKE '%张卫国%')",
+      "description": "关系维度：法人/关联人与对象人员重叠"
+    },
+    {
+      "name": "time_window_collision",
+      "title": "中标-资金时间窗碰撞",
+      "inputs": ["lnk_time_window", "obj_bid_project"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT l.title AS 项目, l.owner_raw AS 资金主体, CAST(l.amount AS BIGINT) AS 金额, l.offset_days AS 偏移天数, CAST(b.pub_date AS DATE) AS 中标公示日 FROM lnk_time_window l JOIN obj_bid_project b ON b.project_id = l.project_id ORDER BY l.offset_days",
+      "description": "时间维度：中标公示 ±20 天整数资金碰撞（Q1，奇兵拓线）"
+    },
+    {
+      "name": "overpass_two_hop",
+      "title": "两跳过桥路径（SQL 轨）",
+      "inputs": ["lnk_transfers"],
+      "parameters": {},
+      "output_type": "rows",
+      "impl": "py",
+      "impl_ref": "overpass_two_hop",
+      "description": "资金链路两跳：上游→过桥方→下游，与图库 Cypher 轨互为校验"
+    },
+    {
+      "name": "jian_cross_level",
+      "title": "五间交叉等级",
+      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint", "obj_org", "obj_bid_project", "lnk_time_window", "obj_tipoff", "obj_osint_article"],
+      "parameters": {},
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "jian_cross_level",
+      "description": "用间：语义代理表非空即命中；单源=观察/双源=线索/三源+=可立案依据候选；未建模数据源诚实标缺口"
+    },
+    {
+      "name": "tipoff_cross_reference",
+      "title": "举报线索与已知证据交叉",
+      "inputs": ["obj_tipoff", "lnk_tipoff_targets_person", "lnk_owns", "lnk_involved_in", "obj_org", "obj_person"],
+      "parameters": {},
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "tipoff_cross_reference",
+      "description": "内间：按被举报人统计举报数量，逐一标记是否命中组织利益关联/中标参与/账户持有（三类已在案证据独立支撑的自动标为高优先级）"
+    },
+    {
+      "name": "call_pair_coverage",
+      "title": "通话对端覆盖诊断",
+      "inputs": ["obj_call"],
+      "parameters": {"min_peer_count": {"type": "integer", "required": false, "default": 3}},
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "call_pair_coverage",
+      "description": "生间：输出主体唯一数、对端数、中位数、是否降级、缺失对端清单——用于判断 call_frequency_spike 是否运行在不可靠的绝对阈值模式"
+    }
+  ]
+}

@@ -26,11 +26,17 @@ from core.lineage import save_statuses, load_statuses
 
 
 class DisposalBoard:
-    """正兵处置看板：内存线索 + DuckDB 持久化的统一封装。"""
+    """正兵处置看板：内存线索 + DuckDB 持久化的统一封装。
 
-    def __init__(self, clues: list[LineageClue], store=None):
+    所有状态变更经 ActionExecutor（actions.json 声明的唯一写路径）：
+    角色校验 / 必填参数 / 状态机校验 / 副作用（含 obj_decision 决策对象）。
+    """
+
+    def __init__(self, clues: list[LineageClue], store=None, pack: str = "default"):
         self.clues: dict[str, LineageClue] = {c.clue_id: c for c in clues}
         self.store = store  # Store 实例（含 .conn），可选
+        from core.action_executor import ActionExecutor
+        self.executor = ActionExecutor(store, pack=pack)
 
     # ---- 查询 ----
     def get(self, clue_id: str) -> LineageClue:
@@ -45,33 +51,43 @@ class DisposalBoard:
     def by_status(self, status: str) -> list[LineageClue]:
         return [c for c in self.clues.values() if c.status == status]
 
-    # ---- 状态迁移（统一走这里，保证审计链）----
+    # ---- 状态迁移（统一走 Action 执行器，保证审计链 + 声明式校验）----
     def transition(self, clue_id: str, target: str, operator: str = "正兵",
                    note: str = "") -> LineageClue:
-        return self.get(clue_id).set_status(target, operator=operator, note=note)
+        clue = self.get(clue_id)
+        spec = self.executor.action_for_status(target)
+        # exclude 的必填参数名为 reason；其余动作备注走 note
+        params = {"reason": note} if target == ClueStatus.EXCLUDED else {"note": note}
+        self.executor.execute(spec.name, clue, operator, params)
+        return clue
 
     def verify(self, clue_id: str, operator: str = "正兵", note: str = "") -> LineageClue:
         """标记为 查证中。"""
-        return self.transition(clue_id, ClueStatus.VERIFYING, operator, note)
+        clue = self.get(clue_id)
+        self.executor.execute("verify", clue, operator, {"note": note})
+        return clue
 
     def exclude(self, clue_id: str, operator: str = "正兵", reason: str = "") -> LineageClue:
         """标记为 已排除（必须给理由，写进审计链）。"""
-        if not reason:
-            raise ValueError("已排除 必须填写排除理由（reason），保证可追溯")
-        return self.transition(clue_id, ClueStatus.EXCLUDED, operator, reason)
+        clue = self.get(clue_id)
+        self.executor.execute("exclude", clue, operator, {"reason": reason})
+        return clue
 
     def confirm(self, clue_id: str, operator: str = "正兵", note: str = "") -> LineageClue:
         """标记为 已固证。"""
-        return self.transition(clue_id, ClueStatus.CONFIRMED, operator, note)
+        clue = self.get(clue_id)
+        self.executor.execute("confirm", clue, operator, {"note": note})
+        return clue
 
     def file(self, clue_id: str, operator: str, legal_basis: str) -> LineageClue:
         """
         受控置位 已立案：仅 已固证 可迁移，须提供法定依据（案号/审批文号）。
-        operator 应为具名正兵（检察官/侦查员），禁止传 "system"/"AI"。
+        operator 应为具名正兵（检察官/侦查员），禁止传 "system"/"AI"；
+        副作用创建 obj_decision 决策对象（含 legal_basis/operator/时间戳/溯源）。
         """
-        if not legal_basis:
-            raise ValueError("已立案 须填写法定依据（案号/审批文号）")
-        return self.get(clue_id).set_filed(operator, legal_basis)
+        clue = self.get(clue_id)
+        self.executor.execute("file", clue, operator, {"legal_basis": legal_basis})
+        return clue
 
     # ---- 持久化 ----
     def persist(self) -> int:

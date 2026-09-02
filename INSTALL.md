@@ -164,9 +164,10 @@ python run_tests.py
 >>> [org] 组织层级对齐            Ran 11 tests   OK
 >>> [review] 人工确认工作台       Ran 10 tests   OK
 >>> [disposal] 处置状态机+审计链  ✅ 全部测试通过
+>>> [ontology] 语义层 Object/Link/Action  Ran 18 tests   OK
 >>> [e2e] 端到端集成              Ran 10 tests   OK
 
-✅ 全部通过：mcp, graph, miaosuan, org, review, disposal, e2e
+✅ 全部通过：mcp, graph, miaosuan, org, review, disposal, ontology, e2e
 ```
 
 > `mcp` 组会自动重建管线再测试（DuckDB 状态跨会话持久，需重置才能可重复）。
@@ -189,9 +190,10 @@ python run_all.py --auto-review --no-cli
 4.  实体对齐：人名 + 组织层级归并
 5.  人工确认工作台：needs_review 候选 → accept / reject / defer
 6.  采样预演：1% 采样验证假设方向 → 决定全量
+6.5 语义层构建：core/ontology.py 声明 → obj_*/lnk_* 语义表（声明式编译，代理键幂等）
 7-8. 侦查主流程：庙算→知己→虚实/奇正/用间 + 血缘去重 + 优先级
-8b. 图库两跳过桥（L4）：Cypher 多跳 + SQL 自连接 双轨比对
-9.  处置状态：状态机 + 审计链 + 持久化
+8b. 图库两跳过桥（L4）：Cypher 多跳 + SQL 自连接 双轨比对（语义层优先取数）
+9.  处置状态：状态机 + 审计链 + 持久化（persist 后重建语义层刷新 obj_clue 快照）
 10. 导出操作台数据
 ```
 
@@ -218,13 +220,18 @@ python run_all.py --operator "李检察官"
 python run_demo.py            # 最小演示（六段输出）
 python run_with_invoker.py    # 线索流 + 处置 + 采样预演
 python run_tests.py --fast    # 跳过端到端，快速回归
-python run_tests.py --only org  # 只跑指定组（org/review/disposal/e2e）
+python run_tests.py --only org  # 只跑指定组（mcp/miaosuan/graph/org/review/disposal/ontology/e2e）
 ```
 
-### 导出图库边表（需 LadybugDB 时）
+### 语义层与图库边表
 
 ```bash
-python -m scripts.export_ladybug    # 生成 data/ladybug/*.csv
+# Ontology 案件包（ontology/<pack>/*.json 声明 Object/Link/Action/Function）
+python -m scripts.build_ontology              # 构建/重建语义层 obj_*/lnk_*（幂等）
+python -m scripts.build_ontology --pack 包名   # 切换案件包
+python -m scripts.build_ontology --actions    # 查看 Action 注册表（角色/参数/副作用）
+python -m scripts.build_ontology --functions  # 查看 Function 目录（只读计算）
+python -m scripts.export_ladybug    # 从语义层导出 data/ladybug/*.csv（节点+全类边）
 python -m scripts.incremental --quarter 2024-Q4   # 增量更新
 ```
 
@@ -245,21 +252,27 @@ python -m scripts.incremental --quarter 2024-Q4   # 增量更新
 │   ├── hypotheses.py     # 庙算：假设生成（数据驱动映射+规则约束+人机协同）+ 知己强制非空
 │   ├── registry.py       # skill_invoke 统一调用 + LineageClue 血缘线索
 │   ├── lineage.py        # 血缘去重合并 + 优先级排序
-│   ├── disposal.py       # 处置状态机 + 审计链 + 事件钩子
+│   ├── ontology.py       # 语义层编译器：obj_*/lnk_* 物化（代理键幂等）
+│   ├── ontology_loader.py # Ontology 案件包 JSON 装载 + 强校验（声明=数据）
+│   ├── functions.py      # Function 层：只读计算执行器（SELECT/WITH 白名单）+ py 实现注册
+│   ├── action_executor.py # Action 层：受控写回唯一入口（角色/参数/状态机/决策对象副作用）
+│   ├── disposal.py       # 处置看板（状态迁移统一走 ActionExecutor）
 │   ├── entity.py         # 组织层级对齐
 │   ├── review.py         # 人工确认工作台
 │   ├── sampling.py       # 采样预演
 │   ├── graph.py          # L4 图库层：LadybugDB 建图 + Cypher 多跳 + 双轨比对
 │   └── validate.py       # Schema + 红线校验
+├── ontology/             # ★ Ontology 案件包（声明是 JSON 数据，可按包切换）
+│   └── default/          # objects.json / links.json / actions.json / functions.json
 ├── AGENTS.md             # 通用精简版（Codex / dsh 都能读）
 ├── AGENTS.Codex.md       # Codex 接入说明（用时改名 AGENTS.md）
 ├── AGENTS.DSH.md         # DeepSeek Harness 接入说明（用时改名 AGENTS.md）
-├── skills/               # 五子技能 A-E（庙算/知己/虚实/奇正/用间）
-├── scripts/              # init_duckdb / incremental / export_ladybug / dashboard
+├── skills/               # 五子技能 A-E（庙算/知己/虚实/奇正/用间；检测器=Function 薄编排）
+├── scripts/              # init_duckdb / incremental / export_ladybug / build_ontology / dashboard
 │   ├── verify_ladybug.py      # 图库能力验证（5 项）
 │   ├── q2_overpass_cypher.py  # Q2 过桥 Cypher + SQL 双轨独立演示
-│   ├── mcp_server.py          # MCP server（stdio，零第三方依赖）
-│   └── mcp_client_test.py     # MCP 端到端自测（33 项）
+│   ├── mcp_server.py          # MCP server（stdio，零第三方依赖，8 工具）
+│   └── mcp_client_test.py     # MCP 端到端自测（39 项）
 ├── data/                 # Parquet 冷层 + 多格式样本 + ladybug 边表
 ├── tests/                # 单元测试
 └── output/               # 运行产物（六段 JSON / 线索 / 处置 / 操作台）

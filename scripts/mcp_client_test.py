@@ -132,7 +132,7 @@ def main() -> int:
         r = c.request("tools/list")
         tools = r["result"]["tools"]
         names = [t["name"] for t in tools]
-        check(f"返回 6 个工具（{len(tools)}）", len(tools) == 6, str(names))
+        check(f"返回 8 个工具（{len(tools)}）", len(tools) == 8, str(names))
         for t in tools:
             sch = t.get("inputSchema", {})
             check(f"  {t['name']} 有 description + inputSchema",
@@ -158,6 +158,23 @@ def main() -> int:
         check(f"scan_anomaly 返回候选（{d.get('count')} 条）", d.get("count", 0) >= 1)
         check("scan_anomaly 不返回明细（只给 count）",
               all("source_rows" not in f for f in d.get("findings", [])))
+
+        d = payload(c.request("tools/call", {"name": "function_list", "arguments": {}}))
+        fnames = [f["name"] for f in d.get("functions", [])]
+        check(f"function_list 返回 10 个 Function（{len(fnames)}）", len(fnames) == 10, str(fnames))
+        check("function_list 全部标注 readonly",
+              all(f.get("readonly") for f in d.get("functions", [])))
+        check("function_list 含新增内间/对端诊断（tipoff_cross_reference, call_pair_coverage）",
+              "tipoff_cross_reference" in fnames and "call_pair_coverage" in fnames)
+
+        d = payload(c.request("tools/call", {"name": "function_invoke",
+                                             "arguments": {"name": "quarter_end_integer_deposits"}}))
+        check("function_invoke 返回只读计算结果",
+              d.get("ok") and d.get("readonly") is True and len(d.get("rows", [])) >= 1,
+              str(d.get("error", d))[:80])
+        d = payload(c.request("tools/call", {"name": "function_invoke",
+                                             "arguments": {"name": "不存在的函数"}}))
+        check("function_invoke 未知名报错（不崩）", d.get("ok") is False)
 
         d = payload(c.request("tools/call", {"name": "clue_list", "arguments": {}}))
         check(f"clue_list 返回线索（{d.get('count')} 条）", d.get("count", 0) >= 1)

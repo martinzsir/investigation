@@ -39,7 +39,8 @@ description: >
 | `skill: qi_zheng` | skills/qi_zheng.py | —（奇兵拓线/正兵固证双列） | 找到突破口、要排下一步 |
 | `skill: yong_jian` | skills/yong_jian.py | `cross_jian`（交叉等级） | 多条线索、要判断可信度 |
 
-辅助工具：`graph_overpass`（图库两跳过桥双轨）/ `clue_list` / `clue_transition` / `run_pipeline`（需 confirm:true）。
+辅助工具：`graph_overpass`（图库两跳过桥双轨）/ `clue_list` / `clue_transition` /
+`function_list`+`function_invoke`（Ontology Function 只读计算目录/调用）/ `run_pipeline`（需 confirm:true）。
 MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三方依赖）。
 
 ## 五、标准输出（每次响应固定六段）
@@ -55,15 +56,16 @@ MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三�
 
 ## 七、校验
 ```bash
-python run_tests.py                  # 7 组测试（mcp/miaosuan/graph/org/review/disposal/e2e），必须全绿
+python run_tests.py                  # 8 组测试（mcp/miaosuan/graph/org/review/disposal/ontology/e2e），必须全绿
 python -m scripts.mcp_client_test    # MCP 端到端（32 项），改 MCP 后必跑
 ```
 Schema 与红线校验在 `core/validate.py`；`--auto-review` 仅限演示，生产必须人工逐条确认。
 
 ## 八、数据输入约定
 - 业务数据：`data/*.parquet`（银行流水/通话记录/招投标档案/工商信息/轨迹出行/公开OSINT/举报材料），重跑 `python -m scripts.init_duckdb` 挂载
+- 语义层（Ontology，声明是数据/实现是代码）：`ontology/<pack>/*.json`（objects/links/actions/functions 四段）由 `core/ontology_loader.py` 装载校验，`python -m scripts.build_ontology` 编译出 `obj_*`/`lnk_*`（run_all 步骤 6.5 自动执行）。Object/Link 为表；**Function 只读**（functions.json 声明 + `core/functions.py` 注册实现，SQL 强制 SELECT/WITH 白名单，检测器只是 Function 薄编排）；**Action 可写**（actions.json 声明 + `core/action_executor.py` 唯一写路径，file 副作用创建 obj_decision 决策对象）。新案件/新数据源：加 ontology 案件包 JSON，`--pack <包名>` 切换，不改检测器
 - 任意格式接入：CSV/Excel/JSON/SQLite/Parquet 走 `data_ingest.DataIngestManager`（自动检测分隔符/映射中文列名/保留 `_source_file` 溯源列）
-- 图库边表：`python -m scripts.export_ladybug` → `data/ladybug/*.csv` → COPY 进 LadybugDB
+- 图库边表：`python -m scripts.export_ladybug` 从语义层导出 → `data/ladybug/*.csv` → COPY 进 LadybugDB
 - 增量：`python -m scripts.incremental --quarter 2024-Q4`
 
 ## 九、调用示例
