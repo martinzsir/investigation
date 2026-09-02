@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 产物与库文件（可由管线重新生成）
+investigation.duckdb
+output/
+data/*.parquet
+data/samples/
+data/ladybug/
