@@ -61,7 +61,7 @@ MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三�
 ## 七、校验
 ```bash
 python run_tests.py                  # 8 组测试（mcp/miaosuan/graph/org/review/disposal/ontology/e2e），必须全绿
-python -m scripts.mcp_client_test    # MCP 端到端（32 项），改 MCP 后必跑
+python -m scripts.mcp_client_test    # MCP 端到端（46 项、9 工具），改 MCP 后必跑
 ```
 Schema 与红线校验在 `core/validate.py`；`--auto-review` 仅限演示，生产必须人工逐条确认。
 

@@ -49,7 +49,7 @@ python -m scripts.build_ontology         # 单独构建/重建语义层（obj_*/
 python -m scripts.build_ontology --pack <包名>   # 指定 ontology 案件包
 python -m scripts.build_ontology --actions      # 查看 Action 注册表
 python -m scripts.build_ontology --functions    # 查看 Function 目录（只读计算）
-python -m scripts.mcp_client_test        # MCP 端到端（39 项）
+python -m scripts.mcp_client_test        # MCP 端到端（46 项，9 个工具）
 python -m scripts.mcp_server             # 启动 MCP server（stdio）
 ```
 
