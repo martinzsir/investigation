@@ -69,6 +69,28 @@ def make_store() -> Store:
     return s
 
 
+def _write_v2_pack(d, objects, links=None, object_bindings=None,
+                   link_bindings=None, actions=None) -> None:
+    """在目录 d 下写一个最小 v2 案件包（functions.json 可选不写）。"""
+    import json as _json
+    (d / "objects.json").write_text(_json.dumps(
+        {"schema_version": 2, "objects": objects}, ensure_ascii=False), encoding="utf-8")
+    (d / "links.json").write_text(_json.dumps(
+        {"schema_version": 2, "links": links or []}, ensure_ascii=False), encoding="utf-8")
+    (d / "bindings.json").write_text(_json.dumps(
+        {"schema_version": 2,
+         "object_bindings": object_bindings or [],
+         "link_bindings": link_bindings or []}, ensure_ascii=False), encoding="utf-8")
+    (d / "actions.json").write_text(_json.dumps(
+        {"schema_version": 2, "actions": actions or []}, ensure_ascii=False), encoding="utf-8")
+
+
+# v2 分层校验用的最小合法对象/绑定
+_X_OBJ = {"name": "x", "title": "X", "pk": "x_id", "kind": "entity",
+          "name_property": "raw_name", "properties": {"raw_name": "string"}}
+_X_BIND = {"object": "x", "source_sql": "SELECT 'a' AS raw_name FROM 工商信息"}
+
+
 class TestBuildIdempotent(unittest.TestCase):
     """编译幂等：同输入多次构建，产物逐行一致。"""
 
@@ -380,28 +402,35 @@ class TestOntologyLoader(unittest.TestCase):
 
     def test_结构化源编译为SQL(self):
         from core.ontology_loader import _compile_structured_source
+        from core.ontology import ObjectType
+        otype = ObjectType(
+            name="transaction", title="交易", pk="txn_id", kind="event",
+            name_property="from_raw",
+            properties={"from_raw": "string", "amount": "decimal", "date": "date"})
         sql, table = _compile_structured_source(
             {"table": "银行流水",
-             "columns": {"from_raw": "主体", "amount": "金额"}}, "ctx")
+             "columns": {"from_raw": "主体", "amount": "金额", "date": "日期"}},
+            otype, "ctx")
         self.assertEqual(table, "银行流水")
-        self.assertIn('"主体" AS from_raw', sql)
+        self.assertIn('"主体" AS from_raw', sql)          # string 不 CAST
+        self.assertIn('CAST("金额" AS DOUBLE) AS amount', sql)   # decimal → DOUBLE
+        self.assertIn('CAST("日期" AS DATE) AS date', sql)      # date → DATE
 
     def test_坏包硬失败(self):
-        import tempfile, json as _json
+        import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as td:
             d = Path(td) / "bad"
             d.mkdir()
-            (d / "objects.json").write_text(_json.dumps({
-                "schema_version": 1,
-                "objects": [{"name": "x", "title": "X", "pk": "x_id",
-                             "name_col": "raw_name",
-                             "clean": ["不存在的清洗规则"]}],
-            }), encoding="utf-8")
-            (d / "links.json").write_text(_json.dumps(
-                {"schema_version": 1, "links": []}), encoding="utf-8")
-            (d / "actions.json").write_text(_json.dumps(
-                {"schema_version": 1, "actions": []}), encoding="utf-8")
+            # v2：清洗规则属于管道层（bindings.json），未注册规则名装载即硬失败
+            _write_v2_pack(
+                d,
+                objects=[{"name": "x", "title": "X", "pk": "x_id",
+                          "kind": "entity", "name_property": "raw_name",
+                          "properties": {"raw_name": "string"}}],
+                object_bindings=[{"object": "x",
+                                  "source_sql": "SELECT 'a' AS raw_name",
+                                  "clean": ["不存在的清洗规则"]}])
             with self.assertRaises(ValueError):
                 load_pack("bad", base_dir=Path(td))
 
@@ -425,6 +454,140 @@ class TestOptionalSource(unittest.TestCase):
         stats = build_ontology(s.conn)
         self.assertTrue(any("obj_clue" in x for x in stats["skipped"]))
         self.assertNotIn("clue", stats["objects"])
+
+
+class TestV2Layering(unittest.TestCase):
+    """v2 分层校验：类型层（objects/links）与管道层（bindings）交叉引用硬失败。"""
+
+    @staticmethod
+    def _pack_dir(td, name="p"):
+        from pathlib import Path
+        d = Path(td) / name
+        d.mkdir()
+        return d
+
+    def test_非runtime对象缺binding硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            _write_v2_pack(self._pack_dir(td), objects=[_X_OBJ])  # 无 binding
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_runtime对象不得有binding(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            obj = dict(_X_OBJ, runtime=True)
+            _write_v2_pack(self._pack_dir(td), objects=[obj],
+                           object_bindings=[_X_BIND])
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_未知值类型硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            obj = dict(_X_OBJ, properties={"raw_name": "money"})
+            _write_v2_pack(self._pack_dir(td), objects=[obj],
+                           object_bindings=[_X_BIND])
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_binding别名不在属性集硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            bind = {"object": "x",
+                    "source": {"table": "工商信息",
+                               "columns": {"raw_name": "主体", "bogus": "法人"}}}
+            _write_v2_pack(self._pack_dir(td), objects=[_X_OBJ],
+                           object_bindings=[bind])
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_links_json含build_sql硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            link = {"name": "l", "from_obj": "x", "to_obj": "x",
+                    "build_sql": "SELECT 1"}
+            _write_v2_pack(self._pack_dir(td), objects=[_X_OBJ],
+                           object_bindings=[_X_BIND], links=[link],
+                           link_bindings=[{"link": "l", "build_sql": "SELECT 1"}])
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_非runtime链接缺binding硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            link = {"name": "l", "from_obj": "x", "to_obj": "x", "properties": {}}
+            _write_v2_pack(self._pack_dir(td), objects=[_X_OBJ],
+                           object_bindings=[_X_BIND], links=[link])
+            with self.assertRaises(ValueError):
+                load_pack("p", base_dir=Path(td))
+
+    def test_链接边属性不在build输出硬失败(self):
+        import tempfile
+        from pathlib import Path
+        import core.ontology_loader as ol
+        with tempfile.TemporaryDirectory() as td:
+            d = self._pack_dir(td, name="badlink")
+            link = {"name": "l", "from_obj": "x", "to_obj": "x",
+                    "properties": {"missing_col": "string"}}
+            lb = {"link": "l",
+                  "build_sql": "SELECT x_id AS from_x, x_id AS to_x FROM obj_x"}
+            _write_v2_pack(d, objects=[_X_OBJ], object_bindings=[_X_BIND],
+                           links=[link], link_bindings=[lb])
+            s = make_store()
+            orig = ol.PACK_ROOT
+            ol.PACK_ROOT = Path(td)
+            try:
+                with self.assertRaises(ValueError):
+                    build_ontology(s.conn, pack="badlink")
+            finally:
+                ol.PACK_ROOT = orig
+
+
+class TestTypedMaterialization(unittest.TestCase):
+    """值类型驱动物化：obj_* 列类型由 properties 声明决定；runtime 表 DDL 同口径。"""
+
+    def setUp(self):
+        self.s = make_store()
+        build_ontology(self.s.conn)
+
+    def _col_types(self, table: str) -> dict:
+        return {r["column_name"]: r["data_type"]
+                for r in self.s.query(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    f"WHERE table_name = '{table}' ORDER BY ordinal_position")}
+
+    def test_金额日期次数列类型化(self):
+        t = self._col_types("obj_transaction")
+        self.assertEqual(t["amount"], "DOUBLE")
+        self.assertEqual(t["date"], "DATE")
+        self.assertEqual(t["from_raw"], "VARCHAR")
+        c = self._col_types("obj_call")
+        self.assertEqual(c["times"], "BIGINT")
+        self.assertEqual(c["date"], "DATE")
+        p = self._col_types("obj_bid_project")
+        self.assertEqual(p["pub_date"], "DATE")
+
+    def test_runtime表按类型声明建列(self):
+        d = self._col_types("obj_decision")
+        self.assertEqual(list(d),
+                         ["decision_id", "decision_type", "clue_id", "legal_basis",
+                          "operator", "note", "created_at", "source_rows"])
+        self.assertTrue(all(t == "VARCHAR" for t in d.values()))
+        l = self._col_types("lnk_decision_for")
+        self.assertEqual(list(l), ["decision_id", "clue_id"])
+
+    def test_类型化后链接语义不变(self):
+        rows = self.s.query(
+            "SELECT owner_raw, offset_days FROM lnk_time_window ORDER BY offset_days")
+        self.assertEqual([(r["owner_raw"], r["offset_days"]) for r in rows],
+                         [("张卫国", -3), ("宏业建设", 0)])
 
 
 if __name__ == "__main__":

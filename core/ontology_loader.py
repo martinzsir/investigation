@@ -1,18 +1,21 @@
 """
 core/ontology_loader.py
-Ontology 案件包装载器：把 ontology/<pack>/*.json 声明校验后编译为内存 dataclass。
+Ontology 案件包装载器（schema_version=2）：把 ontology/<pack>/*.json 声明校验后编译为内存 dataclass。
+
+v2 分层（类型层 vs 管道层）：
+  objects.json    类型层：ObjectType（name/pk/kind/name_property/properties{属性:值类型}/runtime）
+  links.json      类型层：LinkType（from_obj/to_obj/properties{边属性:值类型}/runtime），不含 SQL
+  bindings.json   管道层：object_bindings（source/source_sql/clean/optional）+
+                          link_bindings（build_sql）
+  actions.json    Action Types（受控写回）
+  functions.json  Function Types（只读计算，可选）
 
 设计：
   - 声明是数据（JSON），实现是代码（清洗规则/Function py 实现/Action 副作用按名注册）；
-  - 加载时强校验：schema_version、必填字段、引用名（清洗规则/function 实现/
-    对象链接引用/副作用名/角色名）存在性，任何未知名/结构错误硬失败（不准带病编译）；
+  - 加载时强校验：schema_version、必填字段、值类型、交叉引用（binding 必须指向已声明类型、
+    非 runtime 类型必须有 binding、结构化源别名必须是已声明属性、链接边属性物化后对账、
+    function/action 引用存在性），任何未知名/结构错误硬失败（不准带病编译）；
   - 零第三方依赖（stdlib json/dataclasses/pathlib），与 MCP server 风格一致。
-
-案件包结构：
-  ontology/<pack>/objects.json   schema_version + objects[]
-  ontology/<pack>/links.json     schema_version + links[]
-  ontology/<pack>/actions.json   schema_version + actions[]
-  ontology/<pack>/functions.json schema_version + functions[]（可选）
 """
 from __future__ import annotations
 
@@ -21,12 +24,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.ontology import (
-    ObjectSpec, LinkSpec, ActionSpec, ParamSpec, FunctionSpec,
+    ObjectType, ObjectBinding, LinkType, LinkBinding,
+    ActionSpec, ParamSpec, FunctionSpec,
+    TYPE_SQL, TYPE_NAMES, OBJECT_KINDS,
     CLEAN_RULE_NAMES, reverse_reach,
 )
 from core.registry import ClueStatus
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PACK_ROOT = Path(__file__).resolve().parent.parent / "ontology"
 
 ALLOWED_ROLES = {"any", "human"}
@@ -39,8 +44,10 @@ _DERIVE_RULES = {"reverse_reach"}
 @dataclass
 class OntologyPack:
     name: str
-    objects: list[ObjectSpec]
-    links: list[LinkSpec]
+    objects: list[ObjectType]
+    links: list[LinkType]
+    object_bindings: dict[str, ObjectBinding]
+    link_bindings: dict[str, LinkBinding]
     actions: dict[str, ActionSpec]
     functions: dict[str, FunctionSpec]
 
@@ -55,10 +62,14 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
 
     objects = _load_objects(root / "objects.json")
     links = _load_links(root / "links.json", objects)
-    actions = _load_actions(root / "actions.json")
+    object_bindings, link_bindings = _load_bindings(
+        root / "bindings.json", objects, links)
+    actions = _load_actions(root / "actions.json", objects)
     functions = _load_functions(root / "functions.json", objects, links,
                                 required=False)
     return OntologyPack(name=pack, objects=objects, links=links,
+                        object_bindings=object_bindings,
+                        link_bindings=link_bindings,
                         actions=actions, functions=functions)
 
 
@@ -72,7 +83,7 @@ def _read_json(path: Path) -> dict:
     if data.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"{path.name} schema_version={data.get('schema_version')}，"
-            f"本内核支持 {SCHEMA_VERSION}")
+            f"本内核支持 {SCHEMA_VERSION}（v2：类型层 objects/links + 管道层 bindings）")
     return data
 
 
@@ -83,71 +94,52 @@ def _require(d: dict, keys: tuple, ctx: str) -> None:
 
 
 # ----------------------------------------------------------------------
-# objects
+# objects（类型层）
 # ----------------------------------------------------------------------
-def _compile_structured_source(src: dict, ctx: str) -> tuple[str, str]:
-    """结构化源 → (source_sql, source_table)。"""
-    _require(src, ("table", "columns"), f"{ctx}.source")
-    table, columns = src["table"], src["columns"]
-    if not isinstance(columns, dict) or not columns:
-        raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
-    select = ", ".join(f'"{raw}" AS {alias}' for alias, raw in columns.items())
-    return f"SELECT {select} FROM {table}", table
-
-
-def _load_objects(path: Path) -> list[ObjectSpec]:
+def _load_objects(path: Path) -> list[ObjectType]:
     data = _read_json(path)
-    out: list[ObjectSpec] = []
+    out: list[ObjectType] = []
     seen: set[str] = set()
     for i, o in enumerate(data.get("objects", [])):
         ctx = f"objects[{i}]"
-        _require(o, ("name", "pk", "name_col"), ctx)
+        _require(o, ("name", "pk", "name_property"), ctx)
         name = o["name"]
         if name in seen:
             raise ValueError(f"{ctx} 对象名重复：{name}")
         seen.add(name)
 
-        runtime = bool(o.get("runtime", False))
-        source_sql, source_table = o.get("source_sql", ""), o.get("source_table", "")
-        if not runtime:
-            if "source" in o:
-                sql, table = _compile_structured_source(o["source"], ctx)
-                source_sql, source_table = sql, table
-            if not source_sql:
-                raise ValueError(f"{ctx}（{name}）必须声明 source 或 source_sql")
-            # name_col 必须是 source 产出列之一（结构化源可静态校验）
-            if "source" in o:
-                aliases = set(o["source"]["columns"].keys())
-                if o["name_col"] not in aliases:
-                    raise ValueError(
-                        f"{ctx} name_col='{o['name_col']}' 不在 source.columns 别名 {sorted(aliases)} 内")
+        kind = o.get("kind", "entity")
+        if kind not in OBJECT_KINDS:
+            raise ValueError(f"{ctx}（{name}）kind='{kind}' 非法，允许 {OBJECT_KINDS}")
+        props = o.get("properties", {})
+        if not isinstance(props, dict):
+            raise ValueError(f"{ctx}（{name}）properties 必须是映射 {{属性名: 值类型}}")
+        bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
+        if bad:
+            raise ValueError(f"{ctx}（{name}）属性值类型非法：{bad}，允许 {TYPE_NAMES}")
+        if o["pk"] in props:
+            raise ValueError(f"{ctx}（{name}）pk '{o['pk']}' 不得出现在 properties 中")
+        name_prop = o["name_property"]
+        if name_prop != o["pk"] and name_prop not in props:
+            raise ValueError(
+                f"{ctx}（{name}）name_property='{name_prop}' 必须是已声明属性，"
+                f"或等于 pk（自引用）")
 
-        clean = tuple(o.get("clean", ()))
-        unknown = set(clean) - CLEAN_RULE_NAMES
-        if unknown:
-            raise ValueError(f"{ctx}（{name}）引用未注册清洗规则：{sorted(unknown)}，"
-                             f"可用 {sorted(CLEAN_RULE_NAMES)}")
-
-        out.append(ObjectSpec(
-            name=name, title=o.get("title", name), pk=o["pk"],
-            source_sql=source_sql, name_col=o["name_col"],
-            properties=dict(o.get("properties", {})),
-            clean=clean,
-            optional_table=bool(o.get("optional", False)),
-            row_key=bool(o.get("row_key", False)),
-            source_table=source_table,
-            runtime=runtime,
+        out.append(ObjectType(
+            name=name, title=o.get("title", name), pk=o["pk"], kind=kind,
+            name_property=name_prop, properties=dict(props),
+            runtime=bool(o.get("runtime", False)),
         ))
     return out
 
 
 # ----------------------------------------------------------------------
-# links
+# links（类型层）
 # ----------------------------------------------------------------------
-def _load_links(path: Path, objects: list[ObjectSpec]) -> list[LinkSpec]:
+def _load_links(path: Path, objects: list[ObjectType]) -> list[LinkType]:
     data = _read_json(path)
     obj_names = {o.name for o in objects}
-    out: list[LinkSpec] = []
+    out: list[LinkType] = []
     seen: set[str] = set()
     for i, l in enumerate(data.get("links", [])):
         ctx = f"links[{i}]"
@@ -159,25 +151,138 @@ def _load_links(path: Path, objects: list[ObjectSpec]) -> list[LinkSpec]:
         for end in ("from_obj", "to_obj"):
             if l[end] not in obj_names:
                 raise ValueError(f"{ctx}（{name}）{end}='{l[end]}' 未在 objects 声明")
-        runtime = bool(l.get("runtime", False))
-        build_sql = l.get("build_sql", "")
-        if not runtime and not build_sql:
-            raise ValueError(f"{ctx}（{name}）非 runtime 链接必须声明 build_sql")
-        out.append(LinkSpec(
+        if "build_sql" in l:
+            raise ValueError(
+                f"{ctx}（{name}）build_sql 属于管道层，请移至 bindings.json 的 link_bindings")
+        props = l.get("properties", {})
+        if not isinstance(props, dict):
+            raise ValueError(f"{ctx}（{name}）properties 必须是映射 {{边属性: 值类型}}")
+        bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
+        if bad:
+            raise ValueError(f"{ctx}（{name}）边属性类型非法：{bad}，允许 {TYPE_NAMES}")
+        out.append(LinkType(
             name=name, title=l.get("title", name),
             from_obj=l["from_obj"], to_obj=l["to_obj"],
-            build_sql=build_sql,
-            properties=dict(l.get("properties", {})),
-            runtime=runtime,
+            properties=dict(props),
+            runtime=bool(l.get("runtime", False)),
         ))
     return out
 
 
 # ----------------------------------------------------------------------
+# bindings（管道层）
+# ----------------------------------------------------------------------
+def _compile_structured_source(src: dict, otype: ObjectType,
+                               ctx: str) -> tuple[str, str]:
+    """
+    结构化源 → (source_sql, source_table)。
+    类型感知：非 string 属性编译期 CAST（与 TYPE_SQL 物化列类型同口径）。
+    """
+    _require(src, ("table", "columns"), f"{ctx}.source")
+    table, columns = src["table"], src["columns"]
+    if not isinstance(columns, dict) or not columns:
+        raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
+    parts: list[str] = []
+    for alias, raw in columns.items():
+        t = otype.properties.get(alias, "string")
+        if t == "string":
+            parts.append(f'"{raw}" AS {alias}')
+        else:
+            parts.append(f'CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
+    return f"SELECT {', '.join(parts)} FROM {table}", table
+
+
+def _load_bindings(path: Path, objects: list[ObjectType],
+                   links: list[LinkType]) -> tuple[dict, dict]:
+    data = _read_json(path)
+    obj_map = {o.name: o for o in objects}
+    link_map = {l.name: l for l in links}
+    obj_out: dict[str, ObjectBinding] = {}
+    link_out: dict[str, LinkBinding] = {}
+
+    # ---- object_bindings ----
+    for i, b in enumerate(data.get("object_bindings", [])):
+        ctx = f"object_bindings[{i}]"
+        _require(b, ("object",), ctx)
+        name = b["object"]
+        if name not in obj_map:
+            raise ValueError(f"{ctx} 绑定了未声明对象 '{name}'（先在 objects.json 声明类型）")
+        if name in obj_out:
+            raise ValueError(f"{ctx} 对象 '{name}' 重复绑定")
+        otype = obj_map[name]
+        if otype.runtime:
+            raise ValueError(f"{ctx} runtime 对象 '{name}' 不得有 binding（由 Action 副作用创建）")
+
+        source_sql, source_table = b.get("source_sql", ""), b.get("source_table", "")
+        if "source" in b:
+            sql, table = _compile_structured_source(b["source"], otype, ctx)
+            source_sql, source_table = sql, table
+        if not source_sql:
+            raise ValueError(f"{ctx}（{name}）必须声明 source 或 source_sql")
+        if "source" in b:
+            aliases = set(b["source"]["columns"])
+            # 合法输出列 = 属性集 ∪ {pk}（name_property 等于 pk 的自引用对象，如 clue）
+            allowed = set(otype.properties) | {otype.pk}
+            unknown = aliases - allowed
+            if unknown:
+                raise ValueError(
+                    f"{ctx}（{name}）源列别名 {sorted(unknown)} 不在属性声明 "
+                    f"{sorted(otype.properties)} 内（类型层与管道层不一致）")
+            if otype.name_property not in aliases:
+                raise ValueError(
+                    f"{ctx}（{name}）结构化源缺少 name_property 列 '{otype.name_property}'")
+
+        clean = tuple(b.get("clean", ()))
+        unknown_rules = set(clean) - CLEAN_RULE_NAMES
+        if unknown_rules:
+            raise ValueError(f"{ctx}（{name}）引用未注册清洗规则：{sorted(unknown_rules)}，"
+                             f"可用 {sorted(CLEAN_RULE_NAMES)}")
+
+        obj_out[name] = ObjectBinding(
+            object=name, source_sql=source_sql, source_table=source_table,
+            clean=clean, optional=bool(b.get("optional", False)))
+
+    missing_obj = [o.name for o in objects if not o.runtime and o.name not in obj_out]
+    if missing_obj:
+        raise ValueError(f"非 runtime 对象缺少 binding 声明：{missing_obj}")
+
+    # ---- link_bindings ----
+    for i, b in enumerate(data.get("link_bindings", [])):
+        ctx = f"link_bindings[{i}]"
+        _require(b, ("link", "build_sql"), ctx)
+        name = b["link"]
+        if name not in link_map:
+            raise ValueError(f"{ctx} 绑定了未声明链接 '{name}'（先在 links.json 声明类型）")
+        if name in link_out:
+            raise ValueError(f"{ctx} 链接 '{name}' 重复绑定")
+        if link_map[name].runtime:
+            raise ValueError(f"{ctx} runtime 链接 '{name}' 不得有 binding（由 Action 副作用写入）")
+        link_out[name] = LinkBinding(link=name, build_sql=b["build_sql"])
+
+    missing_link = [l.name for l in links if not l.runtime and l.name not in link_out]
+    if missing_link:
+        raise ValueError(f"非 runtime 链接缺少 binding 声明：{missing_link}")
+
+    # runtime 链接端点列约定：<from_obj>_id / <to_obj>_id（ensure_runtime_tables 据此建表）
+    for l in links:
+        if not l.runtime:
+            continue
+        for end in (l.from_obj, l.to_obj):
+            epk = obj_map[end].pk
+            if epk != f"{end}_id":
+                raise ValueError(
+                    f"runtime 链接 {l.name} 端点对象 '{end}' 的 pk 必须是 '{end}_id' "
+                    f"（当前 '{epk}'），否则副作用建表列名无法约定")
+
+    return obj_out, link_out
+
+
+# ----------------------------------------------------------------------
 # actions
 # ----------------------------------------------------------------------
-def _load_actions(path: Path) -> dict[str, ActionSpec]:
+def _load_actions(path: Path, objects: list[ObjectType]) -> dict[str, ActionSpec]:
     data = _read_json(path)
+    obj_names = {o.name for o in objects}
     out: dict[str, ActionSpec] = {}
     for i, a in enumerate(data.get("actions", [])):
         ctx = f"actions[{i}]"
@@ -201,6 +306,9 @@ def _load_actions(path: Path) -> dict[str, ActionSpec]:
         if unknown_fx:
             raise ValueError(f"{ctx}（{name}）引用未注册副作用：{sorted(unknown_fx)}，"
                              f"可用 {sorted(ALLOWED_SIDE_EFFECTS)}")
+        if "create_decision" in effects and "decision" not in obj_names:
+            raise ValueError(f"{ctx}（{name}）副作用 create_decision 要求在 objects.json "
+                             f"声明 runtime 对象 'decision'")
         params = []
         for p in a.get("parameters", []):
             _require(p, ("name",), f"{ctx}.parameters")
@@ -224,7 +332,7 @@ def _load_actions(path: Path) -> dict[str, ActionSpec]:
 # ----------------------------------------------------------------------
 # functions
 # ----------------------------------------------------------------------
-def _load_functions(path: Path, objects: list[ObjectSpec], links: list[LinkSpec],
+def _load_functions(path: Path, objects: list[ObjectType], links: list[LinkType],
                     required: bool) -> dict[str, FunctionSpec]:
     if not path.exists():
         if required:

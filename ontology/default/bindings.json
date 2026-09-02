@@ -1,0 +1,122 @@
+{
+  "schema_version": 2,
+  "_note": "管道层（Bindings）：类型层对象/链接的数据从哪来、怎么清洗、怎么物化。object_bindings: source(结构化 {table, columns:{别名:源列}}，编译期按属性类型 CAST) 或 source_sql(自由查询)；clean 清洗规则；optional 源表缺失可跳过。link_bindings: build_sql 物化边（引用 obj_*/lnk_*）。",
+  "object_bindings": [
+    {
+      "object": "person",
+      "source_table": "通话记录",
+      "source_sql": "SELECT 主体 AS raw_name FROM 通话记录 UNION SELECT 对端 FROM 通话记录 UNION SELECT 主体 FROM 轨迹出行 UNION SELECT 主体 FROM 公开OSINT UNION SELECT 主体 FROM 银行流水 UNION SELECT 被举报人 AS raw_name FROM 举报材料",
+      "clean": ["strip", "exclude_org_tokens"]
+    },
+    {
+      "object": "org",
+      "source": {
+        "table": "工商信息",
+        "columns": {"raw_name": "主体", "legal_rep": "法人", "status": "状态", "relation": "关联"}
+      }
+    },
+    {
+      "object": "account",
+      "source_table": "银行流水",
+      "source_sql": "SELECT 主体 AS raw_name FROM 银行流水 UNION SELECT 对方 FROM 银行流水"
+    },
+    {
+      "object": "transaction",
+      "source": {
+        "table": "银行流水",
+        "columns": {"from_raw": "主体", "to_raw": "对方", "amount": "金额", "date": "日期"}
+      }
+    },
+    {
+      "object": "call",
+      "source": {
+        "table": "通话记录",
+        "columns": {"caller_raw": "主体", "callee_raw": "对端", "date": "日期", "times": "次数"}
+      }
+    },
+    {
+      "object": "trackpoint",
+      "source": {
+        "table": "轨迹出行",
+        "columns": {"person_raw": "主体", "location": "地点", "date": "日期"}
+      }
+    },
+    {
+      "object": "bid_project",
+      "source": {
+        "table": "招投标档案",
+        "columns": {"title": "项目", "winner_raw": "中标方", "pub_date": "中标公示日", "leader": "分管领导"}
+      }
+    },
+    {
+      "object": "clue",
+      "optional": true,
+      "source": {
+        "table": "clue_disposal_status",
+        "columns": {"clue_id": "clue_id", "status": "status", "last_operator": "operator", "note": "note", "updated_at": "updated_at"}
+      }
+    },
+    {
+      "object": "tipoff",
+      "optional": true,
+      "source": {
+        "table": "举报材料",
+        "columns": {
+          "title": "分类",
+          "submit_date": "举报日期",
+          "target_raw": "被举报人",
+          "reporter_raw": "举报人",
+          "content_raw": "内容"
+        }
+      }
+    },
+    {
+      "object": "osint_article",
+      "optional": true,
+      "source": {
+        "table": "公开OSINT",
+        "columns": {
+          "raw_name": "主体",
+          "info_text": "公开信息",
+          "pub_date": "发布日期",
+          "source_name": "来源"
+        }
+      }
+    }
+  ],
+  "link_bindings": [
+    {
+      "link": "transfers",
+      "build_sql": "SELECT txn_id, from_raw AS from_account, to_raw AS to_account, amount, date FROM obj_transaction"
+    },
+    {
+      "link": "calls_to",
+      "build_sql": "SELECT c.call_id, p1.person_id AS from_person, p2.person_id AS to_person FROM obj_call c LEFT JOIN obj_person p1 ON p1.raw_name = c.caller_raw LEFT JOIN obj_person p2 ON p2.raw_name = c.callee_raw"
+    },
+    {
+      "link": "owns",
+      "build_sql": "SELECT a.account_id, p.person_id AS owner_person, a.raw_name AS owner_raw FROM obj_account a JOIN obj_person p ON p.raw_name = a.raw_name"
+    },
+    {
+      "link": "involved_in",
+      "build_sql": "SELECT o.org_id, b.project_id, b.winner_raw FROM obj_bid_project b JOIN obj_org o ON o.raw_name = b.winner_raw"
+    },
+    {
+      "link": "co_located",
+      "build_sql": "SELECT t1.track_id AS track_id_1, t2.track_id AS track_id_2, p1.person_id AS person_1, p2.person_id AS person_2, t1.location, t1.date FROM obj_trackpoint t1 JOIN obj_trackpoint t2 ON t1.location = t2.location AND t1.person_raw <> t2.person_raw AND ABS(date_diff('day', CAST(t1.date AS DATE), CAST(t2.date AS DATE))) <= 1 LEFT JOIN obj_person p1 ON p1.raw_name = t1.person_raw LEFT JOIN obj_person p2 ON p2.raw_name = t2.person_raw"
+    },
+    {
+      "link": "time_window",
+      "_note": "build_sql 暂含检测判据（整数资金/排除公司），本期原样搬迁保持行为；后续可上移至 function 层。",
+      "build_sql": "SELECT b.project_id, t.txn_id, b.title, t.from_raw AS owner_raw, t.amount, date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE)) AS offset_days FROM obj_bid_project b JOIN obj_transaction t ON ABS(date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE))) <= 20 AND CAST(t.amount AS BIGINT) % 10000 = 0 AND t.from_raw NOT LIKE '%公司%'"
+    },
+    {
+      "link": "tipoff_targets_person",
+      "build_sql": "SELECT t.tipoff_id, p.person_id, t.target_raw, t.title AS tip_type, t.submit_date FROM obj_tipoff t JOIN obj_person p ON p.raw_name = t.target_raw"
+    },
+    {
+      "link": "osint_mentions",
+      "build_sql": "SELECT a.article_id, p.person_id, a.raw_name AS subject_raw, a.source_name, a.pub_date FROM obj_osint_article a JOIN obj_person p ON p.raw_name = a.raw_name"
+    }
+  ]
+}

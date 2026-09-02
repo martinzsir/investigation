@@ -72,23 +72,16 @@ class ActionExecutor:
         return {"action": action_name, "clue_id": clue.clue_id,
                 "status": clue.status, "side_effects": applied}
 
-    # ---- 副作用：创建决策对象（运行期对象，编译器不管，CREATE IF NOT EXISTS）----
+    # ---- 副作用：创建决策对象（runtime 对象，DDL 由 objects/links 类型声明生成）----
     def _create_decision(self, spec, clue, operator, params, json_dumps) -> dict:
         if self.store is None or not hasattr(self.store, "conn"):
             return {"decision_id": None, "persisted": False,
                     "note": "无 store，决策对象未持久化"}
         import time
+        from core.ontology import ensure_runtime_tables
         conn = self.store.conn
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS obj_decision (
-                "decision_id" VARCHAR, "decision_type" VARCHAR, "clue_id" VARCHAR,
-                "legal_basis" VARCHAR, "operator" VARCHAR, "note" VARCHAR,
-                "created_at" VARCHAR, "source_rows" VARCHAR)
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS lnk_decision_for (
-                "decision_id" VARCHAR, "clue_id" VARCHAR)
-        """)
+        # obj_decision / lnk_decision_for 的列定义来自 ontology 类型层（不再硬编码）
+        ensure_runtime_tables(conn, self.pack)
         decision_id = f"decision_{int(time.time() * 1000)}"
         created_at = time.strftime("%Y-%m-%d %H:%M:%S")
         src = json_dumps([

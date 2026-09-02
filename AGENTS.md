@@ -10,17 +10,23 @@ data/*.parquet（L3 冷层） → investigation.duckdb（L2 温层） → output
 data/ladybug/*.lbug（L4 图库，可选）
 ```
 
-语义层（Palantir Ontology 裁剪版）：**声明是数据、实现是代码**——
-`ontology/<pack>/*.json`（objects/links/actions/functions 四段）由
-`core/ontology_loader.py` 装载校验（未知名/版本不符硬失败），`build_ontology()`
-编译为 `obj_*` / `lnk_*` 语义表。四要素：
-- Object/Link：声明式物化（编译器在 core/ontology.py）
+语义层（Palantir Ontology 裁剪版，schema_version=2 五段）：**声明是数据、实现是代码**——
+`ontology/<pack>/*.json` 由 `core/ontology_loader.py` 装载校验
+（未知名/版本不符硬失败），`build_ontology()` 编译为 `obj_*` / `lnk_*` 语义表。
+**类型层与管道层分离**：
+- objects.json / links.json（类型层）：Object/Link 是什么——pk、kind(entity|event)、
+  name_property、`properties{属性:值类型}`（string/integer/decimal/date/boolean）；
+  值类型经 TYPE_SQL 驱动物化列类型，结构化 source 编译期 CAST，不含任何数据来源信息
+- bindings.json（管道层）：object_bindings（source/source_sql/clean/optional）+
+  link_bindings（build_sql）；换数据源/新案件改这里，不改检测器代码
 - Function（只读）：functions.json 声明 + `core/functions.py` 注册实现；
   SQL 强制 SELECT/WITH 白名单，检测器只是 Function 的薄编排层
 - Action（可写）：actions.json 声明 + `core/action_executor.py` 唯一写路径；
   角色/必填参数/状态机校验，file 副作用创建 obj_decision 决策对象
-换数据源/新案件：加 ontology 案件包 JSON，不改检测器代码。代理键分两类：
-实体型按 raw_name 排序分配，事件型按行分配（均幂等）。
+runtime 对象/链接（obj_decision/lnk_decision_for）在类型层声明属性，
+由 `ensure_runtime_tables()` 按声明建表（Action 副作用唯一建表入口；编译器跳过物化、
+重建语义层不丢决策）。代理键分两类：entity 按 name_property 值排序分配，
+event 事件型按行分配（均幂等）。
 
 内核 = Python + DuckDB + LadybugDB，纯离线、无大模型依赖、无需 API Key。
 
@@ -60,10 +66,10 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 - `Store(db_path=":memory:")` 才是内存库（签名是 `(root, db_path)`）
 - 建图**先节点后边**，否则 `COPY` 边表报 `Unable to find primary key value X`
-- 语义层事件型对象（transaction/call/trackpoint）代理键**按行分配**（`row_key=True`），实体型按 raw_name 分配；改错会让同一主体所有行共享主键
+- 语义层事件型对象（transaction/call/trackpoint，objects.json 里 `kind:"event"`）代理键**按行分配**，实体型（`kind:"entity"`）按 name_property 值分配；改错会让同一主体所有行共享主键
 - 图库/SQL 双轨取数走 `_flow_source()`：有 `lnk_transfers` 读语义层，否则回落 `银行流水`——两轨必须同源
 - 检测器/图库/MCP **不准直读 Parquet**，一律消费 `obj_*`/`lnk_*`（新数据源加 ontology 案件包 JSON）
-- Ontology 声明在 `ontology/<pack>/*.json`（不在 Python 里）：清洗规则名/py function 名/副作用名引用不存在时 loader 硬失败；新增 py Function 必须在 `core/functions.FUNCTION_IMPLS` 注册
+- Ontology 声明在 `ontology/<pack>/*.json`（不在 Python 里，schema_version=2）：类型（objects/links）与管道（bindings：source/source_sql/clean/build_sql）分文件；值类型/清洗规则名/py function 名/副作用名/binding 交叉引用不存在或不一致时 loader 硬失败；新增 py Function 必须在 `core/functions.FUNCTION_IMPLS` 注册；新数据源加 binding（源列别名必须是已声明属性），不改检测器代码
 - 写操作唯一入口是 `ActionExecutor`（DisposalBoard/MCP 都经它）：新写动作先在 actions.json 声明；Function 只读、永远不准写
 - `runtime` 对象/链接（obj_decision/lnk_decision_for）由 Action 副作用创建，编译器跳过；语义层重建不会清掉决策
 - `prioritize_clues()` 返回新列表，必须接收返回值

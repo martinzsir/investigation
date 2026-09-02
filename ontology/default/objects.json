@@ -1,147 +1,146 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "_note": "类型层（Object Types）：只声明对象是什么——主键、kind(entity 实体型/event 事件型)、身份属性、带值类型的属性集。数据来源/清洗/物化 SQL 一律在 bindings.json。值类型：string/integer/decimal/date/boolean。",
   "objects": [
     {
       "name": "person",
       "title": "自然人",
       "pk": "person_id",
-      "name_col": "raw_name",
-      "source_table": "通话记录",
-      "source_sql": "SELECT 主体 AS raw_name FROM 通话记录 UNION SELECT 对端 FROM 通话记录 UNION SELECT 主体 FROM 轨迹出行 UNION SELECT 主体 FROM 公开OSINT UNION SELECT 主体 FROM 银行流水 UNION SELECT 被举报人 AS raw_name FROM 举报材料",
-      "properties": {"raw_name": "raw_name"},
-      "clean": ["strip", "exclude_org_tokens"]
+      "kind": "entity",
+      "name_property": "raw_name",
+      "properties": {"raw_name": "string"}
     },
     {
       "name": "org",
       "title": "组织",
       "pk": "org_id",
-      "name_col": "raw_name",
-      "source": {
-        "table": "工商信息",
-        "columns": {"raw_name": "主体", "legal_rep": "法人", "status": "状态", "relation": "关联"}
-      },
-      "properties": {"raw_name": "raw_name", "legal_rep": "法人", "status": "状态", "relation": "关联"}
+      "kind": "entity",
+      "name_property": "raw_name",
+      "properties": {
+        "raw_name": "string",
+        "legal_rep": "string",
+        "status": "string",
+        "relation": "string"
+      }
     },
     {
       "name": "account",
       "title": "账户",
       "pk": "account_id",
-      "name_col": "raw_name",
-      "source_table": "银行流水",
-      "source_sql": "SELECT 主体 AS raw_name FROM 银行流水 UNION SELECT 对方 FROM 银行流水",
-      "properties": {"raw_name": "raw_name"}
+      "kind": "entity",
+      "name_property": "raw_name",
+      "properties": {"raw_name": "string"}
     },
     {
       "name": "transaction",
       "title": "交易",
       "pk": "txn_id",
-      "name_col": "from_raw",
-      "row_key": true,
-      "source": {
-        "table": "银行流水",
-        "columns": {"from_raw": "主体", "to_raw": "对方", "amount": "金额", "date": "日期"}
-      },
-      "properties": {"from_raw": "主体", "to_raw": "对方", "amount": "金额", "date": "日期"}
+      "kind": "event",
+      "name_property": "from_raw",
+      "properties": {
+        "from_raw": "string",
+        "to_raw": "string",
+        "amount": "decimal",
+        "date": "date"
+      }
     },
     {
       "name": "call",
       "title": "通话",
       "pk": "call_id",
-      "name_col": "caller_raw",
-      "row_key": true,
-      "source": {
-        "table": "通话记录",
-        "columns": {"caller_raw": "主体", "callee_raw": "对端", "date": "日期", "times": "次数"}
-      },
-      "properties": {"caller_raw": "主体", "callee_raw": "对端", "date": "日期", "times": "次数"}
+      "kind": "event",
+      "name_property": "caller_raw",
+      "properties": {
+        "caller_raw": "string",
+        "callee_raw": "string",
+        "date": "date",
+        "times": "integer"
+      }
     },
     {
       "name": "trackpoint",
       "title": "轨迹点",
       "pk": "track_id",
-      "name_col": "person_raw",
-      "row_key": true,
-      "source": {
-        "table": "轨迹出行",
-        "columns": {"person_raw": "主体", "location": "地点", "date": "日期"}
-      },
-      "properties": {"person_raw": "主体", "location": "地点", "date": "日期"}
+      "kind": "event",
+      "name_property": "person_raw",
+      "properties": {
+        "person_raw": "string",
+        "location": "string",
+        "date": "date"
+      }
     },
     {
       "name": "bid_project",
       "title": "招投标项目",
       "pk": "project_id",
-      "name_col": "title",
-      "source": {
-        "table": "招投标档案",
-        "columns": {"title": "项目", "winner_raw": "中标方", "pub_date": "中标公示日", "leader": "分管领导"}
-      },
-      "properties": {"title": "项目", "winner_raw": "中标方", "pub_date": "中标公示日", "leader": "分管领导"}
+      "kind": "entity",
+      "name_property": "title",
+      "properties": {
+        "title": "string",
+        "winner_raw": "string",
+        "pub_date": "date",
+        "leader": "string"
+      }
     },
     {
       "name": "clue",
       "title": "线索",
       "pk": "clue_id",
-      "name_col": "clue_id",
-      "optional": true,
-      "source": {
-        "table": "clue_disposal_status",
-        "columns": {"clue_id": "clue_id", "status": "status", "last_operator": "operator", "note": "note", "updated_at": "updated_at"}
-      },
-      "properties": {"status": "status", "last_operator": "operator", "note": "note", "updated_at": "updated_at"}
+      "kind": "entity",
+      "name_property": "clue_id",
+      "_note_naming": "name_property 等于 pk（自引用）：线索无自然名，代理键即标识",
+      "properties": {
+        "status": "string",
+        "last_operator": "string",
+        "note": "string",
+        "updated_at": "string"
+      }
     },
     {
       "name": "decision",
       "title": "处置决定",
       "pk": "decision_id",
-      "name_col": "decision_id",
+      "kind": "entity",
+      "name_property": "decision_id",
       "runtime": true,
-      "properties": {},
-      "_note": "运行期对象：不由编译器从 L2 物化，由 Action 执行器在 file 动作时创建（obj_decision / lnk_decision_for）"
+      "_note": "运行期对象：不由编译器从 L2 物化。属性声明即 DDL——Action 执行器 file 动作时由 ensure_runtime_tables 建表（obj_decision / lnk_decision_for），列序与 INSERT 对齐。",
+      "properties": {
+        "decision_type": "string",
+        "clue_id": "string",
+        "legal_basis": "string",
+        "operator": "string",
+        "note": "string",
+        "created_at": "string"
+      }
     },
     {
       "name": "tipoff",
       "title": "举报线索（内间）",
       "pk": "tipoff_id",
-      "name_col": "title",
-      "row_key": true,
-      "optional": true,
-      "source": {
-        "table": "举报材料",
-        "columns": {
-          "title": "分类",
-          "submit_date": "举报日期",
-          "target_raw": "被举报人",
-          "reporter_raw": "举报人",
-          "content_raw": "内容"
-        }
-      },
+      "kind": "event",
+      "name_property": "title",
+      "_note": "五间映射：内间（内部线索/举报材料）。接入后 jian_cross_level 内间自动从缺口变命中。",
       "properties": {
-        "title": "分类", "submit_date": "举报日期", "target_raw": "被举报人",
-        "reporter_raw": "举报人", "content_raw": "内容"
-      },
-      "_note": "五间映射：内间（内部线索/举报材料）。接入后 jian_cross_level 内间自动从缺口变命中。"
+        "title": "string",
+        "submit_date": "date",
+        "target_raw": "string",
+        "reporter_raw": "string",
+        "content_raw": "string"
+      }
     },
     {
       "name": "osint_article",
       "title": "公开OSINT文章（死间）",
       "pk": "article_id",
-      "name_col": "raw_name",
-      "row_key": true,
-      "optional": true,
-      "source": {
-        "table": "公开OSINT",
-        "columns": {
-          "raw_name": "主体",
-          "info_text": "公开信息",
-          "pub_date": "发布日期",
-          "source_name": "来源"
-        }
-      },
+      "kind": "event",
+      "name_property": "raw_name",
+      "_note": "五间映射：死间（公开OSINT交叉验证）。原死间仅靠工商信息，新增后多一条公开渠道。",
       "properties": {
-        "raw_name": "主体", "info_text": "公开信息", "pub_date": "发布日期", "source_name": "来源"
-      },
-      "_note": "五间映射：死间（公开OSINT交叉验证）。原死间仅靠工商信息，新增后多一条公开渠道。"
+        "raw_name": "string",
+        "info_text": "string",
+        "pub_date": "date",
+        "source_name": "string"
+      }
     }
   ]
 }
