@@ -205,6 +205,25 @@ def _tools() -> list[dict]:
             },
             "annotations": {"readOnlyHint": True},
         },
+        {
+            "name": "rule_list",
+            "description": (
+                "检测规则手册（只读）：列出自然语言检测规则（rule_text 判据原文、绑定 Function、"
+                "参数阈值、维度/间类/假设挂钩）。编排约定：先读本手册理解判据，再按规则调 "
+                "function_invoke（参数以规则 params 为基准），不得自创规则外判据、不写 SQL。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "stage": {
+                        "type": "string",
+                        "description": "可选：按决策阶段过滤（xu_shi/qi_zheng/yong_jian）",
+                    },
+                },
+                "required": [],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
     ]
 
 
@@ -497,6 +516,20 @@ def tool_function_invoke(args: dict) -> dict:
         store.close()
 
 
+def tool_rule_list(args: dict) -> dict:
+    """检测规则手册（自然语言规则目录，只读声明，不碰数据）。"""
+    from core.rules import catalog
+
+    try:
+        rules = catalog()
+    except Exception as e:
+        return _redline({"ok": False, "error": f"规则手册装载失败：{e}"})
+    stage = args.get("stage")
+    if stage:
+        rules = [r for r in rules if r.get("stage") == stage]
+    return _redline({"count": len(rules), "rules": rules, "readonly": True})
+
+
 _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "scan_anomaly": tool_scan_anomaly,
     "cross_jian": tool_cross_jian,
@@ -506,6 +539,7 @@ _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "run_pipeline": tool_run_pipeline,
     "function_list": tool_function_list,
     "function_invoke": tool_function_invoke,
+    "rule_list": tool_rule_list,
 }
 
 

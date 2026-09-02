@@ -4,8 +4,8 @@ MCP server 端到端冒烟测试：手写 JSON-RPC 客户端，走完整生命�
 
 覆盖：
   1. initialize 握手（协议版本、capabilities、serverInfo）
-  2. tools/list（6 个工具，schema 必填项齐全）
-  3. tools/call —— 4 个只读工具
+  2. tools/list（9 个工具，schema 必填项齐全）
+  3. tools/call —— 只读工具（含 function_list/function_invoke/rule_list）
   4. 红线：clue_transition 用 operator="system" 必须被拒
   5. 红线：置"已立案"不带 legal_basis 必须被拒
   6. 红线：operator 具名 + 带 legal_basis → 允许
@@ -132,7 +132,7 @@ def main() -> int:
         r = c.request("tools/list")
         tools = r["result"]["tools"]
         names = [t["name"] for t in tools]
-        check(f"返回 8 个工具（{len(tools)}）", len(tools) == 8, str(names))
+        check(f"返回 9 个工具（{len(tools)}）", len(tools) == 9, str(names))
         for t in tools:
             sch = t.get("inputSchema", {})
             check(f"  {t['name']} 有 description + inputSchema",
@@ -175,6 +175,35 @@ def main() -> int:
         d = payload(c.request("tools/call", {"name": "function_invoke",
                                              "arguments": {"name": "不存在的函数"}}))
         check("function_invoke 未知名报错（不崩）", d.get("ok") is False)
+
+        # ---- 自然语言规则手册（rule_list）----
+        d = payload(c.request("tools/call", {"name": "rule_list", "arguments": {}}))
+        rids = [r["id"] for r in d.get("rules", [])]
+        check(f"rule_list 返回 6 条自然语言规则（{len(rids)}）",
+              d.get("count") == 6 and d.get("readonly") is True, str(rids))
+        check("rule_list 规则携带判据原文与函数挂钩",
+              all(len(r.get("rule_text", "")) >= 30 and r.get("function")
+                  for r in d.get("rules", [])))
+        d = payload(c.request("tools/call", {"name": "rule_list",
+                                             "arguments": {"stage": "xu_shi"}}))
+        check("rule_list 支持 stage 过滤（xu_shi=5 条）", d.get("count") == 5,
+              str(d.get("count")))
+
+        # ---- SQL Function 参数注入（规则阈值可调）----
+        d_off = payload(c.request("tools/call", {"name": "function_invoke",
+            "arguments": {"name": "quarter_end_integer_deposits",
+                          "params": {"quarter_end_window_days": 0}}}))
+        d_tight = payload(c.request("tools/call", {"name": "function_invoke",
+            "arguments": {"name": "quarter_end_integer_deposits",
+                          "params": {"quarter_end_window_days": 1}}}))
+        n_off = len(d_off.get("rows", []))
+        n_tight = len(d_tight.get("rows", []))
+        check(f"function_invoke 参数注入生效（窗口0天={n_off}桶 ≥ 窗口1天={n_tight}桶）",
+              d_off.get("ok") and n_off > n_tight, f"{n_off} vs {n_tight}")
+        d_bad = payload(c.request("tools/call", {"name": "function_invoke",
+            "arguments": {"name": "quarter_end_integer_deposits",
+                          "params": {"cash_summary_tokens": "自由文本' OR 1=1"}}}))
+        check("function_invoke 非 enum 字符串参数被拒（防注入）", d_bad.get("ok") is False)
 
         d = payload(c.request("tools/call", {"name": "clue_list", "arguments": {}}))
         check(f"clue_list 返回线索（{d.get('count')} 条）", d.get("count", 0) >= 1)

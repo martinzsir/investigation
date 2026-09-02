@@ -5,21 +5,27 @@
       "name": "quarter_end_integer_deposits",
       "title": "季度末整数存入聚合",
       "inputs": ["obj_transaction"],
-      "parameters": {},
+      "parameters": {
+        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"},
+        "quarter_end_window_days": {"type": "integer", "default": 15, "description": "距最近季末边界天数阈值；0=不按日期过滤（复现旧口径）"},
+        "cash_summary_tokens": {"type": "string", "enum": ["现金存入"], "default": "现金存入", "description": "现金类交易对方摘要标记；对公转账归 integer_transfer_aggregates"}
+      },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT date_trunc('quarter', CAST(date AS DATE)) AS q, COUNT(*) AS cnt, SUM(CAST(amount AS DOUBLE)) AS amt FROM obj_transaction WHERE CAST(amount AS BIGINT) % 10000 = 0 GROUP BY q ORDER BY q",
-      "description": "资金维度：整万元资金按季度聚合（季度末整数现金存入候选反常）"
+      "sql": "SELECT date_trunc('quarter', CAST(date AS DATE)) AS q, COUNT(*) AS cnt, SUM(CAST(amount AS DOUBLE)) AS amt FROM obj_transaction WHERE CAST(amount AS BIGINT) % {{round_unit}} = 0 AND to_raw = {{cash_summary_tokens}} AND ({{quarter_end_window_days}} = 0 OR LEAST(ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) - INTERVAL 1 DAY)), ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) + INTERVAL 3 MONTH - INTERVAL 1 DAY))) <= {{quarter_end_window_days}}) GROUP BY q ORDER BY q",
+      "description": "资金维度：季末窗口内整万元现金存入按季度聚合（规则 R1 挂钩；阈值见 rules.json）"
     },
     {
       "name": "integer_transfer_aggregates",
       "title": "整数转账聚合（过桥结构）",
       "inputs": ["obj_transaction"],
-      "parameters": {},
+      "parameters": {
+        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"}
+      },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT from_raw, to_raw, SUM(CAST(amount AS DOUBLE)) AS total FROM obj_transaction WHERE CAST(amount AS BIGINT) % 10000 = 0 GROUP BY from_raw, to_raw",
-      "description": "资金维度：整数转账 from→to 聚合，第三方过桥结构识别"
+      "sql": "SELECT from_raw, to_raw, SUM(CAST(amount AS DOUBLE)) AS total FROM obj_transaction WHERE CAST(amount AS BIGINT) % {{round_unit}} = 0 GROUP BY from_raw, to_raw",
+      "description": "资金维度：整数转账 from→to 聚合，第三方过桥结构识别（规则 R2 挂钩）"
     },
     {
       "name": "call_frequency_spike",
@@ -55,11 +61,14 @@
       "name": "time_window_collision",
       "title": "中标-资金时间窗碰撞",
       "inputs": ["lnk_time_window", "obj_bid_project"],
-      "parameters": {},
+      "parameters": {
+        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"},
+        "exclude_org_suffix": {"type": "string", "enum": ["公司"], "default": "公司", "description": "资金主体名含该后缀视为对公单位，从个人时间窗碰撞排除"}
+      },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT l.title AS 项目, l.owner_raw AS 资金主体, CAST(l.amount AS BIGINT) AS 金额, l.offset_days AS 偏移天数, CAST(b.pub_date AS DATE) AS 中标公示日 FROM lnk_time_window l JOIN obj_bid_project b ON b.project_id = l.project_id ORDER BY l.offset_days",
-      "description": "时间维度：中标公示 ±20 天整数资金碰撞（Q1，奇兵拓线）"
+      "sql": "SELECT l.title AS 项目, l.owner_raw AS 资金主体, CAST(l.amount AS BIGINT) AS 金额, l.offset_days AS 偏移天数, CAST(b.pub_date AS DATE) AS 中标公示日 FROM lnk_time_window l JOIN obj_bid_project b ON b.project_id = l.project_id WHERE CAST(l.amount AS BIGINT) % {{round_unit}} = 0 AND l.owner_raw NOT LIKE '%' || {{exclude_org_suffix}} || '%' ORDER BY l.offset_days",
+      "description": "时间维度：中标公示 ±20 天邻接边（lnk_time_window 关系层）上，整数资金且主体为个人的碰撞（Q1，奇兵拓线；规则 R6 挂钩，判据在规则层不在链接层）"
     },
     {
       "name": "overpass_two_hop",

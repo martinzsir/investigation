@@ -25,7 +25,7 @@ from pathlib import Path
 
 from core.ontology import (
     ObjectType, ObjectBinding, LinkType, LinkBinding,
-    ActionSpec, ParamSpec, FunctionSpec,
+    ActionSpec, ParamSpec, FunctionSpec, RuleSpec,
     TYPE_SQL, TYPE_NAMES, OBJECT_KINDS,
     CLEAN_RULE_NAMES, reverse_reach,
 )
@@ -38,6 +38,11 @@ ALLOWED_ROLES = {"any", "human"}
 ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision"}
 ALLOWED_IMPL_KINDS = {"sql", "py"}
 ALLOWED_OUTPUT_TYPES = {"rows", "scalar", "report"}
+ALLOWED_RULE_STAGES = {"xu_shi", "qi_zheng", "yong_jian"}
+ALLOWED_DIMENSIONS = {"资金", "通讯", "行为", "关系", "时间"}
+ALLOWED_JIAN = {"因间", "内间", "反间", "死间", "生间"}
+ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
+RULE_TEXT_MIN = 30
 _DERIVE_RULES = {"reverse_reach"}
 
 
@@ -50,6 +55,7 @@ class OntologyPack:
     link_bindings: dict[str, LinkBinding]
     actions: dict[str, ActionSpec]
     functions: dict[str, FunctionSpec]
+    rules: dict[str, RuleSpec]
 
 
 # ----------------------------------------------------------------------
@@ -67,10 +73,11 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     actions = _load_actions(root / "actions.json", objects)
     functions = _load_functions(root / "functions.json", objects, links,
                                 required=False)
+    rules = _load_rules(root / "rules.json", functions, required=False)
     return OntologyPack(name=pack, objects=objects, links=links,
                         object_bindings=object_bindings,
                         link_bindings=link_bindings,
-                        actions=actions, functions=functions)
+                        actions=actions, functions=functions, rules=rules)
 
 
 def _read_json(path: Path) -> dict:
@@ -374,12 +381,103 @@ def _load_functions(path: Path, objects: list[ObjectType], links: list[LinkType]
             if t not in valid_tables:
                 raise ValueError(f"{ctx}（{name}）inputs 引用未声明语义表：{t}，"
                                  f"可用 {sorted(valid_tables)}")
+        params = dict(f.get("parameters", {}))
+        _validate_function_params(params, sql if kind == "sql" else None, ctx, name)
         out[name] = FunctionSpec(
             name=name, title=f.get("title", name),
             inputs=tuple(f.get("inputs", [])),
             output_type=f["output_type"], impl=kind,
-            parameters=dict(f.get("parameters", {})),
+            parameters=params,
             impl_ref=impl_ref, sql=sql,
             description=f.get("description", ""),
+        )
+    return out
+
+
+def _validate_function_params(params: dict, sql: str | None, ctx: str, name: str) -> None:
+    """参数声明校验：类型合法、string 必带 enum、默认值类型合法；
+    SQL 实现的占位符与 parameters 双向核对、且每个参数必须有默认值（无参调用可跑）。"""
+    from core import functions as fn_mod
+
+    for pname, pspec in params.items():
+        pctx = f"{ctx}（{name}）.parameters.{pname}"
+        if not isinstance(pspec, dict):
+            raise ValueError(f"{pctx} 必须是对象 {{type, default, ...}}")
+        ptype = pspec.get("type", "string")
+        if ptype not in fn_mod.PARAM_TYPES:
+            raise ValueError(f"{pctx} type='{ptype}' 非法，允许 {sorted(fn_mod.PARAM_TYPES)}")
+        if ptype == "string" and not pspec.get("enum"):
+            raise ValueError(f"{pctx} string 类型必须声明 enum 白名单（防注入）")
+        if "default" in pspec:
+            fn_mod.check_param_value(pname, pspec, pspec["default"], pctx)
+        elif sql is not None:
+            raise ValueError(f"{pctx} SQL 函数参数必须声明 default（保证无参调用可跑）")
+    if sql is not None:
+        placeholders = fn_mod.sql_placeholders(sql)
+        missing = placeholders - set(params)
+        if missing:
+            raise ValueError(f"{ctx}（{name}）SQL 占位符未在 parameters 声明：{sorted(missing)}")
+        unused = set(params) - placeholders
+        if unused:
+            raise ValueError(f"{ctx}（{name}）parameters 已声明但 SQL 未使用：{sorted(unused)}")
+
+
+# ----------------------------------------------------------------------
+# rules（自然语言规则手册，第六段）
+# ----------------------------------------------------------------------
+def _load_rules(path: Path, functions: dict[str, FunctionSpec],
+                required: bool) -> dict[str, RuleSpec]:
+    if not path.exists():
+        if required:
+            raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
+        return {}
+    data = _read_json(path)
+    from core import functions as fn_mod
+
+    out: dict[str, RuleSpec] = {}
+    for i, r in enumerate(data.get("rules", [])):
+        ctx = f"rules[{i}]"
+        _require(r, ("id", "stage", "title", "rule_text", "function", "hit_when"), ctx)
+        rid = r["id"]
+        if rid in out:
+            raise ValueError(f"{ctx} 规则 id 重复：{rid}")
+        stage = r["stage"]
+        if stage not in ALLOWED_RULE_STAGES:
+            raise ValueError(f"{ctx}（{rid}）stage='{stage}' 非法，允许 {sorted(ALLOWED_RULE_STAGES)}")
+        dimension = r.get("dimension", "")
+        if dimension and dimension not in ALLOWED_DIMENSIONS:
+            raise ValueError(f"{ctx}（{rid}）dimension='{dimension}' 非法，允许 {sorted(ALLOWED_DIMENSIONS)}")
+        jian = tuple(r.get("jian_types", []))
+        bad_jian = set(jian) - ALLOWED_JIAN
+        if bad_jian:
+            raise ValueError(f"{ctx}（{rid}）jian_types 非法：{sorted(bad_jian)}，允许 {sorted(ALLOWED_JIAN)}")
+        hit_when = r["hit_when"]
+        if hit_when not in ALLOWED_HIT_WHEN:
+            raise ValueError(f"{ctx}（{rid}）hit_when='{hit_when}' 非法，允许 {sorted(ALLOWED_HIT_WHEN)}")
+        rule_text = (r.get("rule_text") or "").strip()
+        if len(rule_text) < RULE_TEXT_MIN:
+            raise ValueError(f"{ctx}（{rid}）rule_text 过短（<{RULE_TEXT_MIN} 字）："
+                             f"自然语言判据必须写明模式/反常理由/边界排除")
+        fname = r["function"]
+        if fname not in functions:
+            raise ValueError(f"{ctx}（{rid}）绑定 function '{fname}' 未在 functions.json 声明，"
+                             f"可用 {sorted(functions)}")
+        fspec = functions[fname]
+        params = r.get("params", {})
+        if not isinstance(params, dict):
+            raise ValueError(f"{ctx}（{rid}）params 必须是对象")
+        unknown = set(params) - set(fspec.parameters)
+        if unknown:
+            raise ValueError(f"{ctx}（{rid}）params 含函数 '{fname}' 未声明的参数：{sorted(unknown)}，"
+                             f"可用 {sorted(fspec.parameters)}")
+        for pname, pval in params.items():
+            fn_mod.check_param_value(
+                pname, fspec.parameters[pname], pval, f"{ctx}（{rid}）.params")
+        out[rid] = RuleSpec(
+            id=rid, stage=stage, title=r["title"], rule_text=rule_text,
+            function=fname, params=params, hit_when=hit_when,
+            dimension=dimension, jian_types=jian,
+            assumption=r.get("assumption", ""),
+            basis_text=r.get("basis_text", r["title"]),
         )
     return out

@@ -70,8 +70,9 @@ def make_store() -> Store:
 
 
 def _write_v2_pack(d, objects, links=None, object_bindings=None,
-                   link_bindings=None, actions=None) -> None:
-    """在目录 d 下写一个最小 v2 案件包（functions.json 可选不写）。"""
+                   link_bindings=None, actions=None, functions=None,
+                   rules=None) -> None:
+    """在目录 d 下写一个最小 v2 案件包（functions.json/rules.json 可选不写）。"""
     import json as _json
     (d / "objects.json").write_text(_json.dumps(
         {"schema_version": 2, "objects": objects}, ensure_ascii=False), encoding="utf-8")
@@ -83,6 +84,13 @@ def _write_v2_pack(d, objects, links=None, object_bindings=None,
          "link_bindings": link_bindings or []}, ensure_ascii=False), encoding="utf-8")
     (d / "actions.json").write_text(_json.dumps(
         {"schema_version": 2, "actions": actions or []}, ensure_ascii=False), encoding="utf-8")
+    if functions is not None:
+        (d / "functions.json").write_text(_json.dumps(
+            {"schema_version": 2, "functions": functions}, ensure_ascii=False),
+            encoding="utf-8")
+    if rules is not None:
+        (d / "rules.json").write_text(_json.dumps(
+            {"schema_version": 2, "rules": rules}, ensure_ascii=False), encoding="utf-8")
 
 
 # v2 分层校验用的最小合法对象/绑定
@@ -239,8 +247,10 @@ class TestLinks(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(r["location"] == "项目A" for r in rows))
 
-    def test_time_window过滤语义(self):
-        # 整数资金 ±20 天：张卫国 09-28（offset -3）与 宏业建设 10-01（offset 0）
+    def test_time_window时间邻接链接(self):
+        # 链接层只表达时间邻接关系（中标公示 ±20 天有资金交易）；
+        # 整数资金/排除公司等检测判据已上移规则层（rules.json R6 → function）
+        # fixture：项目A 公示 10-01，张卫国 09-28（offset -3）、宏业建设 10-01（offset 0）
         rows = self.s.query(
             "SELECT owner_raw, offset_days FROM lnk_time_window ORDER BY offset_days"
         )
@@ -394,6 +404,7 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn("osint_article", names)  # 新增：公开OSINT文章（死间）
         self.assertEqual(len(pack.links), 9)   # + tipoff_targets_person, osint_mentions
         self.assertEqual(len(pack.functions), 10)  # + tipoff_cross_reference, call_pair_coverage
+        self.assertEqual(len(pack.rules), 6)   # 规则手册 R1-R6（rules.json 第六段）
 
     def test_runtime对象不参与编译(self):
         s = make_store()
@@ -588,6 +599,161 @@ class TestTypedMaterialization(unittest.TestCase):
             "SELECT owner_raw, offset_days FROM lnk_time_window ORDER BY offset_days")
         self.assertEqual([(r["owner_raw"], r["offset_days"]) for r in rows],
                          [("张卫国", -3), ("宏业建设", 0)])
+
+
+# 规则手册装载校验用的最小合法 SQL 函数/规则（基于 _X_OBJ → obj_x）
+_RULE_TEXT = ("这是一条用于测试装载校验的自然语言判据文本，"
+              "必须超过三十个字的最小长度要求，写明模式与排除边界。")
+_F1 = {"name": "f1", "title": "F1", "output_type": "rows", "impl": "sql",
+       "inputs": ["obj_x"],
+       "parameters": {"unit": {"type": "integer", "default": 100}},
+       "sql": "SELECT raw_name FROM obj_x WHERE {{unit}} > 0"}
+_R1 = {"id": "R1", "stage": "xu_shi", "title": "测试规则",
+       "dimension": "资金", "jian_types": ["生间"],
+       "rule_text": _RULE_TEXT, "function": "f1",
+       "params": {"unit": 100}, "hit_when": "rows_nonempty"}
+
+
+class TestRulebook(unittest.TestCase):
+    """自然语言规则手册（rules.json）：装载校验 + 确定性执行轨 + SQL 参数注入。"""
+
+    def setUp(self):
+        self.s = make_store()
+        build_ontology(self.s.conn)
+
+    def test_默认包规则装载(self):
+        pack = load_pack("default")
+        self.assertEqual(set(pack.rules), {"R1", "R2", "R3", "R4", "R5", "R6"})
+        r1 = pack.rules["R1"]
+        self.assertEqual(r1.function, "quarter_end_integer_deposits")
+        self.assertEqual(r1.params["quarter_end_window_days"], 15)
+        self.assertEqual(r1.hit_when, "rows_nonempty")
+        self.assertEqual(pack.rules["R3"].hit_when, "result_hit")
+        self.assertEqual(pack.rules["R6"].stage, "qi_zheng")
+        for r in pack.rules.values():
+            self.assertGreaterEqual(len(r.rule_text), 30)
+
+    def test_规则驱动虚实扫描(self):
+        from core.rules import run_rules
+        findings = run_rules(self.s, stage="xu_shi")
+        ids = [f["rule_id"] for f in findings]
+        # fixture：R1（现金 09-28 距季末 2 天，窗口 15 命中）、R2（整数转账 460 万命中）、
+        # R4（异人同地命中）、R5（工商关联 LIKE 命中）；R3 仅 2 次通话 < 30 不命中
+        self.assertIn("R1", ids)
+        self.assertIn("R2", ids)
+        self.assertNotIn("R3", ids)
+        self.assertNotIn("R6", ids)  # stage 过滤：R6 属 qi_zheng
+        for f in findings:
+            self.assertGreaterEqual(len(f["rule_text"]), 30)
+            self.assertTrue(f["source_rows"])
+
+    def test_R1窗口参数注入(self):
+        from core.functions import invoke_function
+        # 默认窗口 15 天：现金存入 09-28（距季末 09-30 为 2 天）→ 1 个季度桶
+        r = invoke_function(self.s, "quarter_end_integer_deposits")
+        self.assertEqual(len(r["rows"]), 1)
+        self.assertEqual(r["rows"][0]["cnt"], 1)
+        # 窗口 1 天：距季末 2 天 → 不命中
+        r_tight = invoke_function(self.s, "quarter_end_integer_deposits",
+                                  {"quarter_end_window_days": 1})
+        self.assertEqual(len(r_tight["rows"]), 0)
+        # 窗口 0 = 关闭日期谓词（现金摘要分流仍生效）→ 命中
+        r_off = invoke_function(self.s, "quarter_end_integer_deposits",
+                                {"quarter_end_window_days": 0})
+        self.assertEqual(len(r_off["rows"]), 1)
+        # 对公转账（460 万）不混入现金规则：桶金额 = 10 万
+        self.assertEqual(r["rows"][0]["amt"], 100000.0)
+
+    def test_R6承接链接上移判据(self):
+        from core.functions import invoke_function
+        rows = invoke_function(self.s, "time_window_collision")["rows"]
+        # 链接为邻接边；整数资金+排除公司过滤后仍为 张卫国 -3 / 宏业建设 0
+        self.assertEqual([(r["资金主体"], r["偏移天数"]) for r in rows],
+                         [("张卫国", -3), ("宏业建设", 0)])
+
+    def test_非enum字符串参数硬失败(self):
+        from core.functions import invoke_function
+        with self.assertRaises(ValueError):
+            invoke_function(self.s, "quarter_end_integer_deposits",
+                            {"cash_summary_tokens": "现金存入' OR 1=1 --"})
+
+    def test_线索携带规则原文(self):
+        """xu_shi adapter：规则 rule_id/rule_text 落进线索 detail（可回放）。"""
+        from core.registry import skill_invoke, get_registry
+        import skills.registry_bootstrap  # noqa: F401  注册子技能
+        clues = skill_invoke(get_registry(), "xu_shi", store=self.s, ctx={})
+        ruled = [c for c in clues if c.detail.get("rule_id")]
+        self.assertTrue(ruled)
+        self.assertTrue(all(len(c.detail["rule_text"]) >= 30 for c in ruled))
+
+    # ---- loader 硬失败（临时包）----
+    @staticmethod
+    def _bad_pack(td, *, functions=None, rules=None):
+        import tempfile
+        from pathlib import Path
+        d = Path(td) / "badrule"
+        d.mkdir()
+        _write_v2_pack(d, objects=[_X_OBJ], object_bindings=[_X_BIND],
+                       functions=functions, rules=rules)
+        return d
+
+    def test_规则绑定未注册函数硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[_F1],
+                           rules=[dict(_R1, function="不存在")])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
+
+    def test_规则参数越界硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[_F1],
+                           rules=[dict(_R1, params={"unit": 100, "extra": 1})])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
+
+    def test_规则文本过短硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[_F1],
+                           rules=[dict(_R1, rule_text="太短了")])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
+
+    def test_规则维度枚举非法硬失败(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[_F1],
+                           rules=[dict(_R1, dimension="玄学")])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
+
+    def test_SQL占位符未声明硬失败(self):
+        import tempfile
+        from pathlib import Path
+        bad_f = dict(_F1, sql="SELECT raw_name FROM obj_x WHERE {{unknown}} > 0")
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[bad_f], rules=[_R1])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
+
+    def test_string参数无enum硬失败(self):
+        import tempfile
+        from pathlib import Path
+        bad_f = {"name": "f2", "title": "F2", "output_type": "rows", "impl": "sql",
+                 "inputs": ["obj_x"],
+                 "parameters": {"tok": {"type": "string", "default": "自由文本"}},
+                 "sql": "SELECT raw_name FROM obj_x WHERE raw_name = {{tok}}"}
+        with tempfile.TemporaryDirectory() as td:
+            self._bad_pack(td, functions=[bad_f],
+                           rules=[dict(_R1, function="f2", params={"tok": "x"})])
+            with self.assertRaises(ValueError):
+                load_pack("badrule", base_dir=Path(td))
 
 
 if __name__ == "__main__":

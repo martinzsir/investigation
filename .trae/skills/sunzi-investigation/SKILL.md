@@ -40,7 +40,11 @@ description: >
 | `skill: yong_jian` | skills/yong_jian.py | `cross_jian`（交叉等级） | 多条线索、要判断可信度 |
 
 辅助工具：`graph_overpass`（图库两跳过桥双轨）/ `clue_list` / `clue_transition` /
-`function_list`+`function_invoke`（Ontology Function 只读计算目录/调用）/ `run_pipeline`（需 confirm:true）。
+`function_list`+`function_invoke`（Ontology Function 只读计算目录/调用）/
+`rule_list`（自然语言规则手册目录）/ `run_pipeline`（需 confirm:true）。
+**规则编排约定**：虚实研判先 `rule_list` 读规则原文（rule_text 是判据依据），再按规则调
+`function_invoke`（参数以规则 params 为基准，可在规则语义内调参对比）；
+不得自创规则外判据、不写 SQL、不造数，线索表述必带 rule_id。
 MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三方依赖）。
 
 ## 五、标准输出（每次响应固定六段）
@@ -63,7 +67,7 @@ Schema 与红线校验在 `core/validate.py`；`--auto-review` 仅限演示，�
 
 ## 八、数据输入约定
 - 业务数据：`data/*.parquet`（银行流水/通话记录/招投标档案/工商信息/轨迹出行/公开OSINT/举报材料），重跑 `python -m scripts.init_duckdb` 挂载
-- 语义层（Ontology，声明是数据/实现是代码）：`ontology/<pack>/*.json`（objects/links/actions/functions 四段）由 `core/ontology_loader.py` 装载校验，`python -m scripts.build_ontology` 编译出 `obj_*`/`lnk_*`（run_all 步骤 6.5 自动执行）。Object/Link 为表；**Function 只读**（functions.json 声明 + `core/functions.py` 注册实现，SQL 强制 SELECT/WITH 白名单，检测器只是 Function 薄编排）；**Action 可写**（actions.json 声明 + `core/action_executor.py` 唯一写路径，file 副作用创建 obj_decision 决策对象）。新案件/新数据源：加 ontology 案件包 JSON，`--pack <包名>` 切换，不改检测器
+- 语义层（Ontology，声明是数据/实现是代码）：`ontology/<pack>/*.json`（objects/links/bindings/actions/functions/rules 六段，schema_version=2）由 `core/ontology_loader.py` 装载校验，`python -m scripts.build_ontology` 编译出 `obj_*`/`lnk_*`（run_all 步骤 6.5 自动执行）。Object/Link 为表；**Function 只读**（functions.json 声明 + `core/functions.py` 注册实现，SQL 强制 SELECT/WITH 白名单 + `{{param}}` 模板参数，string 参数仅 enum 白名单，检测器只是 Function 薄编排）；**Rule 是自然语言规则手册**（rules.json：rule_text 判据原文 + function/params 挂钩，`core/rules.py` 确定性执行，LLM 经 rule_list 读取解释、不执行文本）；**Action 可写**（actions.json 声明 + `core/action_executor.py` 唯一写路径，file 副作用创建 obj_decision 决策对象）。新案件/新数据源/新检测规则：加 ontology 案件包 JSON，`--pack <包名>` 切换，不改检测器
 - 任意格式接入：CSV/Excel/JSON/SQLite/Parquet 走 `data_ingest.DataIngestManager`（自动检测分隔符/映射中文列名/保留 `_source_file` 溯源列）
 - 图库边表：`python -m scripts.export_ladybug` 从语义层导出 → `data/ladybug/*.csv` → COPY 进 LadybugDB
 - 增量：`python -m scripts.incremental --quarter 2024-Q4`

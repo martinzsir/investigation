@@ -33,6 +33,77 @@ def _assert_readonly(sql: str, name: str) -> None:
 
 
 # ----------------------------------------------------------------------
+# SQL 模板参数（{{param}}）：规则 rules.json 的 params 经此安全注入 SQL
+# ----------------------------------------------------------------------
+_PLACEHOLDER = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+PARAM_TYPES = {"integer", "decimal", "date", "boolean", "string"}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def sql_placeholders(sql: str) -> set[str]:
+    """提取 SQL 模板中的全部占位符名。"""
+    return set(_PLACEHOLDER.findall(sql))
+
+
+def check_param_value(name: str, spec: dict, value, ctx: str) -> None:
+    """参数值类型 + enum 白名单校验（装载期校验默认值、运行期校验入参，同一决策点）。"""
+    ptype = spec.get("type", "string")
+    if ptype == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{ctx} 参数 '{name}' 应为 integer，得到 {value!r}")
+    elif ptype == "decimal":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{ctx} 参数 '{name}' 应为 decimal，得到 {value!r}")
+    elif ptype == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"{ctx} 参数 '{name}' 应为 boolean，得到 {value!r}")
+    elif ptype == "date":
+        if not (isinstance(value, str) and _DATE_RE.match(value)):
+            raise ValueError(f"{ctx} 参数 '{name}' 应为 ISO date(YYYY-MM-DD)，得到 {value!r}")
+    else:  # string：仅允许 enum 白名单取值（自由文本一律拒绝，防注入）
+        allowed = spec.get("enum")
+        if not isinstance(allowed, list) or not allowed:
+            raise ValueError(f"{ctx} 参数 '{name}' 为 string 类型必须声明 enum 白名单"
+                             f"（自由文本不接受，防 SQL 注入）")
+        if value not in allowed:
+            raise ValueError(f"{ctx} 参数 '{name}'={value!r} 不在 enum 白名单 {allowed}")
+
+
+def _render_literal(spec: dict, value) -> str:
+    ptype = spec.get("type", "string")
+    if ptype == "integer":
+        return str(int(value))
+    if ptype == "decimal":
+        return repr(float(value))
+    if ptype == "boolean":
+        return "TRUE" if value else "FALSE"
+    if ptype == "date":
+        return f"DATE '{value}'"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def render_sql_template(sql: str, params_spec: dict, merged: dict, ctx: str) -> str:
+    """把 {{param}} 占位渲染为类型化字面量。占位符与 parameters 双向核对（硬失败）。"""
+    in_sql = sql_placeholders(sql)
+    declared = set(params_spec)
+    missing = in_sql - declared
+    if missing:
+        raise ValueError(f"{ctx} SQL 占位符未在 parameters 声明：{sorted(missing)}")
+    unused = declared - in_sql
+    if unused:
+        raise ValueError(f"{ctx} parameters 已声明但 SQL 未使用：{sorted(unused)}")
+
+    def sub(m: re.Match) -> str:
+        n = m.group(1)
+        if n not in merged:
+            raise ValueError(f"{ctx} 参数 '{n}' 无默认值且调用未提供")
+        check_param_value(n, params_spec[n], merged[n], ctx)
+        return _render_literal(params_spec[n], merged[n])
+
+    return _PLACEHOLDER.sub(sub, sql)
+
+
+# ----------------------------------------------------------------------
 # py 实现注册表（functions.json 的 impl_ref 指向这里的键）
 # ----------------------------------------------------------------------
 FUNCTION_IMPLS: dict[str, Callable] = {}
@@ -299,10 +370,15 @@ class FunctionExecutor:
         merged.update(params or {})
 
         if spec.impl == "sql":
-            _assert_readonly(spec.sql, name)
-            rows = self.store.query(spec.sql)
+            sql = spec.sql
+            if spec.parameters:
+                sql = render_sql_template(
+                    sql, spec.parameters, merged, ctx=f"function '{name}'")
+            _assert_readonly(sql, name)
+            rows = self.store.query(sql)
             return {"function": name, "output_type": spec.output_type,
-                    "rows": rows, "readonly": True}
+                    "rows": rows, "readonly": True,
+                    "params_used": {k: merged[k] for k in spec.parameters}}
         result = FUNCTION_IMPLS[spec.impl_ref](self.store, merged)
         return {"function": name, "output_type": spec.output_type,
                 "result": result, "readonly": True}

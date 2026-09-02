@@ -19,8 +19,12 @@ data/ladybug/*.lbug（L4 图库，可选）
   值类型经 TYPE_SQL 驱动物化列类型，结构化 source 编译期 CAST，不含任何数据来源信息
 - bindings.json（管道层）：object_bindings（source/source_sql/clean/optional）+
   link_bindings（build_sql）；换数据源/新案件改这里，不改检测器代码
+- rules.json（规则手册）：自然语言判据 rule_text（分析师写、LLM 经 `rule_list` 读取解释、
+  随线索落产物可审计）+ function/params 唯一机器挂钩；`core/rules.py` 确定性执行
+  （调只读 Function，不解析自然语言）；LLM 不得自创规则外判据、不写 SQL
 - Function（只读）：functions.json 声明 + `core/functions.py` 注册实现；
-  SQL 强制 SELECT/WITH 白名单，检测器只是 Function 的薄编排层
+  SQL 强制 SELECT/WITH 白名单 + `{{param}}` 模板参数（数值类型正则、string 仅 enum 白名单，
+  占位符与 parameters 装载期双向核对），检测器只是 Function 的薄编排层
 - Action（可写）：actions.json 声明 + `core/action_executor.py` 唯一写路径；
   角色/必填参数/状态机校验，file 副作用创建 obj_decision 决策对象
 runtime 对象/链接（obj_decision/lnk_decision_for）在类型层声明属性，
@@ -69,7 +73,8 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 - 语义层事件型对象（transaction/call/trackpoint，objects.json 里 `kind:"event"`）代理键**按行分配**，实体型（`kind:"entity"`）按 name_property 值分配；改错会让同一主体所有行共享主键
 - 图库/SQL 双轨取数走 `_flow_source()`：有 `lnk_transfers` 读语义层，否则回落 `银行流水`——两轨必须同源
 - 检测器/图库/MCP **不准直读 Parquet**，一律消费 `obj_*`/`lnk_*`（新数据源加 ontology 案件包 JSON）
-- Ontology 声明在 `ontology/<pack>/*.json`（不在 Python 里，schema_version=2）：类型（objects/links）与管道（bindings：source/source_sql/clean/build_sql）分文件；值类型/清洗规则名/py function 名/副作用名/binding 交叉引用不存在或不一致时 loader 硬失败；新增 py Function 必须在 `core/functions.FUNCTION_IMPLS` 注册；新数据源加 binding（源列别名必须是已声明属性），不改检测器代码
+- Ontology 声明在 `ontology/<pack>/*.json`（不在 Python 里，schema_version=2）：类型（objects/links）、管道（bindings：source/source_sql/clean/build_sql）、规则（rules：rule_text 自然语言判据 + function/params 挂钩）分文件；值类型/清洗规则名/py function 名/副作用名/binding 与规则交叉引用不存在或不一致时 loader 硬失败；新增 py Function 必须在 `core/functions.FUNCTION_IMPLS` 注册；新数据源加 binding（源列别名必须是已声明属性）；新检测规则加 rules.json（判据写 rule_text、阈值写 params），均不改检测器代码
+- SQL Function 的 `{{param}}` 模板参数：integer/decimal/date/boolean 按类型正则渲染，string **仅允许 enum 白名单取值**（自由文本硬失败，防注入）；占位符与 parameters 必须一一对应；链接 build_sql 只表达关系，检测判据一律写 rules/function（lnk_time_window 不含整数/排除公司判据，过滤在 R6 time_window_collision）
 - 写操作唯一入口是 `ActionExecutor`（DisposalBoard/MCP 都经它）：新写动作先在 actions.json 声明；Function 只读、永远不准写
 - `runtime` 对象/链接（obj_decision/lnk_decision_for）由 Action 副作用创建，编译器跳过；语义层重建不会清掉决策
 - `prioritize_clues()` 返回新列表，必须接收返回值

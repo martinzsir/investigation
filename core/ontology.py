@@ -139,6 +139,30 @@ class FunctionSpec:
         return asdict(self)
 
 
+@dataclass
+class RuleSpec:
+    """自然语言检测规则（Rulebook 第六段 rules.json）。
+
+    rule_text 是规则主体（分析师写的判据文本，人/LLM 可读，随线索落产物可审计）；
+    function + params 是唯一机器挂钩——确定性执行只认只读 Function，
+    自然语言本身不被机器执行（LLM 编排时读取解释，不得自创判据）。
+    """
+    id: str
+    stage: str                     # xu_shi | qi_zheng | yong_jian（决策顺序位置）
+    title: str
+    rule_text: str                 # 自然语言判据（什么模式/为什么反常/边界排除）
+    function: str                  # 绑定的只读 Function 名
+    params: dict = field(default_factory=dict)
+    hit_when: str = "rows_nonempty"  # rows_nonempty | result_hit
+    dimension: str = ""            # 资金 | 通讯 | 行为 | 关系 | 时间
+    jian_types: tuple[str, ...] = ()
+    assumption: str = ""           # 庙算假设挂钩（如 H1）
+    basis_text: str = ""           # 线索"依据"栏短文本
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 # ---- 清洗规则库（声明引用名；实现集中在此，可扩展） ----
 CLEAN_RULE_NAMES = {"strip", "exclude_org_tokens"}
 

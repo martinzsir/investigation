@@ -107,8 +107,8 @@
     },
     {
       "link": "time_window",
-      "_note": "build_sql 暂含检测判据（整数资金/排除公司），本期原样搬迁保持行为；后续可上移至 function 层。",
-      "build_sql": "SELECT b.project_id, t.txn_id, b.title, t.from_raw AS owner_raw, t.amount, date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE)) AS offset_days FROM obj_bid_project b JOIN obj_transaction t ON ABS(date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE))) <= 20 AND CAST(t.amount AS BIGINT) % 10000 = 0 AND t.from_raw NOT LIKE '%公司%'"
+      "_note": "链接只表达时间邻接关系（中标公示 ±20 天有资金交易）；整数资金/排除公司等检测判据在规则层（rules.json R6 → function time_window_collision 参数），不污染链接物化。",
+      "build_sql": "SELECT b.project_id, t.txn_id, b.title, t.from_raw AS owner_raw, t.amount, date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE)) AS offset_days FROM obj_bid_project b JOIN obj_transaction t ON ABS(date_diff('day', CAST(b.pub_date AS DATE), CAST(t.date AS DATE))) <= 20"
     },
     {
       "link": "tipoff_targets_person",

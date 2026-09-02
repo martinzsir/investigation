@@ -42,14 +42,22 @@ def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
     findings = result.get("虚实扫描", {}).get("findings", [])
     for i, f in enumerate(findings):
         text = f"{f.get('候选虚处', '')}{f.get('依据', '')}"
-        # 假设链/间类优先取模式库映射；未命中模式时兜底按关键词推断
+        # 假设链/间类：规则手册声明（rules.json）优先；未声明时回落模式库映射/关键词兜底
         chain, jian = _chain_jian_for(text)
+        if f.get("assumption"):
+            chain = [f["assumption"]]
+        if f.get("jian_types"):
+            jian = list(f["jian_types"])
         if not jian:
             jian = ["反间"] if "过桥" in text else ["生间"]
+        detail = {"依据": f.get("依据"), "级别": f.get("级别")}
+        if f.get("rule_id"):  # 规则溯源：线索携带规则 id 与判据原文（可回放）
+            detail["rule_id"] = f["rule_id"]
+            detail["rule_text"] = f.get("rule_text", "")
         clues.append(LineageClue(
             skill_id=spec.skill_id,
             title=f.get("候选虚处", ""),
-            detail={"依据": f.get("依据"), "级别": f.get("级别")},
+            detail=detail,
             source_rows=f.get("source_rows", []),
             assumption_chain=chain,
             jian_types=jian,

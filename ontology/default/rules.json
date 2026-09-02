@@ -1,0 +1,84 @@
+{
+  "schema_version": 2,
+  "_note": "规则手册（Rulebook，第六段）：rule_text 是自然语言判据（分析师写、LLM 编排时读取解释、随线索落产物可审计）；function+params 是唯一机器挂钩——确定性执行只认只读 Function，自然语言不被机器执行。改判据/阈值改本文件，不改检测器代码。",
+  "rules": [
+    {
+      "id": "R1",
+      "stage": "xu_shi",
+      "title": "季度末整数现金存入",
+      "dimension": "资金",
+      "jian_types": ["生间"],
+      "assumption": "H1",
+      "rule_text": "在季度末边界（3/31、6/30、9/30、12/31 及其邻日）前后 15 天内，出现金额为 1 万元整数倍且对方摘要为“现金存入”的交易。正常工资与经营性收入多为非整数金额、按固定周期发放；季末时点的整数现金存入与走账、平账、利益输送的常见节奏吻合，列为候选反常。对方为单位或账户名的整数对公转账（如数百万元工程款）适用整数转账聚合规则，不归本规则。",
+      "basis_text": "与工资性非整数收支规律不符；季末时点整数现金存入",
+      "function": "quarter_end_integer_deposits",
+      "params": {"round_unit": 10000, "quarter_end_window_days": 15, "cash_summary_tokens": "现金存入"},
+      "hit_when": "rows_nonempty"
+    },
+    {
+      "id": "R2",
+      "stage": "xu_shi",
+      "title": "整数转账聚合（第三方过桥结构）",
+      "dimension": "资金",
+      "jian_types": ["反间"],
+      "assumption": "H4",
+      "rule_text": "从一方到另一方的转账金额为 1 万元整数倍且金额显著大于日常收支（如百万元级），按转出方→转入方聚合后呈现单向链条（上游单位→中间方→利益关系人账户）。正常贸易往来多有非整数尾款、双向对冲与发票背景；整数大额单向流转符合第三方过桥、资金洗白的结构特征，列为候选反常。现金存入类交易适用季度末整数现金存入规则，不归本规则。",
+      "basis_text": "整数大额对公转账单向流转，符合第三方过桥特征",
+      "function": "integer_transfer_aggregates",
+      "params": {"round_unit": 10000},
+      "hit_when": "rows_nonempty"
+    },
+    {
+      "id": "R3",
+      "stage": "xu_shi",
+      "title": "招投标公示期通话频次突增",
+      "dimension": "通讯",
+      "jian_types": ["生间"],
+      "assumption": "H3",
+      "rule_text": "在招投标公示等敏感时间窗口前后，某主体与特定对端的通话频次显著高于其与其他对端的常态水平（达到常态中位数 2 倍及以上）；当只有单一通话对端、无法计算常态中位数时，降级为绝对频次判据（窗口期内不少于 30 次）并在结果中标注降级。正常工作联系在各对端间分布相对均匀；频次向单一对象突增暗示串标、通风报信等反常沟通，列为候选反常。",
+      "basis_text": "头部对端通话频次达常态中位数 2 倍（无对照对端时降级为绝对阈值 ≥30 次）",
+      "function": "call_frequency_spike",
+      "params": {"absolute_threshold": 30},
+      "hit_when": "result_hit"
+    },
+    {
+      "id": "R4",
+      "stage": "xu_shi",
+      "title": "二人公示期轨迹同框",
+      "dimension": "行为",
+      "jian_types": ["生间"],
+      "assumption": "",
+      "rule_text": "两个无共同出行理由的不同主体，在同一地点、前后 1 天内先后留下轨迹记录（异人同地相邻日）。偶然同地（如公共场合）的概率随地点私密性与时间吻合度上升而降低；非公开场合的同框指向私下接触，列为候选反常。轨迹数据缺失或无异人同地记录时本规则不命中，不得以缺口充数。",
+      "basis_text": "不同主体在相同地点 ±1 天内先后出现",
+      "function": "co_located_pairs",
+      "params": {},
+      "hit_when": "rows_nonempty"
+    },
+    {
+      "id": "R5",
+      "stage": "xu_shi",
+      "title": "工商登记利益关联",
+      "dimension": "关系",
+      "jian_types": ["因间"],
+      "assumption": "H2",
+      "rule_text": "涉案单位的法定代表人、股东或登记关联人，与案件对象本人或其近亲属（配偶、妻弟等）姓名重合或存在亲属关系。正常市场主体的登记信息与案件对象无交集；利益关联人持股或任职意味着利益输送通道与掩护关系，列为候选反常。亲属关系本身需言词证据或户籍资料核实，本规则只标记登记信息重叠。",
+      "basis_text": "法人/关联人与案件对象人员存在重叠（如 A建材法人系李志强妻弟）",
+      "function": "org_interest_links",
+      "params": {},
+      "hit_when": "rows_nonempty"
+    },
+    {
+      "id": "R6",
+      "stage": "qi_zheng",
+      "title": "中标-资金时间窗碰撞",
+      "dimension": "时间",
+      "jian_types": ["反间"],
+      "assumption": "H4",
+      "rule_text": "招投标中标公示日前后 20 天内（lnk_time_window 时间邻接关系），出现与中标项目相关的 1 万元整数倍资金交易，且资金主体为个人（名称不含“公司”等单位后缀）。正常工程资金走对公账户、按合同节点非整数结算；公示期整数资金由个人账户进出，指向回扣、好处费的时间协同，列为奇兵拓线候选。对公单位之间的整数往来属正常工程款，不归本规则。",
+      "basis_text": "中标公示 ±20 天邻接边上出现整数资金、且资金主体为个人（非对公单位）",
+      "function": "time_window_collision",
+      "params": {"round_unit": 10000, "exclude_org_suffix": "公司"},
+      "hit_when": "rows_nonempty"
+    }
+  ]
+}
