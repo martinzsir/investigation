@@ -22,10 +22,12 @@ core/ontology.py
   - 实现是 Python：清洗规则（CLEAN_RULE_NAMES）、Function py 实现（core.functions）、
     Action 副作用（core.action_executor）均按名注册，加载时校验引用存在性，未知名硬失败。
 
-主键策略：代理键（person_0001 式），分两类——
-  实体型（kind=entity）：按 name_property 值排序分配，同输入同键（幂等）；
-  事件型（kind=event，transaction/call/trackpoint 等）：同一主体对应多行，
-  代理键按行分配，行集做确定性排序保证幂等。
+主键策略：内容哈希代理键（person_<sha1[:12]> 式），分两类——
+  实体型（kind=entity）：键 = 前缀 + sha1(name_property 值)，同名同键，
+  且新增名字不改变既有键（增量重建只重写受影响行的前提）；
+  事件型（kind=event，transaction/call/trackpoint 等）：键 = 前缀 + sha1(行内容)，
+  同内容多行追加 _02/_03 序号；行集确定性排序保证幂等；
+  自引用对象（name_property == pk，如 clue）直通源自然键（runtime 链接按此关联）。
 
 红线不变：
   - 每张语义表带 source_rows（JSON 数组，溯源到 L2/L3 行）——红线 2
@@ -34,6 +36,8 @@ core/ontology.py
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field, asdict
 
 from core.registry import ClueStatusMachine
@@ -207,9 +211,32 @@ def reverse_reach(target: str) -> tuple[str, ...]:
 # 编译器
 # ----------------------------------------------------------------------
 def _proxy_keys(raw_names: list[str], prefix: str) -> dict[str, str]:
-    """代理键分配：排序后 person_0001 式（幂等：同输入同键）。"""
-    return {n: f"{prefix}_{i:04d}"
-            for i, n in enumerate(sorted(raw_names), 1)}
+    """代理键分配：内容哈希式 person_<sha1(name)[:12]>。
+
+    幂等（同名永远同键）且与插入顺序/其它名字无关——增量插入新名字不会改变
+    既有名字的键，这是 REQ-004 增量重建"只重写受影响行"的前提
+    （旧的按排序序号分配 person_0001 式会在新名字插入时级联改键）。
+    """
+    return {n: f"{prefix}_{hashlib.sha1(str(n).encode('utf-8')).hexdigest()[:12]}"
+            for n in raw_names}
+
+
+def _event_proxy_keys(rows: list, prefix: str) -> list[str]:
+    """事件型代理键：行内容哈希 + 同内容序号后缀。
+
+    内容完全相同的多行（如同日同额两笔）按确定性顺序追加 _02/_03…，
+    保证逐行唯一；旧行键只取决于自身内容，增量追加新行时不变。
+    """
+    seen: dict[str, int] = {}
+    keys: list[str] = []
+    for r in rows:
+        digest = hashlib.sha1(
+            json.dumps(list(r), ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()[:12]
+        n = seen.get(digest, 0) + 1
+        seen[digest] = n
+        keys.append(f"{prefix}_{digest}" if n == 1 else f"{prefix}_{digest}_{n:02d}")
+    return keys
 
 
 def _table_exists(conn, table: str) -> bool:
@@ -239,51 +266,15 @@ def build_ontology(conn, pack: str = "default") -> dict:
             if otype.runtime:
                 continue
             b = spec.object_bindings[otype.name]
-            src_table = b.source_table or _guess_source_table(b.source_sql)
-            if not _table_exists(conn, src_table):
-                tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
-                stats["skipped"].append(f"obj_{otype.name}{tag}")
+            computed = _compute_object_rows(conn, otype, b, org_names, stats)
+            if computed is None:
                 continue
-            try:
-                q = (f"SELECT {otype.name_property}, * EXCLUDE ({otype.name_property}) "
-                     f"FROM ({b.source_sql})")
-                rows = conn.execute(q).fetchall()
-                cols = [d[0] for d in conn.execute(q + " LIMIT 0").description]
-            except Exception as e:
-                # 典型：L2 表存在但缺新 schema 列（如旧版公开OSINT仅2列）
-                if b.optional:
-                    stats["skipped"].append(
-                        f"obj_{otype.name}(编译失败,源列缺失已跳过: {type(e).__name__})")
-                    continue
-                raise
-            if b.clean:
-                rows = _apply_clean(rows, cols, otype, b, org_names)
-            prefix = otype.pk.split("_")[0]
-            if otype.kind == "event":
-                # 事件型：代理键按行分配；行集确定性排序保证幂等
-                rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))
-                keys = [f"{prefix}_{i:04d}" for i in range(1, len(rows) + 1)]
-            else:
-                # 实体型：按 name_property 值排序分配（同输入同键）
-                proxy = _proxy_keys(sorted({r[0] for r in rows}), prefix)
-                keys = [proxy[r[0]] for r in rows]
+            cols, rows, keys, src_table = computed
             rest_cols = [c for c in cols if c != otype.name_property]
             same = otype.pk == otype.name_property
             _create_obj_table(conn, otype, same, rest_cols)
-            for key, r in zip(keys, rows):
-                raw, *props = r
-                if otype.kind == "event":
-                    src = [f"{src_table}:"
-                           + ",".join(f"{c}={v}" for c, v in zip(cols, r))]
-                else:
-                    src = [f"{src_table}:{otype.name_property}={raw}"]
-                if same:
-                    ph = ", ".join(["?"] * (len(rest_cols) + 1))
-                    vals = [key, *props, json_dumps(src)]
-                else:
-                    ph = ", ".join(["?"] * (len(rest_cols) + 2))
-                    vals = [key, raw, *props, json_dumps(src)]
-                conn.execute(f"INSERT INTO obj_{otype.name} VALUES (?, {ph})", vals)
+            _insert_object_rows(conn, otype, same, rest_cols, cols,
+                                rows, keys, src_table)
             stats["objects"][otype.name] = len(rows)
 
         # ---- 2) Link 物化（runtime 链接跳过；声明边属性与输出列对账）----
@@ -316,6 +307,12 @@ def build_ontology(conn, pack: str = "default") -> dict:
 
     # ---- 3) runtime 对象/链接：按类型声明建空表（IF NOT EXISTS，不碰既有数据）----
     ensure_runtime_tables(conn, spec)
+
+    # ---- 4) 记录版本时钟（REQ-001）：每次 build 写一条 is_current=true ----
+    from core.ontology_version import compute_version, record_version
+    ver = compute_version(conn, pack, spec)
+    record_version(conn, ver)
+
     return stats
 
 
@@ -374,8 +371,277 @@ def _create_obj_table(conn, otype: ObjectType, same: bool,
 
 
 def json_dumps(obj) -> str:
-    import json
     return json.dumps(obj, ensure_ascii=False)
+
+
+# ----------------------------------------------------------------------
+# 共享物化逻辑（全量 build 与增量 materialize_changed 同口径）
+# ----------------------------------------------------------------------
+def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
+                         org_names: set[str], stats: dict | None = None):
+    """按 binding 计算对象物化行，返回 (cols, rows, keys, src_table)。
+
+    跳过场景（源表缺失/编译失败且 optional）返回 None，并把原因记入 stats["skipped"]。
+    键策略：事件型=行内容哈希（同内容加序号后缀）；实体型=name_property 内容哈希；
+    name_property 即 pk 的自引用对象（clue）直通源自然键（runtime 链接按此关联）。
+    """
+    src_table = b.source_table or _guess_source_table(b.source_sql)
+    if not _table_exists(conn, src_table):
+        if stats is not None:
+            tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
+            stats["skipped"].append(f"obj_{otype.name}{tag}")
+        return None
+    try:
+        q = (f"SELECT {otype.name_property}, * EXCLUDE ({otype.name_property}) "
+             f"FROM ({b.source_sql})")
+        rows = conn.execute(q).fetchall()
+        cols = [d[0] for d in conn.execute(q + " LIMIT 0").description]
+    except Exception as e:
+        # 典型：L2 表存在但缺新 schema 列（如旧版公开OSINT仅2列）
+        if b.optional:
+            if stats is not None:
+                stats["skipped"].append(
+                    f"obj_{otype.name}(编译失败,源列缺失已跳过: {type(e).__name__})")
+            return None
+        raise
+    if b.clean:
+        rows = _apply_clean(rows, cols, otype, b, org_names)
+    prefix = otype.pk.split("_")[0]
+    if otype.kind == "event":
+        rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))
+        keys = _event_proxy_keys(rows, prefix)
+    elif otype.pk == otype.name_property:
+        keys = [r[0] for r in rows]          # 自引用自然键，直通不重映射
+    else:
+        proxy = _proxy_keys(sorted({r[0] for r in rows}), prefix)
+        keys = [proxy[r[0]] for r in rows]
+    return cols, rows, keys, src_table
+
+
+def _object_row_values(otype: ObjectType, same: bool, rest_cols: list[str],
+                       cols: list[str], row, key, src_table: str) -> list:
+    """组装一行 obj_* 写入值（列序：pk[, name_property], *rest, source_rows）。"""
+    raw, *props = row
+    if otype.kind == "event":
+        src = [f"{src_table}:"
+               + ",".join(f"{c}={v}" for c, v in zip(cols, row))]
+    else:
+        src = [f"{src_table}:{otype.name_property}={raw}"]
+    if same:
+        return [key, *props, json_dumps(src)]
+    return [key, raw, *props, json_dumps(src)]
+
+
+def _insert_object_rows(conn, otype: ObjectType, same: bool, rest_cols: list[str],
+                        cols: list[str], rows: list, keys: list[str],
+                        src_table: str, target: str | None = None,
+                        *, chunk: int = 500) -> None:
+    """批量 INSERT（全量 build 写入 obj_*；增量路径写入同构暂存表）。
+
+    target 默认 obj_<name>；每行占位符数 = pk + (name_property?) + rest + source_rows。
+    分块多行 VALUES（10 万行场景比逐行 execute 快两个数量级，语义不变）。
+    """
+    target = target or f"obj_{otype.name}"
+    n_cols = (len(rest_cols) + 2) if same else (len(rest_cols) + 3)
+    all_vals: list = []
+    for key, r in zip(keys, rows):
+        all_vals.extend(_object_row_values(otype, same, rest_cols, cols, r, key, src_table))
+    for start in range(0, len(rows), chunk):
+        size = min(chunk, len(rows) - start)
+        ph = ", ".join(["(" + ", ".join(["?"] * n_cols) + ")"] * size)
+        conn.execute(
+            f"INSERT INTO {target} VALUES {ph}",
+            all_vals[start * n_cols:(start + size) * n_cols])
+
+
+def _ensure_obj_table(conn, otype: ObjectType, same: bool,
+                      rest_cols: list[str]) -> None:
+    """增量路径：obj_* 表不存在时按声明建空表（存在则不动）。"""
+    defs = [f'"{otype.pk}" VARCHAR']
+    if not same:
+        t = otype.properties.get(otype.name_property, "string")
+        defs.append(f'"{otype.name_property}" {TYPE_SQL[t]}')
+    for c in rest_cols:
+        t = otype.properties.get(c, "string")
+        defs.append(f'"{c}" {TYPE_SQL[t]}')
+    defs.append('"source_rows" VARCHAR')
+    conn.execute(f'CREATE TABLE IF NOT EXISTS obj_{otype.name} ({", ".join(defs)})')
+
+
+def _diff_apply(conn, target: str, stage: str) -> tuple[int, int]:
+    """通用行级 diff：stage（新结果集，列包含 target 全部列）→ target。
+
+    全行比对（IS NOT DISTINCT FROM，NULL 安全）：
+      删除 target 中在 stage 不存在的行（消失/变更），
+      插入 stage 中在 target 不存在的行（新增/变更）。
+    未变化行不重写——增量场景 10 万全量 + 100 新行只写约 100 行。
+    返回 (inserted, deleted)。
+    """
+    cols = [r[1] for r in conn.execute(
+        f"PRAGMA table_info('{target}')").fetchall()]
+    # stage 可能是 TEMP TABLE：用 result description 取列名，跨表类型最稳
+    stage_cols = {d[0] for d in conn.execute(
+        f"SELECT * FROM {stage} LIMIT 0").description}
+    missing = [c for c in cols if c not in stage_cols]
+    if missing:
+        raise ValueError(
+            f"增量物化 {target}：新结果集缺列 {missing}（build_sql/source_sql 输出与声明不一致）")
+
+    def cond(left: str, right: str) -> str:
+        return " AND ".join(
+            f'{left}."{c}" IS NOT DISTINCT FROM {right}."{c}"' for c in cols)
+
+    deleted = conn.execute(
+        f"SELECT COUNT(*) FROM {target} t WHERE NOT EXISTS "
+        f"(SELECT 1 FROM {stage} s WHERE {cond('t', 's')})"
+    ).fetchone()[0]
+    inserted = conn.execute(
+        f"SELECT COUNT(*) FROM {stage} s WHERE NOT EXISTS "
+        f"(SELECT 1 FROM {target} t WHERE {cond('t', 's')})"
+    ).fetchone()[0]
+    conn.execute(
+        f"DELETE FROM {target} WHERE NOT EXISTS "
+        f"(SELECT 1 FROM {stage} s WHERE {cond(target, 's')})")
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    conn.execute(
+        f"INSERT INTO {target} ({col_list}) "
+        f"SELECT {col_list} FROM {stage} s WHERE NOT EXISTS "
+        f"(SELECT 1 FROM {target} t WHERE {cond('t', 's')})")
+    return inserted, deleted
+
+
+# ----------------------------------------------------------------------
+# 增量重建（REQ-004）：只重物化 plan 命中的对象/链接，行级 diff
+# ----------------------------------------------------------------------
+_STAGE = "_rebuild_stage"
+
+
+def materialize_changed(conn, plan, *, pack: str = "default",
+                        bus=None, actor: str = "system") -> dict:
+    """按 RebuildPlan 增量物化语义层，返回统计（含 rewritten_rows）。
+
+    build_ontology() 保留为 bootstrap 全量；日常增量只调本函数：
+      对象先于链接（链接 build_sql 引用 obj_*）；未变化行经 _diff_apply 跳过；
+      完成后推进版本时钟（is_current=true）并发布 ontology.materialized 事件。
+    受保护版本（review accept 的 entity_mapping 不被覆盖）属 REQ-016，本批不实现。
+    """
+    from core.ontology_loader import load_pack
+    from core.ontology_version import compute_version, record_version
+    spec = load_pack(pack)
+    org_names = _default_org_names(conn)
+    stats: dict = {"objects": {}, "links": {}, "skipped": [],
+                   "rewritten_rows": 0, "plan_mode": plan.mode}
+
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS {_STAGE}")
+        # ---- 1) 对象：重算 binding → 暂存 → 行级 diff ----
+        for name in plan.affected_objects:
+            otype = next((o for o in spec.objects if o.name == name), None)
+            if otype is None or otype.runtime:
+                continue
+            b = spec.object_bindings.get(name)
+            if b is None:
+                continue
+            computed = _compute_object_rows(conn, otype, b, org_names, stats)
+            if computed is None:
+                continue
+            cols, rows, keys, src_table = computed
+            rest_cols = [c for c in cols if c != otype.name_property]
+            same = otype.pk == otype.name_property
+            _ensure_obj_table(conn, otype, same, rest_cols)
+            # 暂存新结果集（与目标表同构），复用全量插入口径
+            conn.execute(f"CREATE TEMP TABLE {_STAGE} AS "
+                         f"SELECT * FROM obj_{name} WHERE 1=0")
+            _insert_object_rows(conn, otype, same, rest_cols, cols,
+                                rows, keys, src_table, target=_STAGE)
+            ins, dele = _diff_apply(conn, f"obj_{name}", _STAGE)
+            conn.execute(f"DROP TABLE {_STAGE}")
+            stats["objects"][name] = conn.execute(
+                f"SELECT COUNT(*) FROM obj_{name}").fetchone()[0]
+            stats["rewritten_rows"] += ins + dele
+
+        # ---- 2) 链接：重算 build_sql → 暂存 → 行级 diff ----
+        for name in plan.affected_links:
+            ltype = next((l for l in spec.links if l.name == name), None)
+            if ltype is None or ltype.runtime:
+                continue
+            lb = spec.link_bindings.get(name)
+            if lb is None:
+                continue
+            target = f"lnk_{name}"
+            if not _table_exists(conn, target):
+                # 从未全量 build 过：按 build_sql 直接建表
+                try:
+                    conn.execute(f"CREATE TABLE {target} AS {lb.build_sql}")
+                    stats["links"][name] = conn.execute(
+                        f"SELECT COUNT(*) FROM {target}").fetchone()[0]
+                    stats["rewritten_rows"] += stats["links"][name]
+                    continue
+                except Exception as e:
+                    stats["skipped"].append(
+                        f"lnk_{name}(增量编译失败已跳过: {type(e).__name__})")
+                    continue
+            cols = [r[1] for r in conn.execute(
+                f"PRAGMA table_info('{target}')").fetchall()]
+            col_list = ", ".join(f'"{c}"' for c in cols)
+            try:
+                conn.execute(
+                    f"CREATE TEMP TABLE {_STAGE} AS "
+                    f"SELECT {col_list} FROM ({lb.build_sql})")
+            except Exception as e:
+                stats["skipped"].append(
+                    f"lnk_{name}(增量编译失败已跳过: {type(e).__name__})")
+                conn.execute(f"DROP TABLE IF EXISTS {_STAGE}")
+                continue
+            ins, dele = _diff_apply(conn, target, _STAGE)
+            conn.execute(f"DROP TABLE {_STAGE}")
+            stats["links"][name] = conn.execute(
+                f"SELECT COUNT(*) FROM {target}").fetchone()[0]
+            stats["rewritten_rows"] += ins + dele
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        conn.execute(f"DROP TABLE IF EXISTS {_STAGE}")
+        raise
+
+    # ---- 3) 推进版本时钟 ----
+    ver = compute_version(conn, pack, spec)
+    record_version(conn, ver)
+    stats["build_id"] = ver.build_id
+
+    # ---- 4) 事件：物化完成（空影响集不产生事件，见 plan mode=skip）----
+    if bus is not None:
+        bus.publish("ontology.materialized", {
+            "pack": pack,
+            "build_id": ver.build_id,
+            "reason": plan.reason,
+            "mode": plan.mode,
+            "affected_objects": plan.affected_objects,
+            "affected_links": plan.affected_links,
+            "affected_rules": plan.affected_rules,
+            "rewritten_rows": stats["rewritten_rows"],
+            "source_watermark": ver.source_watermark,
+        }, actor=actor)
+    return stats
+
+
+def rebuild_from_partition(conn, part, *, pack: str = "default",
+                           bus=None, actor: str = "system",
+                           batch_threshold: int | None = None):
+    """分区到达的完整增量链路：影响范围（REQ-018）→ 增量物化（REQ-004）。
+
+    返回 (plan, stats)。空影响集（mode=skip）不物化、不产生事件。
+    """
+    from core.rebuild_planner import plan_from_partition
+    kw = {} if batch_threshold is None else {"batch_threshold": batch_threshold}
+    plan = plan_from_partition(conn, part, pack=pack, **kw)
+    if plan.mode == "skip" or plan.is_empty():
+        return plan, {"objects": {}, "links": {}, "skipped": [],
+                      "rewritten_rows": 0, "plan_mode": "skip"}
+    stats = materialize_changed(conn, plan, pack=pack, bus=bus, actor=actor)
+    return plan, stats
 
 
 # ----------------------------------------------------------------------

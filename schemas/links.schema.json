@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "links.schema.json",
+  "title": "Ontology Links (schema_version=2)",
+  "description": "类型层：Link Types 声明",
+  "type": "object",
+  "required": ["schema_version", "links"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "from_obj", "to_obj"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z_]+$"},
+          "title": {"type": "string"},
+          "from_obj": {"type": "string"},
+          "to_obj": {"type": "string"},
+          "properties": {
+            "type": "object",
+            "additionalProperties": {"enum": ["string", "integer", "decimal", "date", "boolean"]}
+          },
+          "runtime": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

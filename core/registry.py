@@ -25,6 +25,7 @@ Lineage(血缘) = 假设链(assumption_chain) + 数据行(source_rows) + 间类(
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Optional
@@ -144,29 +145,54 @@ class LineageClue:
     # ------------------------------------------------------------------
     # 状态变更（唯一入口，禁止直接赋值 status —— 保证审计链完整）
     # ------------------------------------------------------------------
-    def set_status(self, target: str, operator: str = "正兵", note: str = "") -> "LineageClue":
+    def set_status(self, target: str, operator: str = "正兵", note: str = "",
+                   audit_chain=None) -> "LineageClue":
         """
         迁移处置状态。operator 标识操作主体；AI/自动化请传具体技能名或 "system"。
         已立案 为受控终态，须通过 set_filed() 显式置位，不走此方法。
+
+        audit_chain：传入 core.audit.AuditChain 实例时，同步落持久哈希链；
+                     None 时仅写内存 audit_log（向后兼容）。
         """
         if target == ClueStatus.FILED:
             raise ValueError("「已立案」为受控红线状态，须调用 set_filed()，禁止经 set_status 设置")
         ClueStatusMachine.validate(self.status, target)
         self.audit_log.append(StatusAuditEntry(self.status, target, operator, note).to_dict())
+        if audit_chain is not None:
+            audit_chain.append(
+                operator=operator,
+                before={"status": self.status},
+                after={"status": target, "note": note},
+                source_row_ids=[json.dumps(r, ensure_ascii=False, default=str)
+                                if not isinstance(r, str) else r
+                                for r in self.source_rows],
+                ontology_version=audit_chain.current_ontology_version())
         self.status = target
         if note:
             self.note = note
         return self
 
-    def set_filed(self, operator: str, legal_basis: str) -> "LineageClue":
+    def set_filed(self, operator: str, legal_basis: str,
+                  audit_chain=None) -> "LineageClue":
         """
         受控置位「已立案」：前置条件为 已固证 且 法定程序完备。
         legal_basis 记录法定依据（案号/审批文号），纳入审计链。
+
+        audit_chain：传入 core.audit.AuditChain 实例时，同步落持久哈希链。
         """
         if self.status not in (ClueStatus.CONFIRMED, ClueStatus.FILED):
             raise ValueError(f"「已立案」须由「已固证」迁移，当前状态={self.status}")
         note = f"法定程序完备：{legal_basis}"
         self.audit_log.append(StatusAuditEntry(self.status, ClueStatus.FILED, operator, note).to_dict())
+        if audit_chain is not None:
+            audit_chain.append(
+                operator=operator,
+                before={"status": self.status},
+                after={"status": ClueStatus.FILED, "legal_basis": legal_basis},
+                source_row_ids=[json.dumps(r, ensure_ascii=False, default=str)
+                                if not isinstance(r, str) else r
+                                for r in self.source_rows],
+                ontology_version=audit_chain.current_ontology_version())
         self.status = ClueStatus.FILED
         self.note = note
         return self

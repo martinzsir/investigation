@@ -425,6 +425,33 @@ def _validate_function_params(params: dict, sql: str | None, ctx: str, name: str
 # ----------------------------------------------------------------------
 # rules（自然语言规则手册，第六段）
 # ----------------------------------------------------------------------
+
+def _known_hypothesis_ids() -> set[str]:
+    """从 MiaoSuan.FINDING_PATTERNS 提取静态假设 ID（延迟导入避免循环依赖）。
+
+    返回空集表示假设库不可导入（测试隔离场景），调用方应跳过校验。
+    """
+    try:
+        from core.hypotheses import MiaoSuan
+        return {p["hypothesis"].id for p in MiaoSuan.FINDING_PATTERNS
+                if isinstance(p, dict) and "hypothesis" in p}
+    except Exception:
+        return set()
+
+
+def _validate_assumption(assumption: str, ctx: str, rid: str) -> str:
+    """校验 assumption 引用：空串合法（无假设驱动）；非空须在已知假设 ID 集合内。"""
+    if not assumption:
+        return ""
+    known = _known_hypothesis_ids()
+    if known and assumption not in known:
+        raise ValueError(
+            f"{ctx}（{rid}）assumption='{assumption}' 未在 core.hypotheses "
+            f"MiaoSuan.FINDING_PATTERNS 中声明，可用 {sorted(known)}；"
+            f"空字符串表示无假设驱动")
+    return assumption
+
+
 def _load_rules(path: Path, functions: dict[str, FunctionSpec],
                 required: bool) -> dict[str, RuleSpec]:
     if not path.exists():
@@ -477,7 +504,7 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             id=rid, stage=stage, title=r["title"], rule_text=rule_text,
             function=fname, params=params, hit_when=hit_when,
             dimension=dimension, jian_types=jian,
-            assumption=r.get("assumption", ""),
+            assumption=_validate_assumption(r.get("assumption", ""), ctx, rid),
             basis_text=r.get("basis_text", r["title"]),
         )
     return out

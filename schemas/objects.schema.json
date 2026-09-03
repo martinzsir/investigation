@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "objects.schema.json",
+  "title": "Ontology Objects (schema_version=2)",
+  "description": "类型层：Object Types 声明",
+  "type": "object",
+  "required": ["schema_version", "objects"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "pk", "name_property"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z_]+$"},
+          "title": {"type": "string"},
+          "pk": {"type": "string"},
+          "kind": {"enum": ["entity", "event"]},
+          "name_property": {"type": "string"},
+          "properties": {
+            "type": "object",
+            "additionalProperties": {"enum": ["string", "integer", "decimal", "date", "boolean"]}
+          },
+          "runtime": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

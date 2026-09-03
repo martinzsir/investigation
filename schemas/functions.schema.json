@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "functions.schema.json",
+  "title": "Ontology Functions (schema_version=2)",
+  "description": "Function Types：只读计算声明",
+  "type": "object",
+  "required": ["schema_version", "functions"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "functions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "output_type", "impl"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z_]+$"},
+          "title": {"type": "string"},
+          "inputs": {"type": "array", "items": {"type": "string"}},
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {"type": "object"}
+          },
+          "output_type": {"enum": ["rows", "scalar", "report"]},
+          "impl": {"enum": ["sql", "py"]},
+          "sql": {"type": "string"},
+          "impl_ref": {"type": "string"},
+          "description": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

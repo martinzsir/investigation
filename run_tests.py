@@ -1,22 +1,31 @@
 """
 run_tests.py —— 统一测试入口
 
-一次跑完八组测试：
-  1. MCP server 端到端（scripts.mcp_client_test）     —— 33 项
-  2. 图库层（tests.test_graph）                       —— 12 项
-  3. 庙算假设引擎（tests.test_miaosuan）              —— 18 项
-     （数据驱动映射 / 人机协同接口 / 规则约束标记）
-  4. 组织层级对齐（tests.test_org_alignment）        —— 11 项
-  5. 人工确认工作台（tests.test_review_queue）       —— 10 项
-  6. 处置状态机 + 审计链（test_disposal.py 脚本式）   —— 20+ 断言
-  7. 语义层（tests.test_ontology）                    —— 18 项
-     （声明式编译 / 代理键幂等 / 溯源红线 / Action 注册表）
-  8. 端到端集成（tests.test_run_all）                —— 10 项
+测试组（--only 可选）：
+  mcp         MCP server 端到端（scripts.mcp_client_test）
+  graph       图库层 Q2 过桥双轨（tests.test_graph）
+  miaosuan    庙算假设引擎（tests.test_miaosuan）
+  org         组织层级对齐（tests.test_org_alignment）
+  review      人工确认工作台（tests.test_review_queue）
+  disposal    处置状态机 + 审计链（test_disposal.py 脚本式）
+  ontology    语义层 Object/Link/Action（tests.test_ontology）
+  version     REQ-001 版本时钟/依赖图（tests.test_ontology_version）
+  eventbus    REQ-006 事件总线（tests.test_event_bus）
+  ingest      REQ-005 分区校验隔离（tests.test_ingest_validate）
+  spec        Schema/规则/引用完整性（test_schemas/test_rule_schema/
+              test_reference_integrity/test_audit_chain）
+  planner     REQ-018 受影响范围计算（tests.test_rebuild_planner）
+  gateway     REQ-002 语义层读网关（tests.test_gateway）
+  guard       REQ-003 直查拦截 + 静态扫描（tests.test_store_guard）
+  features    REQ-015 L1 特征落盘（tests.test_features）
+  incremental REQ-004 语义层增量重建（tests.test_incremental_semantic）
+  audit       REQ-003 直查静态扫描（scripts/audit_straight_sql.py）
+  e2e         端到端集成（tests.test_run_all）
 
 用法：
     python run_tests.py              # 跑全部
     python run_tests.py --fast       # 跳过端到端（最快反馈）
-    python run_tests.py --only org   # 只跑指定组（mcp/miaosuan/graph/org/review/disposal/ontology/e2e）
+    python run_tests.py --only org   # 只跑指定组
 """
 from __future__ import annotations
 
@@ -28,14 +37,26 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 
 GROUPS = {
-    "mcp":      ("MCP Server 端到端", [sys.executable, "-m", "scripts.mcp_client_test"]),
-    "graph":    ("图库层 Q2 过桥双轨", [sys.executable, "-m", "unittest", "tests.test_graph"]),
-    "miaosuan": ("庙算假设引擎 三层机制", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
-    "org":      ("组织层级对齐", [sys.executable, "-m", "unittest", "tests.test_org_alignment"]),
-    "review":   ("人工确认工作台", [sys.executable, "-m", "unittest", "tests.test_review_queue"]),
-    "disposal": ("处置状态机+审计链", [sys.executable, "test_disposal.py"]),
-    "ontology": ("语义层 Object/Link/Action", [sys.executable, "-m", "unittest", "tests.test_ontology"]),
-    "e2e":      ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
+    "mcp":         ("MCP Server 端到端", [sys.executable, "-m", "scripts.mcp_client_test"]),
+    "graph":       ("图库层 Q2 过桥双轨", [sys.executable, "-m", "unittest", "tests.test_graph"]),
+    "miaosuan":    ("庙算假设引擎 三层机制", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
+    "org":         ("组织层级对齐", [sys.executable, "-m", "unittest", "tests.test_org_alignment"]),
+    "review":      ("人工确认工作台", [sys.executable, "-m", "unittest", "tests.test_review_queue"]),
+    "disposal":    ("处置状态机+审计链", [sys.executable, "test_disposal.py"]),
+    "ontology":    ("语义层 Object/Link/Action", [sys.executable, "-m", "unittest", "tests.test_ontology"]),
+    "version":     ("REQ-001 版本时钟/依赖图", [sys.executable, "-m", "unittest", "tests.test_ontology_version"]),
+    "eventbus":    ("REQ-006 事件总线", [sys.executable, "-m", "unittest", "tests.test_event_bus"]),
+    "ingest":      ("REQ-005 分区校验隔离", [sys.executable, "-m", "unittest", "tests.test_ingest_validate"]),
+    "spec":        ("Schema/规则/引用完整性", [sys.executable, "-m", "unittest",
+                                                 "tests.test_schemas", "tests.test_rule_schema",
+                                                 "tests.test_reference_integrity", "tests.test_audit_chain"]),
+    "planner":     ("REQ-018 受影响范围计算", [sys.executable, "-m", "unittest", "tests.test_rebuild_planner"]),
+    "gateway":     ("REQ-002 语义层读网关", [sys.executable, "-m", "unittest", "tests.test_gateway"]),
+    "guard":       ("REQ-003 直查拦截+静态扫描", [sys.executable, "-m", "unittest", "tests.test_store_guard"]),
+    "features":    ("REQ-015 L1 特征落盘", [sys.executable, "-m", "unittest", "tests.test_features"]),
+    "incremental": ("REQ-004 语义层增量重建", [sys.executable, "-m", "unittest", "tests.test_incremental_semantic"]),
+    "audit":       ("REQ-003 直查静态扫描", [sys.executable, "scripts/audit_straight_sql.py", "--fail-on-violation"]),
+    "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
 

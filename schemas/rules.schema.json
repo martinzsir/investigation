@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rules.schema.json",
+  "title": "Ontology Rules (schema_version=2)",
+  "description": "Rulebook：自然语言判据 + function/params 机器挂钩",
+  "type": "object",
+  "required": ["schema_version", "rules"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "stage", "title", "rule_text", "function", "hit_when"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^R\\d+$"},
+          "stage": {"enum": ["xu_shi", "qi_zheng", "yong_jian"]},
+          "title": {"type": "string", "minLength": 1},
+          "rule_text": {"type": "string", "minLength": 30},
+          "function": {"type": "string"},
+          "params": {"type": "object"},
+          "hit_when": {"enum": ["rows_nonempty", "result_hit"]},
+          "dimension": {"enum": ["", "资金", "通讯", "行为", "关系", "时间"]},
+          "jian_types": {
+            "type": "array",
+            "items": {"enum": ["因间", "内间", "反间", "死间", "生间"]}
+          },
+          "assumption": {"type": "string"},
+          "basis_text": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

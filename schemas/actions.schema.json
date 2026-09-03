@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "actions.schema.json",
+  "title": "Ontology Actions (schema_version=2)",
+  "description": "Action Types：受控写回声明",
+  "type": "object",
+  "required": ["schema_version", "actions"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "target_status"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z_]+$"},
+          "title": {"type": "string"},
+          "target_status": {"type": "string", "minLength": 1},
+          "derive": {"type": "string"},
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string"},
+                "required": {"type": "boolean"},
+                "description": {"type": "string"}
+              }
+            }
+          },
+          "requires_role": {"enum": ["any", "human"]},
+          "terminal": {"type": "boolean"},
+          "side_effects": {"type": "array", "items": {"type": "string"}},
+          "description": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bindings.schema.json",
+  "title": "Ontology Bindings (schema_version=2)",
+  "description": "管道层：object_bindings + link_bindings",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "object_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object"],
+        "properties": {
+          "object": {"type": "string"},
+          "source": {
+            "type": "object",
+            "required": ["table", "columns"],
+            "properties": {
+              "table": {"type": "string"},
+              "columns": {"type": "object", "minProperties": 1}
+            }
+          },
+          "source_sql": {"type": "string"},
+          "source_table": {"type": "string"},
+          "clean": {"type": "array", "items": {"type": "string"}},
+          "optional": {"type": "boolean"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "link_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["link", "build_sql"],
+        "properties": {
+          "link": {"type": "string"},
+          "build_sql": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "_note": {"type": "string"}
+  },
+  "additionalProperties": false
+}

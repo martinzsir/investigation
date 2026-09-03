@@ -135,12 +135,16 @@ class TestProxyKeys(unittest.TestCase):
             rows = self.s.query(f"SELECT {pk} FROM {t}")
             self.assertEqual(len(rows), len({r[pk] for r in rows}), msg=t)
 
-    def test_实体型主键唯一且按名排序分配(self):
+    def test_实体型主键唯一且内容稳定(self):
+        import re
         rows = self.s.query("SELECT person_id, raw_name FROM obj_person ORDER BY raw_name")
-        # 码点序：张(U+5F20) < 李(U+674E)
         self.assertEqual([r["raw_name"] for r in rows], ["张卫国", "李志强"])
-        self.assertEqual([r["person_id"] for r in rows],
-                         ["person_0001", "person_0002"])
+        ids = [r["person_id"] for r in rows]
+        self.assertEqual(len(set(ids)), 2)
+        # 内容哈希键：person_<12位十六进制>（同输入同键，新增名字不改键——增量重建前提）
+        for i in ids:
+            self.assertTrue(re.fullmatch(r"person_[0-9a-f]{12}", i),
+                            f"代理键格式不符：{i}")
 
     def test_代理键与插入顺序无关(self):
         s2 = Store(db_path=":memory:")
