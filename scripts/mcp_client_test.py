@@ -4,7 +4,7 @@ MCP server 端到端冒烟测试：手写 JSON-RPC 客户端，走完整生命�
 
 覆盖：
   1. initialize 握手（协议版本、capabilities、serverInfo）
-  2. tools/list（9 个工具，schema 必填项齐全）
+  2. tools/list（12 个工具，schema 必填项齐全）
   3. tools/call —— 只读工具（含 function_list/function_invoke/rule_list）
   4. 红线：clue_transition 用 operator="system" 必须被拒
   5. 红线：置"已立案"不带 legal_basis 必须被拒
@@ -134,7 +134,7 @@ def main() -> int:
         r = c.request("tools/list")
         tools = r["result"]["tools"]
         names = [t["name"] for t in tools]
-        check(f"返回 9 个工具（{len(tools)}）", len(tools) == 9, str(names))
+        check(f"返回 12 个工具（{len(tools)}）", len(tools) == 12, str(names))
         for t in tools:
             sch = t.get("inputSchema", {})
             check(f"  {t['name']} 有 description + inputSchema",
@@ -190,6 +190,44 @@ def main() -> int:
                                              "arguments": {"stage": "xu_shi"}}))
         check("rule_list 支持 stage 过滤（xu_shi=5 条）", d.get("count") == 5,
               str(d.get("count")))
+
+        # ---- REQ-021 读轨：人审工作台 + 两阶段动作可见性 ----
+        print("\n[4b] REQ-021 读轨工具")
+        d = payload(c.request("tools/call", {"name": "review.list_pending",
+                                             "arguments": {}}))
+        check("review.list_pending 返回队列结构（summary/pending/readonly）",
+              "summary" in d and isinstance(d.get("pending"), list)
+              and d.get("readonly") is True)
+        check("review.list_pending 不附证据明细",
+              all("evidence" not in p for p in d.get("pending", [])))
+
+        test_cid = None
+        rq_path = ROOT / "output" / "review_queue.json"
+        if rq_path.exists():
+            rq = json.loads(rq_path.read_text(encoding="utf-8"))
+            if rq.get("decisions"):
+                test_cid = rq["decisions"][0]["candidate_id"]
+        if test_cid:
+            d = payload(c.request("tools/call", {"name": "review.get_evidence",
+                "arguments": {"candidate_id": test_cid}}))
+            check("review.get_evidence 返回证据+知识/规则版本",
+                  d.get("ok") and d.get("knowledge_version")
+                  and d.get("rulebook_size") and "evidence_refs" in d,
+                  str({k: d.get(k) for k in ("error", "knowledge_version")})[:80])
+        d = payload(c.request("tools/call", {"name": "review.get_evidence",
+            "arguments": {"candidate_id": "rev_nonexistent_xyz"}}))
+        check("review.get_evidence 未知候选报错（不崩）", d.get("ok") is False)
+        d = payload(c.request("tools/call", {"name": "review.get_evidence",
+            "arguments": {}}))
+        check("review.get_evidence 缺 candidate_id 报错", d.get("ok") is False)
+
+        d = payload(c.request("tools/call", {"name": "action.status",
+            "arguments": {"action_id": "act_notexist_xyz"}}))
+        check("action.status 未知提案报错（不崩）", d.get("ok") is False,
+              str(d.get("error"))[:60])
+        d = payload(c.request("tools/call", {"name": "action.status",
+            "arguments": {}}))
+        check("action.status 缺 action_id 报错", d.get("ok") is False)
 
         # ---- SQL Function 参数注入（规则阈值可调）----
         d_off = payload(c.request("tools/call", {"name": "function_invoke",
@@ -298,6 +336,13 @@ def main() -> int:
             check("AC1 低权限调偏将级 Function（同框）被对象策略拒",
                   d.get("ok") is False and "无权" in str(d.get("error")),
                   str(d.get("error"))[:60])
+            if test_cid:
+                d = payload(low.request("tools/call", {"name": "review.get_evidence",
+                    "arguments": {"candidate_id": test_cid}}))
+                check("REQ-021 正兵会话 get_evidence 只给受限摘要（无证据引用明细）",
+                      d.get("ok") and "evidence_summary" in d
+                      and d.get("evidence_refs") == [],
+                      str(d.get("access_note"))[:60])
             d = payload(low.request("tools/call", {"name": "clue_transition",
                 "arguments": {"clue_id": first_id, "to_status": "查证中",
                               "operator": "王检察官"}}))

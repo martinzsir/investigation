@@ -255,6 +255,47 @@ def _tools() -> list[dict]:
             },
             "annotations": {"readOnlyHint": True},
         },
+        {
+            "name": "review.list_pending",
+            "description": (
+                "人审工作台只读（REQ-021）：列出待正兵确认的实体对齐候选"
+                "（candidate_id / entity_type / canonical / variants / reason / status，"
+                "字段与 review_queue.json 一致）。不含证据明细；证据走 review.get_evidence。"
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "required": []},
+            "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "review.get_evidence",
+            "description": (
+                "人审工作台只读（REQ-021）：单条候选的证据引用、知识包/规则手册版本。"
+                "正兵及以下角色只返回证据类型与计数摘要（受限），偏将及以上返回证据引用。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "candidate_id": {"type": "string", "description": "候选 ID，如 rev_person_0001"},
+                },
+                "required": ["candidate_id"],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "action.status",
+            "description": (
+                "两阶段动作只读（REQ-021）：按 action_id 查询提案状态机"
+                "（proposed/approved/dispatching/pending_receipt/confirmed/failed/dead_letter）、"
+                "审批人、尝试次数、外部业务号与回写发件箱记录。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "action_id": {"type": "string", "description": "动作提案 ID（act_ 前缀）"},
+                },
+                "required": ["action_id"],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
     ]
 
 
@@ -593,6 +634,128 @@ def tool_rule_list(args: dict) -> dict:
     return _redline({"count": len(rules), "rules": rules, "readonly": True})
 
 
+# ----------------------------------------------------------------------
+# REQ-021（读轨）：人审工作台 / 两阶段动作 的只读可见性
+#   submit_proposal 等写动作属 REQ-021 写轨，不在本批开放；
+#   Agent 不得直接调 clue_transition 写状态机之外的审查对象。
+# ----------------------------------------------------------------------
+def _load_review_queue():
+    """装载 output/review_queue.json；未生成时返回 (None, 提示)。"""
+    from core.review import ReviewQueue
+    path = ROOT / "output" / "review_queue.json"
+    if not path.exists():
+        return None, "review_queue.json 未生成（先跑 run_pipeline）"
+    return ReviewQueue.load(str(path)), None
+
+
+def tool_review_list_pending(args: dict) -> dict:
+    """待确认候选列表（字段与 review_queue.json 一致，evidence 不铺明细）。"""
+    q, note = _load_review_queue()
+    if q is None:
+        return _redline({"count": 0, "pending": [], "note": note, "readonly": True})
+    pending = []
+    for d in q.pending():
+        item = d.to_dict()
+        item.pop("evidence", None)      # 列表不附证据明细，按需走 get_evidence
+        pending.append(item)
+    return _redline({
+        "count": len(pending), "pending": pending, "summary": q.summary(),
+        "字段源": "output/review_queue.json", "readonly": True,
+    })
+
+
+def tool_review_get_evidence(args: dict) -> dict:
+    """单条候选的证据引用 + 知识/规则版本；受限角色只给摘要计数。"""
+    from core.access import ROLE_RANK
+    candidate_id = args.get("candidate_id")
+    if not candidate_id:
+        return _redline({"ok": False, "error": "必填参数 candidate_id"})
+    q, note = _load_review_queue()
+    if q is None:
+        return _redline({"ok": False, "error": note})
+    try:
+        d = q.get(candidate_id)
+    except KeyError as e:
+        return _redline({"ok": False, "error": str(e)})
+
+    ctx = _access()
+    evidence = d.evidence or {}
+    restricted = not ctx.is_system and ctx.rank < ROLE_RANK["偏将"]
+    out = {
+        "ok": True, "readonly": True,
+        "candidate_id": d.candidate_id,
+        "entity_type": d.entity_type,
+        "canonical": d.canonical,
+        "variants": d.variants,
+        "status": d.status,
+        "reason": d.reason,
+    }
+    # 版本溯源：知识包版本（R5 等）+ 规则手册条数
+    try:
+        from core.functions import load_case_knowledge
+        out["knowledge_version"] = load_case_knowledge().get("knowledge_version")
+    except Exception:
+        out["knowledge_version"] = None
+    out["rulebook_size"] = None
+    try:
+        from core.rules import catalog
+        out["rulebook_size"] = len(catalog())
+    except Exception:
+        pass
+
+    if restricted:
+        # 正兵及以下：只给证据类型与计数（受限摘要），不铺原始引用
+        out["evidence_summary"] = {
+            k: (len(v) if isinstance(v, (list, dict, str)) else v)
+            for k, v in evidence.items()
+        }
+        out["access_note"] = (
+            f"operator={ctx.operator} role={ctx.role}：证据明细限偏将及以上，"
+            "仅返回类型/计数摘要（REQ-021 受限摘要）")
+        out["evidence_refs"] = []
+    else:
+        refs = []
+        for k, v in evidence.items():
+            if isinstance(v, list):
+                refs.extend(str(x) for x in v[:50])
+            else:
+                refs.append(f"{k}={v}")
+        out["evidence_refs"] = refs
+    return _redline(out)
+
+
+def tool_action_status(args: dict) -> dict:
+    """两阶段动作查询：提案状态 / 审批 / 回执（只读）。"""
+    from core import Store
+    from core.action_executor import ActionExecutor, ActionRequestNotFound
+
+    action_id = args.get("action_id")
+    if not action_id:
+        return _redline({"ok": False, "error": "必填参数 action_id"})
+    store = Store()
+    try:
+        ex = ActionExecutor(store, access=_access())
+        try:
+            req = ex.request_status(action_id)
+        except ActionRequestNotFound:
+            return _redline({"ok": False, "error": f"动作提案不存在：{action_id}"})
+        out = {"ok": True, "readonly": True, "action": req}
+        # 回写发件箱/外部回执（若已进入回写轨）
+        try:
+            rows = store.conn.execute(
+                "SELECT outbox_id, status, attempts, external_id, last_error, "
+                "idempotency_key, created_at, sent_at, confirmed_at "
+                "FROM writeback_outbox WHERE action_id=?", [action_id]).fetchall()
+            cols = ["outbox_id", "status", "attempts", "external_id", "last_error",
+                    "idempotency_key", "created_at", "sent_at", "confirmed_at"]
+            out["writeback"] = [dict(zip(cols, r)) for r in rows]
+        except Exception:
+            out["writeback"] = []
+        return _redline(out)
+    finally:
+        store.close()
+
+
 _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "scan_anomaly": tool_scan_anomaly,
     "cross_jian": tool_cross_jian,
@@ -603,6 +766,9 @@ _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "function_list": tool_function_list,
     "function_invoke": tool_function_invoke,
     "rule_list": tool_rule_list,
+    "review.list_pending": tool_review_list_pending,
+    "review.get_evidence": tool_review_get_evidence,
+    "action.status": tool_action_status,
 }
 
 

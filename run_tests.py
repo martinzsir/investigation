@@ -23,6 +23,24 @@ run_tests.py —— 统一测试入口
   access      REQ-009 AccessContext 权限上下文（tests.test_access）
   policy      REQ-010 对象级/属性级策略（tests.test_policy）
   export      REQ-011 导出权限与审计（tests.test_export_policy）
+  action      REQ-012 Action 两阶段提交（tests.test_action_two_phase）
+  writeback   REQ-013 回写适配器+发件箱（tests.test_writeback）
+  reconcile   REQ-014 对账重试死信（tests.test_reconcile）
+  reviewloop  REQ-016 review 闭环增量重建（tests.test_review_loop）
+  deferred    REQ-017 defer 回捞（tests.test_deferred）
+  r5knowledge REQ-024 R5 知识包参数化（tests.test_rule_r5_knowledge）
+  golden      REQ-020 Golden Finding 回归（tests.test_golden）
+  overlap     REQ-025 规则互斥与重叠消解（tests.test_rule_overlap）
+  threshold   REQ-027 阈值策略对象（tests.test_threshold_adaptive）
+  derived     REQ-028 DerivedProperty 查询时派生（tests.test_derived）
+  object_set  REQ-029 ObjectSet 查询构造器（tests.test_object_set）
+  metrics     REQ-030 规则运行时度量（tests.test_metrics）
+  rule_dsl    REQ-026 规则 DSL 组合与时序（tests.test_rule_dsl）
+  llmpolicy   REQ-038 LLM 策略与脱敏闸门（tests.test_llm_policy）
+  proposal    REQ-033 ProposalStore 强类型提案（tests.test_proposal）
+  injection   REQ-039 提示注入防护（tests.test_injection）
+  caselib     REQ-031 案例库片段沉淀（tests.test_case_library）
+  params      REQ-032 参数治理版本/审批/回滚（tests.test_parameters）
   e2e         端到端集成（tests.test_run_all）
 
 用法：
@@ -62,6 +80,24 @@ GROUPS = {
     "access":      ("REQ-009 AccessContext 权限上下文", [sys.executable, "-m", "unittest", "tests.test_access"]),
     "policy":      ("REQ-010 对象级/属性级策略", [sys.executable, "-m", "unittest", "tests.test_policy"]),
     "export":      ("REQ-011 导出权限与审计", [sys.executable, "-m", "unittest", "tests.test_export_policy"]),
+    "action":      ("REQ-012 Action 两阶段提交", [sys.executable, "-m", "unittest", "tests.test_action_two_phase"]),
+    "writeback":   ("REQ-013 回写适配器+发件箱", [sys.executable, "-m", "unittest", "tests.test_writeback"]),
+    "reconcile":   ("REQ-014 对账重试死信", [sys.executable, "-m", "unittest", "tests.test_reconcile"]),
+    "reviewloop":  ("REQ-016 review 闭环增量重建", [sys.executable, "-m", "unittest", "tests.test_review_loop"]),
+    "deferred":    ("REQ-017 defer 回捞", [sys.executable, "-m", "unittest", "tests.test_deferred"]),
+    "r5knowledge": ("REQ-024 R5 知识包参数化", [sys.executable, "-m", "unittest", "tests.test_rule_r5_knowledge"]),
+    "golden":      ("REQ-020 Golden Finding 回归", [sys.executable, "-m", "unittest", "tests.test_golden"]),
+    "overlap":     ("REQ-025 规则互斥与重叠消解", [sys.executable, "-m", "unittest", "tests.test_rule_overlap"]),
+    "threshold":   ("REQ-027 阈值策略对象", [sys.executable, "-m", "unittest", "tests.test_threshold_adaptive"]),
+    "derived":     ("REQ-028 DerivedProperty 查询时派生", [sys.executable, "-m", "unittest", "tests.test_derived"]),
+    "object_set":  ("REQ-029 ObjectSet 查询构造器", [sys.executable, "-m", "unittest", "tests.test_object_set"]),
+    "metrics":     ("REQ-030 规则运行时度量", [sys.executable, "-m", "unittest", "tests.test_metrics"]),
+    "rule_dsl":    ("REQ-026 规则 DSL 组合与时序", [sys.executable, "-m", "unittest", "tests.test_rule_dsl"]),
+    "llmpolicy":   ("REQ-038 LLM 策略与脱敏闸门", [sys.executable, "-m", "unittest", "tests.test_llm_policy"]),
+    "proposal":    ("REQ-033 ProposalStore 强类型提案", [sys.executable, "-m", "unittest", "tests.test_proposal"]),
+    "injection":   ("REQ-039 提示注入防护", [sys.executable, "-m", "unittest", "tests.test_injection"]),
+    "caselib":     ("REQ-031 案例库片段沉淀", [sys.executable, "-m", "unittest", "tests.test_case_library"]),
+    "params":      ("REQ-032 参数治理版本/审批/回滚", [sys.executable, "-m", "unittest", "tests.test_parameters"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 

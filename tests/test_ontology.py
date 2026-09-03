@@ -641,10 +641,20 @@ class TestRulebook(unittest.TestCase):
         from core.rules import run_rules
         findings = run_rules(self.s, stage="xu_shi")
         ids = [f["rule_id"] for f in findings]
-        # fixture：R1（现金 09-28 距季末 2 天，窗口 15 命中）、R2（整数转账 460 万命中）、
-        # R4（异人同地命中）、R5（工商关联 LIKE 命中）；R3 仅 2 次通话 < 30 不命中
+        # fixture：R1（现金 09-28 距季末 2 天，窗口 15 命中）、
+        #   [REQ-025 起] R1 作为 integer_amount 组的 primary_rule，命中后抑制同组 R2（非 primary），
+        #   R2 进入 suppressed_log（任何保留 finding 都有该字段）；
+        #   R4（异人同地命中）、R5（工商关联 LIKE 命中）；R3 仅 2 次通话 < 30 不命中。
         self.assertIn("R1", ids)
-        self.assertIn("R2", ids)
+        # REQ-025：R2 同组被 R1 抑制 → 主 finding 列表不再出现 R2
+        self.assertNotIn("R2", ids)
+        # REQ-025：每条保留 finding 都应携带 suppressed_log 审计字段（可追溯被抑制项）
+        for f in findings:
+            self.assertIn("suppressed_log", f)
+        suppressed = [x for f in findings for x in f.get("suppressed_log", [])]
+        r2_suppressed = [x for x in suppressed if x["rule_id"] == "R2"]
+        self.assertTrue(r2_suppressed, "R2 应出现在 suppressed_log（被 R1 抑制）")
+        self.assertIn("primary=R1 命中", r2_suppressed[0]["reason"])
         self.assertNotIn("R3", ids)
         self.assertNotIn("R6", ids)  # stage 过滤：R6 属 qi_zheng
         for f in findings:

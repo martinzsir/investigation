@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "_note": "阈值策略对象（REQ-027）：每条规则的阈值选择方法、样本要求、降级回落与夹紧范围。method=absolute 等价于规则 rules.json 中原硬编码值（向后兼容）；method=relative_median 根据样本中位数 × multiplier 自适应。",
+  "thresholds": [
+    {
+      "rule": "R1",
+      "method": "absolute",
+      "bound_param": "round_unit",
+      "value": 10000,
+      "fallback": 10000,
+      "bounded_by": {"min": 1000, "max": 100000},
+      "per": []
+    },
+    {
+      "rule": "R2",
+      "method": "absolute",
+      "bound_param": "round_unit",
+      "value": 10000,
+      "fallback": 10000,
+      "bounded_by": {"min": 1000, "max": 100000},
+      "per": []
+    },
+    {
+      "rule": "R3",
+      "method": "relative_median",
+      "bound_param": "absolute_threshold",
+      "params": {"multiplier": 2.0, "min_samples": 20},
+      "fallback": 30,
+      "bounded_by": {"min": 5, "max": 1000},
+      "per": ["subject"]
+    },
+    {
+      "rule": "R4",
+      "method": "absolute",
+      "bound_param": "co_loc_window_days",
+      "value": 1,
+      "fallback": 1,
+      "bounded_by": {"min": 1, "max": 7},
+      "per": [],
+      "_note": "R4 语义链接 lnk_co_located 已固化 ±1 天窗口；此处声明用于元数据，不直接注入 params"
+    },
+    {
+      "rule": "R5",
+      "method": "absolute",
+      "bound_param": null,
+      "value": null,
+      "fallback": null,
+      "bounded_by": null,
+      "per": [],
+      "_note": "R5 为知识包匹配，无数值阈值"
+    },
+    {
+      "rule": "R6",
+      "method": "absolute",
+      "bound_param": "round_unit",
+      "value": 10000,
+      "fallback": 10000,
+      "bounded_by": {"min": 1000, "max": 100000},
+      "per": []
+    }
+  ]
+}

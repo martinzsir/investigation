@@ -1,0 +1,16 @@
+{
+  "knowledge_version": "2026.05.01",
+  "pack": "default",
+  "description": "案件知识包（REQ-024 R5 参数化）：案件主体别名与关系断言。R5 工商利益关联只消费本包，functions.json 不写人名。valid_until 过期断言自动失效。",
+  "subject_aliases": {
+    "张卫国": ["张卫国"],
+    "李志强": ["李志强"],
+    "李志强妻弟": ["李志强妻弟"]
+  },
+  "relation_assertions": [
+    {"from": "宏业建设", "to": "李志强", "type": "legal_rep", "source": "工商内档", "valid_until": null},
+    {"from": "A建材", "to": "李志强妻弟", "type": "legal_rep", "source": "工商注册样本", "valid_until": null},
+    {"from": "宏业建设", "to": "张卫国", "type": "interest", "source": "招投标档案", "valid_until": null},
+    {"from": "旧关联公司", "to": "旧关联人", "type": "interest", "source": "已过期登记", "valid_until": "2019-12-31"}
+  ]
+}

@@ -31,10 +31,11 @@ from typing import Callable, Any
 EVENT_TYPES = {
     "source.partition.arrived", "partition.quarantined",
     "ontology.stale", "ontology.materialized",
-    "finding.created", "clue.status_changed",
+    "finding.created", "finding.changed", "clue.status_changed",
     "review.decided", "review.deferred",
     "action.submitted", "action.approved", "action.dispatched",
     "writeback.sent", "writeback.failed", "writeback.confirmed",
+    "writeback.dead_letter",
     "external.status_changed",
 }
 

@@ -44,6 +44,7 @@ ALLOWED_JIAN = {"因间", "内间", "反间", "死间", "生间"}
 ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
 RULE_TEXT_MIN = 30
 _DERIVE_RULES = {"reverse_reach"}
+ALLOWED_OVERLAP_RESOLUTION = {None, "drop_if_primary_hit"}
 
 
 @dataclass
@@ -506,5 +507,33 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             dimension=dimension, jian_types=jian,
             assumption=_validate_assumption(r.get("assumption", ""), ctx, rid),
             basis_text=r.get("basis_text", r["title"]),
+            exclusive_group=r.get("exclusive_group") or None,
+            primary_rule=bool(r.get("primary_rule", False)),
+            overlap_resolution=r.get("overlap_resolution") or None,
+            excludes=tuple(r.get("excludes") or ()),
         )
+        ol = out[rid].overlap_resolution
+        if ol not in ALLOWED_OVERLAP_RESOLUTION:
+            raise ValueError(
+                f"{ctx}（{rid}）overlap_resolution='{ol}' 非法，"
+                f"允许 {sorted(x for x in ALLOWED_OVERLAP_RESOLUTION if x is not None)}")
+    # REQ-025：装载尾双向核对（AC2 单向声明→告警不硬失败）
+    import warnings
+    for rid, spec in out.items():
+        for other in spec.excludes:
+            if other in out and rid not in out[other].excludes:
+                warnings.warn(
+                    f"rules excludes 单向声明：{rid} 排除 {other}，但 {other} 未声明排除 {rid}"
+                    "（AC2 装载告警）", stacklevel=2)
+    # REQ-025：exclusive_group 内最多一个 primary_rule=True
+    group_primary: dict[str, str] = {}
+    for rid, spec in out.items():
+        if not spec.exclusive_group or not spec.primary_rule:
+            continue
+        g = spec.exclusive_group
+        if g in group_primary:
+            raise ValueError(
+                f"rules exclusive_group='{g}' 同时存在多个 primary_rule："
+                f"{group_primary[g]} 与 {rid}（组内最多一个）")
+        group_primary[g] = rid
     return out

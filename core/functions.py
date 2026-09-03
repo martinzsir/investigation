@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Callable
 
+import duckdb
+
 from core.ontology_loader import load_pack
 
 # SQL 只读白名单：首词必须是 SELECT/WITH；语句中出现 DDL/DML 关键词即拒绝
@@ -30,6 +32,15 @@ def _assert_readonly(sql: str, name: str) -> None:
         raise ValueError(f"function '{name}' 的 SQL 必须以 SELECT/WITH 开头（只读约束）")
     if _FORBIDDEN_SQL.search(sql):
         raise ValueError(f"function '{name}' 的 SQL 含写操作/DDL 关键词，违反只读约束")
+
+
+def _is_missing_semantic_table(exc: BaseException) -> bool:
+    """降级判定：CatalogException 且缺失的是 obj_*/lnk_* 语义表（数据源未接入）。"""
+    if not isinstance(exc, duckdb.CatalogException):
+        return False
+    msg = str(exc)
+    return "does not exist" in msg and bool(
+        re.search(r"\b(?:obj_|lnk_)[a-z_]+", msg))
 
 
 # ----------------------------------------------------------------------
@@ -329,6 +340,66 @@ def _tipoff_cross_reference(store, params: dict) -> dict:
     }
 
 
+# ---- 关系维度：工商登记利益关联（R5，REQ-024 知识包参数化）----
+def load_case_knowledge(pack: str = "default") -> dict:
+    """加载 ontology/<pack>/case_knowledge.json；无知识包时返回空骨架（零命中不报错）。"""
+    import json
+    from core.ontology_loader import PACK_ROOT
+    p = PACK_ROOT / pack / "case_knowledge.json"
+    if not p.exists():
+        return {"knowledge_version": None, "subject_aliases": {},
+                "relation_assertions": []}
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+@register_function("org_interest_links")
+def _org_interest_links(store, params: dict) -> dict:
+    """工商利益关联：法人/关联人命中案件知识包中的主体/关系人即候选。
+
+    人名只来自 case_knowledge.json（subject_aliases + 未过期 relation_assertions），
+    functions.json/规则代码中不出现任何人名（REQ-024 AC1）；过期断言自动排除。
+    """
+    from datetime import date
+    kn = load_case_knowledge(params.get("pack", "default"))
+    today = date.today().isoformat()
+    assertions = kn.get("relation_assertions", [])
+    valid = [a for a in assertions
+             if not a.get("valid_until") or str(a["valid_until"]) >= today]
+    persons: set[str] = set(kn.get("subject_aliases", {}).keys())
+    for aliases in kn.get("subject_aliases", {}).values():
+        persons.update(aliases or [])
+    persons.update(a.get("to", "") for a in valid)
+    persons.discard("")
+    rel_types = set(params.get("relation_types") or [])
+
+    try:
+        orgs = store.query("SELECT raw_name, legal_rep, relation FROM obj_org")
+    except Exception:
+        return {"rows": [], "knowledge_version": kn.get("knowledge_version")}
+
+    rows = []
+    for o in orgs:
+        fields = [str(o.get("legal_rep") or ""), str(o.get("relation") or "")]
+        matched = sorted(p for p in persons if any(p in f for f in fields))
+        if not matched:
+            continue
+        sources = sorted({a.get("source", "") for a in valid
+                          if a.get("from") == o.get("raw_name")
+                          and a.get("to") in matched
+                          and (not rel_types or a.get("type") in rel_types)})
+        if rel_types and not sources:
+            continue
+        rows.append({
+            "raw_name": o.get("raw_name"),
+            "legal_rep": o.get("legal_rep"),
+            "relation": o.get("relation"),
+            "matched_person": matched,
+            "knowledge_sources": sources,
+            "knowledge_version": kn.get("knowledge_version"),
+        })
+    return {"rows": rows, "knowledge_version": kn.get("knowledge_version")}
+
+
 # ---- 资金链路：两跳过桥（SQL 轨，与图库 Cypher 轨互为校验）----
 @register_function("overpass_two_hop")
 def _overpass_two_hop(store, params: dict) -> dict:
@@ -379,20 +450,32 @@ class FunctionExecutor:
         merged = {k: v.get("default") for k, v in spec.parameters.items()
                   if isinstance(v, dict) and "default" in v}
         merged.update(params or {})
+        params_used = {k: merged[k] for k in spec.parameters}
 
-        if spec.impl == "sql":
-            sql = spec.sql
-            if spec.parameters:
-                sql = render_sql_template(
-                    sql, spec.parameters, merged, ctx=f"function '{name}'")
-            _assert_readonly(sql, name)
-            rows = self.store.query(sql)
+        try:
+            if spec.impl == "sql":
+                sql = spec.sql
+                if spec.parameters:
+                    sql = render_sql_template(
+                        sql, spec.parameters, merged, ctx=f"function '{name}'")
+                _assert_readonly(sql, name)
+                rows = self.store.query(sql)
+                return {"function": name, "output_type": spec.output_type,
+                        "rows": rows, "readonly": True, "params_used": params_used}
+            result = FUNCTION_IMPLS[spec.impl_ref](self.store, merged)
             return {"function": name, "output_type": spec.output_type,
-                    "rows": rows, "readonly": True,
-                    "params_used": {k: merged[k] for k in spec.parameters}}
-        result = FUNCTION_IMPLS[spec.impl_ref](self.store, merged)
-        return {"function": name, "output_type": spec.output_type,
-                "result": result, "readonly": True}
+                    "result": result, "readonly": True}
+        except duckdb.CatalogException as e:
+            if not _is_missing_semantic_table(e):
+                raise
+            # 降级（REQ-020 golden 降级场景）：函数消费的 obj_*/lnk_* 语义表不存在
+            # （数据源未接入 → 编译器跳过绑定），零命中返回而非报错；带 degraded 标记可审计。
+            return {"function": name, "output_type": spec.output_type,
+                    "rows": [] if spec.impl == "sql" else None,
+                    "result": None if spec.impl == "sql" else {"hit": False, "pairs": []},
+                    "readonly": True, "degraded": True,
+                    "degraded_reason": str(e).splitlines()[0][:120],
+                    "params_used": params_used}
 
 
 def invoke_function(store, name: str, params: dict | None = None,

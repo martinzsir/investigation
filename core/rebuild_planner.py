@@ -236,6 +236,40 @@ def plan_from_seeds(conn, seeds: dict[str, set[str]], *,
     return plan
 
 
+def plan_from_review(conn, decision, *, pack: str = "default",
+                     batch_threshold: int = DEFAULT_BATCH_THRESHOLD) -> RebuildPlan:
+    """review.decided(accept) → 受影响范围（REQ-016）。
+
+    decision：core.review.ReviewDecision（entity_type person/org，canonical + variants）。
+    种子 = canonical 与全部 variants 在语义层中已物化的实体主键（重建**前**的图，
+    变体尚未折叠，一跳邻域同时覆盖合并双方，不漏边）。
+    reject 决策不应进入本函数（只写 feedback_event，不触发重建）。
+    """
+    spec = load_pack(pack)
+    valid = {o.name for o in spec.objects}
+    obj = getattr(decision, "entity_type", None)
+    if obj not in valid:
+        raise ValueError(
+            f"review 决策实体类型 {obj!r} 不在 ontology 对象清单 {sorted(valid)}")
+    otype = next(o for o in spec.objects if o.name == obj)
+    names = {decision.canonical, *getattr(decision, "variants", [])}
+    names.discard(None)
+
+    seeds: dict[str, set[str]] = {obj: set()}
+    try:
+        placeholders = ", ".join(["?"] * len(names))
+        rows = conn.execute(
+            f'SELECT "{otype.pk}" FROM obj_{obj} '
+            f'WHERE "{otype.name_property}" IN ({placeholders})',
+            sorted(names)).fetchall()
+        seeds[obj] = {r[0] for r in rows if r[0]}
+    except Exception:
+        pass  # 语义层未物化：种子为空，include_objects 仍声明该对象重建
+    return plan_from_seeds(conn, seeds, pack=pack, reason="review",
+                           batch_threshold=batch_threshold,
+                           include_objects=[obj])
+
+
 def plan_from_partition(conn, part, *, pack: str = "default",
                         batch_threshold: int = DEFAULT_BATCH_THRESHOLD) -> RebuildPlan:
     """新分区到达：源表 → 直接受影响对象 → 种子主键 → 一跳邻域。

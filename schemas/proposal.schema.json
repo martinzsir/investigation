@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "proposal.schema.json",
+  "title": "LLM Proposal Envelope (REQ-033)",
+  "description": "LLM 产出的提案信封：只承载只读计算/解释/对齐建议，永不自动生效；candidate 内容另受七项硬校验（函数白名单、参数类型、证据 URI、禁写回、禁状态变更、confidence 不参与命中）",
+  "type": "object",
+  "required": ["proposal_id", "kind", "case_id", "author", "candidate"],
+  "properties": {
+    "proposal_id": {"type": "string", "pattern": "^pp-[a-z0-9][a-z0-9\\-]+$"},
+    "kind": {
+      "enum": ["rule_draft", "parameter_draft", "alignment_review", "explanation"]
+    },
+    "case_id": {"type": "string", "minLength": 1},
+    "ontology_version": {"type": "string"},
+    "author": {"type": "string", "minLength": 1},
+    "input": {
+      "type": "object",
+      "properties": {
+        "redacted_context_uri": {"type": "string"},
+        "available_functions": {"type": "array", "items": {"type": "string"}},
+        "access_context": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "candidate": {"type": "object"},
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "must_have_source_rows": {"type": "boolean"},
+        "expires_at": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "_sort_hint": {
+      "type": "object",
+      "description": "仅允许排序提示（如 confidence）；不参与任何命中判定（REQ-033 AC7）",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

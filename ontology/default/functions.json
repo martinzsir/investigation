@@ -53,9 +53,9 @@
       "inputs": ["obj_org"],
       "parameters": {},
       "output_type": "rows",
-      "impl": "sql",
-      "sql": "SELECT raw_name, legal_rep, relation FROM obj_org WHERE (legal_rep IS NOT NULL AND (legal_rep LIKE '%李志强%' OR legal_rep LIKE '%妻弟%')) OR (relation IS NOT NULL AND relation LIKE '%张卫国%')",
-      "description": "关系维度：法人/关联人与对象人员重叠"
+      "impl": "py",
+      "impl_ref": "org_interest_links",
+      "description": "关系维度（REQ-024）：法人/关联人命中案件知识包（case_knowledge.json）主体/关系人即候选；人名只来自知识包，过期断言自动排除，无知识包零命中不报错"
     },
     {
       "name": "time_window_collision",

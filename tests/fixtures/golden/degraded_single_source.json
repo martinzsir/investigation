@@ -1,0 +1,20 @@
+{
+  "name": "degraded_single_source",
+  "seed": 20260503,
+  "description": "降级场景：只有银行流水单源（通话/轨迹/工商/招投标/OSINT/举报全缺）。规则引擎必须零命中不报错、缺失源绑定跳过而不是崩，finding 结构仍合法。",
+  "tables": {
+    "银行流水": {
+      "columns": ["主体", "对方", "金额", "日期"],
+      "rows": [
+        ["周大郎", "吴二娘", 3333.33, "2021-07-07"]
+      ]
+    }
+  },
+  "expect": {
+    "finding_count": 0,
+    "rules_hit": [],
+    "source_rows_total": 0,
+    "by_rule": {},
+    "skipped_rules_note": "缺失数据源的规则应零命中而非报错"
+  }
+}

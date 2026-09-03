@@ -13,7 +13,11 @@
       "basis_text": "与工资性非整数收支规律不符；季末时点整数现金存入",
       "function": "quarter_end_integer_deposits",
       "params": {"round_unit": 10000, "quarter_end_window_days": 15, "cash_summary_tokens": "现金存入"},
-      "hit_when": "rows_nonempty"
+      "hit_when": "rows_nonempty",
+      "exclusive_group": "integer_amount",
+      "primary_rule": true,
+      "overlap_resolution": "drop_if_primary_hit",
+      "excludes": ["R2"]
     },
     {
       "id": "R2",
@@ -26,7 +30,11 @@
       "basis_text": "整数大额对公转账单向流转，符合第三方过桥特征",
       "function": "integer_transfer_aggregates",
       "params": {"round_unit": 10000},
-      "hit_when": "rows_nonempty"
+      "hit_when": "rows_nonempty",
+      "exclusive_group": "integer_amount",
+      "primary_rule": false,
+      "overlap_resolution": "drop_if_primary_hit",
+      "excludes": ["R1"]
     },
     {
       "id": "R3",

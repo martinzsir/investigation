@@ -122,6 +122,25 @@ def main():
                 final_person_mapping.pop(v, None)
     queue.to_json(str(out_dir / "review_queue.json"))
 
+    # REQ-016：人审决策落表——accept → entity_mapping 受保护表（6.5 构建语义层时归并生效）；
+    # reject/defer 只写 review.decided(feedback) 事件，不删证据、不触发重建。
+    from core.review_loop import (
+        ensure_tables as _ensure_review_tables,
+        record_accept as _record_accept,
+        record_feedback as _record_feedback,
+    )
+    _ensure_review_tables(store.conn)
+    _map_n = 0
+    _fb_n = 0
+    for _d in queue.decided():
+        if _d.status == review.Decision.ACCEPTED:
+            _map_n += _record_accept(store.conn, _d)
+        else:
+            _record_feedback(store.conn, _d)
+            _fb_n += 1
+    print(f"  人审决策落表：entity_mapping {_map_n} 条归并，feedback 事件 {_fb_n} 条"
+          f"（语义层构建时归并生效，重建不清除）")
+
     # ===== 6. 采样预演 =====
     step("6. 采样预演：1% 采样验证假设方向 → 决定全量")
     from core.sampling import SamplingPreflight

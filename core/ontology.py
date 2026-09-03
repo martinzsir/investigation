@@ -162,6 +162,11 @@ class RuleSpec:
     jian_types: tuple[str, ...] = ()
     assumption: str = ""           # 庙算假设挂钩（如 H1）
     basis_text: str = ""           # 线索"依据"栏短文本
+    # REQ-025：互斥与重叠消解
+    exclusive_group: str | None = None   # 同组按 primary 命中抑制次级
+    primary_rule: bool = False           # 同组内最多一个 primary=True
+    overlap_resolution: str | None = None  # drop_if_primary_hit | None
+    excludes: tuple[str, ...] = ()       # 与其他规则声明互斥（双向一致性告警）
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -258,6 +263,7 @@ def build_ontology(conn, pack: str = "default") -> dict:
 
     stats: dict = {"objects": {}, "links": {}, "skipped": []}
     org_names = _default_org_names(conn)
+    entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
 
     conn.execute("BEGIN TRANSACTION")
     try:
@@ -266,7 +272,8 @@ def build_ontology(conn, pack: str = "default") -> dict:
             if otype.runtime:
                 continue
             b = spec.object_bindings[otype.name]
-            computed = _compute_object_rows(conn, otype, b, org_names, stats)
+            computed = _compute_object_rows(conn, otype, b, org_names, stats,
+                                            mapping=entity_mapping)
             if computed is None:
                 continue
             cols, rows, keys, src_table = computed
@@ -377,13 +384,54 @@ def json_dumps(obj) -> str:
 # ----------------------------------------------------------------------
 # 共享物化逻辑（全量 build 与增量 materialize_changed 同口径）
 # ----------------------------------------------------------------------
+def _load_entity_mapping(conn) -> dict:
+    """加载正兵 accept 的实体归并映射（variant → canonical）。
+
+    entity_mapping 是受保护表：编译器只 DROP/CREATE obj_*/lnk_*，
+    语义层重建/增量物化都不会清除人工确认结果（REQ-004 AC5 / REQ-016）。
+    """
+    if not _table_exists(conn, "entity_mapping"):
+        return {}
+    try:
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT variant, canonical FROM entity_mapping").fetchall()}
+    except Exception:
+        return {}
+
+
+def _apply_entity_mapping(rows: list, cols: list[str], mapping: dict) -> list:
+    """把名字列（raw_name / *_raw 约定）的变体名归并为 canonical。
+
+    对象/事件双侧都归并：lnk_* 的 JOIN（p.raw_name = c.caller_raw）
+    两端同时命中 canonical，不会因合并丢边。
+    """
+    if not mapping:
+        return rows
+    name_idx = [i for i, c in enumerate(cols)
+                if c == "raw_name" or c.endswith("_raw")]
+    if not name_idx:
+        return rows
+    out = []
+    for r in rows:
+        r = list(r)
+        for i in name_idx:
+            v = r[i]
+            if isinstance(v, str) and v in mapping:
+                r[i] = mapping[v]
+        out.append(tuple(r))
+    return out
+
+
 def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
-                         org_names: set[str], stats: dict | None = None):
+                         org_names: set[str], stats: dict | None = None,
+                         mapping: dict | None = None):
     """按 binding 计算对象物化行，返回 (cols, rows, keys, src_table)。
 
     跳过场景（源表缺失/编译失败且 optional）返回 None，并把原因记入 stats["skipped"]。
     键策略：事件型=行内容哈希（同内容加序号后缀）；实体型=name_property 内容哈希；
     name_property 即 pk 的自引用对象（clue）直通源自然键（runtime 链接按此关联）。
+    mapping：正兵确认的 variant→canonical 归并（REQ-016），在代理键分配**之前**应用，
+    使合并后的实体共享同一代理键。
     """
     src_table = b.source_table or _guess_source_table(b.source_sql)
     if not _table_exists(conn, src_table):
@@ -406,6 +454,8 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
         raise
     if b.clean:
         rows = _apply_clean(rows, cols, otype, b, org_names)
+    # REQ-016：正兵确认的归并映射在代理键分配前应用（对象+事件双侧名字列）
+    rows = _apply_entity_mapping(rows, cols, mapping or {})
     prefix = otype.pk.split("_")[0]
     if otype.kind == "event":
         rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))
@@ -413,6 +463,15 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     elif otype.pk == otype.name_property:
         keys = [r[0] for r in rows]          # 自引用自然键，直通不重映射
     else:
+        # 实体型：归并后变体行折叠为同一 canonical，按 name_property 去重
+        seen: set = set()
+        deduped = []
+        for r in rows:
+            if r[0] in seen:
+                continue
+            seen.add(r[0])
+            deduped.append(r)
+        rows = deduped
         proxy = _proxy_keys(sorted({r[0] for r in rows}), prefix)
         keys = [proxy[r[0]] for r in rows]
     return cols, rows, keys, src_table
@@ -523,12 +582,14 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     build_ontology() 保留为 bootstrap 全量；日常增量只调本函数：
       对象先于链接（链接 build_sql 引用 obj_*）；未变化行经 _diff_apply 跳过；
       完成后推进版本时钟（is_current=true）并发布 ontology.materialized 事件。
-    受保护版本（review accept 的 entity_mapping 不被覆盖）属 REQ-016，本批不实现。
+    entity_mapping（review accept 的 variant→canonical）是受保护表：
+      编译器只重建 obj_*/lnk_*，归并结果在全量/增量重建后均生效且不被清除（REQ-016）。
     """
     from core.ontology_loader import load_pack
     from core.ontology_version import compute_version, record_version
     spec = load_pack(pack)
     org_names = _default_org_names(conn)
+    entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
     stats: dict = {"objects": {}, "links": {}, "skipped": [],
                    "rewritten_rows": 0, "plan_mode": plan.mode}
 
@@ -543,7 +604,8 @@ def materialize_changed(conn, plan, *, pack: str = "default",
             b = spec.object_bindings.get(name)
             if b is None:
                 continue
-            computed = _compute_object_rows(conn, otype, b, org_names, stats)
+            computed = _compute_object_rows(conn, otype, b, org_names, stats,
+                                            mapping=entity_mapping)
             if computed is None:
                 continue
             cols, rows, keys, src_table = computed
