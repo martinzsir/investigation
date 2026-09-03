@@ -99,7 +99,7 @@ description: >
 ```bash
 # 1. 最快：装载校验（rules/functions 交叉引用，秒级）
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python -m scripts.build_ontology"
-# 2. 全量：8 组测试必绿（ontology 组含规则手册用例）
+# 2. 全量：18 组测试必绿（ontology/spec 组含规则手册与 schema 用例；--fast 跳 e2e）
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python run_tests.py"
 # 3. 改了 functions.json / MCP 工具 / 规则目录计数时额外跑：
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python -m scripts.mcp_client_test"

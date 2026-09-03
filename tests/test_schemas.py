@@ -12,6 +12,7 @@ REQ-019 CI + JSON Schema 校验 测试。
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -61,15 +62,21 @@ class TestSchemas(unittest.TestCase):
         self.assertIn("影响报告", report)
 
     def test_ac5_existing_tests_green(self):
-        """AC5: 现有 8 组测试在 CI 中全绿（缺 pyarrow 时 skip）"""
+        """AC5: 现有测试组在 CI 中全绿（缺 pyarrow 时 skip）"""
+        # 递归守卫：本测试会 subprocess 跑全量 run_tests.py，而全量里又包含
+        # spec 组（含本测试）——子进程继承该环境变量后直接 skip，截断无限嵌套
+        if os.environ.get("SUNZI_AC5_NESTED"):
+            self.skipTest("嵌套全量回归层（外层 test_ac5 已在跑 run_tests.py）")
         try:
             import pyarrow  # noqa: F401
         except ImportError:
             self.skipTest("pyarrow 未安装（WSL 环境才有），跳过全量回归")
+        env = dict(os.environ)
+        env["SUNZI_AC5_NESTED"] = "1"
         r = subprocess.run(
             [sys.executable, "run_tests.py"],
             capture_output=True, text=True, cwd=str(ROOT),
-            timeout=300)
+            timeout=600, env=env)
         self.assertEqual(r.returncode, 0,
                          f"run_tests.py 失败：\n{r.stdout}\n{r.stderr}")
 
