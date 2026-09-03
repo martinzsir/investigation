@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "_note": "REQ-010 对象级/属性级策略。对象未在本文件声明 → fail-closed 默认拒绝（AC4）；coverage_missing() 保证 objects.json 每个对象都有显式声明（AC5）。角色分级与 core/access.ROLE_RANK 同源。",
+  "object_policies": [
+    {"object": "person",       "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "基础情报"},
+    {"object": "org",          "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
+    {"object": "account",      "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
+    {"object": "bid_project",  "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
+    {"object": "transaction",  "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1, "_note": "资金明细：正兵及以上"},
+    {"object": "call",         "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"object": "trackpoint",   "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "轨迹：行踪信息，偏将及以上"},
+    {"object": "clue",         "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "工作面线索全队可见"},
+    {"object": "decision",     "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "处置决策：偏将及以上"},
+    {"object": "tipoff",       "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "内间举报材料：AC1 演示对象，正兵被拒"},
+    {"object": "osint_article","roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报归档同内间门槛"}
+  ],
+  "link_policies": [
+    {"link": "transfers",     "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"link": "calls_to",      "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"link": "co_located",    "roles": ["偏将", "主办", "human"], "min_clearance": 2},
+    {"link": "owns",          "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"link": "involved_in",   "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"link": "time_window",   "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
+    {"link": "decision_for",  "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "runtime 链接，与 decision 同门槛"},
+    {"link": "tipoff_targets_person", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "举报指向关系，与 tipoff 同门槛"},
+    {"link": "osint_mentions", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报提及关系，与 osint_article 同门槛"}
+  ],
+  "property_policies": [
+    {"object": "person", "property": "id_card",    "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "身份证号：主办及以上原文，其余部分遮蔽（310****1234）"},
+    {"object": "tipoff", "property": "content_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报材料正文：主办及以上原文"},
+    {"object": "tipoff", "property": "reporter_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报人身份：主办及以上原文"}
+  ]
+}

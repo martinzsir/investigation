@@ -343,9 +343,14 @@ def _overpass_two_hop(store, params: dict) -> dict:
 class FunctionExecutor:
     """按 functions.json 声明执行只读计算。"""
 
-    def __init__(self, store, pack: str = "default"):
+    def __init__(self, store, pack: str = "default", access=None):
         self.store = store
         self.pack = pack
+        # REQ-009：access=None → system 旁路（既有调用行为不变）
+        from core.access import system_context
+        self.access = access if access is not None else system_context()
+        from core.policy import PolicyEngine
+        self.policy = PolicyEngine(pack)
 
     def _specs(self) -> dict:
         return load_pack(self.pack).functions
@@ -365,6 +370,12 @@ class FunctionExecutor:
         if name not in specs:
             raise KeyError(f"未注册的 Function：{name}，可用 {sorted(specs)}")
         spec = specs[name]
+        # REQ-010：函数输入对象/链接的策略检查（fail-closed，system 旁路）
+        for tbl in spec.inputs:
+            if tbl.startswith("obj_"):
+                self.policy.check_object(self.access, tbl[4:])
+            elif tbl.startswith("lnk_"):
+                self.policy.check_link(self.access, tbl[4:])
         merged = {k: v.get("default") for k, v in spec.parameters.items()
                   if isinstance(v, dict) and "default" in v}
         merged.update(params or {})

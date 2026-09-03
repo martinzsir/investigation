@@ -35,10 +35,12 @@ def check(label: str, ok: bool, note: str = "") -> None:
 class MCPClient:
     """极简 stdio MCP 客户端。"""
 
-    def __init__(self):
+    def __init__(self, env: dict | None = None):
+        import os
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "scripts.mcp_server"],
             cwd=str(ROOT),
+            env={**os.environ, **env} if env else None,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
         )
@@ -271,6 +273,43 @@ def main() -> int:
 
         r = c.request("tools/call", {"name": "not_a_tool", "arguments": {}})
         check("未知工具 → -32601", r.get("error", {}).get("code") == -32601)
+
+        # 8. 权限接入（REQ-009/010/011）：低权限会话（正兵）独立 server
+        print("\n[8] 权限接入（低权限会话，REQ-011）")
+        low = MCPClient(env={"SUNZI_OPERATOR": "实习侦查员", "SUNZI_ROLE": "正兵",
+                             "SUNZI_CLEARANCE": "1", "SUNZI_PURPOSE": "推演测试"})
+        try:
+            low.request("initialize", {"protocolVersion": "2025-06-18",
+                                       "capabilities": {},
+                                       "clientInfo": {"name": "low-client", "version": "0"}})
+            low.notify("notifications/initialized")
+            r = low.request("tools/list")
+            names = [t["name"] for t in r["result"]["tools"]]
+            check("AC4 工具清单无自由 run_sql 入口",
+                  not any("sql" in n for n in names), str(names))
+            d = payload(low.request("tools/call", {"name": "clue_list", "arguments": {}}))
+            check("AC1 低权限 clue_list 只返回授权范围（无内间线索）",
+                  d.get("count", 0) >= 0 and "access_note" in d
+                  and all("内间" not in (cl.get("jian_types") or [])
+                          for cl in d.get("clues", [])),
+                  str(d.get("access_note"))[:60])
+            d = payload(low.request("tools/call", {"name": "function_invoke",
+                "arguments": {"name": "co_located_pairs"}}))
+            check("AC1 低权限调偏将级 Function（同框）被对象策略拒",
+                  d.get("ok") is False and "无权" in str(d.get("error")),
+                  str(d.get("error"))[:60])
+            d = payload(low.request("tools/call", {"name": "clue_transition",
+                "arguments": {"clue_id": first_id, "to_status": "查证中",
+                              "operator": "王检察官"}}))
+            check("AC5-adj 会话主体与 operator 不一致被拒（REQ-009）",
+                  d.get("ok") is False, str(d.get("error"))[:60])
+            d = payload(low.request("tools/call", {"name": "clue_transition",
+                "arguments": {"clue_id": first_id, "to_status": "已立案",
+                              "operator": "实习侦查员", "legal_basis": "测试"}}))
+            check("AC5-adj 正兵无权立案（human 专属终态）",
+                  d.get("ok") is False, str(d.get("error"))[:60])
+        finally:
+            low.close()
 
     finally:
         c.close()

@@ -19,9 +19,12 @@ FORBIDDEN_OPERATORS = {"system", "ai", "assistant", "model", "bot", "auto", "llm
 
 
 class ActionExecutor:
-    def __init__(self, store=None, pack: str = "default"):
+    def __init__(self, store=None, pack: str = "default", access=None):
         self.store = store
         self.pack = pack
+        # REQ-009：access=None → system 旁路（既有调用行为不变）
+        from core.access import system_context
+        self.access = access if access is not None else system_context()
 
     # ---- 声明查询 ----
     def action_for_status(self, target_status: str):
@@ -57,6 +60,18 @@ class ActionExecutor:
 
         # 3) 状态机校验（allowed_from 由 _TRANSITIONS 反向派生，单一事实来源）
         ClueStatusMachine.validate(clue.status, spec.target_status)
+
+        # 3.5) 权限上下文校验（REQ-009）：human 终态需 human 角色；
+        #      非 system 会话不得以他人名义执行（operator 与 access 主体一致）
+        if not self.access.is_system:
+            if not self.access.can_transition(clue.status, spec.target_status):
+                raise PermissionError(
+                    f"AccessContext(role={self.access.role}) 无权迁移到"
+                    f" {spec.target_status!r}（human 专属终态）——operator={self.access.operator}")
+            if operator and str(operator).strip() != self.access.operator:
+                raise PermissionError(
+                    f"会话主体 {self.access.operator!r} 不得以 {operator!r} 名义执行写动作"
+                    f"（写操作主体一致性，REQ-009）")
 
         # 4) 应用状态变更（写线索审计链）
         if action_name == "file":

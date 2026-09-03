@@ -32,6 +32,13 @@ runtime 对象/链接（obj_decision/lnk_decision_for）在类型层声明属性
 重建语义层不丢决策）。代理键分两类：entity 按 name_property 值排序分配，
 event 事件型按行分配（均幂等）。
 
+权限面（REQ-009/010/011）：`core/access.py` AccessContext（frozen，operator 必填，
+network="isolated" 拒 LLM）贯穿网关/Function/Action/MCP/导出五出口；
+`ontology/<pack>/policies.json` + `core/policy.py` 对象级/链接级策略
+（未声明一律 fail-closed 拒绝）与属性级敏感列遮蔽（310****1234）；
+system 角色唯一旁路（access=None 既有代码全兼容）；MCP 会话身份经
+SUNZI_OPERATOR/SUNZI_ROLE/SUNZI_CLEARANCE/SUNZI_NETWORK 环境变量声明。
+
 内核 = Python + DuckDB + LadybugDB，纯离线、无大模型依赖、无需 API Key。
 
 ## 三条禁令
@@ -43,13 +50,13 @@ event 事件型按行分配（均幂等）。
 ## 命令
 
 ```bash
-python run_tests.py                      # 18 组测试，必须全绿（--fast 跳 e2e、--only <组> 单跑）
+python run_tests.py                      # 21 组测试，必须全绿（--fast 跳 e2e、--only <组> 单跑）
 python run_all.py --no-cli               # 全链路（人工确认）
 python -m scripts.build_ontology         # 单独构建/重建语义层（obj_*/lnk_*）
 python -m scripts.build_ontology --pack <包名>   # 指定 ontology 案件包
 python -m scripts.build_ontology --actions      # 查看 Action 注册表
 python -m scripts.build_ontology --functions    # 查看 Function 目录（只读计算）
-python -m scripts.mcp_client_test        # MCP 端到端（46 项，9 个工具）
+python -m scripts.mcp_client_test        # MCP 端到端（51 项，9 个工具）
 python -m scripts.mcp_server             # 启动 MCP server（stdio）
 ```
 
@@ -63,7 +70,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 ## 验证
 
-改完代码跑 `python run_tests.py`。18 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/audit/e2e）全绿才算完成。
+改完代码跑 `python run_tests.py`。21 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/audit/access/policy/export/e2e）全绿才算完成。
 改了 MCP 相关额外跑 `python -m scripts.mcp_client_test`。
 
 ## 已知坑
@@ -76,6 +83,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 - Ontology 声明在 `ontology/<pack>/*.json`（不在 Python 里，schema_version=2）：类型（objects/links）、管道（bindings：source/source_sql/clean/build_sql）、规则（rules：rule_text 自然语言判据 + function/params 挂钩）分文件；值类型/清洗规则名/py function 名/副作用名/binding 与规则交叉引用不存在或不一致时 loader 硬失败；新增 py Function 必须在 `core/functions.FUNCTION_IMPLS` 注册；新数据源加 binding（源列别名必须是已声明属性）；新检测规则加 rules.json（判据写 rule_text、阈值写 params），均不改检测器代码
 - SQL Function 的 `{{param}}` 模板参数：integer/decimal/date/boolean 按类型正则渲染，string **仅允许 enum 白名单取值**（自由文本硬失败，防注入）；占位符与 parameters 必须一一对应；链接 build_sql 只表达关系，检测判据一律写 rules/function（lnk_time_window 不含整数/排除公司判据，过滤在 R6 time_window_collision）
 - 写操作唯一入口是 `ActionExecutor`（DisposalBoard/MCP 都经它）：新写动作先在 actions.json 声明；Function 只读、永远不准写
+- 权限三纪律（REQ-009/010/011）：新对象/链接必须同时在 policies.json 声明策略（漏了=运行时 fail-closed 被拒）；`role != system` 的会话执行写动作时 operator 参数必须与 AccessContext.operator 一致；"已立案"是 human 专属终态（正兵及以下不可达）；导出走 export_ladybug CLI 时显式传 --operator/--role/--purpose/--destination（缺省 system 旁路仅限本机）
 - `runtime` 对象/链接（obj_decision/lnk_decision_for）由 Action 副作用创建，编译器跳过；语义层重建不会清掉决策
 - `prioritize_clues()` 返回新列表，必须接收返回值
 - 处置状态改完要**重新生成** report，否则 `by_status` 是旧快照

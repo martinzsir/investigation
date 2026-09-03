@@ -6,6 +6,17 @@ scripts/export_ladybug.py
 换数据源只改 core/ontology.py 声明，本脚本零改动。
 语义层未构建时报错退出，提示先跑 python -m scripts.build_ontology。
 
+权限与审计（REQ-011，P0 出口同源执行策略）：
+  - 会话身份经命令行声明（--operator 必填；缺省 --operator system 全旁路，
+    仅限本机内部使用），角色/等级经 --role/--clearance；
+  - 导出前按 ontology/<pack>/policies.json 逐对象做对象级策略检查
+    （fail-closed），越权即拒绝（AC5：落审计 + stderr 告警 + 退出码 2）；
+  - 敏感属性列（property_policies default=deny 且无权）在导出 SQL 前
+    按声明剔除/遮蔽（AC2）；本次导出列均为标识/关系列，不含敏感属性，
+    _masked_columns 机制保证未来新增敏感列时自动防护；
+  - 导出完成后落审计链 audit_chain：operator / purpose / destination /
+    文件清单（AC3）。
+
 产物（data/ladybug/）：
   nodes.csv              全部节点（name, type）：person/org/account/bid_project
   transfer_edges.csv     转账边（lnk_transfers，兼容旧字段名 from_id/to_id）
@@ -21,9 +32,13 @@ LadybugDB 可通过 ATTACH DuckDB 直接读（WSL/Linux 可用）；Windows 原�
 """
 from __future__ import annotations
 
+import argparse
+import sys
 from pathlib import Path
 
 from core import Store
+from core.access import AccessContext, system_context
+from core.policy import PolicyDeniedError, PolicyEngine
 
 OUT = Path("data/ladybug")
 
@@ -42,15 +57,65 @@ def _copy(store: Store, sql: str, fname: str) -> int:
     return store.query(f"SELECT COUNT(*) AS n FROM ({sql})")[0]["n"]
 
 
-def main():
-    store = Store()
+def _masked_columns(engine: PolicyEngine, ctx: AccessContext,
+                    obj: str, columns: list[str]) -> list[str]:
+    """返回该对象在当前会话下将被剔除/遮蔽的敏感列（AC2 防护清单）。"""
+    return [p for p in columns
+            if engine.property_rule(obj, p) and not engine.can_read_property(ctx, obj, p)]
+
+
+def main(store: Store | None = None) -> int:
+    ap = argparse.ArgumentParser(description="语义层 → LadybugDB 图谱 CSV 导出")
+    ap.add_argument("--operator", default="system",
+                    help="导出操作者（system=内部旁路，仅限本机）")
+    ap.add_argument("--role", default="system", help="角色（见习/正兵/偏将/主办/human）")
+    ap.add_argument("--clearance", type=int, default=99, help="权限等级")
+    ap.add_argument("--purpose", default="", help="导出目的（落审计）")
+    ap.add_argument("--destination", default="local-csv:data/ladybug",
+                    help="目的地标签（落审计，如 airgap-usb/内网FTP）")
+    args = ap.parse_args()
+
+    ctx = (system_context() if args.operator == "system"
+           else AccessContext(operator=args.operator, role=args.role,
+                              clearance=args.clearance, purpose=args.purpose))
+    engine = PolicyEngine()
+    own_store = store is None
+    store = store if store is not None else Store()
     missing = [t for t in ("obj_person", "obj_transaction", "lnk_transfers")
                if not _exists(store, t)]
     if missing:
         raise SystemExit(f"语义层缺失 {missing}：先跑 python -m scripts.build_ontology")
 
+    # ---- 对象级策略检查（fail-closed；AC5 越权落审计+告警）----
+    try:
+        for obj in ("person", "org", "account", "bid_project",
+                    "transaction", "call", "trackpoint"):
+            engine.check_object(ctx, obj)
+        for lnk in ("transfers", "calls_to", "co_located", "owns",
+                    "involved_in", "time_window"):
+            engine.check_link(ctx, lnk)
+    except PolicyDeniedError as e:
+        # AC5：越权尝试必须被审计记录并告警
+        from core.audit import AuditChain
+        AuditChain(store.conn).append(
+            operator=ctx.operator,
+            before=None,
+            after={"action": "export_denied", "purpose": ctx.purpose,
+                   "destination": args.destination, "reason": str(e)},
+            source_row_ids=[],
+            ontology_version="n/a")
+        print(f"[告警] 导出被策略拒绝并已落审计：{e}", file=sys.stderr)
+        if own_store:
+            store.close()
+        return 2
+
     OUT.mkdir(exist_ok=True)
     exported: dict[str, int] = {}
+    masked: list[str] = []
+    for obj, cols in (("person", ["raw_name", "id_card"]),
+                      ("tipoff", ["content_raw", "reporter_raw"])):
+        masked += [f"{obj}.{c}" for c in _masked_columns(engine, ctx, obj, cols)
+                   if c in ("id_card", "content_raw", "reporter_raw")]
 
     # ---- 节点：person ∪ org ∪ account ∪ bid_project（raw_name/title 即图上名称）----
     exported["nodes.csv"] = _copy(store, """
@@ -123,10 +188,30 @@ def main():
             FROM lnk_time_window
         """, "time_window_edges.csv")
 
+    # ---- AC3：导出落审计（operator / purpose / destination / 文件清单）----
+    from core.audit import AuditChain
+    AuditChain(store.conn).append(
+        operator=ctx.operator,
+        before=None,
+        after={"action": "export", "purpose": ctx.purpose,
+               "destination": args.destination,
+               "role": ctx.role, "clearance": ctx.clearance,
+               "files": dict(exported),
+               "masked_columns": masked},
+        source_row_ids=[],
+        ontology_version="n/a")
+
     print("LadybugDB 图谱 CSV 已从语义层导出：", OUT)
     for fname, n in exported.items():
         print(f"  {fname:<24} {n} 行")
+    if masked:
+        print(f"  按属性策略剔除/遮蔽列：{masked}")
+    print(f"  导出事件已落审计链（operator={ctx.operator}, "
+          f"purpose={ctx.purpose or '-'}, destination={args.destination}）")
+    if own_store:
+        store.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

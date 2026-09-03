@@ -54,6 +54,37 @@ _FORBIDDEN_OPERATORS = {"system", "ai", "assistant", "model", "bot", "auto", "ll
 
 
 # ----------------------------------------------------------------------
+# 会话权限上下文（REQ-009/011）：由 harness 经环境变量声明身份
+#   SUNZI_OPERATOR 必填（缺省 → system 全旁路，向后兼容既有部署）
+#   SUNZI_ROLE / SUNZI_CLEARANCE / SUNZI_NETWORK / SUNZI_PURPOSE 可选
+# ----------------------------------------------------------------------
+def _build_access():
+    import os
+    operator = os.environ.get("SUNZI_OPERATOR", "").strip()
+    if not operator:
+        from core.access import system_context
+        return system_context()
+    from core.access import AccessContext
+    return AccessContext(
+        operator=operator,
+        role=os.environ.get("SUNZI_ROLE", "正兵"),
+        clearance=int(os.environ.get("SUNZI_CLEARANCE", "1")),
+        purpose=os.environ.get("SUNZI_PURPOSE", ""),
+        network=os.environ.get("SUNZI_NETWORK", "local"),
+    )
+
+
+_ACCESS = None
+
+
+def _access():
+    global _ACCESS
+    if _ACCESS is None:
+        _ACCESS = _build_access()
+    return _ACCESS
+
+
+# ----------------------------------------------------------------------
 # 工具定义（inputSchema 为 JSON Schema，字段必填性在这里声明）
 # ----------------------------------------------------------------------
 def _tools() -> list[dict]:
@@ -378,11 +409,21 @@ def tool_graph_overpass(args: dict) -> dict:
 def tool_clue_list(args: dict) -> dict:
     status = args.get("status", "all")
     include_rows = bool(args.get("include_rows", False))
+    ctx = _access()
     board, store, rep = _build_board()
     try:
+        # REQ-011 AC1：低权限会话只返回授权范围内线索——
+        # 内间线索源自举报材料（tipoff，偏将及以上门槛），正兵及以下不可见
+        from core.access import ROLE_RANK
+        restricted = (not ctx.is_system
+                      and ctx.rank < ROLE_RANK["偏将"])
         items = []
+        filtered = 0
         for c in board.clues.values():
             if status != "all" and c.status != status:
+                continue
+            if restricted and "内间" in (c.jian_types or []):
+                filtered += 1
                 continue
             det = c.detail or {}
             item = {
@@ -399,12 +440,17 @@ def tool_clue_list(args: dict) -> dict:
             if include_rows:
                 item["source_rows"] = c.source_rows
             items.append(item)
-        return _redline({
+        out = {
             "status_filter": status,
             "count": len(items),
             "clues": items,
             "状态源": "DuckDB（真值源），非 JSON 快照",
-        })
+        }
+        if restricted:
+            out["access_note"] = (
+                f"operator={ctx.operator} role={ctx.role}：按对象策略过滤内间线索"
+                f" {filtered} 条（REQ-011 AC1）")
+        return _redline(out)
     finally:
         store.close()
 
@@ -422,6 +468,23 @@ def tool_clue_transition(args: dict) -> dict:
             "error": f"operator 必须是具名正兵，拒绝 {operator!r}。"
                      f"禁止使用 {sorted(_FORBIDDEN_OPERATORS)} 等占位名",
         })
+
+    # REQ-009：写操作主体一致性 + human 终态角色门槛
+    ctx = _access()
+    if not ctx.is_system:
+        if operator != ctx.operator:
+            return _redline({
+                "ok": False,
+                "error": f"会话主体 {ctx.operator!r}(role={ctx.role}) 不得以"
+                         f" {operator!r} 名义执行写动作（REQ-009 主体一致性）",
+            })
+        from core.access import HUMAN_ONLY_STATUSES
+        if to_status in HUMAN_ONLY_STATUSES and ctx.role != "human":
+            return _redline({
+                "ok": False,
+                "error": f"role={ctx.role} 无权迁移到 {to_status!r}"
+                         f"（human 专属终态，REQ-009）",
+            })
 
     # 红线 2：立案必须带法定依据
     if to_status == "已立案" and not legal_basis:
@@ -503,7 +566,7 @@ def tool_function_invoke(args: dict) -> dict:
         return _redline({"ok": False, "error": "必填参数 name"})
     store = Store()
     try:
-        r = FunctionExecutor(store).invoke(name, args.get("params") or {})
+        r = FunctionExecutor(store, access=_access()).invoke(name, args.get("params") or {})
         return _redline({"ok": True, **r})
     except KeyError as e:
         return _redline({"ok": False, "error": str(e)})

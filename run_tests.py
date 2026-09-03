@@ -20,6 +20,9 @@ run_tests.py —— 统一测试入口
   features    REQ-015 L1 特征落盘（tests.test_features）
   incremental REQ-004 语义层增量重建（tests.test_incremental_semantic）
   audit       REQ-003 直查静态扫描（scripts/audit_straight_sql.py）
+  access      REQ-009 AccessContext 权限上下文（tests.test_access）
+  policy      REQ-010 对象级/属性级策略（tests.test_policy）
+  export      REQ-011 导出权限与审计（tests.test_export_policy）
   e2e         端到端集成（tests.test_run_all）
 
 用法：
@@ -56,6 +59,9 @@ GROUPS = {
     "features":    ("REQ-015 L1 特征落盘", [sys.executable, "-m", "unittest", "tests.test_features"]),
     "incremental": ("REQ-004 语义层增量重建", [sys.executable, "-m", "unittest", "tests.test_incremental_semantic"]),
     "audit":       ("REQ-003 直查静态扫描", [sys.executable, "scripts/audit_straight_sql.py", "--fail-on-violation"]),
+    "access":      ("REQ-009 AccessContext 权限上下文", [sys.executable, "-m", "unittest", "tests.test_access"]),
+    "policy":      ("REQ-010 对象级/属性级策略", [sys.executable, "-m", "unittest", "tests.test_policy"]),
+    "export":      ("REQ-011 导出权限与审计", [sys.executable, "-m", "unittest", "tests.test_export_policy"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
