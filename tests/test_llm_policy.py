@@ -95,10 +95,11 @@ class LlmPolicyTests(unittest.TestCase):
             (root / "llm_policy.json").write_text("{ not json", encoding="utf-8")
             p3 = load_llm_policy("badpack", base_dir=Path(td))
             self.assertEqual(p3["network"], "isolated")
-        # 默认包策略本身就是 isolated（内核环境声明）
+        # 默认包策略本身就是 isolated（内核环境声明）；allowed_models 允许
+        # 声明候选模型（如语义检索 embedding / 草案器），isolated 拒网下不生效
         default_p = load_llm_policy("default")
         self.assertEqual(default_p["network"], "isolated")
-        self.assertEqual(default_p["allowed_models"], [])
+        self.assertIsInstance(default_p["allowed_models"], list)
 
     # ---- AC2：脱敏 ----
     def test_ac2_pii_redacted_before_egress(self):

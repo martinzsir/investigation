@@ -40,7 +40,7 @@ def _make_store_with_data() -> Store:
     c.execute("CREATE TABLE 工商信息 (主体 VARCHAR, 法人 VARCHAR, 状态 VARCHAR, 关联 VARCHAR)")
     c.execute("CREATE TABLE 轨迹出行 (日期 VARCHAR, 主体 VARCHAR, 地点 VARCHAR)")
     c.execute("CREATE TABLE 招投标档案 (项目 VARCHAR, 中标方 VARCHAR, 中标公示日 VARCHAR, 分管领导 VARCHAR)")
-    c.execute("CREATE TABLE 公开OSINT (主体 VARCHAR, 公开信息 VARCHAR, 发布日期 DATE, 来源 VARCHAR)")
+    c.execute("CREATE TABLE 公开OSINT (主体 VARCHAR, 公开信息 VARCHAR, 发布日期 DATE, 来源 VARCHAR, 采集时间 TIMESTAMP, 保留天数 INTEGER)")
     c.execute("CREATE TABLE 举报材料 (举报日期 DATE, 分类 VARCHAR, 被举报人 VARCHAR, 举报人 VARCHAR, 内容 VARCHAR)")
     # 样例数据
     c.execute("INSERT INTO 银行流水 VALUES ('张卫国','宏业建设',50000,'2021-10-01')")
@@ -48,8 +48,8 @@ def _make_store_with_data() -> Store:
     c.execute("INSERT INTO 工商信息 VALUES ('宏业建设','李志强','存续','')")
     c.execute("INSERT INTO 轨迹出行 VALUES ('2021-10-03','张卫国','滨江路')")
     c.execute("INSERT INTO 招投标档案 VALUES ('滨江路改造','宏业建设','2021-09-15','')")
-    c.execute("INSERT INTO 公开OSINT VALUES ('宏业建设','宏业建设与滨江路改造项目存在异常关联，涉嫌围标','2024-01-15','财经观察')")
-    c.execute("INSERT INTO 公开OSINT VALUES ('李某','李某通过多个空壳公司转移资金，涉及银行流水异常','2024-02-20','深度调查')")
+    c.execute("INSERT INTO 公开OSINT VALUES ('宏业建设','宏业建设与滨江路改造项目存在异常关联，涉嫌围标','2024-01-15','财经观察','2024-01-15 08:00:00',3650)")
+    c.execute("INSERT INTO 公开OSINT VALUES ('李某','李某通过多个空壳公司转移资金，涉及银行流水异常','2024-02-20','深度调查','2024-02-20 08:00:00',3650)")
     c.execute("INSERT INTO 举报材料 VALUES ('2024-03-01','宏业建设行贿举报','宏业建设','张某某','宏业建设向招标办人员行贿，金额约200万，银行转账记录可查13812345678')")
     build_ontology(c)
     return s

@@ -53,7 +53,8 @@ def main():
             # 拿实际列集：DESCRIBE 列顺序 (column_name, column_type, null, key, default, extra)
             actual = {row[0] for row in con.execute(f'DESCRIBE "{name}"').fetchall()}
             expected_types = {
-                "公开OSINT": {"主体":"VARCHAR","公开信息":"VARCHAR","发布日期":"DATE","来源":"VARCHAR"},
+                "公开OSINT": {"主体":"VARCHAR","公开信息":"VARCHAR","发布日期":"DATE","来源":"VARCHAR",
+                              "采集时间":"TIMESTAMP","保留天数":"INTEGER"},
                 "举报材料": {"举报日期":"DATE","分类":"VARCHAR","被举报人":"VARCHAR","举报人":"VARCHAR","内容":"VARCHAR"},
             }[name]
             for col, typ in expected_types.items():
