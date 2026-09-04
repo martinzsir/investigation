@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "policies.schema.json",
+  "title": "Ontology Policies (REQ-010 对象级/链接级/属性级策略)",
+  "description": "权限声明：对象/链接未声明即 fail-closed；角色集与 core.access.ROLE_RANK 同源（system 旁路不入声明）。装载期交叉校验由 core/policy.py 执行。",
+  "type": "object",
+  "required": ["schema_version", "object_policies", "link_policies"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "_note": {"type": "string"},
+    "roles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/role"},
+      "uniqueItems": true
+    },
+    "object_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object", "roles", "min_clearance"],
+        "properties": {
+          "object": {"type": "string", "pattern": "^[a-z_]+$"},
+          "roles": {"type": "array", "items": {"$ref": "#/$defs/role"}, "minItems": 1, "uniqueItems": true},
+          "min_clearance": {"type": "integer", "minimum": 0, "maximum": 4},
+          "_note": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "link_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["link", "roles", "min_clearance"],
+        "properties": {
+          "link": {"type": "string", "pattern": "^[a-z_]+$"},
+          "roles": {"type": "array", "items": {"$ref": "#/$defs/role"}, "minItems": 1, "uniqueItems": true},
+          "min_clearance": {"type": "integer", "minimum": 0, "maximum": 4},
+          "_note": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "property_policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object", "property", "default", "allow_roles", "mask"],
+        "properties": {
+          "object": {"type": "string", "pattern": "^[a-z_]+$"},
+          "property": {"type": "string"},
+          "default": {"enum": ["deny", "allow"]},
+          "allow_roles": {"type": "array", "items": {"$ref": "#/$defs/role"}, "minItems": 1, "uniqueItems": true},
+          "mask": {"enum": ["partial", "full"]},
+          "_note": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "role": {"enum": ["见习", "正兵", "偏将", "主办", "human", "system"]}
+  }
+}

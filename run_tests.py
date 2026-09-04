@@ -98,6 +98,7 @@ GROUPS = {
     "metrics":     ("REQ-030 规则运行时度量", [sys.executable, "-m", "unittest", "tests.test_metrics"]),
     "rule_dsl":    ("REQ-026 规则 DSL 组合与时序", [sys.executable, "-m", "unittest", "tests.test_rule_dsl"]),
     "llmpolicy":   ("REQ-038 LLM 策略与脱敏闸门", [sys.executable, "-m", "unittest", "tests.test_llm_policy"]),
+    "llmfallback": ("REQ-040 LLM 降级开关与影子模式", [sys.executable, "-m", "unittest", "tests.test_llm_fallback"]),
     "proposal":    ("REQ-033 ProposalStore 强类型提案", [sys.executable, "-m", "unittest", "tests.test_proposal"]),
     "reviewwrite": ("REQ-021-write Agent 提案写轨", [sys.executable, "-m", "unittest", "tests.test_review_write"]),
     "injection":   ("REQ-039 提示注入防护", [sys.executable, "-m", "unittest", "tests.test_injection"]),

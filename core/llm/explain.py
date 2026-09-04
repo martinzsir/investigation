@@ -70,6 +70,17 @@ def generate_explanation(
     from core.llm.redact import load_llm_policy
     policy = policy or load_llm_policy(pack)
 
+    # REQ-040：一键降级开关——关闭时零模型调用，落审计后静默回落（AC1/AC4）
+    from core.llm.fallback import ensure_llm_capability, LLMDegraded
+    _model_hint = getattr(llm_client, "model", None)
+    try:
+        ensure_llm_capability(conn, ctx, policy, model=_model_hint,
+                              source="generate_explanation")
+    except LLMDegraded as e:
+        return {"ok": False, "explanation": None, "evidence_coverage": 0.0,
+                "sentences": [], "model": _model_hint or "offline",
+                "error": str(e), "degraded": True}
+
     # 构造脱敏上下文
     redacted_ctx = build_redacted_context(findings, policy)
 

@@ -24,7 +24,8 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.validate_ontology import validate_ontology, validate_schema  # noqa: E402
 
-SCHEMA_FILES = ["objects", "links", "bindings", "actions", "functions", "rules"]
+SCHEMA_FILES = ["objects", "links", "bindings", "actions", "functions",
+                "rules", "policies", "views"]
 
 
 class TestSchemas(unittest.TestCase):
@@ -53,6 +54,54 @@ class TestSchemas(unittest.TestCase):
         # 直接测 validate_ontology 对 default pack 应通过
         errors = validate_ontology("default")
         self.assertEqual(errors, [], f"default pack 校验失败：{errors}")
+
+    def test_ac3_adj_views_policies_schema_reject_bad(self):
+        """REQ-019/046 覆盖面：views/policies schema 必须拒绝坏实例（写错即 CI 失败）"""
+        from jsonschema import Draft7Validator
+
+        def load_schema(name: str) -> dict:
+            return json.loads(
+                (ROOT / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8"))
+
+        views_schema = load_schema("views")
+        bad_views = [
+            # roles 含非法角色
+            {"schema_version": 2, "views": [{"name": "v1", "base_object": "person",
+             "properties": ["person_id"], "roles": ["黑客"]}]},
+            # 缺必填 base_object
+            {"schema_version": 2, "views": [{"name": "v1",
+             "properties": ["person_id"], "roles": ["正兵"]}]},
+            # properties 空数组
+            {"schema_version": 2, "views": [{"name": "v1", "base_object": "person",
+             "properties": [], "roles": ["正兵"]}]},
+            # 越界字段（additionalProperties=false）
+            {"schema_version": 2, "views": [{"name": "v1", "base_object": "person",
+             "properties": ["person_id"], "roles": ["正兵"], "evil": 1}]},
+            # schema_version 错
+            {"schema_version": 99, "views": []},
+        ]
+        for inst in bad_views:
+            errs = list(Draft7Validator(views_schema).iter_errors(inst))
+            self.assertTrue(errs, f"views 坏实例应被 schema 拒绝：{inst}")
+
+        pol_schema = load_schema("policies")
+        bad_pols = [
+            # 缺必填 link_policies
+            {"schema_version": 1, "object_policies": []},
+            # min_clearance 越界（0-4）
+            {"schema_version": 1,
+             "object_policies": [{"object": "person", "roles": ["正兵"],
+                                  "min_clearance": 9}],
+             "link_policies": []},
+            # property_policies mask 非法枚举
+            {"schema_version": 1, "object_policies": [], "link_policies": [],
+             "property_policies": [{"object": "person", "property": "id_no",
+                                    "default": "deny", "allow_roles": ["主办"],
+                                    "mask": "weird"}]},
+        ]
+        for inst in bad_pols:
+            errs = list(Draft7Validator(pol_schema).iter_errors(inst))
+            self.assertTrue(errs, f"policies 坏实例应被 schema 拒绝：{inst}")
 
     def test_ac4_pr_impact_report(self):
         """AC4: pr_impact.py 生成报告"""

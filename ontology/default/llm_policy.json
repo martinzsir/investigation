@@ -1,9 +1,11 @@
 {
   "schema_version": 2,
   "pack": "default",
-  "description": "LLM 使用策略（REQ-038）：内核纯离线。network=isolated 拒绝一切模型调用（allowed_models 白名单仅在显式启用出网时生效，isolated 下双保险）；出网文本必须脱敏（证件/手机号遮蔽、精确轨迹与通话正文整段丢弃、人名 tokenize）；prompt 不留存、原始上下文永不入库；LLM 不可用时仅允许确定性计算（fallback=deterministic_only）。",
+  "description": "LLM 使用策略（REQ-038）：内核纯离线。network=isolated 拒绝一切模型调用（allowed_models 白名单仅在显式启用出网时生效，isolated 下双保险）；出网文本必须脱敏（证件/手机号遮蔽、精确轨迹与通话正文整段丢弃、人名 tokenize）；prompt 不留存、原始上下文永不入库；LLM 不可用时仅允许确定性计算（fallback=deterministic_only）。llm_enabled 为 REQ-040 一键总开关（false=关闭全部 LLM 能力，草案器零模型调用并回落确定性路径，降级落 llm_call_log+AuditChain）；mode=shadow 影子模式：LLM 草案只产 draft 提案/日志/审计，永不进入生产 finding 集合、不写语义层。",
   "network": "isolated",
   "allowed_models": ["text-embedding-v3", "qwen-plus"],
+  "llm_enabled": true,
+  "mode": "shadow",
   "pii_redaction": {
     "id_card": "redact",
     "phone": "redact",

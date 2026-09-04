@@ -68,6 +68,16 @@ def plan_query(
     from core.llm.redact import load_llm_policy
     policy = policy or load_llm_policy(pack)
 
+    # REQ-040：一键降级开关——关闭时零模型调用，落审计后静默回落（AC1/AC4）
+    from core.llm.fallback import ensure_llm_capability, LLMDegraded
+    _model_hint = getattr(llm_client, "model", None)
+    try:
+        ensure_llm_capability(conn, ctx, policy, model=_model_hint,
+                              source="plan_query")
+    except LLMDegraded as e:
+        return {"ok": False, "plan": None, "model": _model_hint or "offline",
+                "error": str(e), "degraded": True}
+
     spec = load_pack(pack)
     func_names = sorted(spec.functions.keys())
 

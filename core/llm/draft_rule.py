@@ -64,6 +64,19 @@ def draft_rule(
     from core.llm.redact import load_llm_policy
     policy = policy or load_llm_policy(pack)
 
+    # REQ-040：一键降级开关——llm_enabled=false 时零模型调用、零提案写入，
+    # 落 llm_call_log + AuditChain 后静默回落确定性路径（degraded 标记，AC1/AC4）
+    from core.llm.fallback import ensure_llm_capability, LLMDegraded
+    _model_hint = getattr(llm_client, "model", None)
+    try:
+        ensure_llm_capability(conn, ctx, policy, model=_model_hint,
+                              source="draft_rule")
+    except LLMDegraded as e:
+        return {"ok": False, "proposal_id": None, "candidate": None,
+                "model": _model_hint or "offline", "error": str(e),
+                "degraded": True,
+                "provenance": {"question": question, "degraded": True}}
+
     # 构造脱敏上下文
     redacted_ctx = build_redacted_context(findings_context or [], policy)
 

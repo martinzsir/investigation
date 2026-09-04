@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT))
 from jsonschema import Draft7Validator  # noqa: E402
 
 
-SCHEMA_FILES = ["objects", "links", "bindings", "actions", "functions", "rules"]
+SCHEMA_FILES = ["objects", "links", "bindings", "actions", "functions",
+                "rules", "policies", "views"]
 
 
 def validate_schema(instance_path: Path, schema_path: Path) -> list[str]:

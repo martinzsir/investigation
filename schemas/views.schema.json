@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "views.schema.json",
+  "title": "Ontology Object Views (REQ-046 按角色只读投影)",
+  "description": "视图声明：SELECT over obj_<base_object> 的列子集 + 角色授权，物化为 DuckDB VIEW v_<name>，不复制数据、不复制权限事实（AC2：策略仍由 PolicyEngine 在读时执行；读取唯一入口 OntologyReadGateway.view()，AC4）。文件缺失时 build_standard_views 自动补齐标准视图（AC3）。语义交叉校验（base_object 必须在 objects.json 声明、properties 必须是该对象声明属性 ∪ {pk, name_property} 子集、roles 与 core.access.ROLE_RANK 同源、视图名不重复）由 core.views.load_views 装载期硬失败（AC5）。",
+  "type": "object",
+  "required": ["schema_version", "views"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "base_object", "properties", "roles"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z_][a-z0-9_]*$",
+            "description": "视图名（合法标识符，物化为 v_<name>）"
+          },
+          "base_object": {
+            "type": "string",
+            "pattern": "^[a-z_][a-z0-9_]*$",
+            "description": "基对象（必须在 objects.json 声明；装载期交叉校验）"
+          },
+          "description": {"type": "string"},
+          "properties": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^[a-z_][a-z0-9_]*$", "minLength": 1},
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "投影列子集（⊆ base_object 声明属性 ∪ {pk, name_property}；装载期交叉校验）"
+          },
+          "roles": {
+            "type": "array",
+            "items": {"enum": ["见习", "正兵", "偏将", "主办", "human", "system"]},
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "授权角色（与 core.access.ROLE_RANK 同源）"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

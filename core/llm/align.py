@@ -56,6 +56,17 @@ def align_entities(
     from core.llm.redact import load_llm_policy
     policy = policy or load_llm_policy(pack)
 
+    # REQ-040：一键降级开关——关闭时零模型调用，落审计后静默回落（AC1/AC4）
+    from core.llm.fallback import ensure_llm_capability, LLMDegraded
+    _model_hint = getattr(llm_client, "model", None)
+    try:
+        ensure_llm_capability(conn, ctx, policy, model=_model_hint,
+                              source="align_entities")
+    except LLMDegraded as e:
+        return {"ok": False, "reviews": [], "needs_human_review": True,
+                "auto_merged": 0, "model": _model_hint or "offline",
+                "error": str(e), "degraded": True}
+
     # AC5: 脱敏实体信息后才发送
     redacted_entities = redact_payload(entities, policy)
 
