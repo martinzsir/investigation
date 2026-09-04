@@ -274,6 +274,7 @@ def build_ontology(conn, pack: str = "default") -> dict:
     conn.execute("BEGIN TRANSACTION")
     try:
         # ---- 1) Object 物化（runtime 对象跳过；每个非 runtime 对象必有 binding）----
+        snap_batches = []   # REQ-008：(obj_type, dataset, cols, rows) 与 source_rows 同源
         for otype in spec.objects:
             if otype.runtime:
                 continue
@@ -289,6 +290,8 @@ def build_ontology(conn, pack: str = "default") -> dict:
             _insert_object_rows(conn, otype, same, rest_cols, cols,
                                 rows, keys, src_table)
             stats["objects"][otype.name] = len(rows)
+            if src_table:
+                snap_batches.append((otype.name, src_table, cols, rows))
 
         # ---- 2) Link 物化（runtime 链接跳过；声明边属性与输出列对账）----
         for ltype in spec.links:
@@ -341,6 +344,11 @@ def build_ontology(conn, pack: str = "default") -> dict:
     from core.ontology_version import compute_version, record_version
     ver = compute_version(conn, pack, spec)
     record_version(conn, ver)
+
+    # ---- 5) REQ-008：源行内容寻址归档（全量 = bootstrap，不继承旧索引）----
+    from core.row_uri import snapshot_source_rows, BOOTSTRAP_PARTITION
+    stats["row_snapshot"] = snapshot_source_rows(
+        conn, ver.build_id, snap_batches, partition=BOOTSTRAP_PARTITION)
 
     return stats
 
@@ -618,6 +626,7 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     conn.execute("BEGIN TRANSACTION")
     try:
         conn.execute(f"DROP TABLE IF EXISTS {_STAGE}")
+        snap_batches = []   # REQ-008：(obj_type, dataset, cols, rows) 与 source_rows 同源
         # ---- 1) 对象：重算 binding → 暂存 → 行级 diff ----
         for name in plan.affected_objects:
             otype = next((o for o in spec.objects if o.name == name), None)
@@ -644,6 +653,8 @@ def materialize_changed(conn, plan, *, pack: str = "default",
             stats["objects"][name] = conn.execute(
                 f"SELECT COUNT(*) FROM obj_{name}").fetchone()[0]
             stats["rewritten_rows"] += ins + dele
+            if src_table:
+                snap_batches.append((name, src_table, cols, rows))
 
         # ---- 2) 链接：重算 build_sql → 暂存 → 行级 diff ----
         for name in plan.affected_links:
@@ -691,9 +702,19 @@ def materialize_changed(conn, plan, *, pack: str = "default",
         raise
 
     # ---- 3) 推进版本时钟 ----
+    from core.ontology_version import current_version
+    prev = current_version(conn, pack)   # 记录新版本前的上一版（REQ-008 索引用）
     ver = compute_version(conn, pack, spec)
     record_version(conn, ver)
     stats["build_id"] = ver.build_id
+
+    # ---- 3.5) REQ-008：源行内容寻址归档（增量；按对象类型粒度继承上版本索引）----
+    if snap_batches:
+        from core.row_uri import snapshot_source_rows
+        stats["row_snapshot"] = snapshot_source_rows(
+            conn, ver.build_id, snap_batches,
+            partition=plan.partition or "incremental",
+            prev_build_id=prev.build_id if prev else None)
 
     # ---- 4) 事件：物化完成（空影响集不产生事件，见 plan mode=skip）----
     if bus is not None:

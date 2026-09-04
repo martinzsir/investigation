@@ -45,6 +45,7 @@ class RebuildPlan:
     mode: str = "incremental"                     # skip | incremental | batch
     estimated_rows: int = 0                       # 预估重写行数
     one_hop_neighbors: bool = True
+    partition: str = ""                           # REQ-008：触发分区（partition_id；seed/review 为空）
     elapsed_ms: float = 0.0
 
     def is_empty(self) -> bool:
@@ -63,6 +64,7 @@ class RebuildPlan:
             "affected_links": self.affected_links,
             "affected_rules": self.affected_rules,
             "one_hop_neighbors": self.one_hop_neighbors,
+            "partition": self.partition,
         }
 
 
@@ -146,12 +148,15 @@ def _link_referenced_objects(spec, ltype, lb) -> set[str]:
 def plan_from_seeds(conn, seeds: dict[str, set[str]], *,
                     pack: str = "default", reason: str = "seed",
                     batch_threshold: int = DEFAULT_BATCH_THRESHOLD,
-                    include_objects: "list[str] | None" = None) -> RebuildPlan:
+                    include_objects: "list[str] | None" = None,
+                    partition: str = "") -> RebuildPlan:
     """从显式种子主键出发计算影响范围（review 回边 / 人工触发用）。
 
     seeds: {对象名: {主键, ...}}，如 {"person": {"person_xxx"}}。
     include_objects: 声明级必受影响对象（即使尚无种子主键——如新数据产生的
         全新名字/事件尚未物化），其依赖链接一并纳入重物化。
+    partition: REQ-008 源行归档的触发分区标识（plan_from_partition 传
+        partition_id；seed/review 触发留空，归档侧回落 "incremental"）。
     """
     t0 = time.perf_counter()
     spec = load_pack(pack)
@@ -159,7 +164,8 @@ def plan_from_seeds(conn, seeds: dict[str, set[str]], *,
     seed_pks: dict[str, set[str]] = {
         k: set(v) for k, v in seeds.items() if k in valid_objs and v
     }
-    plan = RebuildPlan(reason=reason, pack=pack, seed_pks=seed_pks)
+    plan = RebuildPlan(reason=reason, pack=pack, seed_pks=seed_pks,
+                       partition=partition)
 
     affected: dict[str, set[str]] = {k: set(v) for k, v in seed_pks.items()}
     for name in include_objects or []:
@@ -316,7 +322,8 @@ def plan_from_partition(conn, part, *, pack: str = "default",
     # plan_from_seeds 内一并标记重物化；mode（skip/incremental/batch）由此统一判定。
     return plan_from_seeds(conn, seeds, pack=pack, reason="partition",
                            batch_threshold=batch_threshold,
-                           include_objects=direct)
+                           include_objects=direct,
+                           partition=part.partition_id)
 
 
 # ----------------------------------------------------------------------

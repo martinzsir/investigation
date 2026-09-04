@@ -282,8 +282,12 @@ class ProposalStore:
         self.pack = pack
         conn.execute(_DDL)
 
-    def submit(self, proposal: dict) -> str:
-        """校验全过才入库；返回 proposal_id。author 必须具名（拒 system/ai）。"""
+    def submit(self, proposal: dict, actor: str | None = None) -> str:
+        """校验全过才入库；返回 proposal_id。author 必须具名（拒 system/ai）。
+
+        actor（如 "agent:<id>"）为实际提交代理身份：提供时落 AuditChain
+        （REQ-021-write AC3，agent 提交可审计）；None 时不落链（兼容既有调用）。
+        """
         errors = validate_proposal(proposal, pack=self.pack, conn=self.conn)
         if errors:
             raise ProposalValidationError(errors)
@@ -305,6 +309,20 @@ class ProposalStore:
              json.dumps(proposal, ensure_ascii=False, default=str),
              author, _dt.datetime.now().isoformat(timespec="seconds"),
              expires])
+        if actor:
+            from core.audit import AuditChain
+            chain = AuditChain(self.conn)
+            event_id = chain.append(
+                operator=author,
+                before=None,
+                after={"proposal_id": pid, "kind": proposal["kind"],
+                       "status": "draft", "actor": str(actor),
+                       "note": "提案提交：永不自动生效，须人审 decide"},
+                source_row_ids=[pid],
+                ontology_version=chain.current_ontology_version())
+            self.conn.execute(
+                "UPDATE proposal SET audit_event_id = ? WHERE proposal_id = ?",
+                [event_id, pid])
         return pid
 
     def get(self, proposal_id: str) -> dict | None:

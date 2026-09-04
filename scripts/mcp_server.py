@@ -33,6 +33,7 @@ scripts/mcp_server.py
 from __future__ import annotations
 
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -283,18 +284,50 @@ def _tools() -> list[dict]:
         {
             "name": "action.status",
             "description": (
-                "两阶段动作只读（REQ-021）：按 action_id 查询提案状态机"
-                "（proposed/approved/dispatching/pending_receipt/confirmed/failed/dead_letter）、"
-                "审批人、尝试次数、外部业务号与回写发件箱记录。"
+                "两阶段动作只读（REQ-021）：按 action_id 查询状态机。"
+                "act_ 前缀走动作执行器（proposed/approved/dispatching/pending_receipt/"
+                "confirmed/failed/dead_letter、审批人、尝试次数、外部业务号与回写发件箱记录）；"
+                "pp- 前缀走提案存储（draft/approved/rejected，Agent 提案审批态）。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "action_id": {"type": "string", "description": "动作提案 ID（act_ 前缀）"},
+                    "action_id": {"type": "string", "description": "动作提案 ID（act_ 前缀）或提案 ID（pp- 前缀）"},
                 },
                 "required": ["action_id"],
             },
             "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "review.submit_proposal",
+            "description": (
+                "人审工作台写轨（REQ-021-write）：Agent 提交规则草案/参数草案/对齐复核/解释提案。"
+                "服务端执行注入清洗（白名单字段）+ 七项硬校验（函数白名单/参数类型/证据URI/禁写回/禁状态变更），"
+                "只创建 status=draft 的提案，永不自动生效、绝不改变线索状态；审批走人工 decide。"
+                "Agent 唯一写通道：agent 身份不得调用 clue_transition。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "代理实例标识（小写字母/数字/-/_，2-32 位）；会话须以 agent:<同 id> 声明身份",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["rule_draft", "parameter_draft", "alignment_review", "explanation"],
+                        "description": "提案类型",
+                    },
+                    "candidate": {
+                        "type": "object",
+                        "description": "提案候选体（字段受白名单清洗，越界字段丢弃并回告）",
+                    },
+                    "case_id": {"type": "string", "description": "案件 ID，默认 default"},
+                    "constraints": {"type": "object", "description": "约束（如 expires_at）"},
+                },
+                "required": ["agent_id", "kind", "candidate"],
+            },
+            "annotations": {"readOnlyHint": False},
         },
     ]
 
@@ -508,6 +541,16 @@ def tool_clue_transition(args: dict) -> dict:
             "ok": False,
             "error": f"operator 必须是具名正兵，拒绝 {operator!r}。"
                      f"禁止使用 {sorted(_FORBIDDEN_OPERATORS)} 等占位名",
+        })
+
+    # 红线 1b（REQ-021-write AC4）：Agent 唯一写通道是 review.submit_proposal，
+    # 线索状态迁移必须走人工 decide —— 工具白名单硬红线，不依赖角色配置。
+    if operator.startswith("agent:"):
+        return _redline({
+            "ok": False,
+            "error": f"Agent 身份 {operator!r} 不得调用 clue_transition 直接改状态"
+                     "（REQ-021 AC4 工具白名单）。Agent 唯一写通道为 "
+                     "review.submit_proposal；线索状态迁移须人工审批 decide。",
         })
 
     # REQ-009：写操作主体一致性 + human 终态角色门槛
@@ -725,13 +768,41 @@ def tool_review_get_evidence(args: dict) -> dict:
 
 
 def tool_action_status(args: dict) -> dict:
-    """两阶段动作查询：提案状态 / 审批 / 回执（只读）。"""
+    """两阶段动作/提案查询：act_ 走 ActionExecutor，pp- 走 ProposalStore（只读）。"""
     from core import Store
-    from core.action_executor import ActionExecutor, ActionRequestNotFound
 
     action_id = args.get("action_id")
     if not action_id:
         return _redline({"ok": False, "error": "必填参数 action_id"})
+
+    # REQ-021-write：pp- 前缀为 LLM/Agent 提案，走 ProposalStore 状态机
+    if str(action_id).startswith("pp-"):
+        store = Store()
+        try:
+            from core.proposal import ProposalStore
+            ps = ProposalStore(store.conn)
+            rec = ps.get(action_id)
+            if rec is None:
+                return _redline({"ok": False, "error": f"提案不存在：{action_id}"})
+            return _redline({
+                "ok": True, "readonly": True, "kind": "proposal",
+                "proposal_id": rec["proposal_id"],
+                "proposal_kind": rec["kind"],
+                "status": rec["status"],
+                "author": rec["author"],
+                "case_id": rec["case_id"],
+                "created_at": rec["created_at"],
+                "expires_at": rec["expires_at"],
+                "decided_by": rec["decided_by"],
+                "decided_at": rec["decided_at"],
+                "decision_reason": rec["decision_reason"],
+                "audit_event_id": rec["audit_event_id"],
+                "note": "提案永不自动生效；draft→approved/rejected 须人工 decide",
+            })
+        finally:
+            store.close()
+
+    from core.action_executor import ActionExecutor, ActionRequestNotFound
     store = Store()
     try:
         ex = ActionExecutor(store, access=_access())
@@ -756,6 +827,100 @@ def tool_action_status(args: dict) -> dict:
         store.close()
 
 
+# Agent 代理实例标识：小写字母/数字开头，2-32 位
+_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+_PROPOSAL_KINDS = ("rule_draft", "parameter_draft", "alignment_review", "explanation")
+
+
+def tool_review_submit_proposal(args: dict) -> dict:
+    """REQ-021-write：Agent 提交提案（唯一写通道）。
+
+    只创建 status=draft 提案：过注入扫描 → 白名单清洗 → 状态变更拦截 →
+    ProposalStore 七校验入库；绝不触 ActionExecutor/DisposalBoard，不改线索状态。
+    """
+    import uuid as _uuid
+    from core import Store
+    from core.llm import guard
+    from core.proposal import ProposalStore, ProposalValidationError
+
+    agent_id = str(args.get("agent_id", "")).strip()
+    kind = args.get("kind")
+    candidate = args.get("candidate")
+
+    if not _AGENT_ID_RE.match(agent_id):
+        return _redline({"ok": False, "error":
+                         "agent_id 必填且须匹配 ^[a-z0-9][a-z0-9_-]{1,31}$（具名代理实例）"})
+    if agent_id.lower() in _FORBIDDEN_OPERATORS:
+        return _redline({"ok": False,
+                         "error": f"agent_id={agent_id!r} 是泛称占位名，须使用具名代理实例 ID"})
+    if kind not in _PROPOSAL_KINDS:
+        return _redline({"ok": False, "error": f"kind 必须是 {_PROPOSAL_KINDS} 之一"})
+    if not isinstance(candidate, dict) or not candidate:
+        return _redline({"ok": False, "error": "candidate 必须是非空对象"})
+
+    author = f"agent:{agent_id}"
+    ctx = _access()
+    if not ctx.is_system and ctx.operator != author:
+        return _redline({
+            "ok": False,
+            "error": f"会话主体 {ctx.operator!r}(role={ctx.role}) 不得以 {author!r} 名义"
+                     "提交提案（REQ-009 主体一致性：Agent 会话须以 agent:<同 id> 声明身份）",
+        })
+
+    # ① 提示注入扫描：候选体序列化后高危命中整单拒绝（REQ-039 接线）
+    hits = guard.scan_text(json.dumps(candidate, ensure_ascii=False, default=str))
+    high = [h for h in hits if h.severity == "high"]
+    if high:
+        return _redline({
+            "ok": False,
+            "error": "候选体检出提示注入高危模式，整单隔离拒绝（REQ-039）",
+            "quarantined_patterns": [h.pattern_id for h in high],
+            "excerpt": high[0].excerpt,
+        })
+
+    # ② 白名单字段清洗（越界字段丢弃回告）
+    clean, dropped = guard.sanitize_candidate(candidate, kind)
+
+    # ③ 状态变更指令拦截（"置为已立案/跳过复核"等）
+    try:
+        guard.assert_no_status_change(clean, kind)
+    except PermissionError as e:
+        return _redline({"ok": False, "error": f"候选体含状态变更指令，拒绝：{e}"})
+
+    envelope = {
+        "proposal_id": "pp-" + _uuid.uuid4().hex[:12],   # 服务端生成，防伪造/重复
+        "kind": kind,
+        "case_id": str(args.get("case_id") or "default"),
+        "author": author,
+        "candidate": clean,
+    }
+    if isinstance(args.get("constraints"), dict):
+        envelope["constraints"] = args["constraints"]
+
+    store = Store()
+    try:
+        ps = ProposalStore(store.conn)
+        pid = ps.submit(envelope, actor=author)
+    except ProposalValidationError as e:
+        return _redline({"ok": False, "error": "提案校验未通过", "validation_errors": e.args[0]})
+    except PermissionError as e:
+        return _redline({"ok": False, "error": str(e)})
+    except Exception as e:
+        return _redline({"ok": False, "error": f"提案入库失败：{e}"})
+    finally:
+        store.close()
+
+    return _redline({
+        "ok": True,
+        "proposal_id": pid,
+        "status": "draft",
+        "kind": kind,
+        "author": author,
+        "dropped_fields": dropped,
+        "readonly_note": "提案已入库待审；永不自动生效，审批走人工 decide（action.status 可查）",
+    })
+
+
 _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "scan_anomaly": tool_scan_anomaly,
     "cross_jian": tool_cross_jian,
@@ -769,6 +934,7 @@ _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "review.list_pending": tool_review_list_pending,
     "review.get_evidence": tool_review_get_evidence,
     "action.status": tool_action_status,
+    "review.submit_proposal": tool_review_submit_proposal,
 }
 
 
