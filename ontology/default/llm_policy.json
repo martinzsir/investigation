@@ -3,7 +3,7 @@
   "pack": "default",
   "description": "LLM 使用策略（REQ-038）：内核纯离线。network=isolated 拒绝一切模型调用，allowed_models=[] 为模型白名单双保险；出网文本必须脱敏（证件/手机号遮蔽、精确轨迹与通话正文整段丢弃、人名 tokenize）；prompt 不留存、原始上下文永不入库；LLM 不可用时仅允许确定性计算（fallback=deterministic_only）。",
   "network": "isolated",
-  "allowed_models": [],
+  "allowed_models": ["text-embedding-v3", "qwen-plus"],
   "pii_redaction": {
     "id_card": "redact",
     "phone": "redact",

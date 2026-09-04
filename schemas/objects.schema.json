@@ -20,7 +20,7 @@
           "name_property": {"type": "string"},
           "properties": {
             "type": "object",
-            "additionalProperties": {"enum": ["string", "integer", "decimal", "date", "boolean"]}
+            "additionalProperties": {"enum": ["string", "integer", "decimal", "date", "boolean", "timestamp", "duration_days", "enum", "json"]}
           },
           "runtime": {"type": "boolean"}
         },

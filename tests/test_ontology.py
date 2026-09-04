@@ -593,7 +593,7 @@ class TestTypedMaterialization(unittest.TestCase):
         d = self._col_types("obj_decision")
         self.assertEqual(list(d),
                          ["decision_id", "decision_type", "clue_id", "legal_basis",
-                          "operator", "note", "created_at", "source_rows"])
+                          "operator", "note", "created_at", "metadata", "source_rows"])
         self.assertTrue(all(t == "VARCHAR" for t in d.values()))
         l = self._col_types("lnk_decision_for")
         self.assertEqual(list(l), ["decision_id", "clue_id"])

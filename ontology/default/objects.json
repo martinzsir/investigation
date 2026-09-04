@@ -105,12 +105,16 @@
       "runtime": true,
       "_note": "运行期对象：不由编译器从 L2 物化。属性声明即 DDL——Action 执行器 file 动作时由 ensure_runtime_tables 建表（obj_decision / lnk_decision_for），列序与 INSERT 对齐。",
       "properties": {
-        "decision_type": "string",
+        "decision_type": "enum",
         "clue_id": "string",
         "legal_basis": "string",
         "operator": "string",
         "note": "string",
-        "created_at": "string"
+        "created_at": "string",
+        "metadata": "json"
+      },
+      "enum_values": {
+        "decision_type": ["立案", "不予立案", "移送管辖", "补充侦查", "撤销"]
       }
     },
     {
@@ -139,7 +143,9 @@
         "raw_name": "string",
         "info_text": "string",
         "pub_date": "date",
-        "source_name": "string"
+        "source_name": "string",
+        "crawled_at": "timestamp",
+        "retention_days": "duration_days"
       }
     }
   ]

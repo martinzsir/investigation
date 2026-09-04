@@ -309,10 +309,10 @@ class ActionExecutor:
             f"legal_basis:{params.get('legal_basis', '')}",
         ])
         conn.execute(
-            "INSERT INTO obj_decision VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO obj_decision VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [decision_id, spec.target_status, clue.clue_id,
              params.get("legal_basis", ""), operator, params.get("note", ""),
-             created_at, src],
+             created_at, params.get("metadata"), src],
         )
         conn.execute(
             "INSERT INTO lnk_decision_for VALUES (?, ?)",

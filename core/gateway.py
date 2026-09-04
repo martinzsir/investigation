@@ -11,6 +11,13 @@ OntologyReadGateway —— 语义层唯一读入口（REQ-002）。
   - 每次读取经策略链，explain() 可审计：plan/versions/applied_policies。
 
 检测器/图库/MCP 读语义层一律走本网关；写操作唯一入口仍是 ActionExecutor。
+
+REQ-046 Object Views（按角色投影）：
+  - 视图 v_<name> 物化为 DuckDB VIEW，SELECT 只引用 obj_<base> 的列子集；
+  - 读视图唯一入口是本网关 view(name) 方法——直查 v_* 不在 Store.query 安全名单
+    内，等同绕过网关的违规行为（AC4）；
+  - 视图读时仍经 PolicyEngine.check_object + apply_row_masks（AC2：权限不复制）；
+  - 视图按角色授权：roles 名单外被拒（AC1）。
 """
 from __future__ import annotations
 
@@ -18,6 +25,9 @@ from core.access import AccessContext, system_context
 from core.ontology_loader import load_pack
 from core.ontology_version import current_version, freshness
 from core.policy import PolicyEngine
+from core.views import (
+    ViewAccessDenied, ViewNotFoundError, all_views,
+)
 
 
 class UnknownObjectError(KeyError):
@@ -62,6 +72,8 @@ class OntologyReadGateway:
         spec = load_pack(pack)
         self._object_names = {o.name for o in spec.objects}
         self._link_names = {l.name for l in spec.links}
+        # REQ-046：合并显式声明视图 + 标准视图（标准视图不覆盖显式声明）
+        self._views = all_views(pack)
 
     # ---- 状态 ----
     def materialization_state(self) -> str:
@@ -77,6 +89,7 @@ class OntologyReadGateway:
             "plan": {
                 "declared_objects": sorted(self._object_names),
                 "declared_links": sorted(self._link_names),
+                "declared_views": sorted(self._views),
             },
             "state": fr.state,
             "ontology_version": ver.ontology_version if ver else None,
@@ -111,6 +124,47 @@ class OntologyReadGateway:
         self._policy.check_link(self._access, name)
         self._guard_fresh()
         return self._read_table(f"lnk_{name}")
+
+    def view(self, name: str) -> list[dict]:
+        """REQ-046 AC1/AC2/AC4：按角色读取视图投影。
+
+        - 视图必须已声明（load_views + build_standard_views）——未声明 raise
+          ViewNotFoundError；
+        - 角色必须在 view.roles 内（AC1：按角色投影；system 旁路）；
+        - 视图读经 base_object 的对象级策略（AC2：权限不复制，读时执行）；
+        - 视图读唯一入口，不绕过 REQ-002 网关（AC4：v_* 不在 Store.query
+          安全名单内，直查 v_* 视同违规）；
+        - 属性级遮蔽仍按 base_object 执行（如 tipoff 视图读到 content_raw
+          仍会被 mask）。
+        """
+        if name not in self._views:
+            raise ViewNotFoundError(
+                f"未声明的视图：{name!r}（可用 {sorted(self._views)}）")
+        view = self._views[name]
+        # 角色授权（system 旁路）
+        if not self._access.is_system and self._access.role not in view.roles:
+            raise ViewAccessDenied(
+                f"角色 {self._access.role!r} 无权访问视图 {name!r}"
+                f"（需 roles={sorted(view.roles)}）"
+                f"——operator={self._access.operator}")
+        # AC2：权限仍由 base_object 策略执行（不复制到视图）
+        self._policy.check_object(self._access, view.base_object)
+        self._guard_fresh()
+        rows = self._read_table(f"v_{name}")
+        # 属性级遮蔽仍按 base_object 执行（apply_row_masks 只遮蔽 base_object
+        # 已声明的敏感属性——视图投影列子集时不影响其他列）
+        return self._policy.apply_row_masks(self._access, view.base_object, rows)
+
+    def view_spec(self, name: str):
+        """返回视图声明（不含数据；调试/审计用）。"""
+        if name not in self._views:
+            raise ViewNotFoundError(
+                f"未声明的视图：{name!r}（可用 {sorted(self._views)}）")
+        return self._views[name]
+
+    def list_views(self) -> list[str]:
+        """列出所有可用视图名（显式声明 + 标准）。"""
+        return sorted(self._views)
 
     def count(self, kind: str, name: str) -> int:
         """聚合读取：行数（检测器常用，避免把明细搬进上下文——禁令 2）。"""

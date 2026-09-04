@@ -48,12 +48,17 @@ from core.registry import ClueStatusMachine
 # ----------------------------------------------------------------------
 
 # 属性值类型 → DuckDB 列类型（结构化 source 编译期 CAST 同口径）
+# REQ-041 扩展：timestamp / duration_days / enum / json
 TYPE_SQL = {
     "string": "VARCHAR",
     "integer": "BIGINT",
     "decimal": "DOUBLE",
     "date": "DATE",
     "boolean": "BOOLEAN",
+    "timestamp": "TIMESTAMP",       # REQ-041: 精确到秒的时间点
+    "duration_days": "INTEGER",    # REQ-041: 天数差值，支持比较运算
+    "enum": "VARCHAR",             # REQ-041: 枚举值，装载期校验白名单
+    "json": "VARCHAR",             # REQ-041: JSON 文本，DuckDB 有 JSON 函数
 }
 TYPE_NAMES = tuple(TYPE_SQL)
 OBJECT_KINDS = ("entity", "event")   # entity=实体型（按 name_property 发代理键）；event=事件型（按行）
@@ -69,6 +74,7 @@ class ObjectType:
     name_property: str                 # 身份/展示属性名（旧 name_col；event 仅作列序）
     properties: dict[str, str] = field(default_factory=dict)  # 属性名 → 值类型（TYPE_NAMES）
     runtime: bool = False              # True=运行期对象（Action 副作用创建，编译器不物化）
+    enum_values: dict[str, list[str]] = field(default_factory=dict)  # REQ-041: enum 属性 → 允许值白名单
 
 
 @dataclass
@@ -314,6 +320,22 @@ def build_ontology(conn, pack: str = "default") -> dict:
 
     # ---- 3) runtime 对象/链接：按类型声明建空表（IF NOT EXISTS，不碰既有数据）----
     ensure_runtime_tables(conn, spec)
+
+    # ---- 3.5) REQ-046 物化 Object Views（v_<name>）----
+    # 视图 = SELECT over obj_<base> 的列子集；runtime 对象若 Action 副作用
+    # 未建表则按 optional 跳过（与 lnk_* 编译失败跳过同口径）。
+    try:
+        from core.views import all_views, ViewMaterializer
+        views = all_views(pack)
+        vm = ViewMaterializer(conn)
+        view_status = vm.materialize_all(views, skip_missing_base=True)
+        stats["views"] = {
+            n: ("ok" if s != "_skipped" else "skipped")
+            for n, s in view_status.items()
+        }
+    except Exception as e:
+        stats["views"] = {}
+        stats["skipped"].append(f"views(物化失败已跳过: {type(e).__name__}: {e})")
 
     # ---- 4) 记录版本时钟（REQ-001）：每次 build 写一条 is_current=true ----
     from core.ontology_version import compute_version, record_version

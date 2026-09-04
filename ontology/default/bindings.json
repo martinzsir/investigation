@@ -79,7 +79,9 @@
           "raw_name": "主体",
           "info_text": "公开信息",
           "pub_date": "发布日期",
-          "source_name": "来源"
+          "source_name": "来源",
+          "crawled_at": "采集时间",
+          "retention_days": "保留天数"
         }
       }
     }

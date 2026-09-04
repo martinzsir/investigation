@@ -3,10 +3,15 @@ __pycache__/
 *.pyc
 .venv/
 
-# 产物与库文件（可由管线重新生成）
+.github/workflows/
+
+## 产物与库文件（可由管线重新生成）
 investigation.duckdb
 output/
 
 # 游离临时数据库（不入库）
 data/t3.sqlite
+
+.trae/documents/map/impl/
+.trae/documents/profile/impl/
 

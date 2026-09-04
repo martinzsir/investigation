@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-046 Object Views（按角色投影）。视图 = SELECT over obj_<base_object> 的列子集 + 角色授权；物化为 DuckDB VIEW v_<name>，不复制数据、不复制权限事实（AC2：策略仍由 PolicyEngine 在读时执行）。读视图唯一入口是 OntologyReadGateway.view(name)（AC4：不绕过 REQ-002 网关）；v_* 不在 Store.query 的安全表白名单内。文件缺失 → load_views 返回空字典 + build_standard_views 自动补齐每个对象的标准视图（AC3）。loader 校验：base_object 必须在 objects.json 声明、properties 必须是该对象属性子集、roles 与 core.access.ROLE_RANK 同源（AC5）。",
+  "views": [
+    {
+      "name": "person_directory",
+      "base_object": "person",
+      "properties": ["person_id", "raw_name"],
+      "roles": ["见习", "正兵", "偏将", "主办", "human", "system"],
+      "description": "人员花名册视图：仅暴露代理键与姓名（与 person_basic 标准视图同口径，但用于跨案件对账场景）"
+    },
+    {
+      "name": "org_overview",
+      "base_object": "org",
+      "properties": ["org_id", "raw_name", "status"],
+      "roles": ["见习", "正兵", "偏将", "主办", "human", "system"],
+      "description": "组织概览视图：去掉法人/关联等需进一步核实的字段"
+    },
+    {
+      "name": "transaction_audit",
+      "base_object": "transaction",
+      "properties": ["txn_id", "from_raw", "to_raw", "amount", "date"],
+      "roles": ["正兵", "偏将", "主办", "human", "system"],
+      "description": "资金流水审计视图：用于跨案件对账与五间命中溯源"
+    },
+    {
+      "name": "trackpoint_minimal",
+      "base_object": "trackpoint",
+      "properties": ["track_id", "person_raw", "date"],
+      "roles": ["偏将", "主办", "human", "system"],
+      "description": "轨迹最小视图：行踪信息受严格授权，仅暴露必要字段"
+    },
+    {
+      "name": "bid_project_public",
+      "base_object": "bid_project",
+      "properties": ["project_id", "title", "winner_raw", "pub_date"],
+      "roles": ["见习", "正兵", "偏将", "主办", "human", "system"],
+      "description": "招投标公开视图：去掉分管领导字段（内部字段不暴露）"
+    },
+    {
+      "name": "clue_pipeline",
+      "base_object": "clue",
+      "properties": ["clue_id", "status", "last_operator", "updated_at"],
+      "roles": ["见习", "正兵", "偏将", "主办", "human", "system"],
+      "description": "线索处置管线视图：全队可见，用于工作面协作"
+    }
+  ]
+}

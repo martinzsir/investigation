@@ -133,10 +133,34 @@ def _load_objects(path: Path) -> list[ObjectType]:
                 f"{ctx}（{name}）name_property='{name_prop}' 必须是已声明属性，"
                 f"或等于 pk（自引用）")
 
+        # REQ-041 AC2: enum 属性必须有 enum_values 白名单，装载期校验
+        enum_values: dict[str, list[str]] = {}
+        raw_enum = o.get("enum_values", {})
+        if raw_enum:
+            if not isinstance(raw_enum, dict):
+                raise ValueError(f"{ctx}（{name}）enum_values 必须是映射 {{属性名: [允许值]}}")
+            for prop_name, allowed in raw_enum.items():
+                if prop_name not in props or props[prop_name] != "enum":
+                    raise ValueError(
+                        f"{ctx}（{name}）enum_values 中的 '{prop_name}' "
+                        f"不是 enum 类型属性（REQ-041 AC2）")
+                if not isinstance(allowed, list) or not allowed:
+                    raise ValueError(
+                        f"{ctx}（{name}）enum_values['{prop_name}'] "
+                        f"必须是非空列表（REQ-041 AC2）")
+                enum_values[prop_name] = list(allowed)
+        # enum 类型属性必须有 enum_values 声明
+        for p, t in props.items():
+            if t == "enum" and p not in enum_values:
+                raise ValueError(
+                    f"{ctx}（{name}）属性 '{p}' 声明为 enum 但未声明 enum_values"
+                    f"（REQ-041 AC2：enum 属性必须有白名单）")
+
         out.append(ObjectType(
             name=name, title=o.get("title", name), pk=o["pk"], kind=kind,
             name_property=name_prop, properties=dict(props),
             runtime=bool(o.get("runtime", False)),
+            enum_values=enum_values,
         ))
     return out
 

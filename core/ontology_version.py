@@ -145,13 +145,30 @@ def _compute_input_hashes(conn, spec) -> dict[str, str]:
     return hashes
 
 
-def _compute_params_hash(spec) -> str:
-    """sha256(rules.json 的 params + functions.json 的 parameters 拼接)。"""
+def _compute_params_hash(spec, pack: str = "default") -> str:
+    """sha256(rules.json 的 params + functions.json 的 parameters + views.json 声明 拼接)。
+
+    REQ-046 AC5：视图定义纳入版本与 schema 校验——views.json 的声明
+    （name + base_object + properties + roles）参与版本哈希，确保视图
+    声明变更会被版本时钟感知，触发 freshness → STALE。
+    """
     parts: list[str] = []
     for rid, r in sorted(spec.rules.items()):
         parts.append(f"{rid}:{json.dumps(r.params, sort_keys=True, ensure_ascii=False)}")
     for fname, f in sorted(spec.functions.items()):
         parts.append(f"{fname}:{json.dumps(f.parameters, sort_keys=True, ensure_ascii=False)}")
+    # REQ-046：视图声明纳入版本哈希（声明变更 → params_hash 变 → freshness STALE）
+    try:
+        from core.views import all_views
+        views = all_views(pack)
+        for vname in sorted(views):
+            v = views[vname]
+            parts.append(
+                f"view:{vname}:{v.base_object}:"
+                f"{','.join(v.properties)}:{sorted(v.roles)}")
+    except Exception:
+        # views.json 缺失或非法 → 不参与哈希（loader 阶段已硬失败，这里只兜底）
+        pass
     return _sha256("|".join(parts))
 
 
@@ -164,7 +181,7 @@ def compute_version(conn, pack: str, spec) -> OntologyVersion:
     """从 spec + conn 当前状态计算版本快照（不写表）。"""
     source_wm = _compute_source_watermark(conn, spec)
     input_hashes = _compute_input_hashes(conn, spec)
-    params_hash = _compute_params_hash(spec)
+    params_hash = _compute_params_hash(spec, pack)
     return OntologyVersion(
         pack=pack,
         schema_version=2,

@@ -24,7 +24,7 @@ run_tests.py —— 统一测试入口
   policy      REQ-010 对象级/属性级策略（tests.test_policy）
   export      REQ-011 导出权限与审计（tests.test_export_policy）
   action      REQ-012 Action 两阶段提交（tests.test_action_two_phase）
-  writeback   REQ-013 回写适配器+发件箱（tests.test_writeback）
+  writeback   REQ-013/043 回写适配器+发件箱+Console（tests.test_writeback + tests.test_writeback_console）
   reconcile   REQ-014 对账重试死信（tests.test_reconcile）
   reviewloop  REQ-016 review 闭环增量重建（tests.test_review_loop）
   deferred    REQ-017 defer 回捞（tests.test_deferred）
@@ -41,6 +41,9 @@ run_tests.py —— 统一测试入口
   injection   REQ-039 提示注入防护（tests.test_injection）
   caselib     REQ-031 案例库片段沉淀（tests.test_case_library）
   params      REQ-032 参数治理版本/审批/回滚（tests.test_parameters）
+  pack        REQ-044 多案件包与隔离（tests.test_pack）
+  views       REQ-046 Object Views 按角色投影（tests.test_views）
+  benchmarks  REQ-045 性能基准（tests.test_benchmarks）
   e2e         端到端集成（tests.test_run_all）
 
 用法：
@@ -81,7 +84,7 @@ GROUPS = {
     "policy":      ("REQ-010 对象级/属性级策略", [sys.executable, "-m", "unittest", "tests.test_policy"]),
     "export":      ("REQ-011 导出权限与审计", [sys.executable, "-m", "unittest", "tests.test_export_policy"]),
     "action":      ("REQ-012 Action 两阶段提交", [sys.executable, "-m", "unittest", "tests.test_action_two_phase"]),
-    "writeback":   ("REQ-013 回写适配器+发件箱", [sys.executable, "-m", "unittest", "tests.test_writeback"]),
+    "writeback":   ("REQ-013/043 回写适配器+发件箱+Console", [sys.executable, "-m", "unittest", "tests.test_writeback", "tests.test_writeback_console"]),
     "reconcile":   ("REQ-014 对账重试死信", [sys.executable, "-m", "unittest", "tests.test_reconcile"]),
     "reviewloop":  ("REQ-016 review 闭环增量重建", [sys.executable, "-m", "unittest", "tests.test_review_loop"]),
     "deferred":    ("REQ-017 defer 回捞", [sys.executable, "-m", "unittest", "tests.test_deferred"]),
@@ -98,6 +101,12 @@ GROUPS = {
     "injection":   ("REQ-039 提示注入防护", [sys.executable, "-m", "unittest", "tests.test_injection"]),
     "caselib":     ("REQ-031 案例库片段沉淀", [sys.executable, "-m", "unittest", "tests.test_case_library"]),
     "params":      ("REQ-032 参数治理版本/审批/回滚", [sys.executable, "-m", "unittest", "tests.test_parameters"]),
+    "search":      ("REQ-042 语义检索（受控）", [sys.executable, "-m", "unittest", "tests.test_semantic_search"]),
+    "types":       ("REQ-041 类型系统扩展", [sys.executable, "-m", "unittest", "tests.test_type_extension"]),
+    "pack":        ("REQ-044 多案件包与隔离", [sys.executable, "-m", "unittest", "tests.test_pack"]),
+    "views":       ("REQ-046 Object Views 按角色投影", [sys.executable, "-m", "unittest", "tests.test_views"]),
+    "benchmarks":  ("REQ-045 性能基准", [sys.executable, "-m", "unittest", "tests.test_benchmarks"]),
+    "llm":         ("REQ-034~037 LLM 草案/解释/对齐/意图", [sys.executable, "-m", "unittest", "tests.test_llm_draft"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
