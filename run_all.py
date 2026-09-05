@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT))
 # 注：不再把 ROOT.parent 加入 sys.path —— workspace 根存在同名 skills 包会遮蔽本包 skills。
 # core.entity 已改为按绝对路径加载 entity_resolution，无需依赖 sys.path。
 
-from core import Store, skill_invoke, get_registry, lineage, review
+from core import Store, skill_invoke, get_registry, lineage, review, record_dimension_gaps
 from core.entity import run_entity_resolution, apply_org_to_duckdb
 from core.run_health import RunHealth
 from skills.registry_bootstrap import register_all
@@ -240,12 +240,10 @@ def main():
     # 维度覆盖缺口（G-008/009 双轨口径）落 coverage_gap 诊断，进入"健康度"。
     miao_cov = miao.report(ctx["可用数据"])
     _dc = miao_cov.get("dimension_coverage", {})
-    if _dc.get("alarm"):
-        health.record("coverage_gap", "warning",
-                      source="miaosuan:dimension",
-                      reason=_dc.get("alarm_text") or "庙算维度覆盖缺口",
-                      missing=_dc.get("missing"),
-                      empirical_missing=_dc.get("empirical_missing"))
+    # REQ-G-024：声明缺口与实证缺口独立留痕——实证缺口不再被声明轨 alarm 门控，
+    # 声明 100% 但实证缺维时健康度不得报 healthy；source 区分补救动作
+    # （miaosuan:dimension=补假设；miaosuan:dimension:empirical=补数据/查检测器）。
+    record_dimension_gaps(_dc, health)
     # REQ-G-017：规则推翻率超阈告警；REQ-G-018：审计链完备性自检（断链/缺字段/缺号）。
     # 二者均在健康度小节生成前完成留痕。
     try:
@@ -439,6 +437,10 @@ def _build_miaosuan(store, ctx, health=None):
     print(f"  覆盖度：维度 {len(dc['covered'])}/5（{dc['score']:.0%}）"
           f" 数据源 {cov['data_source_coverage']['score']}%"
           f" → {'⚠ ' + dc['alarm_text'] if dc['alarm'] else '无报警'}")
+    # REQ-G-024：实证缺口独立于声明报警，控制台同步可见（否则声明满覆盖时
+    # 上面打印"无报警"，健康度却因实证缺口 degraded，自相矛盾）
+    if dc.get("empirical_alarm"):
+        print(f"  实证覆盖：⚠ {dc['empirical_alarm_text']}")
     print(f"  间类缺口：{cov['jian_coverage']['missing'] or '无'}；"
           f"证据冲突：{len(cov['conflicts'])} 处；"
           f"枚举候选池 {cov['enum']['total_combos']} 组合 → 候补 {cov['enum']['backlog_size']}")

@@ -49,7 +49,9 @@ data/ladybug/*.lbug（L4 图库，可选）
 5. 单源情报不算数，至少 2 类"间"独立指向才升格
 
 ## 五子技能（skills/，Function 的薄编排层，不写 SQL）
-- `skill: miaosuan` 庙算沙盘：假设 ≤5 条，四层覆盖完整性（数据驱动×规则约束×反遗漏×人机协同）
+- `skill: miaosuan` 庙算沙盘：假设 ≤5 条，四层覆盖完整性（数据驱动×规则约束×反遗漏×人机协同）；
+  反遗漏含五维覆盖**双轨报警**——声明轨 ≤80% 报警（G-009）、实证缺口独立报警（G-024，
+  "想到了但没查到"落 `miaosuan:dimension:empirical` 诊断，进健康度小节）
 - `skill: zhi_ji_zhi_bi` 双向画像机：知己强制非空
 - `skill: xu_shi` 虚实扫描：只标反常，不给定性（经规则手册调只读 Function 消费 `obj_*`/`lnk_*`）
 - `skill: qi_zheng` 奇正分工器：奇兵拓线 / 正兵固证 双列
@@ -73,7 +75,10 @@ data/ladybug/*.lbug（L4 图库，可选）
   L3 语义指标/五间覆盖/质量分；值类型识别 `core/value_type.py`（账号/手机/身份证/金额/日期/人名/机构）。
 - **新表接入草案组装器**（`core/draft_assembler.py`）：外部表画像 → objects/links/bindings
   三件【待核实】草案 + ETL 步骤序列，只写 `output/drafts/`，人工审核 + loader 校验两道闸才生效。
-- 画像/地图/草案**只观察不写回**；健康度诊断落 `run_diagnostic`（`core/run_health.py`）。
+- 画像/地图/草案**只观察不写回**；健康度诊断落 `run_diagnostic`（`core/run_health.py`）：
+  产物首部「健康度」小节 status=healthy/degraded/critical，warning/critical 需人工复核、
+  不参与线索升格；维度覆盖双轨缺口（声明 G-008/009、实证 G-024）、零命中规则、
+  推翻率/审计链缺口统一在此留痕。
 
 ## LLM 与内核的边界
 | 环节 | 谁做 |

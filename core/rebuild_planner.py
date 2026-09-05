@@ -206,10 +206,14 @@ def plan_from_seeds(conn, seeds: dict[str, set[str]], *,
                 placeholders = ", ".join(["?"] * len(vals))
                 clauses.append(f'"{c}" IN ({placeholders})')
                 params.extend(vals)
+        # 列名/子句先拼好再插值：f-string 表达式段内不允许反斜杠
+        # （旧写法 f'\"{c}\"' 在 Python ≤3.11 直接 SyntaxError，CI 固定 3.11）；
+        # 单引号 f-string 内嵌双引号字面量的写法与 _fallback_link_rows 一致。
+        col_list = ", ".join(f'"{c}"' for c in cols)
+        where_clause = " OR ".join(clauses)
         try:
             rows = conn.execute(
-                f"SELECT {', '.join(f'\"{c}\"' for c in cols)} "
-                f"FROM {lnk_table} WHERE {' OR '.join(clauses)}",
+                f"SELECT {col_list} FROM {lnk_table} WHERE {where_clause}",
                 params,
             ).fetchall()
         except Exception:

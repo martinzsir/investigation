@@ -1,5 +1,5 @@
 from .store import Store
-from .hypotheses import MiaoSuan, Hypothesis
+from .hypotheses import MiaoSuan, Hypothesis, record_dimension_gaps
 from .validate import validate, redline_check
 from .registry import (
     SkillSpec, SkillRegistry, LineageClue,
@@ -12,7 +12,7 @@ from . import review
 from . import sampling
 
 __all__ = [
-    "Store", "MiaoSuan", "Hypothesis",
+    "Store", "MiaoSuan", "Hypothesis", "record_dimension_gaps",
     "validate", "redline_check",
     "SkillSpec", "SkillRegistry", "LineageClue",
     "skill_invoke", "get_registry", "DEFAULT_REGISTRY",

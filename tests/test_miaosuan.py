@@ -11,7 +11,10 @@ tests/test_miaosuan.py
 """
 import unittest
 
-from core import MiaoSuan, Hypothesis
+import duckdb
+
+from core import MiaoSuan, Hypothesis, record_dimension_gaps
+from core.run_health import RunHealth
 
 FINDINGS = [
     {"候选虚处": "季度末整数现金存入", "依据": "与工资非整数规律不符"},
@@ -232,6 +235,97 @@ class TestDimensionCoverage(unittest.TestCase):
         # finding.dimension 为字符串也能归一
         dc2 = m.dimension_coverage([{"dimension": "资金"}])
         self.assertEqual(dc2["empirical_covered"], ["资金"])
+
+    # ---- REQ-G-024：实证缺口独立报警 ----
+    def test_g024_ac1_声明满覆盖实证缺维独立报警(self):
+        """AC1：声明轨 5/5、实证轨 3/5 → empirical_alarm 为真；声明轨 alarm 为假。"""
+        m = _full_miao()  # 假设声明覆盖全 5 维
+        findings = [{"dimension": d} for d in ("关系", "资金", "通讯")]
+        dc = m.dimension_coverage(findings)
+        # AC6：既有键语义不变（声明满覆盖 → 不报警、score=1.0）
+        self.assertEqual(dc["score"], 1.0)
+        self.assertFalse(dc["alarm"])
+        self.assertEqual(dc["missing"], [])
+        self.assertEqual(dc["covered"], sorted(m.DIMENSIONS))
+        # AC1：实证轨独立报警，缺维按 DIMENSIONS 顺序枚举
+        self.assertTrue(dc["empirical_alarm"])
+        self.assertEqual(dc["empirical_missing"], ["行为", "时间"])
+        self.assertIn("行为", dc["empirical_alarm_text"])
+        self.assertIn("时间", dc["empirical_alarm_text"])
+        self.assertIn("3/5", dc["empirical_alarm_text"])
+
+    def test_g024_ac4_双轨满覆盖不误报(self):
+        """AC4：声明 5/5 且实证 5/5 → 两轨均不报警、文案为空。"""
+        m = _full_miao()
+        findings = [{"dimension": d} for d in m.DIMENSIONS]
+        dc = m.dimension_coverage(findings)
+        self.assertFalse(dc["alarm"])
+        self.assertEqual(dc["alarm_text"], "")
+        self.assertFalse(dc["empirical_alarm"])
+        self.assertEqual(dc["empirical_alarm_text"], "")
+        self.assertEqual(dc["empirical_missing"], [])
+
+    def test_g024_ac5_实证全空列出全部缺维(self):
+        """AC5：findings 为空（实证轨全空）→ 报警且缺维枚举全 5 维。"""
+        m = _full_miao()
+        dc = m.dimension_coverage([])
+        self.assertTrue(dc["empirical_alarm"])
+        self.assertEqual(dc["empirical_missing"], list(m.DIMENSIONS))
+        for d in m.DIMENSIONS:
+            self.assertIn(d, dc["empirical_alarm_text"])
+
+
+class TestDimensionGapDiagnostics(unittest.TestCase):
+    """REQ-G-024 AC2/AC3：双轨缺口独立落 run_diagnostic，source 可区分、健康度滚定。"""
+
+    def setUp(self):
+        self.con = duckdb.connect()
+        self.health = RunHealth(self.con)
+
+    def tearDown(self):
+        self.con.close()
+
+    def _gaps(self, dc: dict) -> list[dict]:
+        record_dimension_gaps(dc, self.health)
+        return [r for r in self.health.rows() if r["kind"] == "coverage_gap"]
+
+    def test_ac2_实证缺口使健康度非healthy(self):
+        """AC2：声明 5/5 实证 3/5 → 1 条 warning 诊断，健康度不再 healthy。"""
+        m = _full_miao()
+        dc = m.dimension_coverage(
+            [{"dimension": d} for d in ("关系", "资金", "通讯")])
+        gaps = self._gaps(dc)
+        # 声明轨满覆盖 → 仅实证缺口一条，source 独立
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["source"], "miaosuan:dimension:empirical")
+        self.assertEqual(gaps[0]["severity"], "warning")
+        self.assertEqual(gaps[0]["detail"]["missing"], ["行为", "时间"])
+        section = self.health.health_section()
+        self.assertNotEqual(section["status"], "healthy")
+        self.assertGreaterEqual(section["计数"]["warning"], 1)
+
+    def test_ac3_source区分声明与实证缺口(self):
+        """AC3：两轨同缺 → 两条诊断，source 不混淆、各带各的缺维。"""
+        m = _miao()
+        m.auto_from_findings(FINDINGS)  # 声明仅 资金+时间 → 缺 通讯/行为/关系
+        dc = m.dimension_coverage([{"dimension": "资金"}])  # 实证仅资金
+        self.assertTrue(dc["alarm"])
+        self.assertTrue(dc["empirical_alarm"])
+        gaps = self._gaps(dc)
+        self.assertEqual(len(gaps), 2)
+        by_source = {g["source"]: g for g in gaps}
+        self.assertEqual(set(by_source),
+                         {"miaosuan:dimension", "miaosuan:dimension:empirical"})
+        self.assertEqual(by_source["miaosuan:dimension"]["detail"]["missing"],
+                         dc["missing"])
+        self.assertEqual(
+            by_source["miaosuan:dimension:empirical"]["detail"]["missing"],
+            dc["empirical_missing"])
+
+    def test_health为none时空操作兼容(self):
+        """兼容红线：health=None（NullRunHealth）不抛异常、不影响调用方。"""
+        m = _full_miao()
+        record_dimension_gaps(m.dimension_coverage([]), None)
 
 
 class TestPatternLibrary(unittest.TestCase):

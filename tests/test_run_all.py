@@ -100,6 +100,16 @@ class TestRunAllPipeline(unittest.TestCase):
         )
         self.assertTrue(any_scored, msg="线索未附加优先级分数")
 
+    def test_g024_empirical_gap_wired_into_health(self):
+        # REQ-G-024：实证缺口独立报警键进 miao_coverage；健康度小节在产物首部
+        r = json.loads((ROOT / "output" / "lineage_clues.json").read_text(encoding="utf-8"))
+        self.assertIn("健康度", r)
+        dc = r["miao_coverage"]["dimension_coverage"]
+        for key in ("empirical_alarm", "empirical_alarm_text",
+                    "empirical_missing", "empirical_covered"):
+            self.assertIn(key, dc, msg=f"dimension_coverage 缺 {key}")
+        self.assertIn(r["健康度"]["status"], ("healthy", "degraded", "critical"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

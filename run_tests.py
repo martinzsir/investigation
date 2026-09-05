@@ -120,7 +120,7 @@ GROUPS = {
     "versionanchor":("REQ-G-007/001 版本锚定+缓存失效令牌", [sys.executable, "-m", "unittest", "tests.test_version_anchor", "tests.test_derived"]),
     # ---- REQ-G 统一降级协议（第二波：治理口径）----
     "policyversion":("REQ-G-016 policies/case_knowledge 版本收口", [sys.executable, "-m", "unittest", "tests.test_policy_version"]),
-    "dimecoverage": ("REQ-G-008/009 维度覆盖双轨+阈值边界", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
+    "dimecoverage": ("REQ-G-008/009/024 维度覆盖双轨+阈值边界+实证缺口独立报警", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
     "overridealert":("REQ-G-017 规则推翻率告警", [sys.executable, "-m", "unittest", "tests.test_override_alert"]),
     "auditinteg":   ("REQ-G-018 审计链完备性自检", [sys.executable, "-m", "unittest", "tests.test_audit_integrity"]),
     "dispatchfailclosed":("REQ-G-020 派发 fail-closed", [sys.executable, "-m", "unittest", "tests.test_dispatch_failclosed"]),

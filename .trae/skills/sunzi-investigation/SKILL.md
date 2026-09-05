@@ -15,7 +15,7 @@ description: >
 
 ## 一、定位
 侦查员的**决策副驾**，只做三件事：
-1. 把案件要素展开成可复查的推演（庙算，`core/hypotheses.py`）——四层覆盖完整性机制：**数据驱动**（`auto_from_findings()` 按模式库把虚实扫描发现自动映射为候选假设，模式库按资金/通讯/行为/关系/时间五维组织）× **规则约束**（≤5 条、四字段必备、超授权边界标"受限(待授权)"、数据源缺失标"降级"，`build()` 内置）× **反遗漏**（五维度覆盖度 <80% 报警、间类缺口警告、证据冲突检测、`enumerate_space()` 枚举候选池+候补清单）× **人机协同**（正兵 `add()/remove()/reorder()/promote()` 受控接口，全程审计）
+1. 把案件要素展开成可复查的推演（庙算，`core/hypotheses.py`）——四层覆盖完整性机制：**数据驱动**（`auto_from_findings()` 按模式库把虚实扫描发现自动映射为候选假设，模式库按资金/通讯/行为/关系/时间五维组织）× **规则约束**（≤5 条、四字段必备、超授权边界标"受限(待授权)"、数据源缺失标"降级"，`build()` 内置）× **反遗漏**（五维度覆盖度双轨报警：声明轨 ≤80% 报警 G-009、实证轨缺口独立报警 G-024——"想到了但没查到"落 `miaosuan:dimension:empirical` 诊断；间类缺口警告、证据冲突检测、`enumerate_space()` 枚举候选池+候补清单）× **人机协同**（正兵 `add()/remove()/reorder()/promote()` 受控接口，全程审计）
 2. 把全量数据里的反常标成候选突破口（虚实/用间，经规则手册调只读 Function 消费 `obj_*`/`lnk_*` 语义层）
 3. 把"假设—证据—程序"对齐，把定性权交回人（奇正/全胜，处置状态机强制）
 
@@ -53,7 +53,10 @@ MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三�
 
 ## 五、标准输出（每次响应固定六段）
 【庙算基线】【双向盘点】【虚实扫描】【奇正分工】【用间交叉】【全胜校验】
-产物落 `output/`：`lineage_clues.json`（含假设链/溯源行/间类/优先级/处置状态/审计链）、
+产物落 `output/`：`lineage_clues.json`（首部固定「健康度」小节：`run_diagnostic` 留痕汇总，
+status=healthy/degraded/critical，warning/critical 项需人工复核、不参与线索升格；
+维度覆盖双轨缺口/零命中规则/推翻率/审计链缺口/异常线索统一在此可见。
+正文含假设链/溯源行/间类/优先级/处置状态/审计链，`miao_coverage` 带维度双轨明细）、
 `entity_mapping.json`、`review_queue.json` 等；线索看板见 `clue_disposal_status` 表。
 
 ## 六、红线与免责（必须随技能分发）

@@ -267,6 +267,9 @@ class MiaoSuan:
           - 经验轨（empirical）：虚实扫描实际命中的 finding 落在哪些维度（实证覆盖）。
         声明覆盖 ≠ 经验覆盖：假设写了维度但扫描无命中，属"有假设无证据"，须可见。
         REQ-G-009：报警阈值 < 改为 <=（4/5=80% 仍缺 1 维，应报警）；alarm_text 枚举缺维名。
+        REQ-G-024：实证缺口独立报警（empirical_alarm/empirical_alarm_text）——
+          声明缺口="压根没想到"（补假设/人工注入），实证缺口="想到了但没查到"
+          （补数据/查检测器是否失效）；两者不共用 alarm，双轨数字可见且可行动。
         """
         if findings is None:
             findings = getattr(self, "_last_findings", None) or []
@@ -290,6 +293,14 @@ class MiaoSuan:
         if alarm:
             alarm_text = (f"假设维度覆盖不完整（{len(declared)}/{len(self.DIMENSIONS)}），"
                           f"缺：{'、'.join(declared_missing)}；建议补充数据或人工注入")
+        # G-024：实证缺口独立报警，不与声明轨共用 alarm/alarm_text
+        empirical_alarm = bool(empirical_missing)
+        empirical_alarm_text = ""
+        if empirical_alarm:
+            empirical_alarm_text = (
+                f"实证维度覆盖不完整：扫描证据仅落 {len(empirical)}/{len(self.DIMENSIONS)} 维，"
+                f"缺：{'、'.join(empirical_missing)}；已声明假设但无证据产出的维度，"
+                f"建议核查数据源或检测器是否失效（零命中规则见 data_absent 诊断）")
         return {
             # 兼容既有键（covered/missing/score/alarm/alarm_text 语义不变）
             "covered": sorted(declared), "missing": declared_missing,
@@ -299,6 +310,9 @@ class MiaoSuan:
             "declared_missing": declared_missing,
             "empirical_covered": sorted(empirical),
             "empirical_missing": empirical_missing,
+            # G-024 实证轨独立报警
+            "empirical_alarm": empirical_alarm,
+            "empirical_alarm_text": empirical_alarm_text,
         }
 
     # ---------- 反遗漏规则 3（H）：间类缺口 ----------
@@ -415,3 +429,28 @@ class MiaoSuan:
             "audit": self.audit,
             "backlog": self.backlog,
         }
+
+
+def record_dimension_gaps(dc: dict, health) -> None:
+    """把 dimension_coverage() 的双轨缺口落运行诊断（REQ-G-024）。
+
+    两条缺口独立留痕、source 区分，指向不同补救动作：
+      - miaosuan:dimension            声明缺口（"压根没想到"）→ 补假设 / 人工注入
+      - miaosuan:dimension:empirical  实证缺口（"想到了但没查到"）→ 补数据 / 查检测器
+    旧逻辑只在声明轨 alarm 分支内 record，声明 100% 时实证缺口被门控掉、
+    健康度虚假 healthy；本函数两条分支互不依赖。
+    health=None → NullRunHealth 空操作（兼容红线）。
+    """
+    from core.run_health import get_health  # 局部导入，与 core.metrics 惯例一致
+    h = get_health(health)
+    if dc.get("alarm"):
+        h.record("coverage_gap", "warning",
+                 source="miaosuan:dimension",
+                 reason=dc.get("alarm_text") or "庙算维度覆盖缺口",
+                 missing=dc.get("missing"),
+                 empirical_missing=dc.get("empirical_missing"))
+    if dc.get("empirical_alarm"):
+        h.record("coverage_gap", "warning",
+                 source="miaosuan:dimension:empirical",
+                 reason=dc.get("empirical_alarm_text") or "庙算实证维度覆盖缺口",
+                 missing=dc.get("empirical_missing"))
