@@ -70,6 +70,7 @@ class OntologyReadGateway:
         self._access = access if access is not None else system_context()
         self._policy = PolicyEngine(pack)
         spec = load_pack(pack)
+        self._spec = spec
         self._object_names = {o.name for o in spec.objects}
         self._link_names = {l.name for l in spec.links}
         # REQ-046：合并显式声明视图 + 标准视图（标准视图不覆盖显式声明）
@@ -172,6 +173,156 @@ class OntologyReadGateway:
         self._policy.check_object(self._access, name)
         self._guard_fresh()
         return self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+    # ---- REQ-P M3 画像方法（聚合/元数据读取，不取回全量——禁令 2） ----
+    def materialized_objects(self) -> list[str]:
+        """已物化对象：declared ∩ information_schema 实表。
+
+        纯 schema 内省（非数据读取），不做 STALE 拦截——对象已物化与否
+        不随源端推进变化。"""
+        self._check_declared_pack()
+        rows = self._conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name LIKE 'obj_%'").fetchall()
+        tables = {r[0] for r in rows}
+        return sorted(n for n in self._object_names if f"obj_{n}" in tables)
+
+    def materialized_props(self, props: list[str] | None = None) -> dict[str, bool]:
+        """属性级列存在性：{"obj.prop": bool}，不按值类型过滤（画像缺陷 3 正解——
+        decimal/date 属性同样被覆盖）。
+
+        缺列 ≠ 未物化：对象已物化但表中无此列 → False（schema 演进场景，
+        画像缺陷 4 的判据来源；M4 profiler 据此报 profile_missing_column）。
+        props 传 "obj.prop" 键列表过滤；未声明键硬失败。
+        """
+        self._check_declared_pack()
+        want = self._validate_prop_keys(props) if props is not None else None
+        cols_by_table: dict[str, set[str]] = {}
+        for t, c in self._conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_name LIKE 'obj_%'").fetchall():
+            cols_by_table.setdefault(t, set()).add(c)
+        out: dict[str, bool] = {}
+        for o in self._spec.objects:
+            for p in o.properties:
+                key = f"{o.name}.{p}"
+                if want is not None and key not in want:
+                    continue
+                cols = cols_by_table.get(f"obj_{o.name}")
+                out[key] = bool(cols) and p in cols
+        return out
+
+    def value_profile(self, obj: str, prop: str) -> dict:
+        """单 SQL 聚合画像：行数/非空/空值率/基数/MIN/MAX/样例（≤5 行）。
+
+        敏感属性（policies.json 声明无权）样例与 MIN/MAX 按策略遮蔽。
+        未声明对象/属性、对象未物化、列缺失 → 明确报错（fail-loud，
+        调用方先用 materialized_props 判定，防画像缺陷 4 的 BinderException）。
+        """
+        table = self._require_prop(obj, prop)
+        self._policy.check_object(self._access, obj)
+        self._guard_fresh()
+        row = self._conn.execute(
+            f'SELECT COUNT(*), COUNT("{prop}"), COUNT(DISTINCT "{prop}"), '
+            f'MIN("{prop}"), MAX("{prop}") FROM {table}').fetchone()
+        samples = [r[0] for r in self._conn.execute(
+            f'SELECT DISTINCT "{prop}" FROM {table} '
+            f'WHERE "{prop}" IS NOT NULL LIMIT 5').fetchall()]
+        total, non_null, distinct, lo, hi = row
+        readable = self._policy.can_read_property(self._access, obj, prop)
+        if not readable:
+            mask = lambda v: self._policy.mask_value(self._access, obj, prop, v)
+            samples = [mask(v) for v in samples]
+            lo, hi = mask(lo), mask(hi)
+        return {
+            "obj": obj, "prop": prop,
+            "row_count": total, "non_null": non_null,
+            "null_rate": (total - non_null) / total if total else 0.0,
+            "distinct": distinct, "min": lo, "max": hi,
+            "samples": samples,
+        }
+
+    def value_overlap(self, obj_a: str, prop_a: str,
+                      obj_b: str, prop_b: str) -> dict:
+        """精确交集/包含率（INTERSECT 子查询，不采样）——画像 → 探测的依据。"""
+        ta = self._require_prop(obj_a, prop_a)
+        tb = self._require_prop(obj_b, prop_b)
+        self._policy.check_object(self._access, obj_a)
+        self._policy.check_object(self._access, obj_b)
+        self._guard_fresh()
+        da = self._conn.execute(
+            f'SELECT COUNT(DISTINCT "{prop_a}") FROM {ta} '
+            f'WHERE "{prop_a}" IS NOT NULL').fetchone()[0]
+        db_ = self._conn.execute(
+            f'SELECT COUNT(DISTINCT "{prop_b}") FROM {tb} '
+            f'WHERE "{prop_b}" IS NOT NULL').fetchone()[0]
+        inter = self._conn.execute(
+            f'SELECT COUNT(*) FROM ('
+            f'SELECT DISTINCT "{prop_a}" AS v FROM {ta} WHERE "{prop_a}" IS NOT NULL '
+            f'INTERSECT '
+            f'SELECT DISTINCT "{prop_b}" AS v FROM {tb} WHERE "{prop_b}" IS NOT NULL)'
+        ).fetchone()[0]
+        return {
+            "a": f"{obj_a}.{prop_a}", "b": f"{obj_b}.{prop_b}",
+            "distinct_a": da, "distinct_b": db_,
+            "intersection": inter,
+            "a_in_b_ratio": round(inter / da, 4) if da else 0.0,
+            "b_in_a_ratio": round(inter / db_, 4) if db_ else 0.0,
+        }
+
+    def distinct_values(self, obj: str, prop: str, limit: int = 1000) -> list:
+        """去重值清单（变体探测/候选关联用）；敏感属性按策略遮蔽。"""
+        table = self._require_prop(obj, prop)
+        self._policy.check_object(self._access, obj)
+        self._guard_fresh()
+        vals = [r[0] for r in self._conn.execute(
+            f'SELECT DISTINCT "{prop}" FROM {table} '
+            f'WHERE "{prop}" IS NOT NULL LIMIT ?', [int(limit)]).fetchall()]
+        if not self._policy.can_read_property(self._access, obj, prop):
+            vals = [self._policy.mask_value(self._access, obj, prop, v)
+                    for v in vals]
+        return vals
+
+    def _check_declared_pack(self) -> None:
+        """画像元数据读取同样只认声明名集合（pack 一致性由构造保证）。"""
+        if not self._object_names:
+            raise UnknownObjectError("案件包未声明任何对象类型")
+
+    def _validate_prop_keys(self, props: list[str]) -> set[str]:
+        """过滤键必须是已声明的 "obj.prop"；未声明硬失败。"""
+        declared = {f"{o.name}.{p}"
+                    for o in self._spec.objects for p in o.properties}
+        unknown = [k for k in props if k not in declared]
+        if unknown:
+            raise ValueError(
+                f"未声明的属性键：{sorted(unknown)}（可用声明键见 objects.json）")
+        return set(props)
+
+    def _require_prop(self, obj: str, prop: str) -> str:
+        """画像取数前置：声明对象 + 声明属性 + 表/列存在性（缺陷 4 fail-loud）。"""
+        if obj not in self._object_names:
+            raise UnknownObjectError(f"未声明的对象类型：{obj!r}")
+        o = next(o for o in self._spec.objects if o.name == obj)
+        if prop not in o.properties:
+            raise ValueError(
+                f"对象 {obj} 未声明属性 {prop!r}"
+                f"（画像只接受 objects.json 声明属性：{sorted(o.properties)}）")
+        table = f"obj_{obj}"
+        exists = self._conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+            [table]).fetchone()[0]
+        if not exists:
+            raise ValueError(
+                f"对象 {obj} 未物化（{table} 不存在）——"
+                "请先构建语义层，或用 materialized_objects() 判定后再画像")
+        cols = {r[0] for r in self._conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ?", [table]).fetchall()}
+        if prop not in cols:
+            raise ValueError(
+                f"对象 {obj} 已物化，但表中无此列：{prop!r}"
+                "（schema 演进——请重建语义层；调用方应先用 materialized_props 判定）")
+        return table
 
     # ---- 内部 ----
     def _resolve(self, kind: str, name: str) -> str:

@@ -132,6 +132,7 @@ GROUPS = {
     "exportendpoints":("REQ-G-015 端点列名声明化/导出通用化", [sys.executable, "-m", "unittest", "tests.test_export_endpoints"]),
     "reqpm1":      ("REQ-P M1 数据层缺陷修复（031~034）", [sys.executable, "-m", "unittest", "tests.test_reqp_m1"]),
     "datamap":     ("REQ-P M2 数据地图 L0+L1 静态拓扑与血缘", [sys.executable, "-m", "unittest", "tests.test_data_map"]),
+    "valuetype":   ("REQ-P M3 值类型识别（纯函数，缺陷1/2内置）", [sys.executable, "-m", "unittest", "tests.test_value_type"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
