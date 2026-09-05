@@ -14,7 +14,9 @@ REQ-020 Golden Finding 回归：固定 seed 的场景夹具锁定检测器行为
 import json
 import re
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import patch
 
 from core import Store
 from core.ontology import build_ontology
@@ -114,13 +116,27 @@ def drift_report(name: str, actual: dict, expect: dict) -> list[str]:
 
 class GoldenFindingTests(unittest.TestCase):
 
+    def _build_and_run(self, fx: dict) -> list[dict]:
+        """建库 → 构建语义层 → 跑规则。
+
+        夹具可携带 case_knowledge 键（REQ-024 R5 人名只来自知识包）：
+        合成新案件用夹具内声明的知识注入 load_case_knowledge，规则/函数/
+        对象/链接仍走 default 包单一真源（不复制整套 ontology 声明）。
+        """
+        kn = fx.get("case_knowledge")
+        ctx = (patch("core.functions.load_case_knowledge",
+                     lambda pack="default": kn)
+               if kn else nullcontext())
+        with ctx:
+            store = build_store(fx)
+            try:
+                return run_rules(store, stage=None)
+            finally:
+                store.close()
+
     def _run_fixture(self, name: str) -> tuple[dict, list[dict], dict]:
         fx = load_fixture(name)
-        store = build_store(fx)
-        try:
-            findings = run_rules(store, stage=None)
-        finally:
-            store.close()
+        findings = self._build_and_run(fx)
         return fx, findings, summarize(findings)
 
     def test_01_fixture_suite_complete(self):
@@ -174,16 +190,11 @@ class GoldenFindingTests(unittest.TestCase):
 
     def test_06_determinism_same_input_same_output(self):
         """确定性锁：同夹具跑两遍，摘要逐字节一致（无随机/无时间依赖）。"""
-        fx = load_fixture("baseline")
-        summaries = []
-        for _ in range(2):
-            store = build_store(fx)
-            try:
-                summaries.append(summarize(run_rules(store, stage=None)))
-            finally:
-                store.close()
-        self.assertEqual(summaries[0], summaries[1],
-                         "同输入两次跑结果不一致：违反确定性")
+        for name in ("baseline", "huachuang_case"):
+            fx = load_fixture(name)
+            summaries = [summarize(self._build_and_run(fx)) for _ in range(2)]
+            self.assertEqual(summaries[0], summaries[1],
+                             f"{name} 同输入两次跑结果不一致：违反确定性")
 
     def test_07_drift_report_detects_changes(self):
         """漂移报告自检：篡改期望必须被 drift_report 抓住。"""
@@ -204,6 +215,26 @@ class GoldenFindingTests(unittest.TestCase):
         self.assertTrue(any("R99" in ln for ln in report), report)
         # 零漂移场景
         self.assertEqual(drift_report("same", actual, json.loads(json.dumps(actual))), [])
+
+    def test_08_huachuang_case_locked(self):
+        """华创文教采购回扣案：R1/R3/R4/R5/R6 命中结构 + R2 被 R1 primary 互斥抑制。"""
+        fx, findings, actual = self._run_fixture("huachuang_case")
+        expect = fx["expect"]
+        self.assertIsNotNone(expect.get("finding_count"),
+                             "huachuang_case golden 未锁定（finding_count 为 null），"
+                             "请先跑夹具用真实结果固化期望")
+        self.assertTrue(findings, "华创案必须有命中（全要素场景）")
+        self.assertTrue(all(f["级别"] == "待核实" for f in findings),
+                        "finding 状态必须恒为'待核实'（状态锁）")
+        # R2（整数转账聚合）与 R1 同 exclusive_group，R1 primary 命中 → 主 findings 不含 R2
+        self.assertNotIn("R2", actual["rules_hit"],
+                         f"R2 应被 R1 primary 抑制，实际命中: {actual['rules_hit']}")
+        suppressed = [e.get("rule_id")
+                      for f in findings for e in (f.get("suppressed_log") or [])]
+        self.assertIn("R2", suppressed,
+                      "R2 被抑制但 suppressed_log 必须留痕（抑制不静默）")
+        drifts = drift_report("huachuang_case", actual, expect)
+        self.assertEqual(drifts, [], "\n".join(drifts) or "零漂移")
 
 
 if __name__ == "__main__":
