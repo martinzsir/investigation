@@ -259,6 +259,7 @@ def skill_invoke(
     store: Any = None,           # Store 实例（L1/L2/L3）
     ctx: dict | None = None,     # 运行上下文（可用数据/未调取/缺口等）
     params: dict | None = None,  # 技能私有参数（如 target_person）
+    health=None,                 # REQ-G-010 运行诊断（None → NullRunHealth）
 ) -> list[LineageClue]:
     """
     统一调用入口。
@@ -295,7 +296,7 @@ def skill_invoke(
     handler = spec.handler
     if handler is None:
         raise RuntimeError(f"技能 {sid} 已注册但未绑定 handler")
-    raw = handler(miao=miao, store=store, ctx=ctx, params=params)
+    raw = handler(miao=miao, store=store, ctx=ctx, params=params, health=health)
 
     # 归一化：允许 handler 返回 (clues, meta) 或纯 list
     clues = _normalize(raw)
@@ -376,7 +377,7 @@ def reset_registry() -> SkillRegistry:
 # ----------------------------------------------------------------------
 # 人名实体对齐：从 Store(DuckDB) 采集（供 core.entity 一站式入口调用）
 # ----------------------------------------------------------------------
-def _resolve_person_from_store(store) -> "EntityResolver":
+def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     """
     从 DuckDB 中采集「人名类」实体记录，跑通人名对齐。
     采集范围：银行流水(主体/对方)、通话记录(主体/对端)、招投标档案(分管领导)。
@@ -385,7 +386,7 @@ def _resolve_person_from_store(store) -> "EntityResolver":
     # 延迟导入：entity_resolution 与 core.registry 互相解耦
     # 复用 core.entity 的路径安全加载器（按绝对路径加载，避免同名包遮蔽 sys.path）
     from .entity import _load_person_resolver
-    EntityResolver = _load_person_resolver()
+    EntityResolver = _load_person_resolver(health=health)
     resolver = EntityResolver()
     conn = getattr(store, "conn", None)
     if conn is None:

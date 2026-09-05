@@ -1,0 +1,11 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-G-011 侦查维度声明（庙算五维覆盖度模型）。DIMENSIONS 不再硬编码于 core/hypotheses.py，改由本文件声明；rules.json 规则的 dimension 必须是此处已声明的 name（装载期交叉校验，未声明硬失败）。新增维度不改 Python 即可被规则引用并参与覆盖度。source_object_types 为该维度证据来源的语义对象（元数据，供溯源）。",
+  "dimensions": [
+    {"name": "资金", "note": "银行流水/资金往来异常", "source_object_types": ["transaction"]},
+    {"name": "通讯", "note": "通话/联系频次与对象", "source_object_types": ["call"]},
+    {"name": "行为", "note": "轨迹同框/行为模式", "source_object_types": ["trackpoint"]},
+    {"name": "关系", "note": "工商/社会关系网络", "source_object_types": ["person", "org"]},
+    {"name": "时间", "note": "时间耦合/先后顺序（跨对象属性）", "source_object_types": ["transaction", "call", "trackpoint"]}
+  ]
+}

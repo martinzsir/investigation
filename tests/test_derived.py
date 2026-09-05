@@ -133,6 +133,29 @@ class DerivedTests(unittest.TestCase):
             cache_policy="never"))
         self.assertIn("transaction.normal_metric", list_all())
 
+    def test_g001_unanchored_source_forces_recompute(self):
+        """REQ-G-001：源版本锚点取不到时，until_source_change 不得复用陈旧缓存。
+
+        未建语义层（版本/行数均取不到）→ 一次性失效令牌 → 连续 compute 均 miss。
+        """
+        register(DerivedProperty(
+            name="transaction.g001_check",
+            function="quarter_end_integer_deposits",
+            cache_policy="until_source_change"))
+        from core import Store
+        from core.run_health import RunHealth
+        s = Store(db_path=":memory:")  # 不 build_ontology：obj_transaction/版本均缺失
+        h = RunHealth(s.conn)
+        try:
+            r1 = compute(s, "transaction", "g001_check", health=h)
+            r2 = compute(s, "transaction", "g001_check", health=h)
+        finally:
+            s.close()
+        self.assertEqual(r1["cache"], "miss")
+        self.assertEqual(r2["cache"], "miss", "锚点缺失时必须每次重算，不得命中陈旧缓存")
+        self.assertNotEqual(r1["source_version_set"], r2["source_version_set"],
+                            "失败令牌应一次性（互不相等）")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

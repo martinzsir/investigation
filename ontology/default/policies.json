@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "_note": "REQ-010 对象级/属性级策略。对象未在本文件声明 → fail-closed 默认拒绝（AC4）；coverage_missing() 保证 objects.json 每个对象都有显式声明（AC5）。角色分级与 core/access.ROLE_RANK 同源。",
+  "schema_version": 2,
+  "_note": "REQ-010 对象级/属性级策略。对象未在本文件声明 → fail-closed 默认拒绝（AC4）；coverage_missing() 保证 objects.json 每个对象都有显式声明（AC5）。角色分级与 core.access.ROLE_RANK 同源。schema_version 必须与其余 ontology 声明一致（REQ-G-016，core/policy.py 装载校验，不符硬失败）。",
   "object_policies": [
     {"object": "person",       "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "基础情报"},
     {"object": "org",          "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},

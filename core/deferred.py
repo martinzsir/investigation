@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS deferred_task (
 _WAITING = "waiting"
 _WOKEN = "woken"
 _EXPIRED = "expired"
+# REQ-G-005：唤醒条件存在但无法解析（如 evidence_count 非数值）——区别于沉睡 waiting，
+# 转 condition_error 进人审，避免"条件不满足"假象导致任务永久沉睡。
+_CONDITION_ERROR = "condition_error"
 
 _VALID_COND_KEYS = {"on_dataset", "after", "evidence_count_gte"}
 
@@ -88,6 +91,13 @@ def validate_wake_conditions(conds: dict) -> None:
             datetime.strptime(str(conds["after"])[:10], "%Y-%m-%d")
         except ValueError:
             raise ValueError(f"after 条件须为 YYYY-MM-DD：{conds['after']!r}")
+    # REQ-G-005：登记时就把阈值类型校验掉（畸形条件不入池）
+    if "evidence_count_gte" in conds:
+        try:
+            int(conds["evidence_count_gte"])
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"evidence_count_gte 须为整数：{conds['evidence_count_gte']!r}")
 
 
 def match_wake(task: DeferredTask, event) -> bool:
@@ -108,12 +118,16 @@ def match_wake(task: DeferredTask, event) -> bool:
         if ds and conds["on_dataset"] in str(ds):
             return True
     if "evidence_count_gte" in conds:
-        n = payload.get("evidence_count") or payload.get("rows") or 0
+        n = payload.get("evidence_count")
+        if n is None:
+            n = payload.get("rows")
         try:
-            if int(n) >= int(conds["evidence_count_gte"]):
+            # n 为 None（事件与证据计数无关）时按 0 处理，不唤醒也不算错
+            if int(n if n is not None else 0) >= int(conds["evidence_count_gte"]):
                 return True
         except (TypeError, ValueError):
-            pass
+            # 无法解析不等于"条件不满足"：交由 condition_parse_error 显式化（REQ-G-005）
+            return False
     if "after" in conds:
         ref = str(occurred or _now())[:10]
         if ref >= str(conds["after"])[:10]:
@@ -121,12 +135,54 @@ def match_wake(task: DeferredTask, event) -> bool:
     return False
 
 
+def condition_parse_error(task: DeferredTask, event) -> str | None:
+    """REQ-G-005：检测唤醒条件是否"存在但无法解析"（区别于正常的未满足）。
+
+    仅当事件确实携带了 evidence_count/rows 字段、但其值无法转整数时，判定为
+    条件解析错误（返回人读原因）；事件不带该字段时返回 None（与本条件无关）。
+    """
+    if task.status != _WAITING:
+        return None
+    conds = task.wake_conditions
+    if "evidence_count_gte" not in conds:
+        return None
+    payload = getattr(event, "payload", None) \
+        or (event.get("payload") if isinstance(event, dict) else {}) or {}
+    has_field = ("evidence_count" in payload) or ("rows" in payload)
+    if not has_field:
+        return None
+    n = payload.get("evidence_count")
+    if n is None:
+        n = payload.get("rows")
+    try:
+        int(n)
+    except (TypeError, ValueError):
+        return (f"任务 {task.task_id} 的 evidence_count_gte 条件无法解析："
+                f"事件 evidence_count={n!r} 非整数（阈值 "
+                f"{conds['evidence_count_gte']!r}）")
+    return None
+
+
 class DeferredBoard:
     """deferred_task 表的唯一读写入口。"""
 
-    def __init__(self, conn):
+    def __init__(self, conn, health=None):
         self._conn = conn
         conn.execute(_DDL)
+        from core.run_health import get_health
+        self.health = get_health(health)
+
+    def _publish(self, etype: str, payload: dict, actor: str, where: str) -> None:
+        """发事件；落盘失败不再静默吞（REQ-G-004），留痕但不阻断主流程。"""
+        try:
+            from core.event_bus import EventBus
+            EventBus(self._conn).publish(etype, payload, actor=actor)
+        except Exception as e:
+            self.health.record(
+                "event_publish_failed", "warning",
+                source=f"deferred:{where}",
+                reason=f"事件 {etype} 发布失败：{str(e)[:120]}",
+                event_type=etype)
 
     # ---- 登记 ----
     def defer(self, *, candidate_id: str, wake_conditions: dict,
@@ -145,14 +201,10 @@ class DeferredBoard:
             [task.task_id, task.candidate_id, task.entity_type, task.canonical,
              json.dumps(task.wake_conditions, ensure_ascii=False),
              task.scheduled_at, _WAITING, operator, _now()])
-        try:
-            from core.event_bus import EventBus
-            EventBus(self._conn).publish(
-                "review.deferred",
-                {"candidate_id": candidate_id, "wake_conditions": wake_conditions},
-                actor=operator)
-        except Exception:
-            pass
+        self._publish(
+            "review.deferred",
+            {"candidate_id": candidate_id, "wake_conditions": wake_conditions},
+            actor=operator, where="defer")
         return task
 
     # ---- 查询 ----
@@ -177,16 +229,12 @@ class DeferredBoard:
         self._conn.execute(
             "UPDATE deferred_task SET status=?, woken_at=?, wake_reason=? WHERE task_id=?",
             [_WOKEN, _now(), reason, task.task_id])
-        try:
-            from core.event_bus import EventBus
-            EventBus(self._conn).publish(
-                "review.decided",
-                {"candidate_id": task.candidate_id, "decision": "deferred_woken",
-                 "wake_reason": reason, "rebuild_triggered": False,
-                 "needs_review": True},
-                actor="deferred")
-        except Exception:
-            pass
+        self._publish(
+            "review.decided",
+            {"candidate_id": task.candidate_id, "decision": "deferred_woken",
+             "wake_reason": reason, "rebuild_triggered": False,
+             "needs_review": True},
+            actor="deferred", where="wake")
         return DeferredTask(task_id=task.task_id, candidate_id=task.candidate_id,
                             entity_type=task.entity_type, canonical=task.canonical,
                             wake_conditions=task.wake_conditions,
@@ -194,13 +242,36 @@ class DeferredBoard:
                             created_by=task.created_by, woken_at=_now(),
                             wake_reason=reason)
 
+    def mark_condition_error(self, task: DeferredTask, reason: str) -> DeferredTask:
+        """REQ-G-005：唤醒条件无法解析 → condition_error（区别于沉睡），critical 留痕。"""
+        self._conn.execute(
+            "UPDATE deferred_task SET status=?, wake_reason=? WHERE task_id=?",
+            [_CONDITION_ERROR, reason[:400], task.task_id])
+        self.health.record(
+            "wake_condition_unparseable", "critical",
+            source=f"deferred:{task.task_id}", reason=reason,
+            candidate_id=task.candidate_id)
+        return DeferredTask(task_id=task.task_id, candidate_id=task.candidate_id,
+                            entity_type=task.entity_type, canonical=task.canonical,
+                            wake_conditions=task.wake_conditions,
+                            scheduled_at=task.scheduled_at, status=_CONDITION_ERROR,
+                            created_by=task.created_by, wake_reason=reason)
+
     def on_event(self, event) -> list[DeferredTask]:
-        """事件驱动唤醒：on_dataset / evidence_count_gte / after（按事件时间）。"""
+        """事件驱动唤醒：on_dataset / evidence_count_gte / after（按事件时间）。
+
+        REQ-G-005：条件存在但无法解析（evidence_count 非数值）时，任务转
+        condition_error 而非静默留在 waiting（永久沉睡）。
+        """
         etype = getattr(event, "type", None)
         if etype is None and isinstance(event, dict):
             etype = event.get("type", "?")
         woken = []
         for t in self.list_all(_WAITING):
+            err = condition_parse_error(t, event)
+            if err:
+                self.mark_condition_error(t, err)
+                continue
             if match_wake(t, event):
                 w = self.wake(t, reason=f"event:{etype or '?'}")
                 if w:
@@ -259,4 +330,5 @@ class DeferredBoard:
             "SELECT COUNT(*) FROM deferred_task WHERE decided_at IS NOT NULL").fetchone()[0]
         return {"total_deferred": total, "waiting": counts.get(_WAITING, 0),
                 "woken": woken, "decided_after_wake": decided,
+                "condition_error": counts.get(_CONDITION_ERROR, 0),
                 "recall_rate": round(decided / total, 4) if total else 0.0}

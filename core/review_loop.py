@@ -116,7 +116,7 @@ def _diff_findings(pre: list[dict], post: list[dict]) -> dict:
 # ----------------------------------------------------------------------
 # 主入口
 # ----------------------------------------------------------------------
-def apply_accept(store, decision, *, pack: str = "default") -> dict:
+def apply_accept(store, decision, *, pack: str = "default", health=None) -> dict:
     """处理一条 accept 决策：落映射 → 增量重建 → 重算 → finding.changed。
 
     幂等：同一 decision_id 重复应用返回首次结果，不重复重算（AC2）。
@@ -150,7 +150,8 @@ def apply_accept(store, decision, *, pack: str = "default") -> dict:
     plan = plan_from_review(conn, decision, pack=pack)
 
     # 2) 重算前快照（只跑受影响规则）
-    pre = run_rules(store, stage=None, pack=pack, rule_ids=plan.affected_rules) \
+    pre = run_rules(store, stage=None, pack=pack, rule_ids=plan.affected_rules,
+                    health=health) \
         if plan.affected_rules else []
 
     # 3) 落归并映射（受保护表）→ 增量重物化
@@ -160,7 +161,8 @@ def apply_accept(store, decision, *, pack: str = "default") -> dict:
                             actor=decision.operator or "review")
 
     # 4) 重算受影响规则 + diff
-    post = run_rules(store, stage=None, pack=pack, rule_ids=plan.affected_rules) \
+    post = run_rules(store, stage=None, pack=pack, rule_ids=plan.affected_rules,
+                     health=health) \
         if plan.affected_rules else []
     diff = _diff_findings(pre, post)
 
@@ -200,13 +202,13 @@ def apply_accept(store, decision, *, pack: str = "default") -> dict:
     return result
 
 
-def apply_decisions(store, decisions, *, pack: str = "default") -> list[dict]:
+def apply_decisions(store, decisions, *, pack: str = "default", health=None) -> list[dict]:
     """批量处理队列中的已决策候选：accept 走重建闭环，其余只写 feedback。"""
     from core.review import Decision
     out = []
     for d in decisions:
         if d.status == Decision.ACCEPTED:
-            out.append(apply_accept(store, d, pack=pack))
+            out.append(apply_accept(store, d, pack=pack, health=health))
         else:
             record_feedback(store.conn, d)
             out.append({"decision_id": d.candidate_id,

@@ -74,11 +74,69 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     actions = _load_actions(root / "actions.json", objects)
     functions = _load_functions(root / "functions.json", objects, links,
                                 required=False)
-    rules = _load_rules(root / "rules.json", functions, required=False)
+    # REQ-G-011：维度声明先于规则装载——规则的 dimension 必须是 dimensions.json
+    # 已声明的 name（缺省回落内置 5 维）；新增维度在声明文件加一项即被规则引用。
+    dim_names = load_dimensions(pack, base_dir)
+    rules = _load_rules(root / "rules.json", functions, required=False,
+                        allowed_dimensions=set(dim_names))
+    # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
+    load_enum_space(pack, base_dir)
     return OntologyPack(name=pack, objects=objects, links=links,
                         object_bindings=object_bindings,
                         link_bindings=link_bindings,
                         actions=actions, functions=functions, rules=rules)
+
+
+# REQ-G-011：维度缺省内置集（dimensions.json 缺失时回落，保证旧案件包/精简测试包兼容）
+DEFAULT_DIMENSIONS = ["资金", "通讯", "行为", "关系", "时间"]
+
+
+def _as_dim_list(v) -> list[str]:
+    """规则/假设的 dimension 可能是字符串或列表，归一为列表。"""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [v] if v else []
+    return [x for x in v if x]
+
+
+def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list[str]:
+    """返回维度名有序列表。dimensions.json 缺失 → 内置默认 5 维；存在 → 校验版本/非空。"""
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "dimensions.json"
+    if not p.exists():
+        return list(DEFAULT_DIMENSIONS)
+    data = _read_json(p)
+    dims = data.get("dimensions", [])
+    names: list[str] = []
+    seen: set[str] = set()
+    for i, d in enumerate(dims):
+        name = d.get("name") if isinstance(d, dict) else None
+        if not name:
+            raise ValueError(f"dimensions.json dimensions[{i}] 缺 name 字段")
+        if name in seen:
+            raise ValueError(f"dimensions.json 维度名重复：{name}")
+        seen.add(name)
+        names.append(name)
+    if not names:
+        raise ValueError("dimensions.json 声明为空：至少需要一个维度（REQ-G-011）")
+    return names
+
+
+def load_enum_space(pack: str = "default", base_dir: Path | None = None) -> dict | None:
+    """返回枚举空间 dict；enum_space.json 缺失 → None（调用方回落内置默认）。"""
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "enum_space.json"
+    if not p.exists():
+        return None
+    data = _read_json(p)
+    space = data.get("space", {})
+    if not isinstance(space, dict) or not space:
+        raise ValueError("enum_space.json 的 space 必须是非空对象（REQ-G-012）")
+    for k, vals in space.items():
+        if not isinstance(vals, list) or not vals:
+            raise ValueError(f"enum_space.json space.{k} 必须是非空数组")
+    return space
 
 
 def _read_json(path: Path) -> dict:
@@ -99,6 +157,14 @@ def _require(d: dict, keys: tuple, ctx: str) -> None:
     for k in keys:
         if k not in d or d[k] in (None, ""):
             raise ValueError(f"ontology 声明 {ctx} 缺必填字段：{k}")
+
+
+def _parse_jian(d: dict, ctx: str) -> tuple[str, str]:
+    """REQ-G-013：读取可选 jian/jian_source；jian 非空时必须在五间枚举内（非法硬失败）。"""
+    jian = (d.get("jian") or "").strip()
+    if jian and jian not in ALLOWED_JIAN:
+        raise ValueError(f"{ctx} jian='{jian}' 非法，允许 {sorted(ALLOWED_JIAN)}（REQ-G-013）")
+    return jian, (d.get("jian_source") or "").strip()
 
 
 # ----------------------------------------------------------------------
@@ -156,11 +222,13 @@ def _load_objects(path: Path) -> list[ObjectType]:
                     f"{ctx}（{name}）属性 '{p}' 声明为 enum 但未声明 enum_values"
                     f"（REQ-041 AC2：enum 属性必须有白名单）")
 
+        jian, jian_source = _parse_jian(o, f"{ctx}（{name}）")
         out.append(ObjectType(
             name=name, title=o.get("title", name), pk=o["pk"], kind=kind,
             name_property=name_prop, properties=dict(props),
             runtime=bool(o.get("runtime", False)),
             enum_values=enum_values,
+            jian=jian, jian_source=jian_source,
         ))
     return out
 
@@ -192,12 +260,56 @@ def _load_links(path: Path, objects: list[ObjectType]) -> list[LinkType]:
         bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
         if bad:
             raise ValueError(f"{ctx}（{name}）边属性类型非法：{bad}，允许 {TYPE_NAMES}")
+        jian, jian_source = _parse_jian(l, f"{ctx}（{name}）")
+        endpoints = _parse_endpoints(l, f"{ctx}（{name}）", obj_names)
         out.append(LinkType(
             name=name, title=l.get("title", name),
             from_obj=l["from_obj"], to_obj=l["to_obj"],
             properties=dict(props),
             runtime=bool(l.get("runtime", False)),
+            jian=jian, jian_source=jian_source,
+            endpoints=endpoints,
         ))
+    return out
+
+
+def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
+    """REQ-G-015：解析图导出端点声明（可选）。
+
+    形态：{"from": {"col": "<lnk 列>", "ref": {"object","key","name"}?},
+           "to":   {...}, "extra": ["直传边属性列", ...]}
+    col 为 lnk_<link> 中直接可读的端点列；ref 存在表示该列是代理键，需 JOIN
+    obj_<object> 按 key 取 name 列（导出边端点名）。非法结构装载期硬失败。
+    """
+    ep = l.get("endpoints")
+    if ep is None:
+        return {}
+    if not isinstance(ep, dict):
+        raise ValueError(f"{ctx} endpoints 必须是对象")
+    out: dict = {}
+    for side in ("from", "to"):
+        e = ep.get(side)
+        if not isinstance(e, dict) or not e.get("col"):
+            raise ValueError(f"{ctx} endpoints.{side} 必须含非空 'col'")
+        ref = e.get("ref")
+        ref_out = None
+        if ref is not None:
+            if not isinstance(ref, dict):
+                raise ValueError(f"{ctx} endpoints.{side}.ref 必须是对象")
+            for k in ("object", "key", "name"):
+                if not ref.get(k):
+                    raise ValueError(f"{ctx} endpoints.{side}.ref 缺 '{k}'")
+            if ref["object"] not in obj_names:
+                raise ValueError(
+                    f"{ctx} endpoints.{side}.ref.object='{ref['object']}' 未在 objects 声明")
+            ref_out = {"object": ref["object"], "key": ref["key"],
+                       "name": ref["name"]}
+        out[side] = {"col": e["col"], "ref": ref_out}
+    extra = ep.get("extra", [])
+    if extra is not None:
+        if not isinstance(extra, list) or not all(isinstance(x, str) and x for x in extra):
+            raise ValueError(f"{ctx} endpoints.extra 必须是非空字符串数组")
+        out["extra"] = list(extra)
     return out
 
 
@@ -478,13 +590,16 @@ def _validate_assumption(assumption: str, ctx: str, rid: str) -> str:
 
 
 def _load_rules(path: Path, functions: dict[str, FunctionSpec],
-                required: bool) -> dict[str, RuleSpec]:
+                required: bool,
+                allowed_dimensions: set | None = None) -> dict[str, RuleSpec]:
     if not path.exists():
         if required:
             raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
         return {}
     data = _read_json(path)
     from core import functions as fn_mod
+    # REQ-G-011：合法维度集来自 dimensions.json 声明（缺省回落内置 5 维）
+    _dims = allowed_dimensions if allowed_dimensions is not None else set(DEFAULT_DIMENSIONS)
 
     out: dict[str, RuleSpec] = {}
     for i, r in enumerate(data.get("rules", [])):
@@ -497,8 +612,9 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
         if stage not in ALLOWED_RULE_STAGES:
             raise ValueError(f"{ctx}（{rid}）stage='{stage}' 非法，允许 {sorted(ALLOWED_RULE_STAGES)}")
         dimension = r.get("dimension", "")
-        if dimension and dimension not in ALLOWED_DIMENSIONS:
-            raise ValueError(f"{ctx}（{rid}）dimension='{dimension}' 非法，允许 {sorted(ALLOWED_DIMENSIONS)}")
+        if dimension and dimension not in _dims:
+            raise ValueError(f"{ctx}（{rid}）dimension='{dimension}' 非法，"
+                             f"须在 dimensions.json 声明，可用 {sorted(_dims)}（REQ-G-011）")
         jian = tuple(r.get("jian_types", []))
         bad_jian = set(jian) - ALLOWED_JIAN
         if bad_jian:
@@ -535,6 +651,7 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             primary_rule=bool(r.get("primary_rule", False)),
             overlap_resolution=r.get("overlap_resolution") or None,
             excludes=tuple(r.get("excludes") or ()),
+            zero_is_clean=bool(r.get("zero_is_clean", False)),
         )
         ol = out[rid].overlap_resolution
         if ol not in ALLOWED_OVERLAP_RESOLUTION:

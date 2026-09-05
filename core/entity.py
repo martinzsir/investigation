@@ -360,12 +360,17 @@ def build_org_table_from_duckdb(
 
 
 def apply_org_to_duckdb(store_or_conn, org: OrganizationResolver,
-                        tables: List[str], name_columns: List[str]) -> int:
+                        tables: List[str], name_columns: List[str],
+                        health=None) -> int:
     """
     把 canonical_组织 列回写到业务表（与 entity_bridge.apply_to_duckdb 对称）。
     仅回写 confidence>=1.0 的强合并；前缀候选保留原名，等正兵确认后再合入。
     返回新增 canonical 列涉及的组织名数量。
+
+    REQ-G-006：缺表/缺列跳过不再静默——落 entity_table_skipped 诊断（info）。
     """
+    from core.run_health import get_health
+    health = get_health(health)
     conn = getattr(store_or_conn, "conn", store_or_conn)
     strong = org.mapping()
     if not strong:
@@ -379,10 +384,17 @@ def apply_org_to_duckdb(store_or_conn, org: OrganizationResolver,
         # 缺失列跳过而非抛错，保证「部分表对齐」不阻断整条管线。
         try:
             available = {r[0] for r in conn.execute(f'DESCRIBE "{table}"').fetchall()}
-        except Exception:
+        except Exception as e:
+            health.record("entity_table_skipped", "info",
+                          source=f"table:{table}",
+                          reason=f"组织回写跳过：表不可查（{str(e)[:80]}）", table=table)
             continue   # 表不存在则跳过该表
         for col in name_columns:
             if col not in available:
+                health.record("entity_table_skipped", "info",
+                              source=f"table:{table}.{col}",
+                              reason=f"组织回写跳过：表 {table} 缺列 {col}",
+                              table=table, column=col)
                 continue
             canon_col = f"canonical_org_{col}"
             conn.execute(f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{canon_col}" VARCHAR')
@@ -540,7 +552,7 @@ def _report(self):
     }
 
 
-def _load_person_resolver():
+def _load_person_resolver(health=None):
     """
     定位并导入根包的 EntityResolver。
     搜索顺序：
@@ -548,7 +560,11 @@ def _load_person_resolver():
          —— 用绝对路径加载，避免被「同名 skills / 其他包」遮蔽 sys.path。
       2. 回退到普通 import（兼容 pip 安装的场景）。
     返回 EntityResolver 类，找不到则返回 None（人名对齐降级）。
+
+    REQ-G-006：插件加载失败/回退内置规则不再静默——落 entity_plugin_failed（warning）。
     """
+    from core.run_health import get_health
+    health = get_health(health)
     import importlib.util
     here = Path(__file__).resolve().parent          # .../core
     candidates = [
@@ -574,15 +590,22 @@ def _load_person_resolver():
             sys.modules[mod_name] = module
             try:
                 spec.loader.exec_module(module)
-            except Exception:
+            except Exception as e:
                 sys.modules.pop(mod_name, None)
+                health.record("entity_plugin_failed", "warning",
+                              source=f"plugin:{src.name}",
+                              reason=f"实体解析插件加载失败，回退内置规则：{str(e)[:100]}",
+                              plugin=str(src))
                 continue
             return getattr(module, "EntityResolver", None)
     # 回退：普通 import（pip 安装场景）
     try:
         from entity_resolution import EntityResolver as _ER  # type: ignore
         return _ER
-    except ImportError:
+    except ImportError as e:
+        health.record("entity_plugin_failed", "info",
+                      source="plugin:entity_resolution",
+                      reason=f"未安装实体解析插件，人名对齐降级：{str(e)[:80]}")
         return None
 
 
@@ -610,7 +633,8 @@ _inject_person_api()
 # 与现有人名对齐的联合入口（供 main 管线调用）
 # ----------------------------------------------------------------------
 def run_entity_resolution(store: Store, alias_dict: Optional[Dict[str, List[str]]] = None,
-                          org_alias_dict: Optional[Dict[str, List[str]]] = None) -> dict:
+                          org_alias_dict: Optional[Dict[str, List[str]]] = None,
+                          health=None) -> dict:
     """
     一站式实体对齐：人名（person）+ 组织（org）一起跑，产出统一映射。
     接入位置：DataIngestManager 之后、首轮 skill_invoke 之前。
@@ -619,9 +643,11 @@ def run_entity_resolution(store: Store, alias_dict: Optional[Dict[str, List[str]
         {"person": EntityResolver, "org": OrganizationResolver,
          "person_mapping": {...}, "org_mapping": {...}}
     """
+    from core.run_health import get_health
+    health = get_health(health)
     # 延迟导入：避免 core 包循环引用
     from .registry import _resolve_person_from_store  # 见 registry.py 新增函数
-    person_resolver = _resolve_person_from_store(store)
+    person_resolver = _resolve_person_from_store(store, health=health)
     if alias_dict:
         person_resolver.add_aliases(alias_dict)
     person_resolver.resolve()

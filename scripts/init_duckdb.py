@@ -5,13 +5,57 @@ scripts/init_duckdb.py
 - 建物化视图 mv_quarterly_integer_deposits
 - 从 L3 Parquet 分区加载数据，零 ETL
 替代原 StarRocks 温层的全部职责。
+
+REQ-G-014：冷层业务表不再硬编码，改由 ontology 案件包推导——
+物理表名取 bindings.object_bindings[].source.table，列名取 source.columns 的源列，
+列类型由 objects.json 属性值类型映射（与语义层 TYPE_SQL 同口径）。
+预聚合表依赖具体业务列，属温层优化，保持手工。
+**红线 AC4**：本脚本不 import core（避免冷层→语义层循环依赖），类型映射为独立最小常量。
 """
 
+import json
+import re
 from pathlib import Path
 import duckdb
 
 DB = "investigation.duckdb"
 DATA = Path(__file__).parent.parent / "data"
+ONTOLOGY = Path(__file__).parent.parent / "ontology" / "default"
+
+# 与 core.ontology.TYPE_SQL 同口径的独立最小映射（脚本层不得 import core，AC4）
+_TYPE_SQL = {
+    "string": "VARCHAR", "integer": "BIGINT", "decimal": "DOUBLE",
+    "date": "DATE", "boolean": "BOOLEAN", "timestamp": "TIMESTAMP",
+    "duration_days": "INTEGER", "enum": "VARCHAR",
+}
+_CJK = re.compile(r"[一-鿿]")
+
+
+def _derived_cold_tables(ontology_dir: Path = ONTOLOGY) -> dict[str, dict[str, str]]:
+    """从 objects.json + bindings.json 推导冷层业务表 {表名: {源列: 列类型}}。
+
+    仅取结构化 source 绑定、且表名含中文的业务冷层表（跳过 core 自建的 ASCII 蛇形
+    内部表，如 clue_disposal_status——其建表/主键/ON CONFLICT 由 core.lineage 负责）。
+    同一表被多个对象绑定时取列并集。
+    """
+    objects = json.loads((ontology_dir / "objects.json").read_text(encoding="utf-8"))
+    bindings = json.loads((ontology_dir / "bindings.json").read_text(encoding="utf-8"))
+    prop_types = {o["name"]: o.get("properties", {})
+                  for o in objects.get("objects", [])}
+    tables: dict[str, dict[str, str]] = {}
+    for b in bindings.get("object_bindings", []):
+        src = b.get("source")
+        if not src:
+            continue
+        table = src.get("table")
+        if not table or not _CJK.search(str(table)):
+            continue  # 仅业务冷层表；core 内部表（ASCII 蛇形）不在此建
+        oprops = prop_types.get(b.get("object"), {})
+        cols = tables.setdefault(table, {})
+        for alias, raw_col in (src.get("columns") or {}).items():
+            cols.setdefault(raw_col, _TYPE_SQL.get(oprops.get(alias, "string"),
+                                                   "VARCHAR"))
+    return tables
 
 
 def main():
@@ -22,48 +66,24 @@ def main():
     con.execute("CREATE OR REPLACE VIEW v_flow AS SELECT * FROM read_parquet('data/银行流水.parquet')")
     con.execute("CREATE OR REPLACE VIEW v_calls AS SELECT * FROM read_parquet('data/通话记录.parquet')")
 
-    # 业务表：技能与实体对齐都以「业务表名」为契约（银行流水/工商信息/...），
-    # 此处把 L3 Parquet 统一挂成同名表。
+    # 业务表（REQ-G-014 声明推导）：表名/列名/列类型均来自 ontology 案件包。
     # 用 CTAS 实体表而非视图：apply_org_to_duckdb 需要 ALTER TABLE 加 canonical_org_* 列，
     # 视图只能走 ALTER VIEW，无法承载写入。
-    # 注：2000 亿行场景应改为「视图 + 旁路映射表 join」避免物化开销，此处演示数据直接 CTAS。
-    for name in ["银行流水", "通话记录", "招投标档案", "工商信息", "轨迹出行"]:
-        p = DATA / f"{name}.parquet"
-        if not p.exists():
-            continue
-        con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
-
-    # ── 后期接入型数据源：缺文件时按约定 schema 建空表（保证语义层编译不中断），
-    #    数据到达后重跑 init_duckdb 即可自动替换；旧版本「仅 内容」列 parquet 向后兼容。 ──
-    _FALLBACK_SCHEMAS = {
-        "公开OSINT": """CREATE OR REPLACE TABLE "公开OSINT" (
-            主体 VARCHAR, 公开信息 VARCHAR, 发布日期 DATE, 来源 VARCHAR
-        )""",
-        "举报材料": """CREATE OR REPLACE TABLE "举报材料" (
-            举报日期 DATE, 分类 VARCHAR, 被举报人 VARCHAR, 举报人 VARCHAR, 内容 VARCHAR
-        )""",
-    }
-    for name, ddl in _FALLBACK_SCHEMAS.items():
+    # - Parquet 存在：CTAS 真实数据，再 ALTER 补齐声明但 parquet 缺的列（旧版单列向后兼容）；
+    # - Parquet 缺失：按推导出的列类型建空表（新数据源仅在 bindings 声明即可建表，AC1）。
+    for name, col_types in _derived_cold_tables().items():
         p = DATA / f"{name}.parquet"
         if p.exists():
-            # 真实数据优先，但列可能少于 schema（向后兼容单列表）：
-            # 先用 parquet 列建表，再 ALTER 补齐缺失列（不影响已存数据），
-            # 这样「内容」旧版本 parquet 也能兼容。
             con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
-            # 拿实际列集：DESCRIBE 列顺序 (column_name, column_type, null, key, default, extra)
             actual = {row[0] for row in con.execute(f'DESCRIBE "{name}"').fetchall()}
-            expected_types = {
-                "公开OSINT": {"主体":"VARCHAR","公开信息":"VARCHAR","发布日期":"DATE","来源":"VARCHAR",
-                              "采集时间":"TIMESTAMP","保留天数":"INTEGER"},
-                "举报材料": {"举报日期":"DATE","分类":"VARCHAR","被举报人":"VARCHAR","举报人":"VARCHAR","内容":"VARCHAR"},
-            }[name]
-            for col, typ in expected_types.items():
+            for col, typ in col_types.items():
                 if col not in actual:
                     con.execute(f'ALTER TABLE "{name}" ADD COLUMN "{col}" {typ}')
         else:
-            con.execute(ddl)
+            cols_ddl = ", ".join(f'"{c}" {t}' for c, t in col_types.items())
+            con.execute(f'CREATE OR REPLACE TABLE "{name}" ({cols_ddl})')
 
-    # 预聚合表：主体×月（温层核心，替代 StarRocks mv）
+    # 预聚合表：主体×月（温层核心，替代 StarRocks mv，保持手工——依赖具体业务列）
     con.execute("""
         CREATE OR REPLACE TABLE agg_subject_month AS
         SELECT 主体, date_trunc('month', 日期::DATE) AS ym, COUNT(*) AS cnt, SUM(金额) AS total

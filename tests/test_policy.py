@@ -107,6 +107,7 @@ class TestPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "policies.json"
             p.write_text(json.dumps({
+                "schema_version": 2,
                 "roles": {"管理员": 5},
                 "object_policies": [{"object": "person", "roles": ["管理员"],
                                      "min_clearance": 0}],

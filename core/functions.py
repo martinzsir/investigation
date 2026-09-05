@@ -43,6 +43,21 @@ def _is_missing_semantic_table(exc: BaseException) -> bool:
         re.search(r"\b(?:obj_|lnk_)[a-z_]+", msg))
 
 
+def _is_structural_degrade(exc: BaseException) -> bool:
+    """REQ-G-003：结构降级判据（加宽版）。
+
+    语义表缺失（CatalogException，表不存在）**或** 语义表在但列缺失/绑定失败
+    （BinderException，数据源接入但 schema 不符）——只要引用到 obj_*/lnk_* 语义层，
+    一律降级零命中并留痕，而非让整条规则崩掉。其余异常（真实 bug/语法错）照抛。
+    """
+    msg = str(exc)
+    if not re.search(r"\b(?:obj_|lnk_)[a-z_]+", msg):
+        return False
+    if isinstance(exc, (duckdb.CatalogException, duckdb.BinderException)):
+        return True
+    return False
+
+
 # ----------------------------------------------------------------------
 # SQL 模板参数（{{param}}）：规则 rules.json 的 params 经此安全注入 SQL
 # ----------------------------------------------------------------------
@@ -225,25 +240,40 @@ def _call_pair_coverage(store, params: dict) -> dict:
 
 
 # ---- 用间：五间交叉等级（语义代理表非空即命中）----
-_JIAN_MAP = {
-    "obj_transaction": ("生间", "银行流水"),
-    "obj_bid_project": ("因间", "招投标档案"),
-    "obj_call": ("生间", "通话记录"),
-    "obj_trackpoint": ("生间", "轨迹出行"),
-    "obj_org": ("死间", "工商信息"),
-    "lnk_time_window": ("反间", "银行流水(过桥)"),
-    "obj_tipoff": ("内间", "举报材料"),
-    "obj_osint_article": ("死间", "公开OSINT"),
-}
+# REQ-G-013：对象→间类映射不再硬编码于此处，改由 objects.json/links.json 的
+# `jian`/`jian_source` 字段声明（loader 校验五间枚举）。**红线**：交叉等级规则
+# （单源=观察/双源=线索/三源=可立案依据候选）与间类展示顺序 _JIAN_ORDER 保持硬编码，不进配置。
 _JIAN_ORDER = ["因间", "内间", "反间", "死间", "生间"]
 # 在册但语义层未建模的数据源（诚实暴露缺口，不充数）——tipoff/osint 已建模则从缺口移除
 _UNMODELED: dict[str, list[str]] = {}
 
 
+def _jian_entries(pack: str) -> list[tuple[str, str, str]]:
+    """从案件包声明收集五间数据源 → [(语义表名, 间类, 数据源展示名), ...]。
+
+    obj_<name>/lnk_<name> 的 jian 非空才纳入；jian_source 缺省回落对象/链接 title。
+    装载失败/精简测试包无声明 → 空列表（不硬编码业务表名，缺口如实呈现）。
+    """
+    try:
+        from core.ontology_loader import load_pack
+        spec = load_pack(pack)
+    except Exception:
+        return []
+    entries: list[tuple[str, str, str]] = []
+    for o in spec.objects:
+        if o.jian:
+            entries.append((f"obj_{o.name}", o.jian, o.jian_source or o.title))
+    for l in spec.links:
+        if l.jian:
+            entries.append((f"lnk_{l.name}", l.jian, l.jian_source or l.title))
+    return entries
+
+
 @register_function("jian_cross_level")
 def _jian_cross_level(store, params: dict) -> dict:
+    entries = _jian_entries(params.get("pack", "default"))
     hits: dict[str, list[str]] = {}
-    for table, (jian, src) in _JIAN_MAP.items():
+    for table, jian, src in entries:
         try:
             n = store.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]
         except Exception:
@@ -252,11 +282,12 @@ def _jian_cross_level(store, params: dict) -> dict:
             hits.setdefault(jian, []).append(f"{src}→{table}({n}行)")
     # 计算总数据源集合（含未建模缺口提示）
     src_by_jian: dict[str, list[str]] = {}
-    for _t, (jn, s) in _JIAN_MAP.items():
+    for _t, jn, s in entries:
         src_by_jian.setdefault(jn, []).append(s)
     for jn, extras in _UNMODELED.items():
         src_by_jian.setdefault(jn, []).extend(extras)
     n = len(hits)
+    # 红线：等级规则硬编码，不读配置
     level = "可立案依据候选" if n >= 3 else ("线索" if n == 2 else "观察")
     rows = [
         {"间": j, "数据源": src_by_jian.get(j, []),
@@ -342,14 +373,23 @@ def _tipoff_cross_reference(store, params: dict) -> dict:
 
 # ---- 关系维度：工商登记利益关联（R5，REQ-024 知识包参数化）----
 def load_case_knowledge(pack: str = "default") -> dict:
-    """加载 ontology/<pack>/case_knowledge.json；无知识包时返回空骨架（零命中不报错）。"""
+    """加载 ontology/<pack>/case_knowledge.json；无知识包时返回空骨架（零命中不报错）。
+
+    REQ-G-016：知识包存在时必须带 schema_version=2（与其余 ontology 声明同源）；
+    版本不符/缺失硬失败，防止旧版知识包被静默装载。文件缺失仍回落空骨架（config_missing）。
+    """
     import json
-    from core.ontology_loader import PACK_ROOT
+    from core.ontology_loader import PACK_ROOT, SCHEMA_VERSION
     p = PACK_ROOT / pack / "case_knowledge.json"
     if not p.exists():
         return {"knowledge_version": None, "subject_aliases": {},
                 "relation_assertions": []}
-    return json.loads(p.read_text(encoding="utf-8"))
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"case_knowledge.json schema_version={data.get('schema_version')}，"
+            f"期望 {SCHEMA_VERSION}（REQ-G-016）；请升级知识包声明")
+    return data
 
 
 @register_function("org_interest_links")
@@ -414,7 +454,7 @@ def _overpass_two_hop(store, params: dict) -> dict:
 class FunctionExecutor:
     """按 functions.json 声明执行只读计算。"""
 
-    def __init__(self, store, pack: str = "default", access=None):
+    def __init__(self, store, pack: str = "default", access=None, health=None):
         self.store = store
         self.pack = pack
         # REQ-009：access=None → system 旁路（既有调用行为不变）
@@ -422,6 +462,9 @@ class FunctionExecutor:
         self.access = access if access is not None else system_context()
         from core.policy import PolicyEngine
         self.policy = PolicyEngine(pack)
+        # REQ-G-010：运行诊断（None → NullRunHealth，既有调用零行为变化）
+        from core.run_health import get_health
+        self.health = get_health(health)
 
     def _specs(self) -> dict:
         return load_pack(self.pack).functions
@@ -463,18 +506,33 @@ class FunctionExecutor:
                 return {"function": name, "output_type": spec.output_type,
                         "rows": rows, "readonly": True, "params_used": params_used}
             result = FUNCTION_IMPLS[spec.impl_ref](self.store, merged)
-            return {"function": name, "output_type": spec.output_type,
-                    "result": result, "readonly": True}
-        except duckdb.CatalogException as e:
-            if not _is_missing_semantic_table(e):
+            out = {"function": name, "output_type": spec.output_type,
+                   "result": result, "readonly": True}
+            # REQ-G-003：py 实现可自报降级（配置缺失/引用解析失败导致无法计算）
+            if isinstance(result, dict) and result.get("degraded"):
+                out["degraded"] = True
+                out["degraded_reason"] = result.get("degraded_reason") or "py 函数自报降级"
+                self.health.record(
+                    "function_empty_degraded", "warning",
+                    source=f"function:{name}",
+                    reason=out["degraded_reason"], impl=spec.impl_ref)
+            return out
+        except (duckdb.CatalogException, duckdb.BinderException) as e:
+            if not _is_structural_degrade(e):
                 raise
-            # 降级（REQ-020 golden 降级场景）：函数消费的 obj_*/lnk_* 语义表不存在
-            # （数据源未接入 → 编译器跳过绑定），零命中返回而非报错；带 degraded 标记可审计。
+            # 降级（REQ-020 golden / REQ-G-003 加宽）：函数消费的 obj_*/lnk_* 语义表
+            # 不存在（Catalog）或表在但列缺失/绑定失败（Binder）——数据源未接入或 schema 不符，
+            # 零命中返回而非报错；带 degraded 标记可审计，并落运行诊断。
+            reason = str(e).splitlines()[0][:120]
+            self.health.record(
+                "function_empty_degraded", "warning",
+                source=f"function:{name}", reason=reason,
+                exc=type(e).__name__)
             return {"function": name, "output_type": spec.output_type,
                     "rows": [] if spec.impl == "sql" else None,
                     "result": None if spec.impl == "sql" else {"hit": False, "pairs": []},
                     "readonly": True, "degraded": True,
-                    "degraded_reason": str(e).splitlines()[0][:120],
+                    "degraded_reason": reason,
                     "params_used": params_used}
 
 
@@ -482,3 +540,10 @@ def invoke_function(store, name: str, params: dict | None = None,
                     pack: str = "default") -> dict:
     """模块级便捷入口。"""
     return FunctionExecutor(store, pack).invoke(name, params)
+
+
+# REQ-G-021：地点标准化/同框 Function。实现独立在 core/geo.py（纯离线、只读、无网络）；
+# 在此注册进 FUNCTION_IMPLS，供 functions.json 的 impl_ref 挂钩（loader 装载期校验存在）。
+from core import geo as _geo  # noqa: E402
+
+register_function("location_colocated")(_geo.location_colocated)

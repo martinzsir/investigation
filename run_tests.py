@@ -110,6 +110,26 @@ GROUPS = {
     "views":       ("REQ-046 Object Views 按角色投影", [sys.executable, "-m", "unittest", "tests.test_views"]),
     "benchmarks":  ("REQ-045 性能基准", [sys.executable, "-m", "unittest", "tests.test_benchmarks"]),
     "llm":         ("REQ-034~037 LLM 草案/解释/对齐/意图", [sys.executable, "-m", "unittest", "tests.test_llm_draft"]),
+    # ---- REQ-G 统一降级协议（第一波：底座留痕）----
+    "runhealth":   ("REQ-G-010 运行诊断/健康度层", [sys.executable, "-m", "unittest", "tests.test_run_health"]),
+    "rulezerodiag":("REQ-G-002 规则零命中诊断", [sys.executable, "-m", "unittest", "tests.test_rule_zero_diag"]),
+    "emptydegrade":("REQ-G-003 函数空转/结构降级", [sys.executable, "-m", "unittest", "tests.test_empty_degrade"]),
+    "eventtrace":  ("REQ-G-004 事件发布留痕", [sys.executable, "-m", "unittest", "tests.test_event_trace"]),
+    "wakecond":    ("REQ-G-005 唤醒条件不可解析", [sys.executable, "-m", "unittest", "tests.test_wake_condition"]),
+    "entitytrace": ("REQ-G-006 实体解析跳过/插件留痕", [sys.executable, "-m", "unittest", "tests.test_entity_trace"]),
+    "versionanchor":("REQ-G-007/001 版本锚定+缓存失效令牌", [sys.executable, "-m", "unittest", "tests.test_version_anchor", "tests.test_derived"]),
+    # ---- REQ-G 统一降级协议（第二波：治理口径）----
+    "policyversion":("REQ-G-016 policies/case_knowledge 版本收口", [sys.executable, "-m", "unittest", "tests.test_policy_version"]),
+    "dimecoverage": ("REQ-G-008/009 维度覆盖双轨+阈值边界", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
+    "overridealert":("REQ-G-017 规则推翻率告警", [sys.executable, "-m", "unittest", "tests.test_override_alert"]),
+    "auditinteg":   ("REQ-G-018 审计链完备性自检", [sys.executable, "-m", "unittest", "tests.test_audit_integrity"]),
+    "dispatchfailclosed":("REQ-G-020 派发 fail-closed", [sys.executable, "-m", "unittest", "tests.test_dispatch_failclosed"]),
+    # ---- REQ-G 统一降级协议（第三波：声明化）----
+    "declconfig":  ("REQ-G-011/012/013 维度/枚举/间类声明化", [sys.executable, "-m", "unittest", "tests.test_decl_config"]),
+    "anomalychannel":("REQ-G-019 异常线索通道（不参与交叉）", [sys.executable, "-m", "unittest", "tests.test_anomaly_channel"]),
+    "geo":         ("REQ-G-021 地点标准化/同框 Function", [sys.executable, "-m", "unittest", "tests.test_geo"]),
+    "initcold":    ("REQ-G-014 冷层建表声明推导", [sys.executable, "-m", "unittest", "tests.test_init_cold"]),
+    "exportendpoints":("REQ-G-015 端点列名声明化/导出通用化", [sys.executable, "-m", "unittest", "tests.test_export_endpoints"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 

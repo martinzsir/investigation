@@ -79,8 +79,11 @@ def _clue_status(conn, clue_id: str) -> str | None:
 def settle_fragment(conn, *, clue_id: str, rule_id: str, outcome: str,
                     legal_basis: str, operator: str, pattern: str,
                     evidence: dict | None = None, confidence: float | None = None,
-                    case_id: str = "default", pack: str = "default") -> str:
+                    case_id: str = "default", pack: str = "default",
+                    health=None) -> str:
     """四质量门通过后沉淀案例片段，返回 fragment_id；不过抛 CaseLibraryError。"""
+    from core.run_health import get_health
+    health = get_health(health)
     ensure_case_fragment(conn)
     errors: list[str] = []
 
@@ -139,7 +142,13 @@ def settle_fragment(conn, *, clue_id: str, rule_id: str, outcome: str,
     try:
         from core.ontology_version import current_version
         ov = current_version(conn, pack).ontology_version
-    except Exception:
+    except Exception as e:
+        # REQ-G-007：版本锚点缺失回退 unknown 不崩，但留痕。
+        health.record(
+            "version_anchor_missing", "warning",
+            source="case_library:ontology_version",
+            reason=f"案例片段 {rule_id} 取 ontology 版本锚点失败：{str(e)[:80]}",
+            rule_id=rule_id)
         ov = "unknown"
 
     fragment_id = "cf-" + uuid.uuid4().hex[:12]

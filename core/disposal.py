@@ -32,11 +32,12 @@ class DisposalBoard:
     角色校验 / 必填参数 / 状态机校验 / 副作用（含 obj_decision 决策对象）。
     """
 
-    def __init__(self, clues: list[LineageClue], store=None, pack: str = "default"):
+    def __init__(self, clues: list[LineageClue], store=None, pack: str = "default",
+                 health=None):
         self.clues: dict[str, LineageClue] = {c.clue_id: c for c in clues}
         self.store = store  # Store 实例（含 .conn），可选
         from core.action_executor import ActionExecutor
-        self.executor = ActionExecutor(store, pack=pack)
+        self.executor = ActionExecutor(store, pack=pack, health=health)
 
     # ---- 查询 ----
     def get(self, clue_id: str) -> LineageClue:

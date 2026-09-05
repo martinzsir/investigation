@@ -91,6 +91,18 @@
       "description": "用间：语义代理表非空即命中；单源=观察/双源=线索/三源+=可立案依据候选；未建模数据源诚实标缺口"
     },
     {
+      "name": "location_colocated",
+      "title": "地点同框判定（标准化/距离）",
+      "inputs": [],
+      "parameters": {
+        "radius_m": {"type": "integer", "default": 200, "description": "坐标可用时的同框距离阈值（米）；无坐标时按路名主干判同"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "location_colocated",
+      "description": "行为维度 REQ-G-021：地点标准化（去 K 桩号/方位/距离修饰、提路名主干）+ 可选坐标距离；loc_a/loc_b 自由文本由编排层传入；无坐标/无法解析时降级标注不报错"
+    },
+    {
       "name": "tipoff_cross_reference",
       "title": "举报线索与已知证据交叉",
       "inputs": ["obj_tipoff", "lnk_tipoff_targets_person", "lnk_owns", "lnk_involved_in", "obj_org", "obj_person"],

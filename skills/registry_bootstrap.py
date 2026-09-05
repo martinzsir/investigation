@@ -120,14 +120,18 @@ def make_handler(skill_id: str, run_fn):
     """
     adapter = _ADAPTERS.get(skill_id, _clue_default)
 
-    def handler(miao=None, store=None, ctx=None, params=None) -> list[LineageClue]:
+    def handler(miao=None, store=None, ctx=None, params=None, health=None) -> list[LineageClue]:
         ctx = ctx or {}
         # 各技能 run() 签名不完全一致，用 kwargs 兼容
         sig = {"ctx": ctx}
-        if "store" in _run_param_names(run_fn):
+        names = _run_param_names(run_fn)
+        if "store" in names:
             sig["store"] = store
-        if "miao" in _run_param_names(run_fn):
+        if "miao" in names:
             sig["miao"] = miao
+        # REQ-G-010：仅向声明了 health 形参的技能透传运行诊断（其余技能零影响）
+        if "health" in names:
+            sig["health"] = health
         result = run_fn(**sig)
         return adapter(DEFAULT_REGISTRY.skill(skill_id), result or {})
 

@@ -201,17 +201,37 @@ class TestDimensionCoverage(unittest.TestCase):
         dc = m.dimension_coverage()
         self.assertEqual(dc["score"], 0.4)
         self.assertTrue(dc["alarm"])
-        self.assertIn("假设覆盖不完整", dc["alarm_text"])
+        # REQ-G-009：报警文案枚举缺失维度名
+        self.assertIn("覆盖不完整", dc["alarm_text"])
+        self.assertIn("通讯", dc["alarm_text"])
+        self.assertIn("行为", dc["alarm_text"])
+        self.assertIn("关系", dc["alarm_text"])
         # 报警进入 report
         self.assertTrue(m.report()["dimension_coverage"]["alarm"])
 
     def test_报警阈值边界(self):
+        # REQ-G-009：4/5=0.80 仍缺 1 维 → 必须报警（阈值由严格 < 改为 <=）
         m = _miao()
-        # H1/H4(资金,时间) + H3(通讯,行为) = 4/5 → 0.8 不触发（阈值严格小于）
         m.auto_from_findings(FINDINGS[:2] + [EXT_FINDINGS[2]])
         dc = m.dimension_coverage()
         self.assertEqual(dc["score"], 0.8)
-        self.assertFalse(dc["alarm"])
+        self.assertTrue(dc["alarm"])
+        self.assertEqual(dc["missing"], ["关系"])
+
+    def test_g008_双轨口径_声明与经验分离(self):
+        """REQ-G-008：声明 5 维但实证 finding 只落 2 维 → declared_missing 空、empirical_missing 非空。"""
+        m = _full_miao()  # 假设声明覆盖全 5 维
+        # 实证 finding 只带 资金/通讯 两个维度
+        findings = [{"dimension": "资金"}, {"dimension": "通讯"}]
+        dc = m.dimension_coverage(findings)
+        self.assertEqual(dc["declared_missing"], [])
+        self.assertFalse(dc["alarm"])  # 声明轨满覆盖，不报警
+        self.assertEqual(sorted(dc["empirical_covered"]), ["资金", "通讯"])
+        self.assertIn("关系", dc["empirical_missing"])
+        self.assertIn("行为", dc["empirical_missing"])
+        # finding.dimension 为字符串也能归一
+        dc2 = m.dimension_coverage([{"dimension": "资金"}])
+        self.assertEqual(dc2["empirical_covered"], ["资金"])
 
 
 class TestPatternLibrary(unittest.TestCase):

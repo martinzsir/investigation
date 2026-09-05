@@ -257,7 +257,7 @@ def _cross_check_within_days(node: DslNode, finding_by_id: dict[str, list[dict]]
     return walk(node)
 
 
-def evaluate(store, node: DslNode, pack: str = "default") -> dict:
+def evaluate(store, node: DslNode, pack: str = "default", health=None) -> dict:
     """运行 DSL：先 run_rules 取叶 finding，再组合 + within_days 窗。
 
     返回 {hit, findings (命中的原始 finding 子集), plan, degraded_note}。
@@ -265,7 +265,8 @@ def evaluate(store, node: DslNode, pack: str = "default") -> dict:
     plan = compile(node)
     # run_rules 只跑叶规则（避免无关开销）
     from core.rules import run_rules
-    all_findings = run_rules(store, stage=None, pack=pack, rule_ids=plan.leaf_ids)
+    all_findings = run_rules(store, stage=None, pack=pack,
+                             rule_ids=plan.leaf_ids, health=health)
     by_id: dict[str, list[dict]] = {}
     for f in all_findings:
         by_id.setdefault(f["rule_id"], []).append(f)

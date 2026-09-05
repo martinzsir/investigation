@@ -87,14 +87,14 @@ class TestSchemas(unittest.TestCase):
         pol_schema = load_schema("policies")
         bad_pols = [
             # 缺必填 link_policies
-            {"schema_version": 1, "object_policies": []},
+            {"schema_version": 2, "object_policies": []},
             # min_clearance 越界（0-4）
-            {"schema_version": 1,
+            {"schema_version": 2,
              "object_policies": [{"object": "person", "roles": ["正兵"],
                                   "min_clearance": 9}],
              "link_policies": []},
             # property_policies mask 非法枚举
-            {"schema_version": 1, "object_policies": [], "link_policies": [],
+            {"schema_version": 2, "object_policies": [], "link_policies": [],
              "property_policies": [{"object": "person", "property": "id_no",
                                     "default": "deny", "allow_roles": ["主办"],
                                     "mask": "weird"}]},

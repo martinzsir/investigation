@@ -16,9 +16,9 @@ from core import Store
 from core.rules import run_rules
 
 
-def run(ctx: dict, store: Store | None = None) -> dict:
+def run(ctx: dict, store: Store | None = None, health=None) -> dict:
     store = store or Store()
-    findings = run_rules(store, stage="xu_shi")
+    findings = run_rules(store, stage="xu_shi", health=health)
     return {"虚实扫描": {
         "findings": findings,
         "备注": "只标反常，不给定性；须正兵复核；每条依据规则见 rule_id/rule_text（AI辅助推演，非证据）",

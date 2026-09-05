@@ -123,6 +123,7 @@ class TestTypeExtension(unittest.TestCase):
                        "actions.json", "functions.json"):
             (pack_dir / fname).write_text("{}", encoding="utf-8")
         (pack_dir / "policies.json").write_text(json.dumps({
+            "schema_version": 2,
             "object_policies": [{"object": "test_obj", "roles": ["system"], "min_clearance": 0}],
             "link_policies": [],
             "property_policies": []
@@ -167,6 +168,7 @@ class TestTypeExtension(unittest.TestCase):
                        "actions.json", "functions.json"):
             (pack_dir / fname).write_text("{}", encoding="utf-8")
         (pack_dir / "policies.json").write_text(json.dumps({
+            "schema_version": 2,
             "object_policies": [{"object": "test_obj", "roles": ["system"], "min_clearance": 0}],
             "link_policies": [], "property_policies": []
         }), encoding="utf-8")

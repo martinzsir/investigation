@@ -87,24 +87,59 @@ def _params_hash(params: dict) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
 
-def _source_version_set(store, obj_type: str) -> str:
-    """until_source_change 版本戳：返回 ontology 版本号+obj_* 行计数 hash。"""
+def _source_version_set(store, obj_type: str, health=None, pack: str = "default") -> str:
+    """until_source_change 版本戳：返回 ontology 版本号 + obj_* 行计数。
+
+    REQ-G-001：版本号/行数任一锚点不可靠时，**不得**返回常量令牌——那会让
+    until_source_change 的"源变才重算"判定在异常期间恒不成立、持续复用陈旧值。
+    锚点失败时改用一次性随机令牌（与任何历史令牌都不等）强制 miss 重算，并落
+    version_anchor_missing 诊断（REQ-G-007）。
+    注：缓存字典键是 params_hash（含 obj_pks），跨对象本就隔离，此处修的是
+    "同一对象自身陈旧值不重算"，非跨对象串号。
+
+    历史坑：此前误用不存在的 core.ontology.get_ontology_version（恒抛 ImportError），
+    导致版本锚点**从未真正取到**（一直 unknown），只靠行计数稳定才没出问题；
+    此处改用 REQ-001 版本时钟 core.ontology_version.current_version。
+    """
+    import uuid as _uuid
+    from core.run_health import get_health
+    health = get_health(health)
+
+    version_ok = False
+    v = None
     try:
-        from core.ontology import get_ontology_version  # type: ignore
-        v = get_ontology_version(store.conn)
+        from core.ontology_version import current_version
+        ov = current_version(getattr(store, "conn", store), pack)
+        v = getattr(ov, "ontology_version", None)
+        version_ok = bool(v) and v != "unknown"
     except Exception:
-        v = "unknown"
+        version_ok = False
+
+    count_ok = False
+    cnt = 0
     try:
         rows = store.query(f"SELECT COUNT(*) AS c FROM obj_{obj_type}")
         cnt = rows[0]["c"] if rows else 0
+        count_ok = True
     except Exception:
-        cnt = 0
-    return f"{v}::{cnt}"
+        count_ok = False
+
+    if version_ok and count_ok:
+        return f"{v}::{cnt}"
+
+    # 至少一个锚点不可靠 → 一次性令牌强制重算，绝不复用陈旧缓存
+    health.record(
+        "version_anchor_missing", "warning",
+        source=f"derived:obj_{obj_type}",
+        reason="派生属性源版本/行数锚定失败，强制重算（不使用陈旧缓存）",
+        obj_type=obj_type, version_ok=version_ok, count_ok=count_ok)
+    return f"unknown::{obj_type}::{_uuid.uuid4().hex}"
 
 
 def compute(store, obj_type: str, property_name: str,
             obj_pks: list[Any] | None = None, params: dict | None = None,
-            *, pack: str = "default", _now_fn: Callable[[], float] = time.time
+            *, pack: str = "default", _now_fn: Callable[[], float] = time.time,
+            health=None
             ) -> dict:
     """计算一个派生属性。返回 {value, computed_at, source_version_set, params_hash}。
 
@@ -125,7 +160,7 @@ def compute(store, obj_type: str, property_name: str,
         params.setdefault("obj_pks", list(obj_pks))
     ph = _params_hash(params)
     computed_at = _now_fn()
-    src_ver = _source_version_set(store, obj_type)
+    src_ver = _source_version_set(store, obj_type, health=health, pack=pack)
 
     # 检查命中缓存
     cached_entry = prop._cache.get(ph)
@@ -153,7 +188,7 @@ def compute(store, obj_type: str, property_name: str,
 
     # 白名单 Function 执行
     from core.functions import FunctionExecutor
-    fx = FunctionExecutor(store, pack)
+    fx = FunctionExecutor(store, pack, health=health)
     out = fx.invoke(prop.function, params)
     if out.get("rows") is not None:
         value = out["rows"]

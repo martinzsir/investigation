@@ -1,6 +1,10 @@
 {
   "schema_version": 2,
-  "_note": "阈值策略对象（REQ-027）：每条规则的阈值选择方法、样本要求、降级回落与夹紧范围。method=absolute 等价于规则 rules.json 中原硬编码值（向后兼容）；method=relative_median 根据样本中位数 × multiplier 自适应。",
+  "_note": "阈值策略对象（REQ-027）：每条规则的阈值选择方法、样本要求、降级回落与夹紧范围。method=absolute 等价于规则 rules.json 中原硬编码值（向后兼容）；method=relative_median 根据样本中位数 × multiplier 自适应。alerts 为全局健康度告警阈值（REQ-G-017）。",
+  "alerts": {
+    "override_rate_max": 0.5,
+    "_note": "单规则推翻率 override_count/evaluated 超过该值 → override_rate_alert（warning）：说明规则先验与人工复核严重背离，需回看判据。"
+  },
   "thresholds": [
     {
       "rule": "R1",

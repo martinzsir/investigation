@@ -65,12 +65,15 @@ def _now() -> str:
 
 
 class ActionExecutor:
-    def __init__(self, store=None, pack: str = "default", access=None):
+    def __init__(self, store=None, pack: str = "default", access=None, health=None):
         self.store = store
         self.pack = pack
         # REQ-009：access=None → system 旁路（既有调用行为不变）
         from core.access import system_context
         self.access = access if access is not None else system_context()
+        # REQ-G-010：运行诊断（None → NullRunHealth）
+        from core.run_health import get_health
+        self.health = get_health(health)
         if store is not None and hasattr(store, "conn"):
             store.conn.execute(_ACTION_REQUEST_DDL)
 
@@ -227,8 +230,18 @@ class ActionExecutor:
                 [action_id])
             result["outbox_id"] = outbox_id
             result["status"] = "pending_receipt"
-        except ImportError:
-            result["status"] = "dispatching"
+        except ImportError as e:
+            # REQ-G-020 fail-closed：派发失败不得用"dispatching 进行中"掩盖。
+            # 置 dispatch_failed 并 critical 留痕，交人工重试，而非假装在途。
+            self.store.conn.execute(
+                "UPDATE action_request SET status='dispatch_failed', last_error=? "
+                "WHERE action_id=?", [f"outbox 不可用：{str(e)[:300]}", action_id])
+            result["status"] = "dispatch_failed"
+            self.health.record(
+                "dispatch_failed", "critical",
+                source=f"action:{action_id}",
+                reason=f"派发失败（outbox 不可用）：{str(e)[:120]}",
+                action_name=spec.name, clue_id=clue.clue_id)
         self._publish("action.dispatched",
                       {"action_id": action_id, "action_name": spec.name,
                        "clue_id": clue.clue_id},
@@ -282,14 +295,21 @@ class ActionExecutor:
         return dict(zip(cols, row))
 
     def _publish(self, event_type: str, payload: dict, *, actor: str) -> None:
-        """事件总线可选接线：无 store/总线异常不阻断主流程（审计另有 audit_chain）。"""
+        """事件总线可选接线：无 store/总线异常不阻断主流程（审计另有 audit_chain）。
+
+        REQ-G-004：发布落盘失败不再静默吞——落运行诊断（warning），但不阻断主流程。
+        """
         if self.store is None or not hasattr(self.store, "conn"):
             return
         try:
             from core.event_bus import EventBus
             EventBus(self.store.conn).publish(event_type, payload, actor=actor)
-        except Exception:
-            pass
+        except Exception as e:
+            self.health.record(
+                "event_publish_failed", "warning",
+                source="action_executor:_publish",
+                reason=f"事件 {event_type} 发布失败：{str(e)[:120]}",
+                event_type=event_type)
 
 
     # ---- 副作用：创建决策对象（runtime 对象，DDL 由 objects/links 类型声明生成）----

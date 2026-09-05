@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["schema_version", "object_policies", "link_policies"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "_note": {"type": "string"},
     "roles": {
       "type": "array",

@@ -129,12 +129,25 @@ class MiaoSuan:
         "过桥": "财物通过第三方过桥",
     }
 
-    def __init__(self):
+    def __init__(self, pack: str = "default"):
         self.hypotheses: list[Hypothesis] = []
         self.ji: dict[str, str] = {}  # 知己栏（证据缺口 / 授权边界）
         self.audit: list[dict] = []   # 人机协同全程审计
         self.backlog: list[dict] = [] # 枚举候补池（未转正候选）
         self._enum_total = 0          # 最近一次枚举的组合总数
+        self._last_findings: list[dict] = []  # REQ-G-008：最近一次虚实扫描 findings（经验轨）
+        # REQ-G-011/012：维度与枚举空间改读 ontology/<pack> 声明；
+        # 声明文件缺失时回落类属性内置默认（旧案件包/精简测试包零行为变化）。
+        try:
+            from core.ontology_loader import load_dimensions, load_enum_space
+            dims = load_dimensions(pack)
+            if dims:
+                self.DIMENSIONS = dims
+            space = load_enum_space(pack)
+            if space:
+                self.ENUM_SPACE = space
+        except Exception:
+            pass  # 装载失败保留类属性默认；loader 在 build 期会对正式包硬失败
 
     def _log(self, action: str, detail: str = "") -> None:
         self.audit.append({
@@ -184,6 +197,8 @@ class MiaoSuan:
         - finding 的 source_rows 随假设留存（供证据冲突检测）
         """
         added: list[Hypothesis] = []
+        # REQ-G-008：留存原始 findings，供 dimension_coverage 经验轨口径
+        self._last_findings = list(findings or [])
         for f in findings:
             text = f"{f.get('候选虚处', '')}{f.get('依据', '')}"
             for p in (patterns or self.FINDING_PATTERNS):
@@ -244,17 +259,46 @@ class MiaoSuan:
         return {"score": round(score * 100, 1), "unused": unused}
 
     # ---------- 反遗漏规则 2（F）：五维度覆盖度 ----------
-    def dimension_coverage(self) -> dict:
-        """维度覆盖 = 已覆盖维度 / 5；<80% 触发报警。"""
-        covered = {d for h in self.hypotheses for d in h.dimension} & set(self.DIMENSIONS)
-        missing = [d for d in self.DIMENSIONS if d not in covered]
-        score = len(covered) / len(self.DIMENSIONS)
+    def dimension_coverage(self, findings: list[dict] | None = None) -> dict:
+        """维度覆盖 = 已覆盖维度 / 5。
+
+        REQ-G-008：双轨口径——
+          - 声明轨（declared）：假设里**声明**了哪些维度（理论覆盖）；
+          - 经验轨（empirical）：虚实扫描实际命中的 finding 落在哪些维度（实证覆盖）。
+        声明覆盖 ≠ 经验覆盖：假设写了维度但扫描无命中，属"有假设无证据"，须可见。
+        REQ-G-009：报警阈值 < 改为 <=（4/5=80% 仍缺 1 维，应报警）；alarm_text 枚举缺维名。
+        """
+        if findings is None:
+            findings = getattr(self, "_last_findings", None) or []
+
+        def _dims(v) -> set:
+            if v is None:
+                return set()
+            if isinstance(v, str):
+                return {v} if v else set()
+            return set(v)
+
+        declared = {d for h in self.hypotheses for d in _dims(h.dimension)} & set(self.DIMENSIONS)
+        declared_missing = [d for d in self.DIMENSIONS if d not in declared]
+        empirical = {d for f in findings for d in _dims(f.get("dimension"))} & set(self.DIMENSIONS)
+        empirical_missing = [d for d in self.DIMENSIONS if d not in empirical]
+
+        score = len(declared) / len(self.DIMENSIONS)
+        # G-009：4/5=0.80 仍缺 1 维 → 报警（< 改 <=）
+        alarm = score <= self.DIMENSION_ALARM if declared_missing else False
+        alarm_text = ""
+        if alarm:
+            alarm_text = (f"假设维度覆盖不完整（{len(declared)}/{len(self.DIMENSIONS)}），"
+                          f"缺：{'、'.join(declared_missing)}；建议补充数据或人工注入")
         return {
-            "covered": sorted(covered), "missing": missing,
-            "score": round(score, 2),
-            "alarm": score < self.DIMENSION_ALARM,
-            "alarm_text": ("假设覆盖不完整，建议补充数据或人工注入"
-                           if score < self.DIMENSION_ALARM else ""),
+            # 兼容既有键（covered/missing/score/alarm/alarm_text 语义不变）
+            "covered": sorted(declared), "missing": declared_missing,
+            "score": round(score, 2), "alarm": alarm, "alarm_text": alarm_text,
+            # G-008 双轨
+            "declared_covered": sorted(declared),
+            "declared_missing": declared_missing,
+            "empirical_covered": sorted(empirical),
+            "empirical_missing": empirical_missing,
         }
 
     # ---------- 反遗漏规则 3（H）：间类缺口 ----------

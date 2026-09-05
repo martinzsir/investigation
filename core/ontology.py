@@ -75,6 +75,8 @@ class ObjectType:
     properties: dict[str, str] = field(default_factory=dict)  # 属性名 → 值类型（TYPE_NAMES）
     runtime: bool = False              # True=运行期对象（Action 副作用创建，编译器不物化）
     enum_values: dict[str, list[str]] = field(default_factory=dict)  # REQ-041: enum 属性 → 允许值白名单
+    jian: str = ""                     # REQ-G-013：五间归类（生间/内间/反间/死间/因间），声明在类型层
+    jian_source: str = ""              # REQ-G-013：该数据源展示名（如 银行流水）；空则回落 title
 
 
 @dataclass
@@ -96,6 +98,11 @@ class LinkType:
     to_obj: str                        # 终点对象
     properties: dict[str, str] = field(default_factory=dict)  # 边属性名 → 值类型
     runtime: bool = False              # True=运行期链接（Action 副作用写入，不参与编译）
+    jian: str = ""                     # REQ-G-013：五间归类（链接维度，如过桥→反间）
+    jian_source: str = ""              # REQ-G-013：数据源展示名；空则回落 title
+    # REQ-G-015：图导出端点列名形式化。{"from": {"col","ref"?:{object,key,name}},
+    #   "to": {...}, "extra"?: [直传列名]}；导出器据此通用生成边 SQL，新增链接无需改导出脚本。
+    endpoints: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -173,6 +180,9 @@ class RuleSpec:
     primary_rule: bool = False           # 同组内最多一个 primary=True
     overlap_resolution: str | None = None  # drop_if_primary_hit | None
     excludes: tuple[str, ...] = ()       # 与其他规则声明互斥（双向一致性告警）
+    # REQ-G-002：零命中语义声明。True=分析师显式声明"本规则空结果属正常（clean_scan）"；
+    # 默认 False=空结果标 empty_result_suspect（疑似匹配失效），机器不擅自下"排除"结论。
+    zero_is_clean: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

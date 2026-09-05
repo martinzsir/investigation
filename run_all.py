@@ -36,6 +36,7 @@ sys.path.insert(0, str(ROOT))
 
 from core import Store, skill_invoke, get_registry, lineage, review
 from core.entity import run_entity_resolution, apply_org_to_duckdb
+from core.run_health import RunHealth
 from skills.registry_bootstrap import register_all
 
 
@@ -57,6 +58,11 @@ def main():
 
     store = Store()
     register_all()
+
+    # REQ-G-010：统一降级/健康度层。全管线"失败被表达成数据"的统一收口——
+    # 规则零命中、函数空转、事件发布失败、实体跳过、版本锚缺失、派发失败等落 run_diagnostic，
+    # 产物首部"健康度"小节呈现；None 兼容红线（此处显式启用）。
+    health = RunHealth(store.conn)
 
     # ===== 3. 数据接入适配层（任务①：多格式 → 统一 schema）=====
     step("3. 数据接入适配层：模拟多格式样本 → 统一 schema")
@@ -81,6 +87,7 @@ def main():
         store,
         alias_dict={"宏业建设": ["宏业建设（集团）", "宏业建设有限公司"]},
         org_alias_dict={"宏业建设": ["宏业建设第一项目部", "宏业建设（集团）"]},
+        health=health,
     )
     person = result["person"]
     org = result["org"]
@@ -93,7 +100,8 @@ def main():
     # 组织层级回写：业务表新增 canonical_org_* 列
     apply_org_to_duckdb(store, org,
                         tables=["银行流水", "招投标档案"],
-                        name_columns=["主体", "对方"])
+                        name_columns=["主体", "对方"],
+                        health=health)
 
     # ===== 5. 人工确认工作台 =====
     step("5. 人工确认工作台：needs_review 候选 → accept / reject / defer")
@@ -173,11 +181,12 @@ def main():
         "证据缺口": ["现金来源无法溯源", "A公司流水缺口95万"],
         "授权边界": ["不可查房产车辆", "不可直接接触对象"],
     }
-    miao = _build_miaosuan(store, ctx)
+    miao = _build_miaosuan(store, ctx, health=health)
 
     all_clues: list = []
     for sid in ["xu_shi", "qi_zheng", "yong_jian"]:
-        clues = skill_invoke(registry, sid, miao=miao, store=store, ctx=ctx)
+        clues = skill_invoke(registry, sid, miao=miao, store=store, ctx=ctx,
+                             health=health)
         print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
         all_clues.extend(clues)
 
@@ -202,7 +211,7 @@ def main():
     # ===== 9. 处置状态 =====
     step("9. 处置状态：状态机 + 审计链 + 持久化")
     from core.disposal import DisposalBoard
-    board = DisposalBoard(merged, store=store)
+    board = DisposalBoard(merged, store=store, health=health)
     board.restore()
     if merged:
         top = merged[0]
@@ -227,11 +236,57 @@ def main():
     # 必须在此重新生成 report：上面第 9 步改变了处置状态，
     # 若沿用第 7-8 步的旧 report，by_status 会停留在『全部待查』，与 DuckDB 真实状态矛盾。
     report = lineage.lineage_report(merged)
+    # 庙算覆盖完整性报告（维度/数据源/间类/冲突/枚举候补）——先于健康度小节计算，
+    # 维度覆盖缺口（G-008/009 双轨口径）落 coverage_gap 诊断，进入"健康度"。
+    miao_cov = miao.report(ctx["可用数据"])
+    _dc = miao_cov.get("dimension_coverage", {})
+    if _dc.get("alarm"):
+        health.record("coverage_gap", "warning",
+                      source="miaosuan:dimension",
+                      reason=_dc.get("alarm_text") or "庙算维度覆盖缺口",
+                      missing=_dc.get("missing"),
+                      empirical_missing=_dc.get("empirical_missing"))
+    # REQ-G-017：规则推翻率超阈告警；REQ-G-018：审计链完备性自检（断链/缺字段/缺号）。
+    # 二者均在健康度小节生成前完成留痕。
+    try:
+        from core.metrics import alert_override_rate
+        alert_override_rate(store.conn, health=health)
+    except Exception as e:  # 自检本身不得炸管线
+        health.record("function_empty_degraded", "info",
+                      source="metrics:override_rate",
+                      reason=f"推翻率告警自检跳过：{str(e)[:80]}")
+    try:
+        from core.audit import AuditChain
+        audit_integrity = AuditChain(store.conn, health=health).chain_integrity()
+    except Exception as e:
+        audit_integrity = {"chain_ok": False, "error": str(e)[:120]}
+        health.record("audit_integrity_gap", "warning", source="audit:chain",
+                      reason=f"审计链自检异常：{str(e)[:80]}")
+    # REQ-G-019：异常线索通道——把零命中疑似失效/函数空转/覆盖缺口转成待核实条目。
+    # 与正常线索同构但 is_anomaly=true、级别恒待核实；**绝不**并入 findings/merged，
+    # 不参与五间交叉升格（交叉只数 obj_*/lnk_* 语义表）。独立产物键 + 审计留痕。
+    anomaly_clues: list = []
+    try:
+        from core.anomaly_channel import emit_anomaly_clues
+        anomaly_clues = emit_anomaly_clues(health)  # 落 anomaly_clue_emitted 诊断
+    except Exception as e:  # 异常通道自身不得炸管线
+        health.record("function_empty_degraded", "info",
+                      source="anomaly_channel",
+                      reason=f"异常线索生成跳过：{str(e)[:80]}")
+    # REQ-G-010：健康度小节置于所有结论字段之前（运行留痕，不参与线索升格/定性）。
+    report = {"健康度": health.health_section(), **report}
     # 重新生成会丢掉 8b 挂上的图库段结果，需补回
     if graph_report:
         report["graph_overpass"] = graph_report
-    # 庙算覆盖完整性报告（维度/数据源/间类/冲突/枚举候补）
-    report["miao_coverage"] = miao.report(ctx["可用数据"])
+    report["miao_coverage"] = miao_cov
+    report["审计链完备性"] = audit_integrity
+    if anomaly_clues:
+        report["异常线索_待核实"] = [
+            {k: c.get(k) for k in ("rule_id", "候选虚处", "依据", "级别",
+                                   "subject", "anomaly_kinds", "anomaly_count",
+                                   "diagnostic_ids", "dimension")}
+            for c in anomaly_clues
+        ]
     # 语义层统计（对象/链接行数）
     report["ontology"] = ontology_stats
     (out_dir / "lineage_clues.json").write_text(
@@ -349,7 +404,7 @@ def _run_graph_overpass(store) -> dict | None:
         g.close()
 
 
-def _build_miaosuan(store, ctx):
+def _build_miaosuan(store, ctx, health=None):
     """三层机制构建庙算：数据驱动 + 规则约束 + 人机协同。"""
     from core import MiaoSuan, Hypothesis
     miao = MiaoSuan()
@@ -359,7 +414,7 @@ def _build_miaosuan(store, ctx):
     )
     # 第 1 层 数据驱动：先跑虚实扫描，异常模式自动映射为候选假设（不再硬编码）
     from skills.xu_shi import run as xu_shi_run
-    findings = xu_shi_run(ctx, store)["虚实扫描"]["findings"]
+    findings = xu_shi_run(ctx, store, health=health)["虚实扫描"]["findings"]
     added = miao.auto_from_findings(findings)
     print(f"  数据驱动：异常扫描 {len(findings)} 项 → 自动生成假设 "
           f"{[h.id for h in added]}")

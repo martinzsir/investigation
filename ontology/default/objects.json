@@ -16,6 +16,8 @@
       "pk": "org_id",
       "kind": "entity",
       "name_property": "raw_name",
+      "jian": "死间",
+      "jian_source": "工商信息",
       "properties": {
         "raw_name": "string",
         "legal_rep": "string",
@@ -37,6 +39,8 @@
       "pk": "txn_id",
       "kind": "event",
       "name_property": "from_raw",
+      "jian": "生间",
+      "jian_source": "银行流水",
       "properties": {
         "from_raw": "string",
         "to_raw": "string",
@@ -50,6 +54,8 @@
       "pk": "call_id",
       "kind": "event",
       "name_property": "caller_raw",
+      "jian": "生间",
+      "jian_source": "通话记录",
       "properties": {
         "caller_raw": "string",
         "callee_raw": "string",
@@ -63,6 +69,8 @@
       "pk": "track_id",
       "kind": "event",
       "name_property": "person_raw",
+      "jian": "生间",
+      "jian_source": "轨迹出行",
       "properties": {
         "person_raw": "string",
         "location": "string",
@@ -75,6 +83,8 @@
       "pk": "project_id",
       "kind": "entity",
       "name_property": "title",
+      "jian": "因间",
+      "jian_source": "招投标档案",
       "properties": {
         "title": "string",
         "winner_raw": "string",
@@ -123,6 +133,8 @@
       "pk": "tipoff_id",
       "kind": "event",
       "name_property": "title",
+      "jian": "内间",
+      "jian_source": "举报材料",
       "_note": "五间映射：内间（内部线索/举报材料）。接入后 jian_cross_level 内间自动从缺口变命中。",
       "properties": {
         "title": "string",
@@ -138,6 +150,8 @@
       "pk": "article_id",
       "kind": "event",
       "name_property": "raw_name",
+      "jian": "死间",
+      "jian_source": "公开OSINT",
       "_note": "五间映射：死间（公开OSINT交叉验证）。原死间仅靠工商信息，新增后多一条公开渠道。",
       "properties": {
         "raw_name": "string",

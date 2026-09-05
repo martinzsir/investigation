@@ -64,6 +64,40 @@ def _masked_columns(engine: PolicyEngine, ctx: AccessContext,
             if engine.property_rule(obj, p) and not engine.can_read_property(ctx, obj, p)]
 
 
+# REQ-G-015：边导出按 links.json 的 endpoints 声明通用生成（新增链接无需改本脚本）。
+# 仅历史产物文件名沿用旧名（golden 兼容）；新链接默认 {link}_edges.csv。
+_EDGE_FILE_OVERRIDE = {
+    "transfers": "transfer_edges.csv",   # 历史名（非 transfers_edges）
+    "calls_to": "calls_edges.csv",       # 历史名（非 calls_to_edges）
+}
+
+
+def _edge_sql(lnk_table: str, ep: dict) -> str:
+    """按 endpoints 声明生成边导出 SELECT（from_id/to_id + 直传列）。
+
+    端点 col 直出即点名（无 ref）；ref 表示该列为代理键，JOIN obj_<object>
+    按 key 取 name 列解析为图上点名（同名对象两端用 n1/n2 自连接）。
+    """
+    selects: list[str] = []
+    joins: list[str] = []
+    for i, side in enumerate(("from", "to"), start=1):
+        end = ep[side]
+        col, ref = end["col"], end.get("ref")
+        out_col = f"{side}_id"
+        if ref:
+            alias = f"n{i}"
+            joins.append(
+                f"JOIN obj_{ref['object']} {alias} "
+                f"ON {alias}.{ref['key']} = l.{col}")
+            selects.append(f"{alias}.{ref['name']} AS {out_col}")
+        else:
+            selects.append(f"l.{col} AS {out_col}")
+    for extra in ep.get("extra", []):
+        selects.append(f"l.{extra}")
+    return (f"SELECT {', '.join(selects)} FROM {lnk_table} l "
+            + " ".join(joins)).strip()
+
+
 def main(store: Store | None = None) -> int:
     ap = argparse.ArgumentParser(description="语义层 → LadybugDB 图谱 CSV 导出")
     ap.add_argument("--operator", default="system",
@@ -128,12 +162,18 @@ def main(store: Store | None = None) -> int:
         SELECT title, 'bid_project' FROM obj_bid_project
     """, "nodes.csv")
 
-    # ---- 边：转账（lnk_transfers 的 from_account/to_account 即 raw_name）----
-    exported["transfer_edges.csv"] = _copy(store, """
-        SELECT from_account AS from_id, to_account AS to_id,
-               CAST(amount AS DOUBLE) AS amount, date
-        FROM lnk_transfers
-    """, "transfer_edges.csv")
+    # ---- 边：按 links.json 的 endpoints 声明通用导出（REQ-G-015）----
+    # 新增链接只需在 links.json 声明 endpoints，本脚本零改动即导出；
+    # 历史产物文件名经 _EDGE_FILE_OVERRIDE 保持（golden 兼容）。
+    from core.ontology_loader import load_pack
+    for link in load_pack("default").links:
+        if not link.endpoints:
+            continue
+        lnk_table = f"lnk_{link.name}"
+        if not _exists(store, lnk_table):
+            continue
+        fname = _EDGE_FILE_OVERRIDE.get(link.name, f"{link.name}_edges.csv")
+        exported[fname] = _copy(store, _edge_sql(lnk_table, link.endpoints), fname)
 
     # ---- 边：过桥两跳路径（Cypher MATCH 的 SQL 对照产物，兼容旧字段名）----
     exported["overpass_paths.csv"] = _copy(store, """
@@ -144,49 +184,6 @@ def main(store: Store | None = None) -> int:
           ON a.to_account = b.from_account AND a.from_account <> b.to_account
         LIMIT 1000
     """, "overpass_paths.csv")
-
-    # ---- 边：通话（代理键回连 obj_person，保证节点引用一致）----
-    if _exists(store, "lnk_calls_to"):
-        exported["calls_edges.csv"] = _copy(store, """
-            SELECT p1.raw_name AS from_id, p2.raw_name AS to_id, c.call_id
-            FROM lnk_calls_to c
-            JOIN obj_person p1 ON p1.person_id = c.from_person
-            JOIN obj_person p2 ON p2.person_id = c.to_person
-        """, "calls_edges.csv")
-
-    # ---- 边：轨迹同框 ----
-    if _exists(store, "lnk_co_located"):
-        exported["co_located_edges.csv"] = _copy(store, """
-            SELECT p1.raw_name AS from_id, p2.raw_name AS to_id,
-                   l.location, l.date
-            FROM lnk_co_located l
-            JOIN obj_person p1 ON p1.person_id = l.person_1
-            JOIN obj_person p2 ON p2.person_id = l.person_2
-        """, "co_located_edges.csv")
-
-    # ---- 边：持有账户（owner_raw 由链接声明直接携带）----
-    if _exists(store, "lnk_owns"):
-        exported["owns_edges.csv"] = _copy(store, """
-            SELECT w.owner_raw AS from_id, a.raw_name AS to_id
-            FROM lnk_owns w
-            JOIN obj_account a ON a.account_id = w.account_id
-        """, "owns_edges.csv")
-
-    # ---- 边：中标参与（org → project）----
-    if _exists(store, "lnk_involved_in"):
-        exported["involved_in_edges.csv"] = _copy(store, """
-            SELECT o.raw_name AS from_id, b.title AS to_id
-            FROM lnk_involved_in i
-            JOIN obj_org o ON o.org_id = i.org_id
-            JOIN obj_bid_project b ON b.project_id = i.project_id
-        """, "involved_in_edges.csv")
-
-    # ---- 边：时间窗碰撞（bid_project → 资金主体，声明已携带 title/owner_raw）----
-    if _exists(store, "lnk_time_window"):
-        exported["time_window_edges.csv"] = _copy(store, """
-            SELECT title AS from_id, owner_raw AS to_id, offset_days
-            FROM lnk_time_window
-        """, "time_window_edges.csv")
 
     # ---- AC3：导出落审计（operator / purpose / destination / 文件清单）----
     from core.audit import AuditChain

@@ -163,7 +163,7 @@ def main() -> int:
 
         d = payload(c.request("tools/call", {"name": "function_list", "arguments": {}}))
         fnames = [f["name"] for f in d.get("functions", [])]
-        check(f"function_list 返回 10 个 Function（{len(fnames)}）", len(fnames) == 10, str(fnames))
+        check(f"function_list 返回 11 个 Function（{len(fnames)}）", len(fnames) == 11, str(fnames))
         check("function_list 全部标注 readonly",
               all(f.get("readonly") for f in d.get("functions", [])))
         check("function_list 含新增内间/对端诊断（tipoff_cross_reference, call_pair_coverage）",

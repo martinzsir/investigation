@@ -7,42 +7,72 @@
       "title": "转账关系",
       "from_obj": "account",
       "to_obj": "account",
-      "properties": {"amount": "decimal", "date": "date"}
+      "properties": {"amount": "decimal", "date": "date"},
+      "endpoints": {
+        "from": {"col": "from_account"},
+        "to": {"col": "to_account"},
+        "extra": ["amount", "date"]
+      }
     },
     {
       "name": "calls_to",
       "title": "通话关系",
       "from_obj": "person",
       "to_obj": "person",
-      "properties": {}
+      "properties": {},
+      "endpoints": {
+        "from": {"col": "from_person", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "to": {"col": "to_person", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "extra": ["call_id"]
+      }
     },
     {
       "name": "owns",
       "title": "持有账户",
       "from_obj": "account",
       "to_obj": "person",
-      "properties": {}
+      "properties": {},
+      "endpoints": {
+        "from": {"col": "owner_raw"},
+        "to": {"col": "account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}}
+      }
     },
     {
       "name": "involved_in",
       "title": "中标参与",
       "from_obj": "org",
       "to_obj": "bid_project",
-      "properties": {}
+      "properties": {},
+      "endpoints": {
+        "from": {"col": "org_id", "ref": {"object": "org", "key": "org_id", "name": "raw_name"}},
+        "to": {"col": "project_id", "ref": {"object": "bid_project", "key": "project_id", "name": "title"}}
+      }
     },
     {
       "name": "co_located",
       "title": "同地点出现",
       "from_obj": "person",
       "to_obj": "person",
-      "properties": {"location": "string", "date": "date"}
+      "properties": {"location": "string", "date": "date"},
+      "endpoints": {
+        "from": {"col": "person_1", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "to": {"col": "person_2", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "extra": ["location", "date"]
+      }
     },
     {
       "name": "time_window",
       "title": "时间窗碰撞",
       "from_obj": "bid_project",
       "to_obj": "transaction",
-      "properties": {"amount": "decimal", "offset_days": "integer"}
+      "jian": "反间",
+      "jian_source": "银行流水(过桥)",
+      "properties": {"amount": "decimal", "offset_days": "integer"},
+      "endpoints": {
+        "from": {"col": "title"},
+        "to": {"col": "owner_raw"},
+        "extra": ["offset_days"]
+      }
     },
     {
       "name": "decision_for",

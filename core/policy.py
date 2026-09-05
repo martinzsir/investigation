@@ -19,6 +19,9 @@ from pathlib import Path
 
 from core.access import AccessContext, ROLE_RANK
 
+# REQ-G-016：与 ontology_loader.SCHEMA_VERSION / 其余声明文件同源
+SCHEMA_VERSION = 2
+
 
 class PolicyDeniedError(PermissionError):
     """对象级策略拒绝（fail-closed 或显式声明拒绝）。"""
@@ -61,6 +64,12 @@ class PolicyEngine:
             return
         self._missing_file = False
         raw = json.loads(p.read_text(encoding="utf-8"))
+        # REQ-G-016：policies.json 纳入统一版本校验，与其余 ontology 声明（schema_version=2）
+        # 一致；版本不符/缺失硬失败，防止旧版策略文件被静默装载。
+        if raw.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(
+                f"policies.json schema_version={raw.get('schema_version')}，"
+                f"期望 {SCHEMA_VERSION}（REQ-G-016）；请升级声明文件")
         # 声明角色集必须与 core.access.ROLE_RANK 同源，防止两处口径漂移
         declared = set(raw.get("roles", ROLE_RANK))
         unknown = declared - set(ROLE_RANK)

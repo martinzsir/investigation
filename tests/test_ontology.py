@@ -350,14 +350,15 @@ class TestFunctionLayer(unittest.TestCase):
         from core.functions import FunctionExecutor
         self.fx = FunctionExecutor(self.s)
 
-    def test_目录10个函数且全部只读(self):
+    def test_目录11个函数且全部只读(self):
         cat = self.fx.catalog()
-        self.assertEqual(len(cat), 10)
+        self.assertEqual(len(cat), 11)
         self.assertTrue(all(f["readonly"] for f in cat))
         names = {f["name"] for f in cat}
         self.assertIn("jian_cross_level", names)
         self.assertIn("tipoff_cross_reference", names)   # 新增：内间交叉
         self.assertIn("call_pair_coverage", names)         # 新增：全量对端覆盖诊断
+        self.assertIn("location_colocated", names)         # REQ-G-021：地点同框
 
     def test_sql函数返回行(self):
         r = self.fx.invoke("quarter_end_integer_deposits")
@@ -407,7 +408,7 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn("tipoff", names)      # 新增：举报材料（内间）
         self.assertIn("osint_article", names)  # 新增：公开OSINT文章（死间）
         self.assertEqual(len(pack.links), 9)   # + tipoff_targets_person, osint_mentions
-        self.assertEqual(len(pack.functions), 10)  # + tipoff_cross_reference, call_pair_coverage
+        self.assertEqual(len(pack.functions), 11)  # + tipoff_cross_reference, call_pair_coverage, location_colocated(REQ-G-021)
         self.assertEqual(len(pack.rules), 6)   # 规则手册 R1-R6（rules.json 第六段）
 
     def test_runtime对象不参与编译(self):

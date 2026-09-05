@@ -230,3 +230,51 @@ def list_metrics(conn, rule_id: str | None = None, access=None,
                 "仅返回数值量级摘要（REQ-030 AC5）。"
             )
     return out
+
+
+# ---------------------------------------------------------------------------
+# REQ-G-017：规则推翻率告警——人工复核结论与规则先验严重背离时进入健康度。
+# ---------------------------------------------------------------------------
+def _override_alert_threshold(pack: str = "default") -> float:
+    """从 thresholds.json 的 alerts.override_rate_max 读阈值；读不到回落 0.5。"""
+    try:
+        from pathlib import Path
+        import json as _json
+        from core.ontology_loader import PACK_ROOT
+        p = Path(PACK_ROOT) / pack / "thresholds.json"
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        v = float((data.get("alerts") or {}).get("override_rate_max", 0.5))
+        return v if 0.0 <= v <= 1.0 else 0.5
+    except Exception:
+        return 0.5
+
+
+def alert_override_rate(conn, *, pack: str = "default", health=None,
+                        threshold: float | None = None) -> list[dict]:
+    """遍历规则运行指标，override_rate 超阈 → record override_rate_alert（warning）。
+
+    推翻率 = override_count / evaluated：值高说明规则产出被人工推翻的比例大，
+    判据可能系统性偏差（阈值/知识包/规则文本需回看）。返回超阈规则摘要列表。
+    """
+    from core.run_health import get_health
+    health = get_health(health)
+    max_rate = float(threshold) if threshold is not None else _override_alert_threshold(pack)
+    alerts: list[dict] = []
+    for row in list_metrics(conn, pack=pack):
+        rid = row.get("rule_id", "?")
+        rate = override_rate(row)
+        if rate is None or rate <= max_rate:
+            continue
+        alerts.append({"rule_id": rid, "override_rate": round(rate, 4),
+                       "threshold": max_rate,
+                       "evaluated": int(row.get("evaluated", 0) or 0),
+                       "override_count": int(row.get("override_count", 0) or 0)})
+        health.record(
+            "override_rate_alert", "warning",
+            source=f"metric:{rid}",
+            reason=f"规则 {rid} 推翻率 {rate:.1%} 超过阈值 {max_rate:.0%}，"
+                   f"人工复核与规则先验严重背离，建议回看判据",
+            rule_id=rid, override_rate=round(rate, 4), threshold=max_rate,
+            evaluated=int(row.get("evaluated", 0) or 0),
+            override_count=int(row.get("override_count", 0) or 0))
+    return alerts
