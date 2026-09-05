@@ -21,6 +21,7 @@ M3 范围（.trae/documents/REQ-P/REQ-P实施计划.md §三 P0）：
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass, field, asdict
 
 from core.functions import load_case_knowledge
 from core.ontology_loader import load_pack
@@ -481,3 +482,124 @@ def record_map_gaps(health, gaps, source: str = "data_map") -> int:
                     if isinstance(v, (str, int, float, bool))})
         n += 1
     return n
+
+
+# ======================================================================
+# REQ-P M6：外部表画像契约（TableProfile）—— 新表接入前画像
+# ======================================================================
+@dataclass
+class ColumnProfile:
+    """外部表单列画像（raw 模式读取，值全部按原始字符串判定）。"""
+    name: str
+    null_rate: float
+    distinct: int
+    type_dist: dict
+    samples: list
+    mixed: bool | None = None          # 混装（≥2 归一落点）；全空列为 None
+    landing_suggestions: list = field(default_factory=list)  # 混装落点（008 复用）
+    needs_confirmation: bool = False   # 含肯定式识别（person/org）
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class CandidateAssoc:
+    """候选关联：外部列 → 已物化语义对象.属性（value_overlap ≥ 阈值）。"""
+    col: str
+    target_obj: str
+    target_prop: str
+    overlap_ratio: float               # 外部列 distinct 中能落到已知实体的比例
+    direction: str = "external_to_ontology"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class TableProfile:
+    """外部表画像契约（DraftAssembler/recommend_steps 的唯一输入）。"""
+    table_name: str
+    row_count: int
+    columns: list                      # list[ColumnProfile]
+    candidates: list = field(default_factory=list)  # list[CandidateAssoc]
+
+    def to_dict(self) -> dict:
+        return {
+            "table_name": self.table_name,
+            "row_count": self.row_count,
+            "columns": [c.to_dict() for c in self.columns],
+            "candidates": [c.to_dict() for c in self.candidates],
+        }
+
+
+def build_table_profile(table_name: str, columns: list[str], rows: list,
+                        gateway=None, pack: str = "default",
+                        min_ratio: float | None = None,
+                        sample_limit: int = 2000) -> TableProfile:
+    """从 raw 读取的外部表构建画像（只读；不写任何库表）。
+
+    rows: list[list/tuple]，值按原始字符串传入（profile_table 固定 raw 模式，
+          禁 data_ingest 适配器隐式类型转换——风险 7：金额/日期被 coerce 后
+          值类型识别失效）。
+    gateway: 提供时计算候选关联（外部列 distinct ∩ obj_* 可连接属性值）；
+             None 时 candidates=[]（无库环境纯列画像）。
+    min_ratio: 候选关联阈值，None 时读 thresholds.json profiler.draft_overlap_min_ratio。
+    """
+    if min_ratio is None:
+        min_ratio = float(load_profiler_settings(pack)["draft_overlap_min_ratio"])
+
+    col_profiles: list[ColumnProfile] = []
+    col_values: dict[str, list[str]] = {}
+    n = len(rows)
+    for idx, cname in enumerate(columns):
+        vals = [r[idx] if idx < len(r) else None for r in rows]
+        non_null = [v for v in vals if v is not None and str(v).strip() != ""]
+        distinct_vals = sorted({str(v) for v in non_null})
+        ana = analyze_column(distinct_vals[:sample_limit])
+        null_rate = 1.0 - (len(non_null) / n) if n else 0.0
+        cp = ColumnProfile(
+            name=str(cname),
+            null_rate=round(null_rate, 4),
+            distinct=len(distinct_vals),
+            type_dist=ana["type_dist"],
+            samples=distinct_vals[:5],
+            mixed=ana["mixed"] if ana["negative_types"] or ana["landing_suggestions"]
+                  or ana["needs_confirmation"] else None,
+            landing_suggestions=ana["landing_suggestions"],
+            needs_confirmation=ana["needs_confirmation"])
+        col_profiles.append(cp)
+        col_values[str(cname)] = distinct_vals
+
+    candidates: list[CandidateAssoc] = []
+    if gateway is not None:
+        try:
+            mat = set(gateway.materialized_objects())
+            spec = load_pack(pack)
+            # 候选关联落点只取各对象身份列（name_property）：链接端点 ref 指向身份列，
+            # relation/from_raw 等可连接属性不是归一目标（否则单值列会对所有含同值的列误报）
+            targets = [(o.name, o.name_property) for o in spec.objects
+                       if not o.runtime and o.name in mat]
+        except Exception:
+            targets = []
+        for cname, dvals in col_values.items():
+            if not dvals:
+                continue
+            ext = set(dvals)
+            for obj, name_prop in targets:
+                try:
+                    known = set(gateway.distinct_values(obj, name_prop,
+                                                        limit=sample_limit))
+                except Exception:
+                    continue
+                if not known:
+                    continue
+                hit = len(ext & known)
+                ratio = hit / len(ext)
+                if ratio >= min_ratio:
+                    candidates.append(CandidateAssoc(
+                        col=cname, target_obj=obj, target_prop=name_prop,
+                        overlap_ratio=round(ratio, 4)))
+
+    return TableProfile(table_name=table_name, row_count=n,
+                        columns=col_profiles, candidates=candidates)

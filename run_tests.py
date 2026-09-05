@@ -134,6 +134,7 @@ GROUPS = {
     "datamap":     ("REQ-P M2 数据地图 L0+L1 静态拓扑与血缘", [sys.executable, "-m", "unittest", "tests.test_data_map"]),
     "valuetype":   ("REQ-P M3 值类型识别（纯函数，缺陷1/2内置）", [sys.executable, "-m", "unittest", "tests.test_value_type"]),
     "profiler":    ("REQ-P M4 六层本体画像（L1/L2/L3/L4/L5）", [sys.executable, "-m", "unittest", "tests.test_ontology_profiler"]),
+    "drafts":      ("REQ-P M6 新表画像+草案组装器+步骤推荐", [sys.executable, "-m", "unittest", "tests.test_draft_assembler"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
