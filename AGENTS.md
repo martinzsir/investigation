@@ -10,7 +10,7 @@ data/*.parquet（L3 冷层） → investigation.duckdb（L2 温层） → output
 data/ladybug/*.lbug（L4 图库，可选）
 ```
 
-语义层（Palantir Ontology 裁剪版，schema_version=2 五段）：**声明是数据、实现是代码**——
+语义层（Palantir Ontology 裁剪版，schema_version=2 八段：objects/links/bindings/rules/functions/actions/views/policies）：**声明是数据、实现是代码**——
 `ontology/<pack>/*.json` 由 `core/ontology_loader.py` 装载校验
 （未知名/版本不符硬失败），`build_ontology()` 编译为 `obj_*` / `lnk_*` 语义表。
 **类型层与管道层分离**：
@@ -27,6 +27,11 @@ data/ladybug/*.lbug（L4 图库，可选）
   占位符与 parameters 装载期双向核对），检测器只是 Function 的薄编排层
 - Action（可写）：actions.json 声明 + `core/action_executor.py` 唯一写路径；
   角色/必填参数/状态机校验，file 副作用创建 obj_decision 决策对象
+- views.json（语义视图，REQ-046）：Object Views 按角色投影（flat 视图声明 + 装载校验），
+  `core/views.py` 查询时派生，不物化、不改写 obj_*
+- policies.json（权限，REQ-009/010/011）：对象级/链接级策略 + 属性级敏感列遮蔽，
+  未声明一律 fail-closed；详见下方「权限面」段。
+  另：thresholds/case_knowledge/dimensions/enum_space/llm_policy 是配置/知识文件，非八段声明
 runtime 对象/链接（obj_decision/lnk_decision_for）在类型层声明属性，
 由 `ensure_runtime_tables()` 按声明建表（Action 副作用唯一建表入口；编译器跳过物化、
 重建语义层不丢决策）。代理键分两类：entity 按 name_property 值排序分配，
