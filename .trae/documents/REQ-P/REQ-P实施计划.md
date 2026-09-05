@@ -320,3 +320,17 @@ def recommend_steps(profile: TableProfile) -> list[dict]
 | 5 | 033 v1 校验过严阻断日常改声明 | normalize 段可选；未声明归一 JOIN 的边（time_window）不校验 |
 | 6 | 草案组装器建议质量低（pk 候选/类型误判）误导人工审核 | 每条建议强制 `_evidence` 画像证据可追溯；恒为候选 + 三道闸（草案目录→人工审核→loader 校验）兜底；阈值 draft_overlap_min_ratio 可配置 |
 | 7 | data_ingest 适配器行为差异（Excel 日期自动解析等）扭曲画像 | profile_table 固定 raw 模式读取（禁适配器隐式类型转换）；AC：同一 CSV 经不同适配器画像结果一致 |
+
+---
+
+## 九、技术债登记（REQ-P-024，不建 AC）
+
+1. **肯定式识别仍会误判**：`供应商`（org.relation）、`存续`（org.status，已由
+   metadata_props 排除在可连接属性外）、`设备采购`（bid_project.title，metadata）
+   等中文短词会被 `classify` 判为"人名/机构名"。当前已通过「只对可连接属性报警」
+   规避误报刷屏，识别本身未改进。改进方向：领域词典，或让人工确认结果回流
+   （case_knowledge 扩展为值类型字典）。
+2. **列内省缓存失效**：沙盒 `_columns_of` 同连接内缓存表结构、schema 变更需手动清。
+   本仓 M3/M4 的 `materialized_props` 每次实时查 information_schema（**无缓存**），
+   暂不存在该问题；若后续为性能引入列缓存，必须在语义层重建/ALTER 后失效，
+   否则缺列诊断（profile_missing_column）会漏报。

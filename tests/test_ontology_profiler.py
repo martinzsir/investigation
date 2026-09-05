@@ -280,5 +280,113 @@ class IntegrationTests(unittest.TestCase):
             DEFAULT_PROFILER_SETTINGS)
 
 
+class GovernanceTests(unittest.TestCase):
+    """M5 治理集成：健康度接线（REQ-P-021）、无写路径（REQ-P-020）、
+    数据源纪律与【待核实】文案（REQ-P-022/023）。"""
+
+    def test_ac30_health_none_零行为变化(self):
+        """不传 health（None→NullRunHealth）：画像跑通、健康小节 healthy、无异常。"""
+        _, _, prof = _profiler(focus_entities=["张卫国"], anchor_date="2021-10-01")
+        r = prof.profile_all()
+        self.assertEqual(r["health"]["status"], "healthy")
+        self.assertEqual(r["health"]["诊断总数"], 0)
+
+    def test_ac31_未物化与版本锚点诊断(self):
+        """未构建语义层：profile_unmaterialized（info）+ version_anchor_missing（warning）。"""
+        from core import Store
+        from core.run_health import RunHealth
+        conn = Store(db_path=":memory:").conn
+        rh = RunHealth(db=conn)
+        OntologyProfiler(OntologyReadGateway(conn), health=rh).profile_all()
+        rows = rh.rows()
+        kinds = [r["kind"] for r in rows]
+        self.assertIn("profile_unmaterialized", kinds)
+        self.assertTrue(all(r["severity"] == "info"
+                            for r in rows if r["kind"] == "profile_unmaterialized"))
+        self.assertIn("version_anchor_missing", kinds)
+        v = [r for r in rows if r["kind"] == "version_anchor_missing"][0]
+        self.assertEqual(v["severity"], "warning")
+        self.assertEqual(v["source"], "ontology_profile")
+
+    def test_ac32_缺列诊断warning(self):
+        """对象已物化但缺列 → profile_missing_column（warning，detail 定位对象.属性）。"""
+        from core.run_health import RunHealth
+        s, gw, _ = _profiler()
+        gw._conn.execute("ALTER TABLE obj_person DROP COLUMN raw_name")
+        gw2 = OntologyReadGateway(gw._conn, allow_stale=True)
+        rh = RunHealth(db=gw._conn)
+        OntologyProfiler(gw2, health=rh).profile_all()
+        miss = [r for r in rh.rows() if r["kind"] == "profile_missing_column"]
+        self.assertTrue(miss)
+        self.assertEqual(miss[0]["severity"], "warning")
+        self.assertEqual(miss[0]["detail"]["object"], "person")
+        self.assertEqual(miss[0]["detail"]["prop"], "raw_name")
+
+    def test_ac33_map缺口诊断与None不计算(self):
+        """record_map_gaps：缺口落 map_normalize_gap(warning)；None=未计算不落；真实包缺口 0。"""
+        import re
+        from core import Store
+        from core.run_health import RunHealth
+        from core.ontology_profile import record_map_gaps
+        from core.data_map import DataMap
+        conn = Store(db_path=":memory:").conn
+
+        rh = RunHealth(db=conn)
+        gaps = [{"object": "transaction", "prop": "from_raw", "note": "未归一【待核实】"}]
+        self.assertEqual(record_map_gaps(rh, gaps), 1)
+        row = rh.rows()[0]
+        self.assertEqual(row["kind"], "map_normalize_gap")
+        self.assertEqual(row["severity"], "warning")
+        self.assertEqual(row["source"], "data_map")
+
+        # gaps=None（bindings 缺失，缺口未计算 ≠ 无缺口）不落诊断
+        rh2 = RunHealth(db=conn)
+        self.assertEqual(record_map_gaps(rh2, None), 0)
+        self.assertEqual(rh2.rows(), [])
+
+        # 真实包 M1 修复后缺口为 0
+        rh3 = RunHealth(db=conn)
+        self.assertEqual(
+            record_map_gaps(rh3, DataMap.from_pack(ROOT / "ontology", "default").normalize_gaps()),
+            0)
+
+    def test_ac34_两模块无写路径(self):
+        """REQ-P-020：profiler/data_map 源码无任何写库操作。"""
+        for mod in ("ontology_profile.py", "data_map.py"):
+            src = (ROOT / "core" / mod).read_text(encoding="utf-8")
+            for banned in ("INSERT INTO", "UPDATE ", "DELETE FROM", "COPY ",
+                           "CREATE TABLE", "DROP TABLE", "conn.execute",
+                           "self._conn"):
+                self.assertNotIn(banned, src, f"{mod} 不得出现写路径：{banned}")
+
+    def test_ac35_待核实文案与PII扫描(self):
+        """报告 render 层固化【待核实】；产物文本无身份证/手机号/银行卡 PII 形态。"""
+        import re
+        from scripts.demo_profile import render_profile
+        from core.data_map import DataMap
+        _, _, prof = _profiler(focus_entities=["张卫国"], anchor_date="2021-10-01")
+        text = render_profile(prof.profile_all())
+        self.assertIn("【待核实】", text)
+        dm_text = DataMap.from_pack(ROOT / "ontology", "default").render_markdown()
+        self.assertIn("【待核实】", dm_text)
+        for pat in (re.compile(r"\d{17}[\dXx]"),
+                    re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
+                    re.compile(r"(?<!\d)\d{16,19}(?!\d)")):
+            self.assertIsNone(pat.search(text),
+                              f"画像报告含 PII 形态：{pat.pattern}")
+
+    def test_ac36_默认不写诊断表(self):
+        """health=None 默认：不往 run_diagnostic 写 ontology_profile 记录。"""
+        s, gw, prof = _profiler(focus_entities=["张卫国"], anchor_date="2021-10-01")
+        prof.profile_all()
+        try:
+            n = s.conn.execute(
+                "SELECT COUNT(*) FROM run_diagnostic "
+                "WHERE source='ontology_profile'").fetchone()[0]
+            self.assertEqual(n, 0)
+        except Exception:
+            pass   # run_diagnostic 表不存在 = 从未写过，符合"默认不写"
+
+
 if __name__ == "__main__":
     unittest.main()

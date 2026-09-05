@@ -24,6 +24,7 @@ import sys
 
 from core.functions import load_case_knowledge
 from core.ontology_loader import load_pack
+from core.run_health import get_health
 from core.threshold import load_profiler_settings
 from core.value_type import analyze_column
 
@@ -211,12 +212,15 @@ class OntologyProfiler:
     def __init__(self, gateway, pack: str = "default", *,
                  focus_entities: list | None = None,
                  anchor_date: str | None = None,
-                 window_days: int | None = None):
+                 window_days: int | None = None,
+                 health=None):
         self._gw = gateway
         self._pack = pack
         self._spec = load_pack(pack)
         self._focus = [str(v) for v in (focus_entities or []) if v]
         self._anchor = anchor_date
+        # REQ-P-021：health=None → NullRunHealth（空操作，既有调用零行为变化）
+        self._health = get_health(health)
         settings = load_profiler_settings(pack)
         self._window = (int(window_days) if window_days is not None
                         else int(settings["window_days"]))
@@ -225,6 +229,18 @@ class OntologyProfiler:
 
     # ---- 入口 ----
     def profile_all(self) -> dict:
+        # 版本锚点检查（G-007）：取不到本体版本 → 审计/血缘锚定 unknown
+        ont_ver = None
+        try:
+            ont_ver = self._gw.explain().get("ontology_version")
+        except Exception:
+            ont_ver = None
+        if not ont_ver:
+            self._health.record(
+                "version_anchor_missing", "warning",
+                source="ontology_profile",
+                reason="本体版本锚点缺失（语义层未构建？审计/血缘将锚定 unknown）")
+
         mat_objects = set(self._gw.materialized_objects())
         mat_props = self._gw.materialized_props()
         connectable = connectable_props(self._pack)
@@ -237,6 +253,13 @@ class OntologyProfiler:
             if o.runtime:
                 continue   # runtime 对象（decision）无数据源，不画像
             obj_mat = o.name in mat_objects
+            if not obj_mat:
+                # 对象级落一条（避免每属性重复）；info 级——未物化是待接入，非错误
+                self._health.record(
+                    "profile_unmaterialized", "info",
+                    source="ontology_profile",
+                    reason=f"对象 {o.name} 未物化，画像占位（表不存在）",
+                    object=o.name)
             for prop, ptype in o.properties.items():
                 l1l2.append(self._profile_prop(
                     o.name, prop, ptype, obj_mat, mat_props,
@@ -256,6 +279,7 @@ class OntologyProfiler:
             "params": {"window_days": self._window,
                        "anchor_date": self._anchor,
                        "focus_entities": self._focus},
+            "health": self._health.health_section(),
             "note": _PROFILE_NOTE,
         }
 
@@ -281,6 +305,11 @@ class OntologyProfiler:
             if is_conn:
                 self._deduct(deductions, "prop", key, "unmaterialized",
                              f"对象 {obj} 已物化但表中无列 {prop}（schema 演进）", "warn")
+                self._health.record(
+                    "profile_missing_column", "warning",
+                    source="ontology_profile",
+                    reason=f"对象 {obj} 已物化但表中无列 {prop}（schema 演进/部分物化）",
+                    object=obj, prop=prop)
             return entry
 
         vp = self._gw.value_profile(obj, prop)
@@ -433,3 +462,22 @@ class OntologyProfiler:
     def _deduct(deductions, scope, ref, code, reason, severity) -> None:
         deductions.append({"scope": scope, "ref": ref, "code": code,
                            "reason": reason, "severity": severity})
+
+
+def record_map_gaps(health, gaps, source: str = "data_map") -> int:
+    """把 DataMap.normalize_gaps() 检出的归一缺口落运行诊断（REQ-P-021）。
+
+    data_map 是零依赖静态模块（只 json/re，不连库），诊断接线由编排层经本函数
+    完成；gaps=None 表示 bindings 缺失「缺口未计算」（≠无缺口），不落诊断。
+    返回落诊断条数。
+    """
+    h = get_health(health)
+    n = 0
+    for g in gaps or []:
+        h.record("map_normalize_gap", "warning", source=source,
+                 reason=f"归一缺口：{g.get('object')}.{g.get('prop')} "
+                        f"未被任何 link build_sql 等值归一（断链温床）",
+                 **{k: v for k, v in g.items()
+                    if isinstance(v, (str, int, float, bool))})
+        n += 1
+    return n

@@ -39,6 +39,9 @@ KINDS = (
     "audit_integrity_gap",        # 审计链完备性缺口（记录数/必填字段）
     "coverage_gap",               # 庙算覆盖缺口
     "anomaly_clue_emitted",       # 异常线索已产出（REQ-G-019）
+    "profile_missing_column",     # REQ-P-012/021：对象已物化但表缺列（schema 演进）
+    "profile_unmaterialized",     # REQ-P-021：画像对象未物化（info，非错误）
+    "map_normalize_gap",          # REQ-P-021：数据地图检出归一缺口（M 波 build_sql 未 JOIN 实体表）
 )
 
 SEVERITIES = ("info", "warning", "critical")
