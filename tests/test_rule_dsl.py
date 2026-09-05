@@ -18,7 +18,11 @@ from core.rule_dsl import parse, compile, evaluate, MAX_DEPTH
 
 
 def _make_store() -> Store:
-    """和 test_rule_overlap 同 baseline 场景（R1/R4/R6 命中）。"""
+    """和 test_rule_overlap 同 baseline 场景。
+
+    REQ-G-022 修复后命中：R1、R4、R5（宏业建设法人=李志强 命中知识包）、R6；
+    未命中：R3（单一对端 2 行 < 降级绝对阈值 30）→ 用 R3 作未命中样例。
+    """
     s = Store(db_path=":memory:")
     s.execute("CREATE TABLE 银行流水 (主体 VARCHAR, 对方 VARCHAR, 金额 DOUBLE, 日期 VARCHAR)")
     s.execute("CREATE TABLE 通话记录 (主体 VARCHAR, 对端 VARCHAR, 日期 VARCHAR, 次数 BIGINT)")
@@ -51,14 +55,15 @@ class RuleDslTests(unittest.TestCase):
         """AC1：all 全部命中才 True；缺任一条 → False。"""
         store = _make_store()
         try:
-            # baseline：R1、R4、R6 三个命中
-            node = parse({"all": [{"rule": "R1"}, {"rule": "R4"}, {"rule": "R6"}]})
+            # baseline：R1、R4、R5、R6 四个命中（REQ-G-022 后 R5 恢复命中）
+            node = parse({"all": [{"rule": "R1"}, {"rule": "R4"},
+                                  {"rule": "R5"}, {"rule": "R6"}]})
             out = evaluate(store, node)
-            self.assertTrue(out["hit"], f"R1∧R4∧R6 都命中应通过，实际 note={out.get('degraded_note')}")
-            # 加一个未命中的 R5 → 不通过
-            node2 = parse({"all": [{"rule": "R1"}, {"rule": "R4"}, {"rule": "R5"}]})
+            self.assertTrue(out["hit"], f"R1∧R4∧R5∧R6 都命中应通过，实际 note={out.get('degraded_note')}")
+            # 加一个未命中的 R3 → 不通过
+            node2 = parse({"all": [{"rule": "R1"}, {"rule": "R4"}, {"rule": "R3"}]})
             out2 = evaluate(store, node2)
-            self.assertFalse(out2["hit"], "R5 未命中 → all 应假")
+            self.assertFalse(out2["hit"], "R3 未命中 → all 应假")
         finally:
             store.close()
 
@@ -66,13 +71,14 @@ class RuleDslTests(unittest.TestCase):
         """AC2：any 任一命中即可；全未命中才假。"""
         store = _make_store()
         try:
-            # 命中 R4、R5：R5 未命中 → R4 命中 True 即 any 为真
-            node = parse({"any": [{"rule": "R5"}, {"rule": "R4"}]})
-            self.assertTrue(evaluate(store, node)["hit"])
-            # 全部未命中 → False（R5 在 baseline 中未命中）
-            node2 = parse({"any": [{"rule": "R5"}]})
+            # R5 修复后命中：单独 any 即为真
+            node = parse({"any": [{"rule": "R5"}]})
+            self.assertTrue(evaluate(store, node)["hit"],
+                            "R5（py impl + rows_nonempty）应命中（REQ-G-022 回归）")
+            # 全部未命中 → False（R3 在 baseline 中未命中）
+            node2 = parse({"any": [{"rule": "R3"}]})
             self.assertFalse(evaluate(store, node2)["hit"],
-                             "R5 单独应未命中；all any 应 False")
+                             "R3 单独应未命中；all any 应 False")
         finally:
             store.close()
 
@@ -80,8 +86,8 @@ class RuleDslTests(unittest.TestCase):
         """AC3：NOT 取反。"""
         store = _make_store()
         try:
-            # NOT(R5) → R5 未命中 → True
-            self.assertTrue(evaluate(store, parse({"not": {"rule": "R5"}}))["hit"])
+            # NOT(R3) → R3 未命中 → True
+            self.assertTrue(evaluate(store, parse({"not": {"rule": "R3"}}))["hit"])
             # NOT(R1) → R1 命中 → False
             self.assertFalse(evaluate(store, parse({"not": {"rule": "R1"}}))["hit"])
         finally:

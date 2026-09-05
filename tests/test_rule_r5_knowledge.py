@@ -85,6 +85,25 @@ class TestR5Knowledge(unittest.TestCase):
         self.assertEqual(ver, kn["knowledge_version"])
         self.assertTrue(all(r["knowledge_version"] == ver for r in rows))
 
+    def test_ac6_r5_finding_via_run_rules(self):
+        """AC6（REQ-G-022 回归）: R5 走规则层 run_rules 真正产出 finding。
+
+        bug 背景：py 实现的 Function 结果包在 out["result"]，rules 判定层
+        只读 out["rows"] → py impl + rows_nonempty 规则永不命中（R5 静默失效）。
+        """
+        from core.rules import run_rules
+        store = _make_store()
+        build_ontology(store.conn)
+        try:
+            findings = run_rules(store, stage="xu_shi")
+            r5 = [f for f in findings if f["rule_id"] == "R5"]
+            self.assertTrue(r5, "R5 应经 run_rules 产出 finding（REQ-G-022）")
+            names = {row["raw_name"] for row in r5[0]["source_rows"]}
+            self.assertIn("宏业建设", names)
+            self.assertEqual(r5[0]["级别"], "待核实")
+        finally:
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

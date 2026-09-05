@@ -30,7 +30,14 @@ def _evaluate_single(rule, fx, out):
         return (bool(result.get("hit")),
                 result.get("pairs") or [],
                 result.get("basis") or rule.basis_text)
-    rows = out.get("rows") or []
+    # REQ-G-022：py 实现的 Function，invoke() 把结果包在 out["result"] 里，
+    # 与 sql 实现的 out["rows"] 路径不同。原先只读 out["rows"]，导致所有
+    # py impl + rows_nonempty 的规则（R5 org_interest_links）永不命中。
+    res = out.get("result")
+    if isinstance(res, dict) and "rows" in res:
+        rows = res.get("rows") or []
+    else:
+        rows = out.get("rows") or []
     return (len(rows) > 0, rows, rule.basis_text)
 
 

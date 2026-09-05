@@ -51,13 +51,14 @@
     }
   },
   "expect": {
-    "_note": "期望值由 tests/test_golden.py 在 seed 固定下锁定（2026-05-01 场景）；修改检测器后须显式刷新 golden。第五批 REQ-025 起：R1（primary）命中抑制同组 R2（整数转账聚合）→ finding 从 4→3，source_rows 从 7→5（有意升级）。",
-    "finding_count": 3,
-    "rules_hit": ["R1", "R4", "R6"],
-    "source_rows_total": 5,
+    "_note": "期望值由 tests/test_golden.py 在 seed 固定下锁定（2026-05-01 场景）；修改检测器后须显式刷新 golden。第五批 REQ-025 起：R1（primary）命中抑制同组 R2（整数转账聚合）→ finding 从 4→3，source_rows 从 7→5（有意升级）。REQ-G-022（2026-09-05）：修复 py impl + rows_nonempty 判定层读不到 out[\"result\"][\"rows\"] 的静默失效 → R5 恢复命中（宏业建设法人=李志强，1 行），finding 3→4，source_rows 5→6（有意刷新）。",
+    "finding_count": 4,
+    "rules_hit": ["R1", "R4", "R5", "R6"],
+    "source_rows_total": 6,
     "by_rule": {
       "R1": {"hits": 1, "source_rows": 1},
       "R4": {"hits": 1, "source_rows": 2},
+      "R5": {"hits": 1, "source_rows": 1},
       "R6": {"hits": 1, "source_rows": 2}
     }
   }
