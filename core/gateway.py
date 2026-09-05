@@ -283,6 +283,74 @@ class OntologyReadGateway:
                     for v in vals]
         return vals
 
+    # ---- REQ-P M4 L3 语义指标（固定模板 + 白名单 metric，参数化绑定，非自由 SQL）----
+    INDICATOR_METRICS = (
+        "wan_integer_rate",       # decimal：万元整数率
+        "window_coverage",        # date：锚点日期 ±window_days 覆盖率
+        "focus_hit_rate",         # string：关注主体命中率（values=focus_entities）
+        "known_overlap_count",    # string：与已知实体集合的重合数（values=known_values）
+    )
+
+    def prop_indicator(self, obj: str, prop: str, metric: str, *,
+                       values: list | None = None,
+                       anchor_date: str | None = None,
+                       window_days: int | None = None) -> dict:
+        """L3 语义指标（画像四层方法之一）：SQL 模板固定在网关内，metric 白名单，
+        所有比较值经占位符参数绑定（无字符串拼接，无注入面）。
+
+        返回 {metric, value, numerator, denominator}：
+          wan_integer_rate    value=万元整数行占比（0~1），denominator=非空行数
+          window_coverage     value=锚点 ±window_days 内日期占比（需 anchor_date/window_days）
+          focus_hit_rate      value=关注值命中的 distinct 占比，numerator=命中 distinct 数
+          known_overlap_count value=重合 distinct 数（计数，非比率），denominator=本列 distinct
+        """
+        if metric not in self.INDICATOR_METRICS:
+            raise ValueError(
+                f"未知画像指标 {metric!r}（白名单 {self.INDICATOR_METRICS}）")
+        table = self._require_prop(obj, prop)
+        self._policy.check_object(self._access, obj)
+        self._guard_fresh()
+        qcol = f'"{prop}"'
+        if metric == "wan_integer_rate":
+            num, den = self._conn.execute(
+                f'SELECT SUM(CASE WHEN MOD(CAST({qcol} AS BIGINT), 10000) = 0 '
+                f'THEN 1 ELSE 0 END), COUNT({qcol}) FROM {table} '
+                f'WHERE {qcol} IS NOT NULL').fetchone()
+            return {"metric": metric, "value": (num / den) if den else 0.0,
+                    "numerator": int(num or 0), "denominator": int(den or 0)}
+        if metric == "window_coverage":
+            if anchor_date is None or window_days is None:
+                raise ValueError(
+                    "window_coverage 需要 anchor_date 与 window_days"
+                    "（锚点日期由调用方传入，不硬编码；window_days 见 thresholds profiler 段）")
+            num, den = self._conn.execute(
+                f'SELECT SUM(CASE WHEN ABS(date_diff(\'day\', CAST({qcol} AS DATE), '
+                f'CAST(? AS DATE))) <= ? THEN 1 ELSE 0 END), COUNT({qcol}) '
+                f'FROM {table} WHERE {qcol} IS NOT NULL',
+                [str(anchor_date), int(window_days)]).fetchone()
+            return {"metric": metric, "value": (num / den) if den else 0.0,
+                    "numerator": int(num or 0), "denominator": int(den or 0),
+                    "anchor_date": str(anchor_date), "window_days": int(window_days)}
+        # string 两指标：IN 列表参数化绑定
+        vals = [str(v) for v in (values or []) if v is not None]
+        if not vals:
+            distinct = self._conn.execute(
+                f'SELECT COUNT(DISTINCT {qcol}) FROM {table} '
+                f'WHERE {qcol} IS NOT NULL').fetchone()[0]
+            return {"metric": metric, "value": 0, "numerator": 0,
+                    "denominator": int(distinct or 0)}
+        placeholders = ", ".join(["?"] * len(vals))
+        hit, distinct = self._conn.execute(
+            f'SELECT COUNT(DISTINCT CASE WHEN {qcol} IN ({placeholders}) '
+            f'THEN {qcol} END), COUNT(DISTINCT {qcol}) FROM {table} '
+            f'WHERE {qcol} IS NOT NULL', vals).fetchone()
+        if metric == "focus_hit_rate":
+            value = (hit / distinct) if distinct else 0.0
+        else:
+            value = int(hit or 0)   # 重合数是计数
+        return {"metric": metric, "value": value,
+                "numerator": int(hit or 0), "denominator": int(distinct or 0)}
+
     def _check_declared_pack(self) -> None:
         """画像元数据读取同样只认声明名集合（pack 一致性由构造保证）。"""
         if not self._object_names:

@@ -20,6 +20,36 @@ from pathlib import Path
 PACK_ROOT = Path(__file__).resolve().parent.parent / "ontology"
 SCHEMA_VERSION = 2
 
+# REQ-P-014：本体画像参数缺省（thresholds.json profiler 段缺失时回落，
+# 保证旧案件包/精简测试包兼容；存在段则按声明覆盖）
+DEFAULT_PROFILER_SETTINGS = {
+    "window_days": 20,
+    "draft_overlap_min_ratio": 0.8,
+    "value_sample_limit": 2000,
+}
+
+
+def load_profiler_settings(pack: str = "default",
+                           base_dir: Path | None = None) -> dict:
+    """读 thresholds.json 的 profiler 段（画像时间窗/草案阈值）。
+
+    与规则阈值（thresholds 数组）分离：profiler 段是工具参数，不注入 rule params。
+    文件/段缺失 → 内置缺省（向后兼容）；schema_version 不符硬失败。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "thresholds.json"
+    if not p.exists():
+        return dict(DEFAULT_PROFILER_SETTINGS)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"thresholds.json schema_version={data.get('schema_version')}，"
+            f"本内核期望 {SCHEMA_VERSION}")
+    prof = data.get("profiler") or {}
+    out = dict(DEFAULT_PROFILER_SETTINGS)
+    out.update({k: v for k, v in prof.items() if not k.startswith("_")})
+    return out
+
 
 def load_thresholds(pack: str = "default", base_dir: Path | None = None) -> dict:
     """返回 {rule_id: threshold_spec_dict}；pack/thresholds.json 不存在 → 空 dict，

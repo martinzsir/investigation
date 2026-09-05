@@ -5,6 +5,12 @@
     "override_rate_max": 0.5,
     "_note": "单规则推翻率 override_count/evaluated 超过该值 → override_rate_alert（warning）：说明规则先验与人工复核严重背离，需回看判据。"
   },
+  "profiler": {
+    "window_days": 20,
+    "draft_overlap_min_ratio": 0.8,
+    "value_sample_limit": 2000,
+    "_note": "REQ-P-014/REQ-P-035 本体画像参数：window_days=时间窗覆盖指标锚点 ±N 天（AC 固化可配置，不硬编码）；draft_overlap_min_ratio=M6 草案候选关联阈值；value_sample_limit=值类型分布取样的 distinct 上限。"
+  },
   "thresholds": [
     {
       "rule": "R1",
