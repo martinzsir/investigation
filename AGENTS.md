@@ -50,13 +50,13 @@ SUNZI_OPERATOR/SUNZI_ROLE/SUNZI_CLEARANCE/SUNZI_NETWORK 环境变量声明。
 ## 命令
 
 ```bash
-python run_tests.py                      # 21 组测试，必须全绿（--fast 跳 e2e、--only <组> 单跑）
+python run_tests.py                      # 70 组测试，必须全绿（--fast 跳 e2e、--only <组> 单跑）
 python run_all.py --no-cli               # 全链路（人工确认）
 python -m scripts.build_ontology         # 单独构建/重建语义层（obj_*/lnk_*）
 python -m scripts.build_ontology --pack <包名>   # 指定 ontology 案件包
 python -m scripts.build_ontology --actions      # 查看 Action 注册表
 python -m scripts.build_ontology --functions    # 查看 Function 目录（只读计算）
-python -m scripts.mcp_client_test        # MCP 端到端（51 项，9 个工具）
+python -m scripts.mcp_client_test        # MCP 端到端（69 项，13 个工具）
 python -m scripts.mcp_server             # 启动 MCP server（stdio）
 ```
 
@@ -70,7 +70,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 ## 验证
 
-改完代码跑 `python run_tests.py`。21 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/audit/access/policy/export/e2e）全绿才算完成。
+改完代码跑 `python run_tests.py`。70 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/rowuri/audit/access/policy/export/action/writeback/reconcile/reviewloop/deferred/r5knowledge/golden/overlap/threshold/derived/object_set/metrics/rule_dsl/llmpolicy/llmfallback/proposal/reviewwrite/injection/caselib/params/search/types/pack/views/benchmarks/llm/runhealth/rulezerodiag/emptydegrade/eventtrace/wakecond/entitytrace/versionanchor/policyversion/dimecoverage/overridealert/auditinteg/dispatchfailclosed/declconfig/anomalychannel/geo/initcold/exportendpoints/reqpm1/datamap/valuetype/profiler/drafts/e2e）全绿才算完成。组名以 `run_tests.py` 的 GROUPS 注册表为准（新增测试组须同步注册）。
 改了 MCP 相关额外跑 `python -m scripts.mcp_client_test`。
 
 ## 已知坑
