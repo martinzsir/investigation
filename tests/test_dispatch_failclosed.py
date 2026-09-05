@@ -50,11 +50,12 @@ class DispatchFailClosedTests(unittest.TestCase):
         self.assertEqual(req["status"], "dispatch_failed")
         self.assertNotEqual(req["status"], "dispatching")
         self.assertTrue(req.get("last_error"))
-        # critical 留痕
-        diags = self.health.rows()
-        self.assertEqual(len(diags), 1)
-        self.assertEqual(diags[0]["kind"], "dispatch_failed")
-        self.assertEqual(diags[0]["severity"], "critical")
+        # critical 留痕（REQ-G-025 后处置动作落审计链，无版本锚点的内存库会另记
+        # version_anchor_missing 警告，故按 kind 过滤断言而非精确总条数）
+        fail_diags = [d for d in self.health.rows()
+                      if d["kind"] == "dispatch_failed"]
+        self.assertEqual(len(fail_diags), 1)
+        self.assertEqual(fail_diags[0]["severity"], "critical")
 
     def test_normal_path_still_pending_receipt(self):
         # outbox 正常 → 仍入队 pending_receipt（回归：fail-closed 不影响正常流转）

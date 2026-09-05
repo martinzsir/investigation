@@ -11,6 +11,7 @@ REQ-007 事件溯源审计 + SHA-256 哈希链 测试。
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -120,6 +121,78 @@ class TestLineageClueWithAuditChain(unittest.TestCase):
         self.assertEqual(self.chain.count(), 3)
         self.assertTrue(self.chain.chain_verify())
         self.assertEqual(self.clue.status, "已立案")
+
+
+class TestActionExecutorAuditWiring(unittest.TestCase):
+    """REQ-G-025：处置动作经唯一写入口 ActionExecutor 必须落持久审计链。"""
+
+    def setUp(self):
+        self.store = Store(db_path=":memory:")
+        from core.action_executor import ActionExecutor
+        self.ex = ActionExecutor(self.store)
+        self.clue = LineageClue(skill_id="test", title="处置落链测试线索")
+
+    def tearDown(self):
+        self.store.close()
+
+    def _last_event(self):
+        row = self.store.conn.execute(
+            "SELECT operator, after_state FROM audit_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return row[0], json.loads(row[1])
+
+    def test_execute_writes_audit_chain(self):
+        """AC1：execute 处置后 audit_chain 新增 1 条事件，chain_verify 通过。"""
+        self.ex.execute("verify", self.clue, "王检察官", {"note": "已调取流水核实"})
+        chain = AuditChain(self.store.conn)
+        self.assertEqual(chain.count(), 1)
+        self.assertTrue(chain.chain_verify())
+        operator, after = self._last_event()
+        self.assertEqual(operator, "王检察官")
+        self.assertEqual(after["status"], "查证中")
+        self.assertEqual(after["note"], "已调取流水核实")
+        # 内存 audit_log 与持久链同步
+        self.assertEqual(len(self.clue.audit_log), 1)
+        self.assertEqual(self.clue.status, "查证中")
+
+    def test_file_event_contains_legal_basis(self):
+        """AC2：file 置「已立案」落链事件含 legal_basis，与内存 audit_log 一一对应。"""
+        self.ex.execute("verify", self.clue, "王检察官", {"note": "核查中"})
+        self.ex.execute("confirm", self.clue, "王检察官", {"note": "过桥结构成立"})
+        self.ex.execute("file", self.clue, "王检察官",
+                        {"legal_basis": "杭检立〔2026〕12号"})
+        chain = AuditChain(self.store.conn)
+        self.assertEqual(chain.count(), 3)
+        self.assertTrue(chain.chain_verify())
+        _, after = self._last_event()
+        self.assertEqual(after["status"], "已立案")
+        self.assertEqual(after["legal_basis"], "杭检立〔2026〕12号")
+        self.assertEqual(self.clue.status, "已立案")
+        self.assertEqual(len(self.clue.audit_log), 3)
+
+    def test_dispatch_writes_chain_once(self):
+        """AC3：两阶段 dispatch 同样落链（复用 _apply），submit/approve 不写处置事件。"""
+        aid = self.ex.submit("verify", self.clue, "王检察官", {"note": "人审通过"})
+        self.ex.approve(aid, "李主办")
+        # 未 dispatch：无处置事件落链
+        self.assertEqual(AuditChain(self.store.conn).count(), 0)
+        self.ex.dispatch(aid, self.clue)
+        chain = AuditChain(self.store.conn)
+        self.assertEqual(chain.count(), 1)  # 不重复写
+        self.assertTrue(chain.chain_verify())
+        self.assertEqual(self.clue.status, "查证中")
+        _, after = self._last_event()
+        self.assertEqual(after["status"], "查证中")
+
+    def test_no_store_degrades_gracefully(self):
+        """AC4：无 store 的内存路径不记录、不抛错（仅写内存 audit_log）。"""
+        from core.action_executor import ActionExecutor
+        ex = ActionExecutor(None)
+        clue = LineageClue(skill_id="t", title="无库线索")
+        result = ex.execute("verify", clue, "王检察官", {"note": "x"})
+        self.assertEqual(result["status"], "查证中")
+        self.assertEqual(clue.status, "查证中")
+        self.assertEqual(len(clue.audit_log), 1)
 
 
 if __name__ == "__main__":

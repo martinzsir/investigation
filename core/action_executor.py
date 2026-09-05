@@ -76,6 +76,22 @@ class ActionExecutor:
         self.health = get_health(health)
         if store is not None and hasattr(store, "conn"):
             store.conn.execute(_ACTION_REQUEST_DDL)
+        # REQ-G-025：持久审计链惰性持有（有 store 才构造，见 _chain()）
+        self._audit_chain = None
+
+    def _chain(self):
+        """REQ-G-025：处置动作必须落持久哈希链。
+
+        有 store 时惰性构造 AuditChain（复用同一 conn 与 health），execute() 与
+        两阶段 dispatch() 共用的 _apply() 统一取链——一处接线两路径同时生效。
+        无 store 的内存/兼容路径回落 None：set_status/set_filed 仅写内存
+        audit_log（registry 层向后兼容语义不变），不抛错。
+        """
+        if self._audit_chain is None and self.store is not None \
+                and hasattr(self.store, "conn"):
+            from core.audit import AuditChain
+            self._audit_chain = AuditChain(self.store.conn, health=self.health)
+        return self._audit_chain
 
     # ---- 声明查询 ----
     def action_for_status(self, target_status: str):
@@ -130,11 +146,15 @@ class ActionExecutor:
     def _apply(self, spec, clue, operator: str, params: dict) -> dict:
         from core.ontology import json_dumps
         # 4) 应用状态变更（写线索审计链）
+        # REQ-G-025：audit_chain 必须传入——此前漏传导致处置动作（含「已立案」
+        # 受控终态）只写内存 audit_log，持久哈希链零记录且自检空链假阳性。
+        chain = self._chain()
         if spec.name == "file":
-            clue.set_filed(operator, params["legal_basis"])
+            clue.set_filed(operator, params["legal_basis"], audit_chain=chain)
         else:
             note = params.get("note") or params.get("reason") or ""
-            clue.set_status(spec.target_status, operator=operator, note=note)
+            clue.set_status(spec.target_status, operator=operator, note=note,
+                            audit_chain=chain)
 
         # 5) 声明式副作用
         applied: list[dict] = []

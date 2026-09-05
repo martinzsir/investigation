@@ -102,6 +102,49 @@ class AuditIntegrityTests(unittest.TestCase):
         self.assertTrue(integ["chain_ok"])
         self.assertEqual(integ["expected_count"], 0)
         self.assertEqual(integ["actual_count"], 0)
+        self.assertEqual(integ["disposal_events"], 0)
+
+    def test_disposal_unwired_flags_warning(self):
+        # REQ-G-025 AC5：处置动作有持久痕迹但链上零处置事件（接线缺失）
+        # → chain_ok=False 且落 warning；纯查询空链不报警（见上一用例）
+        from core.registry import LineageClue
+        from core.lineage import save_statuses
+        from core.action_executor import ActionExecutor
+        # 证据源 1：处置结果已落 clue_disposal_status（状态变更只走内存，模拟脱链）
+        clue = LineageClue(title="脱链线索")
+        clue.set_status("查证中", operator="王检察官", note="已核查")
+        save_statuses(self.conn, [clue])
+        # 证据源 2：两阶段 action_request 已到 confirmed（_apply 理应已落链）
+        ActionExecutor(self.store)  # 仅为建 action_request 表
+        self.conn.execute(
+            "INSERT INTO action_request (action_id, idempotency_key, action_name, "
+            "clue_id, target_status, params_json, status, submitted_by, submitted_at, "
+            "attempts) VALUES ('act_t1', 'k', 'verify', 'clue_x', '查证中', '{}', "
+            "'confirmed', '王检察官', '2026-09-05 00:00:00', 1)")
+        integ = self.chain.chain_integrity()
+        self.assertFalse(integ["chain_ok"])
+        self.assertEqual(integ["disposal_events"], 0)
+        self.assertEqual(integ["disposal_activity"]["persisted_non_pending"], 1)
+        self.assertEqual(integ["disposal_activity"]["actions_applied"], 1)
+        self.assertIn(("audit_integrity_gap", "warning"), self._diag_kinds())
+
+    def test_wired_disposal_no_unwired_alarm(self):
+        # REQ-G-025：处置经 ActionExecutor 落链后（版本锚点有效），不报脱链、chain_ok=True
+        from core.registry import LineageClue
+        from core.action_executor import ActionExecutor
+        from core.ontology_version import record_version, OntologyVersion
+        record_version(self.conn, OntologyVersion(
+            pack="default", schema_version=2, ontology_version="2.9.9",
+            build_id="test-anchor", built_at="2026-09-05T00:00:00",
+            source_watermark="", ontology_watermark=""))
+        ex = ActionExecutor(self.store, health=self.health)
+        clue = LineageClue(title="落链线索")
+        ex.execute("verify", clue, "王检察官", {"note": "已核查"})
+        integ = self.chain.chain_integrity()
+        self.assertEqual(integ["disposal_events"], 1)
+        self.assertTrue(integ["chain_ok"])
+        self.assertNotIn(("audit_integrity_gap", "warning"), self._diag_kinds())
+        self.assertNotIn(("audit_integrity_gap", "critical"), self._diag_kinds())
 
 
 if __name__ == "__main__":

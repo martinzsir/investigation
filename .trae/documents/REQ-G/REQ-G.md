@@ -1,7 +1,7 @@
 # 孙武侦查官 · 改进需求清单
-## REQ-G-001 ~ REQ-G-024　共 24 项
+## REQ-G-001 ~ REQ-G-025　共 25 项
 
-> **补登记说明（2026-09-05）**：REQ-G-022 至 REQ-G-024 为实施阶段发现并修复后追录（G-022/023 见 REQ-G-REV.md，commit `e53efad`；G-024 见 REQ-G-fix.md，commit `00fd2ac`）。编号按规则续编、不重排，条目内标注实施状态。
+> **补登记说明（2026-09-05）**：REQ-G-022 至 REQ-G-024 为实施阶段发现并修复后追录（G-022/023 见 REQ-G-REV.md，commit `e53efad`；G-024 见 REQ-G-fix.md，commit `00fd2ac`）。REQ-G-025 为代码逐行核对 + 真实库实测发现，登记当日完成修复（见条目状态）。编号按规则续编、不重排，条目内标注实施状态。
 
 **编号规则**：格式 `REQ-G-XXX`，自 REQ-G-001 起连续编号。前缀 **G** 表示治理（Governance）类改进，与项目既有功能需求编号空间（REQ-001~REQ-027）相互独立，不占用后续功能需求号段。编号按优先级分组连续分配，一经分配即固定，不因实施顺序调整、需求合并或拆分而改变；后续新增追加至最大编号之后，不重排已有编号。
 
@@ -35,6 +35,7 @@
 | REQ-G-022 | P1 | py Function 结果路径静默 | py impl 规则只读 out["rows"]，R5/R7 永不命中且零诊断（已实施 e53efad） |
 | REQ-G-023 | P2 | 规则强度分级名实相符 | R7 分级判据落地实现、窗口内外双口径，宁低估不高估（已实施 e53efad） |
 | REQ-G-024 | P2 | 实证缺口独立报警 | 实证覆盖缺口不再依附声明轨报警，独立留痕并经异常通道转待核实（已实施 00fd2ac） |
+| REQ-G-025 | P1 | 处置动作未落审计链 | _apply 漏传 audit_chain，状态变更含「已立案」不落防篡改链；空链 chain_ok=true 假阳性（待实施） |
 
 ---
 
@@ -192,6 +193,46 @@
 **价值**：修复后 R5/R7 从「永远零命中的死规则」恢复为有效检测能力；同时印证 REQ-G-002 的零命中诊断是此类缺陷唯一的暴露口。
 
 **状态**：**已实施**（commit `e53efad`，2026-09-05）。
+
+### REQ-G-025　处置动作未落持久审计链，空链自检假阳性
+
+> **登记（2026-09-05，代码逐行核对 + 真实库实测；登记当日修复）**：与 REQ-G-022 同形态——接口提供了能力，消费方没接上，而失败完全静默；且自检返回"正常"，比没有自检更危险。
+
+**问题**：
+1. **接线缺失（根因）**：`LineageClue.set_status()` / `set_filed()` 提供 `audit_chain` 形参（传入即同步落持久哈希链），但写操作唯一入口 `ActionExecutor._apply()` 的两处调用均未传——`clue.set_filed(operator, params["legal_basis"])` 漏第三参、`clue.set_status(target, operator=, note=)` 漏 `audit_chain`；`ActionExecutor` 构造签名 `(store, pack, access, health)` 根本不持有 AuditChain。处置看板五个动作（verify/exclude/confirm/file 等）全部经 `_apply()`，**全部受影响**。
+2. **内存与持久链脱节**：`set_status()` 中内存 `audit_log.append()` 无条件执行，`audit_chain.append()` 在 `if audit_chain is not None` 门控内；状态赋值 `self.status = target` 也在门控外。故内存日志、看板状态、控制台「法定依据入审计链」提示一切正常，持久链为空。
+3. **空链假阳性**：`chain_integrity()` 对空表计算 `expected = max(seq, default=0) = 0`、`actual = 0`，`chain_ok = (无断链) and (无缺字段) and (0 == 0) = True`，且不进入任何报警分支（run_diagnostic 零记录）。
+
+**实测证据**（2026-09-05，可复跑）：
+- 真实库 `investigation.duckdb` 的 `audit_chain` 共 50 行 = 48 条 proposal 事件 + 2 条 export 事件；**线索处置状态变更事件 0 条**（`after_state` 含 `legal_basis` 的 0 条、纯 status 事件 0 条）。
+- 全新内存库经 `ActionExecutor.execute('verify', ...)` 执行成功后：线索内存 `audit_log` 有 1 条、status 已变更为「查证中」，但 **audit_chain 表从未被创建**（该路径不实例化 AuditChain）。
+- 空库 `chain_integrity()` 返回 `{'chain_ok': True, 'expected_count': 0, 'actual_count': 0, ...}`，run_diagnostic 0 条。
+- 测试盲区：`test_audit_chain.py` 把"不传 chain → 链 0 行"当作**向后兼容预期**固化，无任何测试断言"经 ActionExecutor 处置后链上有记录"。
+
+**后果**：
+- 所有处置状态变更——包括「已立案」这个 human 专属受控终态（需 legal_basis、占位名拦截、权限三纪律层层设防）——**没有留下任何防篡改的持久记录**。事后无法回答"这条线索是谁、依据哪一版规则、何时置为已立案"。
+- 防线最严的地方恰恰没有留痕；而健康度报告显示 `chain_ok: true`，用"正常"掩盖"什么都没记下来"。
+- 这直接击穿 REQ-G-018 的立项目标——该条立项时已写明"记录数期望核对（该写的事件没写进来）"是仍缺项，本缺陷正是该缺口的真实爆发。
+
+**方案**：
+1. **接线（必须）**：`ActionExecutor` 持有/惰性构造 `AuditChain(self.store.conn, health=self.health)`，在 `_apply()` 两处调用传入（无 store 的内存/兼容路径回落 None，不抛错）；`execute()` 与两阶段 `dispatch()` 共用 `_apply()`，一处修复两路径同时生效。
+2. **空链/缺类不再判完整（必须）**：`chain_integrity()` 区分两种空——本次运行**存在处置动作但链上无对应事件** → warning 诊断（`audit_integrity_gap`，reason 指明"处置动作未落链，属接线缺失"）；链全空且确无处置 → 不报或 info（纯查询运行合法），避免误报。
+3. **补接线测试（必须）**：新增断言"经 ActionExecutor 处置后 audit_chain 新增对应事件、chain_verify 通过、file 事件含 legal_basis"；registry 层"不传 chain 仅内存"的兼容语义保持不变。
+4. **治本（可选，评估后定）**：将 `audit_chain` 改为必填位置参数，使漏传在编译/调用期暴露；代价是同步改造 `test_disposal.py` 等依赖默认 None 的脚本与兼容约定，建议接线稳定后单独评估。
+
+**验收标准**：
+1. 经 `execute()` 执行任一处置动作后，`audit_chain` 新增 1 条事件（`after_state` 含目标 status、operator 具名），`chain_verify()` 为 true
+2. 经 `execute('file', ...)` 置「已立案」后，落链事件 `after_state` 含 `legal_basis`，与内存 audit_log 条目一一对应
+3. 两阶段路径 `dispatch()` 同样落链（复用 `_apply()`，不重复写）
+4. 无 store / 内存路径下降级为不记录、不抛错（NullRunHealth 与无 conn 均不阻断）
+5. 构造"本次有处置动作但链上无处置事件"场景，`chain_integrity()` 产出 warning 诊断且 `chain_ok` 不为 true；纯查询空链运行不报警
+6. `test_audit_chain` 既有"不传 chain 仅内存"兼容用例行为不变；全量回归 70 组全绿
+
+**原因**：`audit_chain` 可选默认 None 的设计给了"只写内存"的合法退路，但唯一的生产写入口恰恰走了这条退路而无人察觉；自检又以 `0 == 0` 给空链盖章。能力接上了、校验也写了，中间的接线断了，且断点两边都显示绿色。
+
+**价值**：让「已立案」等终态处置真正具备防篡改、可回溯的资格——这是结论进入后续程序的基本前提；同时补上 REQ-G-018"期望记录数核对"的最后半段，使审计自检不再能被空链骗过。
+
+**状态**：**已实施**（2026-09-05）。修复落地：`ActionExecutor._chain()` 惰性构造 AuditChain 并在 `_apply()` 两处状态变更传入（即时执行与两阶段 dispatch 共用，一处接线两路径生效；无 store 回落 None 不抛错）；`chain_integrity()` 新增处置事件识别与 `clue_disposal_status`/`action_request` 双证据源交叉核对，有处置痕迹而链上零事件判 chain_ok=false 并落 warning，纯查询空链不报警；新增 6 项 AC 测试（execute/file/dispatch 落链、无 store 降级、脱链告警、接线后无告警），test_dispatch_failclosed 精确计数断言改为按 kind 过滤（落链后无锚点库按 REQ-G-007 记 version_anchor_missing 属预期）。方案 4（audit_chain 改必填）按条目约定留待接线稳定后单独评估。
 
 ---
 
@@ -554,11 +595,11 @@
 
 ## 一句话总结
 
-这 24 项需求动机高度一致：项目为保证管线不中断，在多处使用了 try/except 或 continue，但处理方式只有「吞掉」，没有「降级标记」。（原列 21 项；REQ-G-022 至 024 为实施阶段补登记，其中 G-022 正是「吞掉」型沉默失败的真实实例——py Function 结果路径未读致规则永不命中。）
+这 25 项需求动机高度一致：项目为保证管线不中断，在多处使用了 try/except 或 continue，但处理方式只有「吞掉」，没有「降级标记」。（原列 21 项；REQ-G-022 至 024 为实施阶段补登记、025 为核查发现待实施——G-022 与 G-025 同为「吞掉」型沉默失败的真实实例：前者是 py Function 结果路径未读致规则永不命中，后者是 audit_chain 漏传致处置动作永不落链。）
 
 真正要补的不是异常处理语句，而是**一套统一的降级协议**——失败必须留下可查的痕迹，而不只是让程序继续往下跑。
 
 项目里已有三处做对了：语义表缺失返回 `degraded`、血缘合并写 `merged_from`、双轨比对不一致打印告警。共同点是**失败被表达成了数据**。
 
-建议以这三处为样板固化成协议，再逐点改造。这样 24 项需求就不是 24 个补丁，而是一次统一的能力升级。
+建议以这三处为样板固化成协议，再逐点改造。这样 25 项需求就不是 25 个补丁，而是一次统一的能力升级。
 
