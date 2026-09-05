@@ -1,6 +1,6 @@
 ---
 name: sunzi-investigation
-version: 1.0.0
+version: 1.1.0
 description: >
   孙武侦查官：确定性侦查推演内核（DuckDB + LadybugDB 单机版）。
   把银行流水/通话/招投标/轨迹/OSINT 跑成可溯源候选线索、五间交叉等级与处置看板。
@@ -16,7 +16,7 @@ description: >
 ## 一、定位
 侦查员的**决策副驾**，只做三件事：
 1. 把案件要素展开成可复查的推演（庙算，`core/hypotheses.py`）——四层覆盖完整性机制：**数据驱动**（`auto_from_findings()` 按模式库把虚实扫描发现自动映射为候选假设，模式库按资金/通讯/行为/关系/时间五维组织）× **规则约束**（≤5 条、四字段必备、超授权边界标"受限(待授权)"、数据源缺失标"降级"，`build()` 内置）× **反遗漏**（五维度覆盖度 <80% 报警、间类缺口警告、证据冲突检测、`enumerate_space()` 枚举候选池+候补清单）× **人机协同**（正兵 `add()/remove()/reorder()/promote()` 受控接口，全程审计）
-2. 把全量数据里的反常标成候选突破口（虚实/用间，DuckDB 扫描）
+2. 把全量数据里的反常标成候选突破口（虚实/用间，经规则手册调只读 Function 消费 `obj_*`/`lnk_*` 语义层）
 3. 把"假设—证据—程序"对齐，把定性权交回人（奇正/全胜，处置状态机强制）
 
 ## 二、核心决策顺序（不可颠倒）
@@ -41,7 +41,11 @@ description: >
 
 辅助工具：`graph_overpass`（图库两跳过桥双轨）/ `clue_list` / `clue_transition` /
 `function_list`+`function_invoke`（Ontology Function 只读计算目录/调用）/
-`rule_list`（自然语言规则手册目录）/ `run_pipeline`（需 confirm:true）。
+`rule_list`（自然语言规则手册目录）/ `run_pipeline`（需 confirm:true）/
+`review.list_pending`+`review.get_evidence`（提案待审队列/取证）/
+`action.status`（处置状态只读查询，`pp-` 前缀走 ProposalStore）/
+`review.submit_proposal`（Agent 唯一写通道，全程不触 ActionExecutor，提案 ID `pp-` 前缀）。
+**MCP 共 13 个工具**（9 主工具 + 4 个 review/action 点号工具）。
 **规则编排约定**：虚实研判先 `rule_list` 读规则原文（rule_text 是判据依据），再按规则调
 `function_invoke`（参数以规则 params 为基准，可在规则语义内调参对比）；
 不得自创规则外判据、不写 SQL、不造数，线索表述必带 rule_id。
@@ -60,17 +64,22 @@ MCP server：`python -m scripts.mcp_server`（stdio，JSON-RPC 2.0，零第三�
 
 ## 七、校验
 ```bash
-python run_tests.py                  # 18 组测试（mcp/miaosuan/graph/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/audit/e2e），必须全绿
-python -m scripts.mcp_client_test    # MCP 端到端（46 项、9 工具），改 MCP 后必跑
+python run_tests.py                  # 70 组测试必须全绿（--fast 跳 e2e、--only <组> 单跑；
+                                     #   含 reqpm1/datamap/valuetype/profiler/drafts 等治理组）
+python -m scripts.mcp_client_test    # MCP 端到端（69 项、13 工具），改 MCP 后必跑
 ```
 Schema 与红线校验在 `core/validate.py`；`--auto-review` 仅限演示，生产必须人工逐条确认。
 
 ## 八、数据输入约定
 - 业务数据：`data/*.parquet`（银行流水/通话记录/招投标档案/工商信息/轨迹出行/公开OSINT/举报材料），重跑 `python -m scripts.init_duckdb` 挂载
-- 语义层（Ontology，声明是数据/实现是代码）：`ontology/<pack>/*.json`（objects/links/bindings/actions/functions/rules 六段，schema_version=2）由 `core/ontology_loader.py` 装载校验，`python -m scripts.build_ontology` 编译出 `obj_*`/`lnk_*`（run_all 步骤 6.5 自动执行）。Object/Link 为表；**Function 只读**（functions.json 声明 + `core/functions.py` 注册实现，SQL 强制 SELECT/WITH 白名单 + `{{param}}` 模板参数，string 参数仅 enum 白名单，检测器只是 Function 薄编排）；**Rule 是自然语言规则手册**（rules.json：rule_text 判据原文 + function/params 挂钩，`core/rules.py` 确定性执行，LLM 经 rule_list 读取解释、不执行文本）；**Action 可写**（actions.json 声明 + `core/action_executor.py` 唯一写路径，file 副作用创建 obj_decision 决策对象）。新案件/新数据源/新检测规则：加 ontology 案件包 JSON，`--pack <包名>` 切换，不改检测器
+- 语义层（Ontology，声明是数据/实现是代码）：`ontology/<pack>/*.json`（objects/links/bindings/rules/functions/actions/policies/views **八段**，schema_version=2，另配 thresholds/case_knowledge/dimensions/enum_space/llm_policy）由 `core/ontology_loader.py` 装载校验，`python -m scripts.build_ontology` 编译出 `obj_*`/`lnk_*`（run_all 步骤 6.5 自动执行）。Object/Link 为表；**Function 只读**（functions.json 声明 + `core/functions.py` 注册实现，SQL 强制 SELECT/WITH 白名单 + `{{param}}` 模板参数，string 参数仅 enum 白名单，检测器只是 Function 薄编排）；**Rule 是自然语言规则手册**（rules.json：rule_text 判据原文 + function/params 挂钩，`core/rules.py` 确定性执行，LLM 经 rule_list 读取解释、不执行文本）；**Action 可写**（actions.json 声明 + `core/action_executor.py` 唯一写路径，file 副作用创建 obj_decision 决策对象）；**权限**（policies.json + `core/policy.py`，未声明 fail-closed + 敏感列遮蔽）。新案件/新数据源/新检测规则：加 ontology 案件包 JSON，`--pack <包名>` 切换，不改检测器
 - 任意格式接入：CSV/Excel/JSON/SQLite/Parquet 走 `data_ingest.DataIngestManager`（自动检测分隔符/映射中文列名/保留 `_source_file` 溯源列）
 - 图库边表：`python -m scripts.export_ladybug` 从语义层导出 → `data/ladybug/*.csv` → COPY 进 LadybugDB
 - 增量：`python -m scripts.incremental --quarter 2024-Q4`
+- 本体画像与数据地图（治理面，只读，REQ-P，不加 MCP 工具）：
+  - 六层本体画像 `python -m scripts.demo_profile` → `output/profile_report.md`（空值率/值类型分布/混装判定/语义指标/五间覆盖/质量分；`core/ontology_profile.py` OntologyProfiler + `core/value_type.py`）；
+  - 数据地图 L0 拓扑 + L1 血缘（`core/data_map.py` 零依赖静态解析，归一缺口检测）；
+  - 新表接入画像 + 草案组装 `python -m scripts.profile_table --input <外部表>`（raw 只读，禁适配器隐式类型转换）→ `output/profiles/` 画像 + `output/drafts/` 三件【待核实】草案（objects/links/bindings）+ ETL 步骤序列；`core/draft_assembler.py` 的 DraftAssembler/recommend_steps。**草案只写 output/drafts/，人工审核复制进 ontology/ 经 build_ontology 校验才生效，画像/地图/草案只观察不写回**。详见 `.trae/documents/REQ-P/草案组装器使用指南.md`。
 
 ## 九、调用示例
 ```

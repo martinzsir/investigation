@@ -1,6 +1,6 @@
 ---
 name: rule-manager
-version: 1.0.0
+version: 1.1.0
 description: >
   规则手册管理：新增/修改/停用侦查规则（ontology/<pack>/rules.json）、调阈值、
   命中核对、排查 loader 硬失败。Invoke when：用户要求加检测规则、改规则阈值或判据表述、
@@ -99,7 +99,7 @@ description: >
 ```bash
 # 1. 最快：装载校验（rules/functions 交叉引用，秒级）
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python -m scripts.build_ontology"
-# 2. 全量：18 组测试必绿（ontology/spec 组含规则手册与 schema 用例；--fast 跳 e2e）
+# 2. 全量：70 组测试必绿（ontology/spec/rule_dsl 等组含规则手册与 schema 用例；--fast 跳 e2e、--only <组> 单跑）
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python run_tests.py"
 # 3. 改了 functions.json / MCP 工具 / 规则目录计数时额外跑：
 wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/python -m scripts.mcp_client_test"
@@ -112,6 +112,6 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 ## 七、现状基线（default 包，2026-09-03，改完对照防回归）
 
 - **6 条规则**：R1 季末整数现金存入（资金/生间/H1，window=15、现金存入 token）、R2 整数转账聚合过桥（资金/反间/H4）、R3 通话频次突增（通讯/生间/H3，result_hit，绝对阈值 30 降级判据）、R4 轨迹同框（行为/生间，演示数据 0 行不命中）、R5 工商利益关联（关系/因间/H2）、R6 中标-资金时间窗碰撞（时间/反间/H4，stage=qi_zheng，排除"公司"后缀）
-- **10 个 function**；MCP **9 个工具**（rule_list 为第 9 个）
+- **10 个 function**；MCP **13 个工具**（9 主工具含 rule_list + 4 个 review/action 点号工具；规则手册相关为 `rule_list`/`function_list`/`function_invoke`）
 - 真实数据基线：R1 `window=15` → 3 桶/30 万；`window=0`（旧口径）→ 7 桶；R6 → 7 行；虚实扫描 4 条 finding（R1/R2/R3/R5）
 - 规则手册设计全文：`.trae/documents/rule_layer_plan.md`
