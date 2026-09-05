@@ -131,6 +131,7 @@ GROUPS = {
     "initcold":    ("REQ-G-014 冷层建表声明推导", [sys.executable, "-m", "unittest", "tests.test_init_cold"]),
     "exportendpoints":("REQ-G-015 端点列名声明化/导出通用化", [sys.executable, "-m", "unittest", "tests.test_export_endpoints"]),
     "reqpm1":      ("REQ-P M1 数据层缺陷修复（031~034）", [sys.executable, "-m", "unittest", "tests.test_reqp_m1"]),
+    "datamap":     ("REQ-P M2 数据地图 L0+L1 静态拓扑与血缘", [sys.executable, "-m", "unittest", "tests.test_data_map"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 
