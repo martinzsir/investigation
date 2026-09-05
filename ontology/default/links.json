@@ -9,9 +9,9 @@
       "to_obj": "account",
       "properties": {"amount": "decimal", "date": "date"},
       "endpoints": {
-        "from": {"col": "from_account"},
-        "to": {"col": "to_account"},
-        "extra": ["amount", "date"]
+        "from": {"col": "from_account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}},
+        "to": {"col": "to_account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}},
+        "extra": ["from_account", "to_account", "amount", "date"]
       }
     },
     {
@@ -88,7 +88,25 @@
       "title": "举报针对人员",
       "from_obj": "tipoff",
       "to_obj": "person",
-      "properties": {"tip_type": "string", "submit_date": "date"}
+      "properties": {"tip_type": "string", "submit_date": "date"},
+      "endpoints": {
+        "from": {"col": "tipoff_id", "ref": {"object": "tipoff", "key": "tipoff_id", "name": "title"}},
+        "to": {"col": "person_id", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "extra": ["target_raw", "tip_type", "submit_date"]
+      }
+    },
+    {
+      "name": "tipoff_from_reporter",
+      "title": "举报来源指向",
+      "from_obj": "tipoff",
+      "to_obj": "person",
+      "properties": {"tip_type": "string", "submit_date": "date"},
+      "endpoints": {
+        "from": {"col": "tipoff_id", "ref": {"object": "tipoff", "key": "tipoff_id", "name": "title"}},
+        "to": {"col": "person_id", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
+        "extra": ["reporter_raw", "tip_type", "submit_date"]
+      },
+      "_note": "REQ-P-032：举报人归一。reporter_raw 常为匿名，LEFT JOIN 未命中则 person_id 为空（边不成立但不丢材料）。"
     },
     {
       "name": "osint_mentions",

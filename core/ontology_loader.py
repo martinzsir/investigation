@@ -20,6 +20,7 @@ v2 分层（类型层 vs 管道层）：
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -223,12 +224,26 @@ def _load_objects(path: Path) -> list[ObjectType]:
                     f"（REQ-041 AC2：enum 属性必须有白名单）")
 
         jian, jian_source = _parse_jian(o, f"{ctx}（{name}）")
+        # REQ-P-034：元数据/内容属性排除声明（不参与实体连接与画像）
+        md = o.get("metadata_props", [])
+        if not isinstance(md, list) or any(
+                not isinstance(x, str) or not x.strip() for x in md):
+            raise ValueError(
+                f"{ctx}（{name}）metadata_props 必须是非空字符串列表（REQ-P-034）")
+        if len(set(md)) != len(md):
+            raise ValueError(f"{ctx}（{name}）metadata_props 存在重复项（REQ-P-034）")
+        unknown_md = [x for x in md if x not in props]
+        if unknown_md:
+            raise ValueError(
+                f"{ctx}（{name}）metadata_props 引用未声明属性：{unknown_md}"
+                f"（REQ-P-034：只允许排除已声明属性）")
         out.append(ObjectType(
             name=name, title=o.get("title", name), pk=o["pk"], kind=kind,
             name_property=name_prop, properties=dict(props),
             runtime=bool(o.get("runtime", False)),
             enum_values=enum_values,
             jian=jian, jian_source=jian_source,
+            metadata_props=tuple(md),
         ))
     return out
 
@@ -336,6 +351,54 @@ def _compile_structured_source(src: dict, otype: ObjectType,
     return f"SELECT {', '.join(parts)} FROM {table}", table
 
 
+# ----------------------------------------------------------------------
+# bindings
+# ----------------------------------------------------------------------
+# REQ-P-033：归一 JOIN 声明校验（v1 校验一致——build_sql 仍是唯一执行源）。
+# 规则：① 声明的每个归一 JOIN 必须在 build_sql 中逐字存在（表/别名/ON 条件一致）；
+#       ② 声明的 select 必须以输出列名（as）进入投影（"sel AS as" 或列名恰为 as）；
+#       ③ build_sql 中出现 raw_name 等值 JOIN 实体表（归一形态）而未声明 → 硬失败；
+#       ④ 业务 JOIN（时间窗/自连接等非 raw_name 等值）不受影响。
+_NORM_KEYS = ("as", "table", "alias", "on", "select")
+_RAW_EQUAL_JOIN_RE = re.compile(
+    r"(?:LEFT\s+)?JOIN\s+(obj_\w+)\s+(\w+)\s+ON\s+\w+\.raw_name\s*=", re.I)
+
+
+def _validate_normalize(items: list, build_sql: str, ctx: str) -> tuple:
+    sql_flat = re.sub(r"\s+", " ", build_sql)
+    declared: set[tuple[str, str]] = set()
+    used_as: set[str] = set()
+    for j, it in enumerate(items):
+        nctx = f"{ctx} normalize[{j}]"
+        if not isinstance(it, dict):
+            raise ValueError(f"{nctx} 必须是映射 {{as,table,alias,on,select}}")
+        _require(it, _NORM_KEYS, nctx)
+        table, alias, as_ = it["table"], it["alias"], it["as"]
+        on_flat = re.sub(r"\s+", " ", str(it["on"]))
+        if not str(table).startswith("obj_"):
+            raise ValueError(f"{nctx} table '{table}' 必须是 obj_* 语义表")
+        if as_ in used_as:
+            raise ValueError(f"{nctx} 输出列名 '{as_}' 重复（REQ-P-033）")
+        used_as.add(as_)
+        if f"JOIN {table} {alias} ON {on_flat}" not in sql_flat:
+            raise ValueError(
+                f"{nctx} 声明的归一 JOIN（{table} {alias} ON {on_flat}）"
+                f"在 build_sql 中不存在或不一致（REQ-P-033：声明与实现须一致）")
+        select = re.sub(r"\s+", " ", str(it["select"]))
+        sel_col = select.split(".")[-1]
+        if f"{select} AS {as_}" not in sql_flat and sel_col != as_:
+            raise ValueError(
+                f"{nctx} select '{select}' 未以输出列 '{as_}' 进入 build_sql "
+                f"投影（REQ-P-033）")
+        declared.add((table, alias))
+    for table, alias in _RAW_EQUAL_JOIN_RE.findall(build_sql):
+        if (table, alias) not in declared:
+            raise ValueError(
+                f"{ctx} build_sql 存在未声明的归一 JOIN（{table} {alias}）"
+                f"——请在 normalize 段声明（REQ-P-033：归一必须声明化）")
+    return tuple(dict(it) for it in items)
+
+
 def _load_bindings(path: Path, objects: list[ObjectType],
                    links: list[LinkType]) -> tuple[dict, dict]:
     data = _read_json(path)
@@ -401,7 +464,12 @@ def _load_bindings(path: Path, objects: list[ObjectType],
             raise ValueError(f"{ctx} 链接 '{name}' 重复绑定")
         if link_map[name].runtime:
             raise ValueError(f"{ctx} runtime 链接 '{name}' 不得有 binding（由 Action 副作用写入）")
-        link_out[name] = LinkBinding(link=name, build_sql=b["build_sql"])
+        norm = b.get("normalize", [])
+        if not isinstance(norm, list):
+            raise ValueError(f"{ctx} normalize 必须是列表（REQ-P-033）")
+        normalize = _validate_normalize(norm, b["build_sql"], ctx)
+        link_out[name] = LinkBinding(link=name, build_sql=b["build_sql"],
+                                     normalize=normalize)
 
     missing_link = [l.name for l in links if not l.runtime and l.name not in link_out]
     if missing_link:

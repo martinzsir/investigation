@@ -75,8 +75,10 @@ class ObjectType:
     properties: dict[str, str] = field(default_factory=dict)  # 属性名 → 值类型（TYPE_NAMES）
     runtime: bool = False              # True=运行期对象（Action 副作用创建，编译器不物化）
     enum_values: dict[str, list[str]] = field(default_factory=dict)  # REQ-041: enum 属性 → 允许值白名单
-    jian: str = ""                     # REQ-G-013：五间归类（生间/内间/反间/死间/因间），声明在类型层
+    jian: str = ""                     # REQ-G-013：五间归类（生间/内间/反间/死间/生间），声明在类型层
     jian_source: str = ""              # REQ-G-013：该数据源展示名（如 银行流水）；空则回落 title
+    # REQ-P-034：元数据/内容属性排除声明——不参与实体连接与画像（content_raw/status/title 等治理字段）
+    metadata_props: tuple[str, ...] = ()
 
 
 @dataclass
@@ -110,6 +112,9 @@ class LinkBinding:
     """链接绑定声明（管道层）：边怎么物化。"""
     link: str                          # 指向 LinkType.name
     build_sql: str                     # 物化 SQL（引用 obj_*/lnk_* 或 L2 表）
+    # REQ-P-033：归一 JOIN 声明（v1 校验一致：声明必须在 build_sql 中逐字存在；
+    #   build_sql 仍是唯一执行源。v2 远期由编译器从 endpoints 生成 JOIN）
+    normalize: tuple = ()
 
 
 @dataclass

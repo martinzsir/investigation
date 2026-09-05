@@ -407,7 +407,7 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn("decision", names)  # runtime 对象也在目录
         self.assertIn("tipoff", names)      # 新增：举报材料（内间）
         self.assertIn("osint_article", names)  # 新增：公开OSINT文章（死间）
-        self.assertEqual(len(pack.links), 9)   # + tipoff_targets_person, osint_mentions
+        self.assertEqual(len(pack.links), 10)  # + tipoff_targets_person, osint_mentions, tipoff_from_reporter(REQ-P-032)
         self.assertEqual(len(pack.functions), 11)  # + tipoff_cross_reference, call_pair_coverage, location_colocated(REQ-G-021)
         self.assertEqual(len(pack.rules), 6)   # 规则手册 R1-R6（rules.json 第六段）
 

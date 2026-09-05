@@ -32,7 +32,8 @@ def _load_export():
 export_ladybug = _load_export()
 
 _EXPORTED_LINKS = ["transfers", "calls_to", "owns", "involved_in",
-                   "co_located", "time_window"]
+                   "co_located", "time_window", "tipoff_targets_person",
+                   "tipoff_from_reporter"]
 
 
 class EndpointDeclTests(unittest.TestCase):

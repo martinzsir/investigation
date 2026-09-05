@@ -8,7 +8,9 @@
       "pk": "person_id",
       "kind": "entity",
       "name_property": "raw_name",
-      "properties": {"raw_name": "string"}
+      "properties": {
+        "raw_name": "string"
+      }
     },
     {
       "name": "org",
@@ -23,7 +25,10 @@
         "legal_rep": "string",
         "status": "string",
         "relation": "string"
-      }
+      },
+      "metadata_props": [
+        "status"
+      ]
     },
     {
       "name": "account",
@@ -31,7 +36,9 @@
       "pk": "account_id",
       "kind": "entity",
       "name_property": "raw_name",
-      "properties": {"raw_name": "string"}
+      "properties": {
+        "raw_name": "string"
+      }
     },
     {
       "name": "transaction",
@@ -90,7 +97,10 @@
         "winner_raw": "string",
         "pub_date": "date",
         "leader": "string"
-      }
+      },
+      "metadata_props": [
+        "title"
+      ]
     },
     {
       "name": "clue",
@@ -104,7 +114,13 @@
         "last_operator": "string",
         "note": "string",
         "updated_at": "string"
-      }
+      },
+      "metadata_props": [
+        "status",
+        "last_operator",
+        "note",
+        "updated_at"
+      ]
     },
     {
       "name": "decision",
@@ -124,8 +140,23 @@
         "metadata": "json"
       },
       "enum_values": {
-        "decision_type": ["立案", "不予立案", "移送管辖", "补充侦查", "撤销"]
-      }
+        "decision_type": [
+          "立案",
+          "不予立案",
+          "移送管辖",
+          "补充侦查",
+          "撤销"
+        ]
+      },
+      "metadata_props": [
+        "decision_type",
+        "clue_id",
+        "legal_basis",
+        "operator",
+        "note",
+        "created_at",
+        "metadata"
+      ]
     },
     {
       "name": "tipoff",
@@ -142,7 +173,12 @@
         "target_raw": "string",
         "reporter_raw": "string",
         "content_raw": "string"
-      }
+      },
+      "metadata_props": [
+        "title",
+        "submit_date",
+        "content_raw"
+      ]
     },
     {
       "name": "osint_article",
@@ -160,7 +196,14 @@
         "source_name": "string",
         "crawled_at": "timestamp",
         "retention_days": "duration_days"
-      }
+      },
+      "metadata_props": [
+        "info_text",
+        "pub_date",
+        "source_name",
+        "crawled_at",
+        "retention_days"
+      ]
     }
   ]
 }

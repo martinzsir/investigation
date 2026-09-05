@@ -23,6 +23,7 @@
     {"link": "time_window",   "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
     {"link": "decision_for",  "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "runtime 链接，与 decision 同门槛"},
     {"link": "tipoff_targets_person", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "举报指向关系，与 tipoff 同门槛"},
+    {"link": "tipoff_from_reporter", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "REQ-P-032 举报来源关系，与 tipoff 同门槛"},
     {"link": "osint_mentions", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报提及关系，与 osint_article 同门槛"}
   ],
   "property_policies": [
