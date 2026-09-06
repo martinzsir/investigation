@@ -380,7 +380,9 @@ def reset_registry() -> SkillRegistry:
 def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     """
     从 DuckDB 中采集「人名类」实体记录，跑通人名对齐。
-    采集范围：银行流水(主体/对方)、通话记录(主体/对端)、招投标档案(分管领导)。
+    采集范围：银行流水(主体/对方)、通话记录(主体/对端)、招投标档案(分管领导)、人员表(姓名)。
+    若源表存在电话/身份证类列（如鲁棒性案例的人员表），一并采集作为强证据——
+    红线 R-1：同名不同人（互斥强证据）须由对齐器拆簇待裁决，而非按名静默合并。
     返回已 ingest 但未 resolve 的 EntityResolver（调用方再 add_aliases + resolve）。
     """
     # 延迟导入：entity_resolution 与 core.registry 互相解耦
@@ -392,28 +394,52 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     if conn is None:
         return resolver
 
-    table_cols = [
-        ("银行流水", "主体", None),
-        ("银行流水", "对方", None),
-        ("通话记录", "主体", None),
-        ("通话记录", "对端", None),
-        ("招投标档案", "分管领导", None),
+    # 强证据列候选名（探测式：源表存在才采集，缺列降级只取名字）
+    _PHONE_CANDS = ("电话", "手机", "手机号", "联系电话", "联系方式")
+    _ID_CANDS = ("身份证号", "身份证", "证件号")
+    name_sources = [
+        ("银行流水", "主体"), ("银行流水", "对方"),
+        ("通话记录", "主体"), ("通话记录", "对端"),
+        ("招投标档案", "分管领导"), ("人员表", "姓名"),
     ]
-    seen: set[tuple[str, str]] = set()   # (name, type) 去重，避免同名人被当作共享证据
+    seen: set[tuple] = set()   # (name, phone, id_card) 去重；同名不同强证据 → 多条 → 对齐器拆簇
     records: list[dict] = []
-    for table, col, _ in table_cols:
+    for table, col in name_sources:
+        try:
+            cols = [d[0] for d in conn.execute(
+                f'SELECT * FROM "{table}" LIMIT 0').description]
+        except Exception:
+            continue   # 表不存在则跳过，容错
+        if col not in cols:
+            continue
+        phone_col = next((c for c in _PHONE_CANDS if c in cols), None)
+        id_col = next((c for c in _ID_CANDS if c in cols), None)
+        sel = [f'DISTINCT "{col}" AS name']
+        if phone_col:
+            sel.append(f'"{phone_col}" AS phone')
+        if id_col:
+            sel.append(f'"{id_col}" AS id_card')
         try:
             rows = conn.execute(
-                f'SELECT DISTINCT "{col}" AS name FROM "{table}" WHERE "{col}" IS NOT NULL'
+                f'SELECT {", ".join(sel)} FROM "{table}" WHERE "{col}" IS NOT NULL'
             ).fetchall()
         except Exception:
-            continue   # 表/列不存在则跳过，容错
-        for (name,) in rows:
-            key = (str(name), "person")
+            continue
+        for row in rows:
+            name = str(row[0]).strip()
+            if not name:
+                continue
+            phone = str(row[1]).strip() if phone_col and row[1] is not None else ""
+            id_card = (str(row[2]).strip()
+                       if id_col and len(row) > 2 and row[2] is not None else "")
+            key = (name, phone, id_card)
             if key in seen:
                 continue
             seen.add(key)
-            records.append({"name": name, "type": "person", "source_row_id": f"{table}.{col}"})
+            rec = {"name": name, "phone": phone, "source_row_id": f"{table}.{col}"}
+            if id_card:
+                rec["id_card"] = id_card
+            records.append(rec)
 
     resolver.ingest(records)
     return resolver
