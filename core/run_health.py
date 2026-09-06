@@ -148,10 +148,14 @@ class RunHealth:
         rows = self.rows(run_id)
         by_kind: dict[str, int] = {}
         by_severity: dict[str, int] = {s: 0 for s in SEVERITIES}
+        by_source: dict[str, int] = {}
         zero_hit: list[dict] = []
         for r in rows:
             by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
             by_severity[r["severity"]] = by_severity.get(r["severity"], 0) + 1
+            # REQ-D-022 AC-5：每类结果独立 source 标识，可区分来源
+            src = r.get("source") or "(unspecified)"
+            by_source[src] = by_source.get(src, 0) + 1
             if r["kind"] == "rule_zero_hit":
                 d = r.get("detail") if isinstance(r.get("detail"), dict) else {}
                 zero_hit.append({
@@ -168,6 +172,7 @@ class RunHealth:
             "total": len(rows),
             "by_kind": by_kind,
             "by_severity": by_severity,
+            "by_source": by_source,
             "zero_hit_rules": zero_hit,
             "event_dead_letter": dead_letter,
             "health_self_dropped": len(self._dropped),
@@ -193,6 +198,7 @@ class RunHealth:
                 "info": sev.get("info", 0),
             },
             "分类计数": s["by_kind"],
+            "来源计数": s["by_source"],
             "零命中规则": s["zero_hit_rules"],
             "事件死信": s["event_dead_letter"],
             "说明": "健康度为运行留痕，不参与线索升格；warning/critical 项需人工复核。",
@@ -212,12 +218,14 @@ class NullRunHealth:
 
     def summary(self, run_id: str | None = None) -> dict:
         return {"run_id": "", "total": 0, "by_kind": {}, "by_severity":
-                {s: 0 for s in SEVERITIES}, "zero_hit_rules": [],
+                {s: 0 for s in SEVERITIES}, "by_source": {},
+                "zero_hit_rules": [],
                 "event_dead_letter": 0, "health_self_dropped": 0}
 
     def health_section(self, run_id: str | None = None) -> dict:
         return {"status": "healthy", "run_id": "", "诊断总数": 0,
                 "计数": {s: 0 for s in SEVERITIES}, "分类计数": {},
+                "来源计数": {},
                 "零命中规则": [], "事件死信": 0,
                 "说明": "未启用运行诊断（health=None）。"}
 

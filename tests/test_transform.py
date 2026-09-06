@@ -148,11 +148,17 @@ class TestTransformValidation(unittest.TestCase):
             _load(_bind(transform={"ghost": ["strip_thousands"]}))
         self.assertIn("ghost", str(cm.exception))
 
-    def test_param_op_rejected_before_d5(self):
-        """带参 op（op:param）属批 D5 参数化机制，当前显式拒绝。"""
+    def test_param_op_whitelist_enforced_d5(self):
+        """REQ-D-011：带参 op（op:param）参数仅白名单取值——无白名单 op 带参、
+        未注册带参 op 均硬失败（自由文本参数防注入）。"""
+        # transform 层 sql op 带了它不接受的参数 → 硬失败
         with self.assertRaises(ValueError) as cm:
+            _load(_bind(transform={"amount": ["digits_only:xx"]}))
+        self.assertIn("不接受参数", str(cm.exception))
+        # 未注册的带参 op 同样硬失败（不报"D5 拒绝"，而是未注册 fail-closed）
+        with self.assertRaises(ValueError) as cm2:
             _load(_bind(transform={"amount": ["regex:,=>"]}))
-        self.assertIn("D5", str(cm.exception))
+        self.assertIn("未在 op 注册表注册", str(cm2.exception))
 
 
 if __name__ == "__main__":

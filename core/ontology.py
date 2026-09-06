@@ -84,8 +84,11 @@ class ObjectType:
     composite_props: tuple[str, ...] = ()
     # REQ-D-016/D-002：属性 → 数据元 ID 引用（properties 值为 {"type": ..., "data_element": "DE_X"}）；
     # loader 装载期校验 ID 已注册（fail-closed）；合规扫描按引用定位扫描目标，
-    # 未引用数据元的属性不扫（AC-8）。完整展开继承（type/format/clean_rule）属批 D5。
+    # 未引用数据元的属性不扫（AC-8）。
     prop_data_elements: dict[str, str] = field(default_factory=dict)
+    # REQ-D-002 AC-3：数据元 clean_rule 自动挂接——属性引用的数据元声明了 clean_rule
+    # 时，_apply_clean 自动应用（无需在 binding.clean 重复声明；binding 显式声明优先）。
+    prop_de_clean: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -214,9 +217,13 @@ class RuleSpec:
 
 
 # ---- 清洗规则库（REQ-D-004：唯一 op 注册表派生，见 core/clean_ops.py） ----
-ORG_KEYWORDS = ("公司", "局", "厂", "中心", "部", "建材", "建设", "银行",
-                "财政", "集团", "院", "所", "处", "队")
-SUMMARY_TOKENS = ("现金存入", "工资", "代发", "利息", "转账", "存款", "取现")
+from core import clean_ops as _clean_ops  # noqa: E402  （实现定义后注册，避免循环依赖）
+from collections.abc import Set as _AbcSet  # noqa: E402
+
+# REQ-D-007：词表基线外置到 clean_ops（可被案件包 clean_rules.json 合并/替换）；
+# 模块级别名保留供既有引用与测试。
+ORG_KEYWORDS = _clean_ops.DEFAULT_ORG_KEYWORDS
+SUMMARY_TOKENS = _clean_ops.DEFAULT_SUMMARY_TOKENS
 
 
 def clean_strip(v: str, _ctx=None) -> str:
@@ -224,15 +231,24 @@ def clean_strip(v: str, _ctx=None) -> str:
     return (v or "").strip()
 
 
-def clean_exclude_org_tokens(v: str, org_names: set[str]) -> bool:
-    """滤行 op（既有口径）：True = 判定为组织/摘要 token，应从 person 候选中排除。"""
+def clean_exclude_org_tokens(v: str, org_names) -> bool:
+    """滤行 op（既有口径）：True = 判定为组织/摘要 token，应从 person 候选中排除。
+
+    REQ-D-007：词表优先取运行上下文 CleanContext 的案件级词表（clean_rules.json）；
+    传入普通 set（旧调用/测试）时回落内置基线 ORG_KEYWORDS / SUMMARY_TOKENS。
+    """
     if v in org_names:
         return True
-    return any(k in v for k in ORG_KEYWORDS) or v in SUMMARY_TOKENS
+    # 属性存在即采用案件词表（replace 空表 = 空词表，不得回落）；仅普通 set（旧调用）
+    # 无该属性时才回落内置基线。
+    kws = getattr(org_names, "org_keywords", None)
+    if kws is None:
+        kws = ORG_KEYWORDS
+    toks = getattr(org_names, "summary_tokens", None)
+    if toks is None:
+        toks = SUMMARY_TOKENS
+    return any(k in v for k in kws) or v in toks
 
-
-from core import clean_ops as _clean_ops  # noqa: E402  （实现定义后注册，避免循环依赖）
-from collections.abc import Set as _AbcSet  # noqa: E402
 
 _clean_ops.register_op("strip", impl="py", fn=clean_strip, layer="any",
                        description="去首尾空白")
@@ -356,7 +372,9 @@ def build_ontology(conn, pack: str = "default") -> dict:
 
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
                    "degraded": [], "clean_stats": [], "quarantine": []}
-    org_names = _default_org_names(conn)
+    # REQ-D-007：org 名单 + 案件级词表（clean_rules.json 合并/替换）汇成清洗上下文
+    org_names = _clean_ops.build_clean_context(
+        _default_org_names(conn), getattr(spec, "clean_rules", None))
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
 
     conn.execute("BEGIN TRANSACTION")
@@ -495,10 +513,19 @@ def _apply_clean(rows: list, cols: list[str], otype: ObjectType,
     聚合进 stats["clean_stats"]：{object, property, rule, dropped_rows, sample_masked}
     （样本脱敏，REQ-D-008 落健康度的数据源）。
     """
-    cmap = binding.clean_map
+    cmap = list(binding.clean_map)
+    # REQ-D-002 AC-3：数据元 clean_rule 自动挂接——引用数据元声明了 clean_rule
+    # 的属性，无需在 binding.clean 重复声明即生效；binding 显式声明优先（不覆盖）。
+    # 仅对投影中实际存在的属性挂接（optional 缺列等场景不报错、不强行追加）。
+    name_prop = otype.name_property
+    _declared = {p for p, _ in cmap}
+    for _prop, _rule in getattr(otype, "prop_de_clean", {}).items():
+        if _prop in _declared:
+            continue
+        if _prop == "_name" or _prop == name_prop or _prop in cols:
+            cmap.append((_prop, (_rule,)))
     if not cmap:
         return rows
-    name_prop = otype.name_property
     idx_map: dict[str, tuple[int, str]] = {}   # 声明属性 → (列索引, 实际列名)
     for prop, _ops in cmap:
         if prop == "_name" or prop == name_prop:
@@ -520,8 +547,12 @@ def _apply_clean(rows: list, cols: list[str], otype: ObjectType,
             if v is None:
                 continue
             for op in ops:
-                spec = _clean_ops.OPS[op]
-                nv = spec.fn(v, org_names)
+                # REQ-D-011：带参 op "name:param"——name 查注册表，param 白名单已在
+                # loader/validate_op 校验；py fn 契约 fn(v, ctx) 或 fn(v, ctx, param)。
+                op_name, op_param = _clean_ops.split_op(op)
+                spec = _clean_ops.OPS[op_name]
+                nv = (spec.fn(v, org_names, op_param) if op_param is not None
+                      else spec.fn(v, org_names))
                 if isinstance(nv, bool):          # 滤行谓词：True=剔除
                     if nv:
                         keep = False
@@ -794,7 +825,8 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     # 并剔除 __raw_ 隐藏列——obj_* schema 与隔离前完全一致）
     if b.on_cast_error:
         rows, cols = _quarantine_cast_failures(conn, otype, b, rows, cols, stats)
-    if b.clean_map:
+    if b.clean_map or getattr(otype, "prop_de_clean", None):
+        # REQ-D-002 AC-3：数据元 clean_rule 自动挂接（prop_de_clean）也触发清洗
         rows = _apply_clean(rows, cols, otype, b, org_names, stats)
     # REQ-016：正兵确认的归并映射在代理键分配前应用（对象+事件双侧名字列）
     rows = _apply_entity_mapping(rows, cols, mapping or {})

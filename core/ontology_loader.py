@@ -60,6 +60,7 @@ class OntologyPack:
     actions: dict[str, ActionSpec]
     functions: dict[str, FunctionSpec]
     rules: dict[str, RuleSpec]
+    clean_rules: dict | None = None
 
 
 # ----------------------------------------------------------------------
@@ -71,8 +72,10 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
         raise FileNotFoundError(f"ontology 案件包不存在：{root}")
 
     # REQ-D-001/016：数据元标准先于对象装载——属性 data_element 引用需校验 ID 已注册
-    element_ids = set(load_data_elements(pack, base_dir))
-    objects = _load_objects(root / "objects.json", element_ids)
+    elements = load_data_elements(pack, base_dir)
+    # REQ-D-002 AC-4/AD-5：sensitive 数据元属性必须已在 policies.json 声明遮蔽
+    mask_set = _load_property_mask_set(root)
+    objects = _load_objects(root / "objects.json", elements, mask_set)
     links = _load_links(root / "links.json", objects)
     object_bindings, link_bindings = _load_bindings(
         root / "bindings.json", objects, links)
@@ -86,10 +89,13 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
                         allowed_dimensions=set(dim_names))
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
+    # REQ-D-007：案件级清洗词表（clean_rules.json，缺失回落内置基线词表）。
+    clean_rules = _load_clean_rules(root)
     return OntologyPack(name=pack, objects=objects, links=links,
                         object_bindings=object_bindings,
                         link_bindings=link_bindings,
-                        actions=actions, functions=functions, rules=rules)
+                        actions=actions, functions=functions, rules=rules,
+                        clean_rules=clean_rules)
 
 
 # REQ-G-011：维度缺省内置集（dimensions.json 缺失时回落，保证旧案件包/精简测试包兼容）
@@ -141,7 +147,96 @@ def load_enum_space(pack: str = "default", base_dir: Path | None = None) -> dict
     for k, vals in space.items():
         if not isinstance(vals, list) or not vals:
             raise ValueError(f"enum_space.json space.{k} 必须是非空数组")
+        # REQ-D-003 AC-3：枚举值必须是非空字符串（非法枚举装载期硬失败）
+        if not all(isinstance(x, str) and x.strip() for x in vals):
+            raise ValueError(
+                f"enum_space.json space.{k} 枚举值必须是非空字符串（REQ-D-003 AC-3）")
     return space
+
+
+def derive_code_tables(elements: dict) -> dict:
+    """REQ-D-003 AC-1：从数据元 enum 值域派生标准代码表 {维度名: [枚举值...]}。
+
+    维度名取数据元 ``enum_space_dim`` 声明，缺省用数据元 name；同一维度多个数据元
+    的值域并集去重保序。代码表承载性别/币种/证件类型/案件类别等标准值域，
+    天然不含具体人名/地名（人名属实体数据，由 obj_* 承载）。
+    """
+    tables: dict[str, list[str]] = {}
+    for eid in sorted(elements):
+        spec = elements[eid]
+        if not isinstance(spec, dict):
+            continue
+        vals = spec.get("enum")
+        if not vals:
+            continue
+        dim = spec.get("enum_space_dim") or spec.get("name") or eid
+        bucket = tables.setdefault(str(dim), [])
+        for v in vals:
+            sv = str(v)
+            if sv not in bucket:
+                bucket.append(sv)
+    return tables
+
+
+def load_code_tables(pack: str = "default", base_dir: Path | None = None) -> dict:
+    """REQ-D-003 AC-1/AC-4：标准代码表（数据元 enum 派生）+ 案件级追加合并。
+
+    案件包可在 enum_space.json 的 ``code_tables`` 段追加自定义枚举值
+    （{维度: [追加值...]}）；标准值永远排在前面、不被覆盖或删除（追加并集，
+    标准值优先，AC-4）。返回 {维度: [标准值..., 案件追加值...]}。
+    """
+    elements = load_data_elements(pack, base_dir)
+    tables = derive_code_tables(elements)
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "enum_space.json"
+    if p.exists():
+        data = _read_json(p)
+        extra = data.get("code_tables", {})
+        if extra:
+            if not isinstance(extra, dict):
+                raise ValueError(
+                    "enum_space.json code_tables 必须是 {维度: [追加值...]} 映射（REQ-D-003 AC-4）")
+            for dim, vals in extra.items():
+                if not isinstance(vals, list) or \
+                   not all(isinstance(x, str) and x.strip() for x in vals):
+                    raise ValueError(
+                        f"enum_space.json code_tables.{dim} 必须是非空字符串数组（REQ-D-003 AC-3）")
+                bucket = tables.setdefault(str(dim), [])
+                for v in vals:
+                    if v not in bucket:
+                        bucket.append(v)   # 仅追加，不改写/删除标准值
+    return tables
+
+
+def _load_clean_rules(root: Path) -> dict | None:
+    """REQ-D-007：读 clean_rules.json 案件级清洗词表；文件缺失 → None（回落内置基线）。
+
+    结构：{"schema_version": 2, "mode": "merge"(默认)|"replace",
+           "org_keywords": [str...], "summary_tokens": [str...]}
+    校验：schema_version 一致；mode 合法；两词表必须是字符串数组（空数组合法——
+    merge 下该表 no-op 回落基线，replace 下该表为空集）；非字符串元素硬失败。
+    合并/替换语义由 clean_ops.build_clean_context 执行。
+    """
+    p = root / "clean_rules.json"
+    if not p.exists():
+        return None
+    data = _read_json(p)
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"clean_rules.json schema_version={data.get('schema_version')} 与内核 "
+            f"{SCHEMA_VERSION} 不符（REQ-D-002 版本锚定）")
+    mode = data.get("mode", "merge")
+    if mode not in ("merge", "replace"):
+        raise ValueError(f"clean_rules.json mode='{mode}' 非法，允许 merge | replace（REQ-D-007）")
+    out: dict = {"mode": mode, "org_keywords": [], "summary_tokens": []}
+    for key in ("org_keywords", "summary_tokens"):
+        vals = data.get(key, [])
+        if not isinstance(vals, list) or not all(isinstance(x, str) for x in vals):
+            raise ValueError(
+                f"clean_rules.json {key} 必须是字符串数组（REQ-D-007；空数组=no-op，"
+                f"非字符串元素硬失败）")
+        out[key] = [x.strip() for x in vals if x.strip()]
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -200,10 +295,16 @@ def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> d
                 f"data_elements['{eid}'] 未知 checksum 算法：'{checksum}'，"
                 f"已注册 {sorted(CHECKSUM_ALGOS)}（REQ-D-001 AC-2 fail-closed）")
         clean_rule = spec.get("clean_rule")
-        if clean_rule is not None and clean_rule not in CLEAN_RULE_NAMES:
-            raise ValueError(
-                f"data_elements['{eid}'] clean_rule='{clean_rule}' 未在 op 注册表注册，"
-                f"可用 {sorted(CLEAN_RULE_NAMES)}")
+        if clean_rule is not None:
+            if not isinstance(clean_rule, str):
+                raise ValueError(
+                    f"data_elements['{eid}'] clean_rule 必须是 op 名字符串（可带白名单参数）")
+            try:
+                _clean_ops.validate_op(clean_rule, "clean")
+            except ValueError as e:
+                raise ValueError(
+                    f"data_elements['{eid}'] clean_rule='{clean_rule}' 非法：{e}，"
+                    f"可用 {sorted(CLEAN_RULE_NAMES)}")
         # REQ-D-016：合规扫描相关字段装载期校验（fail-closed，扫描期不做容错）
         fmt = spec.get("format")
         if fmt is not None:
@@ -289,8 +390,27 @@ def _parse_jian(d: dict, ctx: str) -> tuple[str, str]:
 # ----------------------------------------------------------------------
 # objects（类型层）
 # ----------------------------------------------------------------------
+def _load_property_mask_set(root: Path) -> set[tuple[str, str]]:
+    """轻量读 policies.json property_policies → {(object, property)} 遮蔽集合。
+
+    REQ-D-002 AC-4/AD-5：引用 sensitive:true 数据元的属性必须已声明遮蔽。
+    policies.json 缺失 → 空集合（敏感引用将因此硬失败，fail-closed 不放宽）；
+    此处只取遮蔽键集合，不重复 PolicyEngine 的角色/版本校验（运行时仍由它把关）。
+    """
+    p = root / "policies.json"
+    if not p.exists():
+        return set()
+    data = _read_json(p)
+    out: set[tuple[str, str]] = set()
+    for x in data.get("property_policies", []):
+        if isinstance(x, dict) and x.get("object") and x.get("property"):
+            out.add((x["object"], x["property"]))
+    return out
+
+
 def _load_objects(path: Path,
-                  element_ids: set[str] | None = None) -> list[ObjectType]:
+                  elements: dict | None = None,
+                  mask_set: set | None = None) -> list[ObjectType]:
     data = _read_json(path)
     out: list[ObjectType] = []
     seen: set[str] = set()
@@ -309,9 +429,13 @@ def _load_objects(path: Path,
         if not isinstance(props, dict):
             raise ValueError(f"{ctx}（{name}）properties 必须是映射 {{属性名: 值类型}}")
         # REQ-D-013：属性值可为 string 或映射 {"type": ..., "composite": true}
-        # REQ-D-016/002：映射还允许 {"data_element": "DE_X"} 引用数据元（loader 校验 ID 已注册）
+        # REQ-D-016/002：映射还允许 {"data_element": "DE_X"} 引用数据元
+        # REQ-D-002：引用数据元时 type 自动继承（AC-1）、本地冲突硬失败（AC-2）、
+        #   sensitive 必须已声明遮蔽（AC-4/AD-5）、clean_rule 自动挂接（AC-3）
+        elements = elements or {}
         composite: list[str] = []
         prop_de: dict[str, str] = {}
+        prop_de_clean: dict[str, str] = {}
         norm_props: dict[str, str] = {}
         bad: dict = {}
         for p, t in props.items():
@@ -324,6 +448,37 @@ def _load_objects(path: Path,
                         f"（fail-closed；允许键：type/composite/data_element，"
                         f"REQ-D-013/REQ-D-016）")
                 base = t.get("type")
+                de = t.get("data_element")
+                if de is not None:
+                    if not isinstance(de, str) or not de.strip():
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' data_element 必须是非空元素 ID")
+                    if de not in elements:
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' 引用未注册数据元：'{de}'"
+                            f"（REQ-D-002 AC-6：未知 ID 硬失败；"
+                            f"已注册 {sorted(elements)}）")
+                    spec = elements[de]
+                    de_type = spec.get("type")
+                    if base is None:
+                        base = de_type              # AC-1：类型自动继承
+                    elif base != de_type:
+                        raise ValueError(             # AC-2：本地与标准冲突硬失败
+                            f"{ctx}（{name}）属性 '{p}' 本地声明 type='{base}' "
+                            f"与数据元 '{de}' type='{de_type}' 冲突"
+                            f"（REQ-D-002 AC-2：本地不得静默覆盖标准；"
+                            f"请省略本地 type 由数据元继承，或改为一致类型）")
+                    # AC-4/AD-5：sensitive 数据元 → 属性必须已在 policies 声明遮蔽
+                    if spec.get("sensitive") and (name, p) not in (mask_set or set()):
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' 引用敏感数据元 '{de}'"
+                            f"（sensitive:true）但未在 policies.json property_policies "
+                            f"声明遮蔽（REQ-D-002 AC-4/AD-5 fail-closed："
+                            f"敏感属性必须先声明 {name}.{p} 的遮蔽策略）")
+                    cr = spec.get("clean_rule")      # AC-3：清洗规则自动挂接
+                    if cr:
+                        prop_de_clean[p] = cr
+                    prop_de[p] = de
                 if base not in TYPE_NAMES:
                     bad[p] = base
                     continue
@@ -333,17 +488,6 @@ def _load_objects(path: Path,
                             f"{ctx}（{name}）属性 '{p}' composite 降级仅支持 string 类型"
                             f"（当前 {base}；复合列整列保留，不参与 CAST，REQ-D-013）")
                     composite.append(p)
-                de = t.get("data_element")
-                if de is not None:
-                    if not isinstance(de, str) or not de.strip():
-                        raise ValueError(
-                            f"{ctx}（{name}）属性 '{p}' data_element 必须是非空元素 ID")
-                    if element_ids is not None and de not in element_ids:
-                        raise ValueError(
-                            f"{ctx}（{name}）属性 '{p}' 引用未注册数据元：'{de}'"
-                            f"（REQ-D-002 AC-6：未知 ID 硬失败；"
-                            f"已注册 {sorted(element_ids)}）")
-                    prop_de[p] = de
                 norm_props[p] = base
             elif t in TYPE_NAMES:
                 norm_props[p] = t
@@ -410,6 +554,7 @@ def _load_objects(path: Path,
             metadata_props=tuple(md),
             composite_props=tuple(composite),
             prop_data_elements=prop_de,
+            prop_de_clean=prop_de_clean,
         ))
     return out
 
@@ -649,15 +794,13 @@ def _parse_clean_map(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
         if ops_t:
             items.append((prop, ops_t))
     flat = {op for _, ops in items for op in ops}
-    unknown = flat - set(CLEAN_RULE_NAMES)
-    if unknown:
-        raise ValueError(f"{ctx}（{name}）引用未注册清洗规则：{sorted(unknown)}，"
-                         f"可用 {sorted(CLEAN_RULE_NAMES)}")
-    non_py = sorted(op for op in flat if _clean_ops.OPS[op].impl != "py")
-    if non_py:
-        raise ValueError(
-            f"{ctx}（{name}）clean 引用非 Python op：{non_py}——clean 在 Python 侧"
-            f"执行，SQL op（如 strip_thousands）属 transform 层（REQ-D-009）")
+    for tok in sorted(flat):
+        try:
+            _clean_ops.validate_op(tok, "clean")
+        except ValueError as e:
+            raise ValueError(
+                f"{ctx}（{name}）clean op '{tok}' 非法：{e}"
+                f"（clean 在 Python 侧执行，可用 {sorted(CLEAN_RULE_NAMES)}）")
     return tuple(items)
 
 
@@ -666,8 +809,9 @@ def _parse_transform_map(raw, otype: ObjectType, ctx: str, name: str,
     """REQ-D-009：transform 声明 → 属性级映射 ((属性, (op, ...)), ...)。
 
     仅结构化源（source）绑定支持——transform 编译进 SQL 投影，手写 source_sql
-    请在上游完成变换。校验（AC-6）：未知 op 硬失败；仅允许 impl=sql 的
-    transform 层声明式 op；带参 op（"op:param"）属批 D5 参数化机制，显式拒绝。
+    请在上游完成变换。校验（AC-6）：未知 op 硬失败；仅允许带 sql_template 的
+    transform/any 层声明式 op；带参 op（"op:param"）的参数必须在该 op 的
+    param_enum 白名单内（REQ-D-011，自由文本硬失败防注入）。
     """
     if raw is None:
         return ()
@@ -691,22 +835,14 @@ def _parse_transform_map(raw, otype: ObjectType, ctx: str, name: str,
     if not items:
         return ()
     flat = {op for _, ops in items for op in ops}
-    param_ops = sorted(op for op in flat if ":" in op)
-    if param_ops:
-        raise ValueError(
-            f"{ctx}（{name}）transform 带参 op {param_ops} 属批 D5 参数化机制"
-            f"（当前仅支持无参声明式 op）")
     avail = _clean_ops.transform_layer_names()
-    unknown = flat - avail
-    if unknown:
-        raise ValueError(
-            f"{ctx}（{name}）transform 引用未注册 op：{sorted(unknown)}，"
-            f"可用 {sorted(avail)}（REQ-D-009 AC-6）")
-    non_sql = sorted(op for op in flat if _clean_ops.OPS[op].impl != "sql")
-    if non_sql:
-        raise ValueError(
-            f"{ctx}（{name}）transform 引用非 SQL op：{non_sql}——transform 在 SQL "
-            f"投影内编译执行，仅支持 impl=sql 的声明式 op（py op 属 clean 层）")
+    for tok in sorted(flat):
+        try:
+            _clean_ops.validate_op(tok, "transform")
+        except ValueError as e:
+            raise ValueError(
+                f"{ctx}（{name}）transform op '{tok}' 非法：{e}"
+                f"（transform 在 SQL 投影内编译，可用 {sorted(avail)}；REQ-D-009 AC-6）")
     return tuple(items)
 
 

@@ -148,6 +148,14 @@ GROUPS = {
     "valuetype":   ("REQ-P M3 值类型识别（纯函数，缺陷1/2内置）", [sys.executable, "-m", "unittest", "tests.test_value_type"]),
     "profiler":    ("REQ-P M4 六层本体画像（L1/L2/L3/L4/L5）", [sys.executable, "-m", "unittest", "tests.test_ontology_profiler"]),
     "drafts":      ("REQ-P M6 新表画像+草案组装器+步骤推荐", [sys.executable, "-m", "unittest", "tests.test_draft_assembler"]),
+    # ---- REQ-D 批 D5（贯通汇聚，8 需求 7 组）----
+    "compliance_score": ("REQ-D-017 合规违规率进画像五要素扣分", [sys.executable, "-m", "unittest", "tests.test_compliance_score"]),
+    "de_ref":      ("REQ-D-002 属性引用数据元 AD-5 展开继承", [sys.executable, "-m", "unittest", "tests.test_de_ref"]),
+    "health_integration": ("REQ-D-022 四类结果统一进 RunHealth + by_source", [sys.executable, "-m", "unittest", "tests.test_health_integration"]),
+    "declarative_ops": ("REQ-D-006/011 声明式带参 op + 脏格式归一", [sys.executable, "-m", "unittest", "tests.test_declarative_ops"]),
+    "wordlist":    ("REQ-D-007 清洗词表外置 clean_rules.json", [sys.executable, "-m", "unittest", "tests.test_wordlist"]),
+    "codetable":   ("REQ-D-003 代码表数据元派生/枚举去人名/快照锁定", [sys.executable, "-m", "unittest", "tests.test_codetable"]),
+    "recommend":   ("REQ-D-021 数据元驱动落点推荐（只进 draft）", [sys.executable, "-m", "unittest", "tests.test_recommend"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 

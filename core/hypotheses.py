@@ -116,8 +116,8 @@ class MiaoSuan:
     ]
 
     # ---- 枚举空间（第二层：笛卡尔积候选池，永不闭合——正兵可传新维度） ----
+    # REQ-D-003：回落默认只放侦查维度抽象类别，不含具体人名/地名（主体从案件数据派生）。
     ENUM_SPACE: dict[str, list[str]] = {
-        "主体": ["张卫国", "李志强", "A建材", "张卫国配偶"],
         "行为": ["现金收受", "购物卡", "转账", "过桥", "代持"],
         "时间": ["2018前", "2018-2024", "2024后"],
         "金额": ["小额多次", "大额单次"],
@@ -395,10 +395,12 @@ class MiaoSuan:
                     h = replace(tpl, id=f"H{n}")
                 else:
                     combo = c["combo"]
+                    actor = combo.get("主体", "")
+                    behavior = combo.get("行为", "")
+                    head = f"{actor}×{behavior}" if actor else behavior
                     h = Hypothesis(
                         id=f"H{n}",
-                        description=f"{combo.get('主体', '')}×{combo.get('行为', '')}"
-                                    f"（枚举候补，无数据命中）",
+                        description=f"{head}（枚举候补，无数据命中）",
                         evidence_needed=["待正兵明确所需证据"],
                         data_sources=["待正兵指定数据源"],
                         procedure="待正兵明确程序",

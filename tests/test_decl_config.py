@@ -131,7 +131,9 @@ class EnumSpaceDeclTests(unittest.TestCase):
     def test_default_enum_space_from_declaration(self):
         space = load_enum_space("default")
         self.assertIsNotNone(space)
-        self.assertIn("主体", space)
+        # REQ-D-003：内置枚举空间禁止手写人名主体维度（主体从案件数据派生）
+        self.assertNotIn("主体", space)
+        self.assertIn("行为", space)
         m = MiaoSuan()
         self.assertEqual(m.ENUM_SPACE, space)
 

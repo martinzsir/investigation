@@ -26,7 +26,8 @@ from dataclasses import dataclass, field, asdict
 
 from core.functions import load_case_knowledge
 from core.ontology import _mask_sample
-from core.ontology_loader import load_pack
+from core.ontology_loader import load_pack, load_data_elements
+from core.de_recommend import recommend_for_column
 from core.run_health import get_health
 from core.threshold import load_profiler_settings
 from core.value_type import analyze_column
@@ -208,11 +209,16 @@ JIAN_ORDER = ("因间", "内间", "反间", "死间", "生间")
 SCORE_BLOCK = {"mixed": -25, "null_rate_high": -20, "zero_rows": -30}
 SCORE_WARN = {"unmaterialized": -12, "low_cardinality": -8,
               "affirmative_type": -5, "no_wan_integer": -5, "has_variants": -5}
+# REQ-D-017：合规违规率独立扣分档（code 前缀 compliance_，与统计扣分可区分 AC-3）。
+# 违规率 ≥_COMPLIANCE_RATE_BLOCK 走 block（compliance_violation_high），
+# 0 < 违规率 < 阈值走 warn（compliance_violation）；无合规属性时不产生此项（AC-5 回归）。
+SCORE_COMPLIANCE = {"compliance_violation_high": -20, "compliance_violation": -10}
 # 启发式可推翻扣分项（区间上沿 = 推翻这些项后的分数）
 REVIEWABLE_DEDUCTIONS = frozenset({"affirmative_type", "has_variants"})
 
 _NULL_RATE_BLOCK = 0.5     # 空值率 ≥50% 阻断
 _LOW_CARDINALITY = 2       # 基数 ≤2 告警
+_COMPLIANCE_RATE_BLOCK = 0.5   # 合规违规率 ≥50% 阻断（低于此但 >0 告警，REQ-D-017 AC-1）
 _PROFILE_NOTE = ("结论均为【待核实】候选；画像只观察不写回，"
                  "启发式扣分（肯定式识别/变体）可人工推翻")
 
@@ -359,6 +365,18 @@ class OntologyProfiler:
             cp = self._compliance["by_property"].get(key)
             if cp:
                 entry["compliance"] = cp
+                # REQ-D-017：合规违规率参与质量分（独立 code 前缀 compliance_，
+                # 与统计扣分可区分 AC-3；五要素经 _deduct 落齐 AC-2）
+                rate = cp.get("rate", 0)
+                if rate >= _COMPLIANCE_RATE_BLOCK:
+                    self._deduct(deductions, "prop", key, "compliance_violation_high",
+                                 f"合规违规率 {rate:.0%} ≥ {_COMPLIANCE_RATE_BLOCK:.0%}"
+                                 f"（数据元 {cp.get('element')}，违规 "
+                                 f"{cp.get('violations')}/{cp.get('checked')}）", "block")
+                elif rate > 0:
+                    self._deduct(deductions, "prop", key, "compliance_violation",
+                                 f"合规违规率 {rate:.0%}（数据元 {cp.get('element')}，"
+                                 f"违规 {cp.get('violations')}/{cp.get('checked')}）", "warn")
         if not obj_mat:
             entry["status"] = "unmaterialized_object"
             if is_conn:
@@ -502,7 +520,11 @@ class OntologyProfiler:
         total = 0
         reviewable_pts = 0
         for d in deductions:
-            w = SCORE_BLOCK.get(d["code"], SCORE_WARN.get(d["code"], 0))
+            w = SCORE_BLOCK.get(d["code"])
+            if w is None:
+                w = SCORE_WARN.get(d["code"])
+            if w is None:
+                w = SCORE_COMPLIANCE.get(d["code"], 0)   # REQ-D-017 独立档
             d["points"] = w
             total += w
             if d["code"] in REVIEWABLE_DEDUCTIONS:
@@ -514,7 +536,8 @@ class OntologyProfiler:
             "score_range": [score, score_hi],
             "deductions": deductions,
             "reviewable": True,
-            "weights": {"block": SCORE_BLOCK, "warn": SCORE_WARN},
+            "weights": {"block": SCORE_BLOCK, "warn": SCORE_WARN,
+                        "compliance": SCORE_COMPLIANCE},
             "note": _PROFILE_NOTE,
         }
 
@@ -577,6 +600,9 @@ class ColumnProfile:
     mixed: bool | None = None          # 混装（≥2 归一落点）；全空列为 None
     landing_suggestions: list = field(default_factory=list)  # 混装落点（008 复用）
     needs_confirmation: bool = False   # 含肯定式识别（person/org）
+    # REQ-D-021：数据元驱动落点推荐（仅 draft 提案，永不自动生效）
+    de_recommendations: list = field(default_factory=list)
+    split_hint: str | None = None      # 混装复合列 → 上游 source_sql 拆分提示
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -628,6 +654,12 @@ def build_table_profile(table_name: str, columns: list[str], rows: list,
     if min_ratio is None:
         min_ratio = float(load_profiler_settings(pack)["draft_overlap_min_ratio"])
 
+    # REQ-D-021：数据元驱动推荐（只读数据元注册，不写任何声明）
+    try:
+        elements = load_data_elements(pack)
+    except Exception:
+        elements = {}
+
     col_profiles: list[ColumnProfile] = []
     col_values: dict[str, list[str]] = {}
     n = len(rows)
@@ -636,6 +668,7 @@ def build_table_profile(table_name: str, columns: list[str], rows: list,
         non_null = [v for v in vals if v is not None and str(v).strip() != ""]
         distinct_vals = sorted({str(v) for v in non_null})
         ana = analyze_column(distinct_vals[:sample_limit])
+        rec = recommend_for_column(str(cname), distinct_vals[:sample_limit], elements)
         null_rate = 1.0 - (len(non_null) / n) if n else 0.0
         cp = ColumnProfile(
             name=str(cname),
@@ -646,7 +679,9 @@ def build_table_profile(table_name: str, columns: list[str], rows: list,
             mixed=ana["mixed"] if ana["negative_types"] or ana["landing_suggestions"]
                   or ana["needs_confirmation"] else None,
             landing_suggestions=ana["landing_suggestions"],
-            needs_confirmation=ana["needs_confirmation"])
+            needs_confirmation=ana["needs_confirmation"],
+            de_recommendations=rec["recommendations"],
+            split_hint=rec["split_hint"])
         col_profiles.append(cp)
         col_values[str(cname)] = distinct_vals
 

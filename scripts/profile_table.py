@@ -111,6 +111,29 @@ def render_markdown(profile, steps, draft_files) -> str:
         L.append("无（无已物化语义层，或无列达到 overlap 阈值）。")
     L.append("")
 
+    L += ["## 数据元驱动推荐（REQ-D-021，仅 draft 提案，人工确认后才生效）", ""]
+    any_rec = False
+    for c in profile.columns:
+        if c.split_hint:
+            any_rec = True
+            L.append(f"- **{c.name}**：⚠ {c.split_hint}")
+        for r in (c.de_recommendations or []):
+            any_rec = True
+            de = r["data_element"] or "（无匹配数据元）"
+            rules = []
+            if r.get("clean"):
+                rules.append("clean=" + "/".join(r["clean"]))
+            if r.get("transform"):
+                rules.append("transform=" + "/".join(r["transform"]))
+            flag = "需人工确认" if r.get("needs_confirmation") else "高置信"
+            sens = "，敏感列建议遮蔽" if r.get("sensitive") else ""
+            L.append(f"- **{c.name}** → 数据元 `{de}`"
+                     f"（{r['confidence']}/{flag}，匹配 {r['match_by']} "
+                     f"{r['match_rate']:.0%}{sens}）{'；'.join(rules)}")
+    if not any_rec:
+        L.append("无（无列达到推荐阈值）。")
+    L.append("")
+
     L += ["## 建议 ETL 步骤（recommend_steps，只输出清单不自动执行）", ""]
     for i, s in enumerate(steps, 1):
         L.append(f"{i}. **{s['step']}**")

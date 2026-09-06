@@ -394,7 +394,8 @@ class TestEnumeration(unittest.TestCase):
     def test_枚举组合总数(self):
         m = _miao()
         r = m.enumerate_space()
-        self.assertEqual(r["total_combos"], 4 * 5 * 3 * 2 * 2)  # 240
+        # REQ-D-003：移除硬编码人名「主体」维度后 = 行为5 × 时间3 × 金额2 × 关系2
+        self.assertEqual(r["total_combos"], 5 * 3 * 2 * 2)  # 60
 
     def test_候补池按行为去重(self):
         m = _miao()

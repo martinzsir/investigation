@@ -80,7 +80,7 @@ class TestOpRegistry(unittest.TestCase):
             with self.assertRaises(ValueError) as cm:
                 ol.load_pack("p")
             msg = str(cm.exception)
-            self.assertIn("未注册清洗规则", msg)
+            self.assertIn("未在 op 注册表注册", msg)
             self.assertIn("no_such_rule_xyz", msg)
 
     def test_strip_and_exclude_org_tokens_behavior(self):

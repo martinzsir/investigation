@@ -10,6 +10,30 @@
       "checksum": "idcard_mod11",
       "sensitive": true,
       "mask": "partial"
+    },
+    "DE_GENDER": {
+      "name": "性别",
+      "type": "string",
+      "enum": ["男", "女", "未知"],
+      "enum_space_dim": "性别"
+    },
+    "DE_CURRENCY": {
+      "name": "币种",
+      "type": "string",
+      "enum": ["人民币", "美元", "欧元", "港币", "日元"],
+      "enum_space_dim": "币种"
+    },
+    "DE_ID_TYPE": {
+      "name": "证件类型",
+      "type": "string",
+      "enum": ["居民身份证", "护照", "军官证", "港澳居民来往内地通行证", "台湾居民来往大陆通行证"],
+      "enum_space_dim": "证件类型"
+    },
+    "DE_CASE_TYPE": {
+      "name": "案件类别",
+      "type": "string",
+      "enum": ["电信网络诈骗", "贪污贿赂", "洗钱", "组织领导传销", "敲诈勒索"],
+      "enum_space_dim": "案件类别"
     }
   }
 }
