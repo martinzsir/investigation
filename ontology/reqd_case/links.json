@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "_note": "海州电诈案链接类型（类型层）：只声明关系是什么，物化 SQL 在 bindings.json。",
+  "links": [
+    {
+      "name": "transfers",
+      "title": "资金转账",
+      "from_obj": "account",
+      "to_obj": "account",
+      "properties": {
+        "amount": "decimal",
+        "date": "date"
+      }
+    },
+    {
+      "name": "calls_to",
+      "title": "通话指向",
+      "from_obj": "person",
+      "to_obj": "person",
+      "properties": {}
+    }
+  ]
+}

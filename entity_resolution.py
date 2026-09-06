@@ -274,7 +274,8 @@ class EntityResolver:
             self.resolve()
         m: Dict[str, str] = {}
         for c in self._clusters:
-            if c.confidence >= 1.0:   # 只暴露经确认的合并
+            # 只暴露经确认的合并；同名拆簇（红线 R-1）一律人工裁决，禁止进自动映射
+            if c.confidence >= 1.0 and not c.needs_review:
                 for v in c.variants:
                     m[v] = c.canonical_name
         return m

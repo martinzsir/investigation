@@ -127,6 +127,7 @@ GROUPS = {
     "transform":    ("REQ-D-009 transform 层（脏值可用性抢救）", [sys.executable, "-m", "unittest", "tests.test_transform"]),
     "casterror":    ("REQ-D-010 on_cast_error 三态（null/fail/quarantine）", [sys.executable, "-m", "unittest", "tests.test_cast_error"]),
     "composite":    ("REQ-D-013 复合列声明（显式降级+画像检出）", [sys.executable, "-m", "unittest", "tests.test_composite"]),
+    "reqdcase":     ("REQ-D 海州电诈案 24 探针端到端验收", [sys.executable, "-m", "unittest", "tests.test_reqd_case"]),
     "compliance":   ("REQ-D-016 数据元合规扫描（违规行落诊断+画像违规率）", [sys.executable, "-m", "unittest", "tests.test_compliance"]),
     "cleanstats":   ("REQ-D-008 清洗统计落健康度（剔除率告警+画像前后行数）", [sys.executable, "-m", "unittest", "tests.test_clean_stats"]),
     "sensitivescan":("REQ-D-018 敏感列启发式扫描（只告警不阻断）", [sys.executable, "-m", "unittest", "tests.test_sensitive_scan"]),

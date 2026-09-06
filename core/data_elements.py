@@ -33,3 +33,22 @@ def checksum_idcard_mod11(v: str) -> bool:
 
 
 register_checksum("idcard_mod11", checksum_idcard_mod11)
+
+
+def checksum_luhn(v: str) -> bool:
+    """Luhn 算法（ISO/IEC 7812-1）：银行卡号/IMEI 等校验位验证。"""
+    v = (v or "").strip()
+    if not v.isdigit() or len(v) < 12:
+        return False
+    total = 0
+    for i, ch in enumerate(reversed(v)):
+        d = int(ch)
+        if i % 2 == 1:            # 从右起偶数位（索引 1,3,...）加倍
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+register_checksum("luhn", checksum_luhn)

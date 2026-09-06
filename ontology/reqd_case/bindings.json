@@ -1,0 +1,135 @@
+{
+  "schema_version": 2,
+  "_note": "海州电诈案管道层（Bindings）。REQ-D 特性声明：transform 层抢救千分位/货币符金额（REQ-D-009）；clean 属性级映射（REQ-D-005）：reject_if:contains_mask 剔除星号卡号（REQ-D-011 带参 op）、digits_only/strip_cc 电话三格式归一（REQ-D-006/011）、exclude_org_tokens 电诈词表（REQ-D-007 经 clean_rules.json replace）；on_cast_error amount=quarantine（REQ-D-010）；optional_columns 对端列缺失降级（B5-01）；cp_split 走 source_sql 上游拆分（REQ-D-013 AC-1）、cp_whole 走 composite 整列降级（REQ-D-013）。",
+  "object_bindings": [
+    {
+      "object": "person",
+      "source": {
+        "table": "人员身份_电诈",
+        "columns": {
+          "raw_name": "姓名",
+          "phone": "电话",
+          "id_card": "身份证号",
+          "address": "住址"
+        }
+      },
+      "clean": {
+        "raw_name": ["despace", "exclude_org_tokens"],
+        "phone": ["digits_only", "strip_cc"]
+      }
+    },
+    {
+      "object": "account",
+      "source_table": "银行流水_电诈",
+      "source_sql": "SELECT 主体 AS raw_name FROM 银行流水_电诈 UNION SELECT 对方 FROM 银行流水_电诈",
+      "clean": {
+        "raw_name": ["strip", "exclude_org_tokens"]
+      }
+    },
+    {
+      "object": "transaction",
+      "source": {
+        "table": "银行流水_电诈",
+        "columns": {
+          "from_raw": "主体",
+          "to_raw": "对方",
+          "amount": "金额",
+          "date": "日期",
+          "card": "卡号",
+          "summary": "摘要"
+        }
+      },
+      "transform": {
+        "amount": ["strip_currency", "strip_thousands"],
+        "date": ["cn_date_norm"]
+      },
+      "clean": {
+        "from_raw": ["strip", "exclude_org_tokens"],
+        "to_raw": ["strip", "exclude_org_tokens"],
+        "card": ["reject_if:contains_mask", "digits_only"]
+      },
+      "on_cast_error": {"amount": "quarantine"}
+    },
+    {
+      "object": "call",
+      "source": {
+        "table": "通话记录_电诈",
+        "columns": {
+          "caller_raw": "主体",
+          "callee_raw": "对端",
+          "phone_raw": "对端号码_原始",
+          "date": "日期",
+          "times": "次数"
+        }
+      },
+      "clean": {
+        "caller_raw": ["strip"],
+        "callee_raw": ["strip"],
+        "phone_raw": ["digits_only", "strip_cc"]
+      }
+    },
+    {
+      "object": "call_old",
+      "source": {
+        "table": "通话记录_旧版",
+        "columns": {
+          "caller_raw": "主体",
+          "callee_raw": "对端",
+          "date": "日期",
+          "times": "次数"
+        }
+      },
+      "optional_columns": ["对端"],
+      "clean": {
+        "caller_raw": ["strip"]
+      }
+    },
+    {
+      "object": "case_ledger",
+      "source": {
+        "table": "案件台账_电诈",
+        "columns": {
+          "case_no": "案件编号",
+          "case_type": "案件类别",
+          "case_date": "案发日期",
+          "amount_wan": "涉案金额"
+        }
+      }
+    },
+    {
+      "object": "cp_split",
+      "source_sql": "SELECT 流水号 AS cp_no, split_part(对方信息, '|', 1) AS cp_name, split_part(对方信息, '|', 2) AS cp_idcard FROM 银行流水_复合列",
+      "clean": {
+        "cp_name": ["strip"]
+      }
+    },
+    {
+      "object": "cp_whole",
+      "source": {
+        "table": "银行流水_复合列",
+        "columns": {
+          "cp_no": "流水号",
+          "cp_info": "对方信息"
+        }
+      }
+    }
+  ],
+  "link_bindings": [
+    {
+      "link": "transfers",
+      "build_sql": "SELECT t.txn_id, t.from_raw AS from_account, t.to_raw AS to_account, fa.account_id AS from_account_id, ta.account_id AS to_account_id, t.amount, t.date FROM obj_transaction t LEFT JOIN obj_account fa ON fa.raw_name = t.from_raw LEFT JOIN obj_account ta ON ta.raw_name = t.to_raw",
+      "normalize": [
+        {"as": "from_account_id", "alias": "fa", "table": "obj_account", "on": "fa.raw_name = t.from_raw", "select": "fa.account_id"},
+        {"as": "to_account_id", "alias": "ta", "table": "obj_account", "on": "ta.raw_name = t.to_raw", "select": "ta.account_id"}
+      ]
+    },
+    {
+      "link": "calls_to",
+      "build_sql": "SELECT c.call_id, p1.person_id AS from_person, p2.person_id AS to_person FROM obj_call c LEFT JOIN obj_person p1 ON p1.raw_name = c.caller_raw LEFT JOIN obj_person p2 ON p2.raw_name = c.callee_raw",
+      "normalize": [
+        {"as": "from_person", "alias": "p1", "table": "obj_person", "on": "p1.raw_name = c.caller_raw", "select": "p1.person_id"},
+        {"as": "to_person", "alias": "p2", "table": "obj_person", "on": "p2.raw_name = c.callee_raw", "select": "p2.person_id"}
+      ]
+    }
+  ]
+}

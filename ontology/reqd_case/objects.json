@@ -1,0 +1,107 @@
+{
+  "schema_version": 2,
+  "_note": "海州电诈案类型层（REQ-D 业务测试案例）。属性值可为 string 或映射 {type|composite|data_element}；数据来源/清洗/物化 SQL 一律在 bindings.json。id_card/cp_idcard 引用敏感数据元 DE_IDCARD（REQ-D-002），遮蔽策略在 policies.json 强制声明（AD-5 fail-closed）。",
+  "objects": [
+    {
+      "name": "person",
+      "title": "自然人（电诈）",
+      "pk": "person_id",
+      "kind": "entity",
+      "name_property": "raw_name",
+      "properties": {
+        "raw_name": "string",
+        "phone": {"data_element": "DE_PHONE"},
+        "id_card": {"data_element": "DE_IDCARD"},
+        "address": "string"
+      }
+    },
+    {
+      "name": "account",
+      "title": "账户（电诈）",
+      "pk": "account_id",
+      "kind": "entity",
+      "name_property": "raw_name",
+      "properties": {
+        "raw_name": "string"
+      }
+    },
+    {
+      "name": "transaction",
+      "title": "交易（电诈流水）",
+      "pk": "txn_id",
+      "kind": "event",
+      "name_property": "from_raw",
+      "properties": {
+        "from_raw": "string",
+        "to_raw": "string",
+        "amount": {"data_element": "DE_AMOUNT"},
+        "date": {"data_element": "DE_DATE"},
+        "card": "string",
+        "summary": "string"
+      }
+    },
+    {
+      "name": "call",
+      "title": "通话（电诈）",
+      "pk": "call_id",
+      "kind": "event",
+      "name_property": "caller_raw",
+      "properties": {
+        "caller_raw": "string",
+        "callee_raw": "string",
+        "phone_raw": {"data_element": "DE_PHONE"},
+        "date": {"data_element": "DE_DATE"},
+        "times": "integer"
+      }
+    },
+    {
+      "name": "call_old",
+      "title": "通话（旧版变体，缺对端列）",
+      "pk": "call_old_id",
+      "kind": "event",
+      "name_property": "caller_raw",
+      "properties": {
+        "caller_raw": "string",
+        "callee_raw": "string",
+        "date": {"data_element": "DE_DATE"},
+        "times": "integer"
+      }
+    },
+    {
+      "name": "case_ledger",
+      "title": "案件台账（电诈）",
+      "pk": "case_id",
+      "kind": "entity",
+      "name_property": "case_no",
+      "properties": {
+        "case_no": "string",
+        "case_type": {"data_element": "DE_CASE_TYPE"},
+        "case_date": {"data_element": "DE_DATE"},
+        "amount_wan": "decimal"
+      }
+    },
+    {
+      "name": "cp_split",
+      "title": "对方当事人（source_sql 上游拆分路径）",
+      "pk": "cp_id",
+      "kind": "entity",
+      "name_property": "cp_name",
+      "properties": {
+        "cp_no": "string",
+        "cp_name": "string",
+        "cp_idcard": {"data_element": "DE_IDCARD"}
+      }
+    },
+    {
+      "name": "cp_whole",
+      "title": "对方当事人（composite 整列降级路径）",
+      "pk": "cpw_id",
+      "kind": "entity",
+      "name_property": "cp_no",
+      "properties": {
+        "cp_no": "string",
+        "cp_info": {"type": "string", "composite": true}
+      }
+    }
+  ]
+}

@@ -246,6 +246,15 @@ register_op("strip_paren", impl="py", layer="any", fn=_strip_paren,
             description="剥括号注释：'李强（绰号小强）' → '李强'")
 
 
+def _despace(v, _ctx=None):
+    return re.sub(r"\s+", "", str(v if v is not None else ""))
+
+
+register_op("despace", impl="py", layer="any", fn=_despace,
+            sql_template=r"regexp_replace({col}, '[\s　]', '', 'g')",
+            description="去全部空白（首尾+内部+全角空格）：'李  强' → '李强'（人名拼写变体归一，REQ-D-005 改值）")
+
+
 def _to_upper(v, _ctx=None):
     return str(v if v is not None else "").upper()
 

@@ -1,0 +1,37 @@
+{
+  "schema_version": 2,
+  "_note": "海州电诈案数据元标准（REQ-D-001）：DE_IDCARD 沿用标准；DE_PHONE/DE_AMOUNT/DE_DATE/DE_CASE_TYPE 为电诈域声明。负金额（016 AC-3）经 DE_AMOUNT range.min 检出；未来日期（016 AC-4）经 DE_DATE range.max 字典序检出；小写 x 结尾身份证（016 AC-8 误报陷阱）format 允许 Xx 且 checksum 大写归一 → 不误报。",
+  "elements": {
+    "DE_IDCARD": {
+      "name": "公民身份号码",
+      "type": "string",
+      "length": 18,
+      "format": "^[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]$",
+      "checksum": "idcard_mod11",
+      "sensitive": true,
+      "mask": "partial"
+    },
+    "DE_PHONE": {
+      "name": "移动电话号码",
+      "type": "string",
+      "length": 11,
+      "format": "^1[3-9]\\d{9}$"
+    },
+    "DE_AMOUNT": {
+      "name": "交易金额（元）",
+      "type": "decimal",
+      "range": {"min": 0}
+    },
+    "DE_DATE": {
+      "name": "业务日期",
+      "type": "date",
+      "range": {"max": "2025-12-31"}
+    },
+    "DE_CASE_TYPE": {
+      "name": "案件类别",
+      "type": "string",
+      "enum": ["电信网络诈骗", "刷单返利", "冒充公检法", "虚假投资理财", "网络赌博"],
+      "enum_space_dim": "案件类别"
+    }
+  }
+}

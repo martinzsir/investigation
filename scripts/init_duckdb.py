@@ -53,9 +53,25 @@ def _derived_cold_tables(ontology_dir: Path = ONTOLOGY) -> dict[str, dict[str, s
         oprops = prop_types.get(b.get("object"), {})
         cols = tables.setdefault(table, {})
         for alias, raw_col in (src.get("columns") or {}).items():
-            cols.setdefault(raw_col, _TYPE_SQL.get(oprops.get(alias, "string"),
+            cols.setdefault(raw_col, _TYPE_SQL.get(_base_type(oprops.get(alias, "string")),
                                                    "VARCHAR"))
     return tables
+
+
+def _base_type(decl) -> str:
+    """属性声明可为 string 或映射 {type|composite|data_element}（REQ-D-013/002）。"""
+    if isinstance(decl, dict):
+        return str(decl.get("type", "string"))
+    return str(decl)
+
+
+def _pack_dirs() -> list[tuple[str, Path]]:
+    """全部案件包 [(包名, ontology/<包> 目录)]；default 在前。"""
+    out = [("default", ONTOLOGY)]
+    for d in sorted(ONTOLOGY.parent.iterdir()):
+        if d.is_dir() and d.name != "default" and (d / "bindings.json").exists():
+            out.append((d.name, d))
+    return out
 
 
 def main():
@@ -71,17 +87,20 @@ def main():
     # 视图只能走 ALTER VIEW，无法承载写入。
     # - Parquet 存在：CTAS 真实数据，再 ALTER 补齐声明但 parquet 缺的列（旧版单列向后兼容）；
     # - Parquet 缺失：按推导出的列类型建空表（新数据源仅在 bindings 声明即可建表，AC1）。
-    for name, col_types in _derived_cold_tables().items():
-        p = DATA / f"{name}.parquet"
-        if p.exists():
-            con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
-            actual = {row[0] for row in con.execute(f'DESCRIBE "{name}"').fetchall()}
-            for col, typ in col_types.items():
-                if col not in actual:
-                    con.execute(f'ALTER TABLE "{name}" ADD COLUMN "{col}" {typ}')
-        else:
-            cols_ddl = ", ".join(f'"{c}" {t}' for c, t in col_types.items())
-            con.execute(f'CREATE OR REPLACE TABLE "{name}" ({cols_ddl})')
+    # 多案件包（REQ-D 业务测试案例）：default 包数据在 data/ 根，其他包在 data/<包名>/。
+    for pack_name, onto_dir in _pack_dirs():
+        data_dir = DATA if pack_name == "default" else DATA / pack_name
+        for name, col_types in _derived_cold_tables(onto_dir).items():
+            p = data_dir / f"{name}.parquet"
+            if p.exists():
+                con.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM read_parquet(\'{p.as_posix()}\')')
+                actual = {row[0] for row in con.execute(f'DESCRIBE "{name}"').fetchall()}
+                for col, typ in col_types.items():
+                    if col not in actual:
+                        con.execute(f'ALTER TABLE "{name}" ADD COLUMN "{col}" {typ}')
+            else:
+                cols_ddl = ", ".join(f'"{c}" {t}' for c, t in col_types.items())
+                con.execute(f'CREATE OR REPLACE TABLE "{name}" ({cols_ddl})')
 
     # 预聚合表：主体×月（温层核心，替代 StarRocks mv，保持手工——依赖具体业务列）
     con.execute("""

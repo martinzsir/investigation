@@ -58,6 +58,10 @@ def _check_value(v, element: dict, checks: tuple) -> list[str]:
     if "range" in checks and element.get("range"):
         rng = element["range"]
         lo, hi = rng.get("min"), rng.get("max")
+        # date/timestamp 物化列的值是 date/datetime 对象（非 str）：转 ISO 字符串
+        # 走字典序比较（ISO 格式字典序=时间序），否则 float() 失败被静默跳过漏检
+        if hasattr(v, "isoformat"):
+            v = v.isoformat()
         try:
             if (isinstance(v, str) and (lo is not None and not _is_number(lo)
                                         or hi is not None and not _is_number(hi))):
