@@ -171,7 +171,8 @@ def main():
         print(f"  lnk_{name:<12} {n} 行")
     for s in ontology_stats["skipped"]:
         print(f"  ⚠ 跳过 {s}")
-    from core.run_health import record_build_dirty, record_build_degraded
+    from core.run_health import (record_build_dirty, record_build_degraded,
+                                 record_build_quarantine)
     n_dirty = record_build_dirty(store, ontology_stats, run_id=health.run_id)
     if n_dirty:
         print(f"  ⚠ TRY_CAST 脏值降级 {n_dirty} 项（已置 NULL，诊断 kind=source_value_cast_failed）")
@@ -182,6 +183,42 @@ def main():
         print(f"  ⚠ 可选源列缺失降级 {n_deg} 项（已置类型化 NULL，诊断 kind=source_column_missing）")
         for d in ontology_stats["degraded"]:
             print(f"    · {d}")
+    n_qua = record_build_quarantine(store, ontology_stats, run_id=health.run_id)
+    if n_qua:
+        print(f"  ⚠ CAST 失败隔离 {n_qua} 项（整行剔出语义层，落 build_quarantine，"
+              f"诊断 kind=source_value_quarantined）")
+        for d in ontology_stats["quarantine"]:
+            print(f"    · {d.get('object')}.{d.get('property')}<-{d.get('column')}: "
+                  f"{d.get('quarantined_rows')} 行已隔离")
+    # REQ-D-008：清洗剔除统计落健康度（剔除率 >30% 升 warning，样本已脱敏）
+    from core.run_health import record_clean_stats
+    n_clean = record_clean_stats(store, ontology_stats, run_id=health.run_id)
+    if n_clean:
+        print(f"  ⚠ 清洗剔除 {n_clean} 个属性有剔除落账（诊断 kind=clean_drop_rate）")
+
+    # ===== 6.6 构建后质量门：数据元合规扫描 + 敏感列启发式（REQ-D-016/018）=====
+    # 只告警不阻断：违规/疑似落 run_diagnostic，绝不抛异常中断侦查管线。
+    step("6.6 构建后质量门：合规扫描（REQ-D-016）+ 敏感列启发式（REQ-D-018）")
+    try:
+        from core.gateway import OntologyReadGateway
+        from core import compliance, sensitive_scan
+        gw = OntologyReadGateway(store.conn)
+        comp = compliance.scan(gw, health=health)
+        if comp["violations"]:
+            print(f"  ⚠ 合规违规 {comp['violations']} 处"
+                  f"（覆盖 {comp['scanned']} 属性，诊断 kind=compliance_violation）")
+        else:
+            print(f"  · 合规扫描：{comp['scanned']} 属性零违规")
+        sens = sensitive_scan.scan(gw, health=health)
+        if sens["suspects"]:
+            print(f"  ⚠ 疑似敏感列未声明遮蔽 {sens['suspects']} 个"
+                  f"（诊断 kind=sensitive_column_suspect，只告警不阻断）")
+        else:
+            print(f"  · 敏感列扫描：{sens['scanned']} 属性无疑似")
+    except Exception as e:   # 质量门自身故障不阻断侦查（诊断层同理）
+        print(f"  ⚠ 质量门执行异常（不阻断）：{e}")
+        health.record("quality_gate_failed", "warning", source="quality_gate",
+                      reason=f"构建后质量门执行异常（不阻断）：{e}")
 
     # ===== 7-8. 侦查主流程（skill_invoke 驱动）=====
     step("7-8. 侦查主流程：庙算→知己→虚实/奇正/用间 + 血缘去重 + 优先级")

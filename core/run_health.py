@@ -44,6 +44,12 @@ KINDS = (
     "map_normalize_gap",          # REQ-P-021：数据地图检出归一缺口（M 波 build_sql 未 JOIN 实体表）
     "source_value_cast_failed",   # TRY_CAST 脏值降级（源列非空→NULL，构建/入库期计数，鲁棒性 B2-08）
     "source_column_missing",      # 可选源列缺失降级类型化 NULL（鲁棒性 B5-01；必填列缺失为硬失败不产生诊断）
+    "source_value_quarantined",   # REQ-D-010：on_cast_error=quarantine 隔离计数（整行剔出语义层落 build_quarantine）
+    "composite_column_detected",  # REQ-D-013：画像期检出疑似复合值（分隔符分片，建议拆分或显式 composite 降级）
+    "clean_drop_rate",            # REQ-D-008：清洗剔除率留痕（>30% 升 warning，样本脱敏可下钻）
+    "compliance_violation",       # REQ-D-016：数据元合规违规行（对象.属性+代理键+违规码，样本脱敏）
+    "sensitive_column_suspect",   # REQ-D-018：疑似敏感列未声明遮蔽（列名/值模式证据，只告警不阻断）
+    "quality_gate_failed",        # REQ-D-016/018：构建后质量门自身执行异常（不阻断，但留痕可见）
 )
 
 SEVERITIES = ("info", "warning", "critical")
@@ -256,3 +262,63 @@ def record_build_degraded(db: Any, stats: dict | None, run_id: str | None = None
         rh.record("source_column_missing", severity="warning",
                   source=source, reason=str(e))
     return len(entries)
+
+
+def record_build_quarantine(db: Any, stats: dict | None,
+                            run_id: str | None = None,
+                            source: str = "build_ontology") -> int:
+    """把 build stats["quarantine"]（REQ-D-010 on_cast_error=quarantine 隔离计数）落 run_diagnostic。
+
+    隔离行已整行剔出 obj_* 并落 build_quarantine（含原因 + 脱敏样本，可下钻），
+    此处按 对象.属性 聚合留痕标注（kind=source_value_quarantined，不静默）。
+    返回落账条数；无隔离返回 0。
+    """
+    entries = (stats or {}).get("quarantine") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("source_value_quarantined", severity="warning",
+                  source=source,
+                  reason=(f"{e.get('object')}.{e.get('property')}<-"
+                          f"{e.get('column')}: {e.get('quarantined_rows')} 行已隔离"
+                          f"（{e.get('reason')}）"))
+    return len(entries)
+
+
+def record_clean_stats(db: Any, stats: dict | None, run_id: str | None = None,
+                       source: str = "build_ontology",
+                       threshold: float = 0.30) -> int:
+    """把 build stats["clean_stats"]（REQ-D-005/008 清洗双通道剔除计数）落 run_diagnostic。
+
+    按 (object, property) 聚合：剔除率 = dropped_rows / rows_before；
+    剔除率 > threshold（默认 30%）升 warning（REQ-D-008 AC-4），否则 info。
+    样本已脱敏（_apply_clean 落账时即 _mask_sample，AC-3），随 detail 可下钻。
+    返回落账属性数；无剔除返回 0（不产生诊断噪音）。
+    """
+    entries = (stats or {}).get("clean_stats") or []
+    if not entries:
+        return 0
+    agg: dict[tuple[str, str], dict] = {}
+    for e in entries:
+        k = (e.get("object"), e.get("property"))
+        a = agg.setdefault(k, {"dropped": 0, "before": 0, "rules": [],
+                               "samples": []})
+        a["dropped"] += int(e.get("dropped_rows") or 0)
+        a["before"] = max(a["before"], int(e.get("rows_before") or 0))
+        if e.get("rule") not in a["rules"]:
+            a["rules"].append(e.get("rule"))
+        a["samples"].extend(e.get("sample_masked") or [])
+    rh = RunHealth(db, run_id=run_id)
+    for (obj, prop), a in agg.items():
+        rate = (a["dropped"] / a["before"]) if a["before"] else 0.0
+        sev = "warning" if rate > threshold else "info"
+        rh.record("clean_drop_rate", sev, source=source,
+                  reason=(f"{obj}.{prop} 清洗剔除 {a['dropped']}/{a['before']} 行"
+                          f"（{rate:.0%}，规则 {a['rules']}）"),
+                  object=obj, prop=prop,
+                  dropped_rows=a["dropped"], rows_before=a["before"],
+                  rows_after=a["before"] - a["dropped"],
+                  rate=round(rate, 4), rules=a["rules"],
+                  sample_masked=a["samples"][:3])
+    return len(agg)

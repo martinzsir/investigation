@@ -79,6 +79,13 @@ class ObjectType:
     jian_source: str = ""              # REQ-G-013：该数据源展示名（如 银行流水）；空则回落 title
     # REQ-P-034：元数据/内容属性排除声明——不参与实体连接与画像（content_raw/status/title 等治理字段）
     metadata_props: tuple[str, ...] = ()
+    # REQ-D-013：复合列显式降级声明（properties 值为 {"type": "string", "composite": true}）
+    # ——整列保留不拆分（路径 B），不参与实体关联/归一 JOIN 键/事件去重哈希（AC-3/AC-5）
+    composite_props: tuple[str, ...] = ()
+    # REQ-D-016/D-002：属性 → 数据元 ID 引用（properties 值为 {"type": ..., "data_element": "DE_X"}）；
+    # loader 装载期校验 ID 已注册（fail-closed）；合规扫描按引用定位扫描目标，
+    # 未引用数据元的属性不扫（AC-8）。完整展开继承（type/format/clean_rule）属批 D5。
+    prop_data_elements: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,11 +94,21 @@ class ObjectBinding:
     object: str                        # 指向 ObjectType.name
     source_sql: str                    # 来源查询（结构化源由 loader 编译生成，含类型 TRY_CAST）
     source_table: str = ""             # 溯源标注用主源表（结构化源自动取 table）
-    clean: tuple[str, ...] = ()        # 清洗规则名（见 CLEAN_RULE_NAMES）
+    clean: tuple[str, ...] = ()        # 清洗规则名平集（见 CLEAN_RULE_NAMES；去重视图）
     optional: bool = False             # True=源表缺失/缺列时跳过（如 clue 尾部物化）
     typed_raw: tuple = ()              # 结构化源 (别名, 源列, 值类型)×非string——构建期 TRY_CAST 脏值计数用
     projections: tuple = ()            # 结构化源 (别名, 源列, 值类型)×全列——缺列预检后重渲染 NULL 用
     optional_raw: tuple = ()           # 声明为可选的源列名（缺列降级 NULL 不硬失败，鲁棒性 B5-01）
+    # REQ-D-005 属性级清洗映射 ((属性别名, (op, ...)), ...)——"_name" 为名称列约定别名
+    # （= name_property，fetch 后恒为第 0 列）；数组形式 clean 由 loader 归一为 {"_name": [...]}
+    clean_map: tuple = ()
+    # REQ-D-009 属性级 transform 映射 ((属性别名, (op, ...)), ...)——仅结构化源，
+    # 编译期注入 SQL 投影（TRY_CAST 前生效），仅 impl=sql 的声明式 op
+    transform: tuple = ()
+    # REQ-D-010 属性级 CAST 失败处置 ((属性别名, 状态), ...)——仅结构化源；
+    # 状态 ∈ {fail: CAST 硬失败回退能力, quarantine: TRY_CAST 失败行整行隔离落 build_quarantine}；
+    # 缺省（未声明）= null：TRY_CAST 降级 NULL + 脏值计数（B2-08 现状口径）
+    on_cast_error: tuple = ()
 
 
 @dataclass
@@ -196,23 +213,72 @@ class RuleSpec:
         return asdict(self)
 
 
-# ---- 清洗规则库（声明引用名；实现集中在此，可扩展） ----
-CLEAN_RULE_NAMES = {"strip", "exclude_org_tokens"}
-
+# ---- 清洗规则库（REQ-D-004：唯一 op 注册表派生，见 core/clean_ops.py） ----
 ORG_KEYWORDS = ("公司", "局", "厂", "中心", "部", "建材", "建设", "银行",
                 "财政", "集团", "院", "所", "处", "队")
 SUMMARY_TOKENS = ("现金存入", "工资", "代发", "利息", "转账", "存款", "取现")
 
 
-def clean_strip(v: str) -> str:
+def clean_strip(v: str, _ctx=None) -> str:
+    """py op 契约（REQ-D-005 / AD-3）：fn(value, ctx) → str 改值生效；ctx=org_names。"""
     return (v or "").strip()
 
 
 def clean_exclude_org_tokens(v: str, org_names: set[str]) -> bool:
-    """True = 判定为组织/摘要 token，应从 person 候选中排除。"""
+    """滤行 op（既有口径）：True = 判定为组织/摘要 token，应从 person 候选中排除。"""
     if v in org_names:
         return True
     return any(k in v for k in ORG_KEYWORDS) or v in SUMMARY_TOKENS
+
+
+from core import clean_ops as _clean_ops  # noqa: E402  （实现定义后注册，避免循环依赖）
+from collections.abc import Set as _AbcSet  # noqa: E402
+
+_clean_ops.register_op("strip", impl="py", fn=clean_strip, layer="any",
+                       description="去首尾空白")
+_clean_ops.register_op("exclude_org_tokens", impl="py",
+                       fn=clean_exclude_org_tokens,
+                       description="组织/摘要 token 剔除（滤行）")
+
+
+class _LiveCleanRuleNames(_AbcSet):
+    """CLEAN_RULE_NAMES 实时视图：内容始终派生自 op 注册表 clean 层。
+
+    REQ-D-004 AC-1：注册新 op 后无需重导入自动可见；保持既有集合使用语义
+    （in / sorted / 差集 / issubset），现有引用点签名不变。
+    注意：不继承内置 set——CPython 对 set 子类走 PyAnySet 快路径、绕过被覆写的
+    __contains__/__iter__（读到过期内部表），故用 collections.abc.Set 保证
+    全部集合运算实时同步。
+    """
+
+    def __init__(self):
+        self._cache = frozenset()
+
+    def _sync(self) -> None:
+        self._cache = frozenset(_clean_ops.clean_layer_names())
+
+    @classmethod
+    def _from_iterable(cls, it):
+        return frozenset(it)
+
+    def __contains__(self, x):
+        self._sync()
+        return x in self._cache
+
+    def __iter__(self):
+        self._sync()
+        return iter(self._cache)
+
+    def __len__(self):
+        self._sync()
+        return len(self._cache)
+
+    def __repr__(self):
+        self._sync()
+        return repr(self._cache)
+
+
+CLEAN_RULE_NAMES = _LiveCleanRuleNames()
 
 
 def _default_org_names(conn=None) -> set[str]:
@@ -250,17 +316,20 @@ def _proxy_keys(raw_names: list[str], prefix: str) -> dict[str, str]:
             for n in raw_names}
 
 
-def _event_proxy_keys(rows: list, prefix: str) -> list[str]:
+def _event_proxy_keys(rows: list, prefix: str, exclude_idx: tuple = ()) -> list[str]:
     """事件型代理键：行内容哈希 + 同内容序号后缀。
 
     内容完全相同的多行（如同日同额两笔）按确定性顺序追加 _02/_03…，
     保证逐行唯一；旧行键只取决于自身内容，增量追加新行时不变。
+    exclude_idx（REQ-D-013 AC-5）：composite 属性列索引，哈希时排除——
+    复合列不参与事件去重（拆分/追加备注不改变事件身份）。
     """
     seen: dict[str, int] = {}
     keys: list[str] = []
     for r in rows:
+        basis = [v for i, v in enumerate(r) if i not in exclude_idx]
         digest = hashlib.sha1(
-            json.dumps(list(r), ensure_ascii=False, default=str).encode("utf-8")
+            json.dumps(basis, ensure_ascii=False, default=str).encode("utf-8")
         ).hexdigest()[:12]
         n = seen.get(digest, 0) + 1
         seen[digest] = n
@@ -285,7 +354,8 @@ def build_ontology(conn, pack: str = "default") -> dict:
     from core.ontology_loader import load_pack
     spec = load_pack(pack)
 
-    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": []}
+    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
+                   "degraded": [], "clean_stats": [], "quarantine": []}
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
 
@@ -401,13 +471,81 @@ def _guess_source_table(source_sql: str) -> str:
     return m.group(1) if m else ""
 
 
+def _mask_sample(v) -> str:
+    """清洗样本脱敏（REQ-D-008 AC-3 口径）：保留首字符，其余以 * 代替。"""
+    s = str(v)
+    return s[0] + "*" * (len(s) - 1) if len(s) > 1 else "*"
+
+
 def _apply_clean(rows: list, cols: list[str], otype: ObjectType,
-                 binding: ObjectBinding, org_names: set[str]) -> list:
-    """按 binding 声明应用清洗规则（当前：person 的 exclude_org_tokens）。"""
-    if otype.name != "person" or "exclude_org_tokens" not in binding.clean:
+                 binding: ObjectBinding, org_names: set[str],
+                 stats: dict | None = None) -> list:
+    """属性级清洗双通道（REQ-D-005 / AD-3）。
+
+    clean 声明为属性级映射（loader 归一后 binding.clean_map）：数组形式等价
+    {"_name": [...]}（AC-3 向后兼容）；_name 是名称列约定别名（= name_property，
+    fetch 后恒为第 0 列）。属性按声明顺序、规则按声明顺序执行（AC-4）；
+    未声明属性不动（AC-5）；作用域不再限于 person/名称列（AC-1/AC-2）。
+
+    py op 契约 fn(value, ctx)（ctx=org_names），三种返回：
+      - str            → 改值生效（回写该属性值）
+      - (value, keep)  → 显式双通道
+      - bool           → 滤行谓词（True=剔除该行，值不动；exclude_org_tokens 既有口径）
+    None 值跳过清洗（NULL 语义不被改写）。剔除计数按 (object, property, rule)
+    聚合进 stats["clean_stats"]：{object, property, rule, dropped_rows, sample_masked}
+    （样本脱敏，REQ-D-008 落健康度的数据源）。
+    """
+    cmap = binding.clean_map
+    if not cmap:
         return rows
-    return [r for r in rows
-            if not clean_exclude_org_tokens(clean_strip(str(r[0])), org_names)]
+    name_prop = otype.name_property
+    idx_map: dict[str, tuple[int, str]] = {}   # 声明属性 → (列索引, 实际列名)
+    for prop, _ops in cmap:
+        if prop == "_name" or prop == name_prop:
+            idx_map[prop] = (0, name_prop)
+        elif prop in cols:
+            idx_map[prop] = (cols.index(prop), prop)
+        else:
+            raise ValueError(
+                f"obj_{otype.name} clean 声明的属性 '{prop}' 不在源投影列 {cols} 中"
+                f"（bindings.json 该 binding 的 clean 声明与源列不一致）")
+    drops: dict[tuple[str, str], list] = {}    # (实际列名, rule) → 脱敏样本
+    out: list = []
+    for r in rows:
+        r = list(r)
+        keep = True
+        for prop, ops in cmap:
+            idx, col = idx_map[prop]
+            v = r[idx]
+            if v is None:
+                continue
+            for op in ops:
+                spec = _clean_ops.OPS[op]
+                nv = spec.fn(v, org_names)
+                if isinstance(nv, bool):          # 滤行谓词：True=剔除
+                    if nv:
+                        keep = False
+                        drops.setdefault((col, op), []).append(_mask_sample(v))
+                    continue
+                if isinstance(nv, tuple):         # 显式 (value, keep) 双通道
+                    v, keep = nv
+                    if not keep:
+                        drops.setdefault((col, op), []).append(_mask_sample(v))
+                else:                             # str：改值生效
+                    v = nv
+                r[idx] = v
+            if not keep:
+                break
+        if keep:
+            out.append(tuple(r))
+    if stats is not None and drops:
+        # rows_before = 清洗前该 binding 行数（REQ-D-008 AC-6：画像清洗前后行数的数据源）
+        entries = [{"object": otype.name, "property": p, "rule": rule,
+                    "dropped_rows": len(samples), "rows_before": len(rows),
+                    "sample_masked": samples[:3]}
+                   for (p, rule), samples in drops.items()]
+        stats.setdefault("clean_stats", []).extend(entries)
+    return out
 
 
 def _create_obj_table(conn, otype: ObjectType, same: bool,
@@ -470,17 +608,101 @@ def _apply_entity_mapping(rows: list, cols: list[str], mapping: dict) -> list:
     return out
 
 
+def _render_projection(alias: str, raw: str | None, t: str,
+                       transform_ops=None, hard: bool = False) -> str:
+    """单个结构化源投影渲染（REQ-D-009 / AD-1 技术核心）：
+    string 直通、非 string TRY_CAST；属性声明 transform 时把声明式 op 链编译为
+    SQL 表达式注入 TRY_CAST 之前（未声明 transform 的属性行为与现状一致，AC-5）。
+    raw=None 表示缺列降级（可选源列缺失，B5-01）：渲染类型化 NULL，列集/列序不变。
+    hard=True（REQ-D-010 on_cast_error=fail）：渲染硬 CAST——脏值抛 ConversionException
+    中断 build（回退能力：显式声明"本列必须干净"的绑定）。"""
+    cast_fn = "CAST" if hard else "TRY_CAST"
+    if raw is None:
+        return f'CAST(NULL AS {TYPE_SQL[t]}) AS {alias}'
+    if transform_ops:
+        expr = _clean_ops.compile_sql_expr(transform_ops, f'"{raw}"')
+        return (f'{expr} AS {alias}' if t == "string"
+                else f'{cast_fn}({expr} AS {TYPE_SQL[t]}) AS {alias}')
+    if t == "string":
+        return f'"{raw}" AS {alias}'
+    return f'{cast_fn}("{raw}" AS {TYPE_SQL[t]}) AS {alias}'
+
+
 def _rerender_source_sql(b: "ObjectBinding", missing: set) -> str:
-    """可选源列缺失后重渲染结构化源 SQL：缺失列投影为类型化 NULL（列集/列序不变）。"""
+    """可选源列缺失后重渲染结构化源 SQL：缺失列投影为类型化 NULL（列集/列序不变）。
+    transform 声明与编译期投影同口径注入（REQ-D-009）；on_cast_error 同口径：
+    fail 属性渲染硬 CAST，quarantine 属性保留 TRY_CAST 并追加 __raw_ 隐藏列（REQ-D-010）。"""
+    tf_map = {alias: ops for alias, ops in (b.transform or ())}
+    oce = {alias: state for alias, state in (b.on_cast_error or ())}
     parts = []
     for alias, raw, t in b.projections:
-        if raw in missing:
-            parts.append(f'CAST(NULL AS {TYPE_SQL[t]}) AS {alias}')
-        elif t == "string":
-            parts.append(f'"{raw}" AS {alias}')
-        else:
-            parts.append(f'TRY_CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
+        parts.append(_render_projection(
+            alias, None if raw in missing else raw, t,
+            tf_map.get(alias), hard=(oce.get(alias) == "fail")))
+        if oce.get(alias) == "quarantine" and raw not in missing:
+            parts.append(f'"{raw}" AS "__raw_{alias}"')
     return f"SELECT {', '.join(parts)} FROM {b.source_table}"
+
+
+# REQ-D-010：CAST 失败隔离表（同 run_diagnostic 一样永不 DROP——重建语义层不丢隔离记录）
+_QUARANTINE_DDL = (
+    "CREATE TABLE IF NOT EXISTS build_quarantine ("
+    "object VARCHAR, property VARCHAR, src_column VARCHAR, reason VARCHAR, "
+    "sample_masked VARCHAR, name_value VARCHAR, source_table VARCHAR, "
+    "quarantined_at TIMESTAMP DEFAULT current_timestamp)")
+
+
+def _quarantine_cast_failures(conn, otype: ObjectType, b: ObjectBinding,
+                              rows: list, cols: list, stats: dict | None):
+    """REQ-D-010 quarantine 三态：TRY_CAST 失败的行整行剔除并落 build_quarantine。
+
+    检测口径：隐藏列 __raw_<别名>（原始源列值）非空而属性列为 NULL = CAST 失败
+    （源列本身为 NULL 的行不算失败，正常保留 NULL 语义）。隔离记录含失败原因
+    （reason=<值类型>_cast_failed）+ 脱敏样本（AD-4），可下钻可审计。
+    处理后剔除全部 __raw_ 前缀隐藏列（cols/rows 同步裁剪），obj_* schema 不变。
+    返回 (rows, cols)。"""
+    oce = {alias: state for alias, state in (b.on_cast_error or ())}
+    q_aliases = [a for a, s in oce.items() if s == "quarantine"]
+    if not q_aliases:
+        return rows, cols
+    conn.execute(_QUARANTINE_DDL)
+    proj = {alias: raw for alias, raw, _ in (b.projections or ())}
+    src_table = b.source_table or _guess_source_table(b.source_sql)
+    kept = list(rows)
+    for alias in q_aliases:
+        raw_col = f"__raw_{alias}"
+        if raw_col not in cols or alias not in cols:
+            continue
+        a_idx, r_idx = cols.index(alias), cols.index(raw_col)
+        survivors, failed = [], []
+        for r in kept:
+            (failed if (r[a_idx] is None and r[r_idx] is not None)
+             else survivors).append(r)
+        kept = survivors
+        if not failed:
+            continue
+        t = otype.properties.get(alias, "string")
+        reason = f"{t}_cast_failed"
+        samples = []
+        for r in failed:
+            masked = _mask_sample(r[r_idx])
+            samples.append(masked)
+            conn.execute(
+                "INSERT INTO build_quarantine (object, property, src_column, "
+                "reason, sample_masked, name_value, source_table) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [otype.name, alias, proj.get(alias, ""), reason,
+                 masked, str(r[0]), src_table])
+        if stats is not None:
+            stats.setdefault("quarantine", []).append({
+                "object": otype.name, "property": alias,
+                "column": proj.get(alias, ""), "reason": reason,
+                "quarantined_rows": len(failed),
+                "sample_masked": samples[:3]})
+    keep_idx = [i for i, c in enumerate(cols) if not c.startswith("__raw_")]
+    cols = [cols[i] for i in keep_idx]
+    rows = [tuple(r[i] for i in keep_idx) for r in kept]
+    return rows, cols
 
 
 def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
@@ -533,12 +755,23 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     # TRY_CAST 降级留痕：源列非空但 TRY_CAST 为 NULL 的行数（结构化源才带 typed_raw）。
     # 脏值（如 2024-02-30）在编译期已降级 NULL 不中断 build，此处按列计数进 stats["dirty"]，
     # 由调用方经 run_health.record_build_dirty 落 run_diagnostic（source_value_cast_failed）。
+    # 声明了 transform 的属性按 transform 后表达式计数（与实际物化口径一致，不误报）。
     if stats is not None and b.typed_raw and src_table:
+        tf_map = {alias: ops for alias, ops in (b.transform or ())}
+        oce = {alias: state for alias, state in (b.on_cast_error or ())}
         for alias, raw, t in b.typed_raw:
+            if oce.get(alias) in ("fail", "quarantine"):
+                continue   # fail 在 fetch 阶段硬失败；quarantine 由隔离处理单独计数
+            expr = f'"{raw}"'
+            if alias in tf_map:
+                try:
+                    expr = _clean_ops.compile_sql_expr(tf_map[alias], expr)
+                except ValueError:
+                    pass   # 表达式异常回落原始列计数（编译期已硬失败，此处仅防御）
             try:
                 n = conn.execute(
                     f'SELECT COUNT(*) FROM "{src_table}" WHERE "{raw}" IS NOT NULL '
-                    f'AND TRY_CAST("{raw}" AS {TYPE_SQL[t]}) IS NULL').fetchone()[0]
+                    f'AND TRY_CAST({expr} AS {TYPE_SQL[t]}) IS NULL').fetchone()[0]
             except Exception:
                 continue   # 计数失败不拖垮物化（列可能已被 clean/视图改名等边缘情形）
             if n:
@@ -557,14 +790,21 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                     f"obj_{otype.name}(编译失败,源列缺失已跳过: {type(e).__name__})")
             return None
         raise
-    if b.clean:
-        rows = _apply_clean(rows, cols, otype, b, org_names)
+    # REQ-D-010 quarantine：TRY_CAST 失败行整行隔离（fetch 后、clean 前执行，
+    # 并剔除 __raw_ 隐藏列——obj_* schema 与隔离前完全一致）
+    if b.on_cast_error:
+        rows, cols = _quarantine_cast_failures(conn, otype, b, rows, cols, stats)
+    if b.clean_map:
+        rows = _apply_clean(rows, cols, otype, b, org_names, stats)
     # REQ-016：正兵确认的归并映射在代理键分配前应用（对象+事件双侧名字列）
     rows = _apply_entity_mapping(rows, cols, mapping or {})
     prefix = otype.pk.split("_")[0]
     if otype.kind == "event":
         rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))
-        keys = _event_proxy_keys(rows, prefix)
+        # REQ-D-013 AC-5：composite 属性不参与事件去重哈希（仅复合列差异的两行同内容）
+        exclude_idx = tuple(cols.index(p) for p in otype.composite_props
+                            if p in cols)
+        keys = _event_proxy_keys(rows, prefix, exclude_idx)
     elif otype.pk == otype.name_property:
         keys = [r[0] for r in rows]          # 自引用自然键，直通不重映射
     else:
@@ -696,7 +936,7 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": [],
-                   "rewritten_rows": 0, "plan_mode": plan.mode}
+                   "clean_stats": [], "rewritten_rows": 0, "plan_mode": plan.mode}
 
     conn.execute("BEGIN TRANSACTION")
     try:
@@ -819,6 +1059,7 @@ def rebuild_from_partition(conn, part, *, pack: str = "default",
     plan = plan_from_partition(conn, part, pack=pack, **kw)
     if plan.mode == "skip" or plan.is_empty():
         return plan, {"objects": {}, "links": {}, "skipped": [],
+                      "dirty": [], "degraded": [], "clean_stats": [],
                       "rewritten_rows": 0, "plan_mode": "skip"}
     stats = materialize_changed(conn, plan, pack=pack, bus=bus, actor=actor)
     return plan, stats

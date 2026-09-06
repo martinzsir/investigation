@@ -28,9 +28,11 @@ from core.ontology import (
     ObjectType, ObjectBinding, LinkType, LinkBinding,
     ActionSpec, ParamSpec, FunctionSpec, RuleSpec,
     TYPE_SQL, TYPE_NAMES, OBJECT_KINDS,
-    CLEAN_RULE_NAMES, reverse_reach,
+    CLEAN_RULE_NAMES, reverse_reach, _render_projection,
 )
 from core.registry import ClueStatus
+from core.data_elements import CHECKSUM_ALGOS
+from core import clean_ops as _clean_ops
 
 SCHEMA_VERSION = 2
 PACK_ROOT = Path(__file__).resolve().parent.parent / "ontology"
@@ -68,7 +70,9 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     if not root.is_dir():
         raise FileNotFoundError(f"ontology 案件包不存在：{root}")
 
-    objects = _load_objects(root / "objects.json")
+    # REQ-D-001/016：数据元标准先于对象装载——属性 data_element 引用需校验 ID 已注册
+    element_ids = set(load_data_elements(pack, base_dir))
+    objects = _load_objects(root / "objects.json", element_ids)
     links = _load_links(root / "links.json", objects)
     object_bindings, link_bindings = _load_bindings(
         root / "bindings.json", objects, links)
@@ -140,6 +144,120 @@ def load_enum_space(pack: str = "default", base_dir: Path | None = None) -> dict
     return space
 
 
+# ----------------------------------------------------------------------
+# data_elements（REQ-D-001 数据元标准，第 14 声明文件）
+# ----------------------------------------------------------------------
+class _DuplicateKeyError(ValueError):
+    pass
+
+
+def _no_dup_pairs(pairs):
+    """object_pairs_hook：JSON 对象内重复键硬失败（dict 形态的元素 ID 重复检测，AC-5）。"""
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise _DuplicateKeyError(k)
+        d[k] = v
+    return d
+
+
+def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> dict:
+    """返回 {元素 ID: 元素声明}；data_elements.json 缺失 → {}（向后兼容）。
+
+    校验（REQ-D-001）：schema_version 一致（AC-3）；必填字段缺失硬失败（AC-1）；
+    type 值类型合法；未知 checksum 算法硬失败（AC-2 fail-closed）；元素 ID 重复
+    硬失败（AC-5）；clean_rule 必须已在 op 注册表 clean 层（与 binding→clean 同口径）。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "data_elements.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"),
+                          object_pairs_hook=_no_dup_pairs)
+    except _DuplicateKeyError as e:
+        raise ValueError(
+            f"data_elements.json 数据元 ID 重复注册：'{e.args[0]}'（REQ-D-001 AC-5）") from e
+    except json.JSONDecodeError as e:
+        raise ValueError(f"ontology 声明 JSON 非法（data_elements.json）：{e}") from e
+    if data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            f"data_elements.json schema_version={data.get('schema_version')}，"
+            f"本内核支持 {SCHEMA_VERSION}（REQ-D-001 AC-3：与其余声明文件一致）")
+    elements = data.get("elements", {})
+    if not isinstance(elements, dict) or not elements:
+        raise ValueError("data_elements.json elements 必须是非空映射 {元素ID: 声明}")
+    for eid, spec in elements.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"data_elements['{eid}'] 声明必须是对象")
+        _require(spec, ("name", "type"), f"data_elements['{eid}']")
+        if spec["type"] not in TYPE_NAMES:
+            raise ValueError(
+                f"data_elements['{eid}'] type='{spec['type']}' 非法，允许 {TYPE_NAMES}")
+        checksum = spec.get("checksum")
+        if checksum is not None and checksum not in CHECKSUM_ALGOS:
+            raise ValueError(
+                f"data_elements['{eid}'] 未知 checksum 算法：'{checksum}'，"
+                f"已注册 {sorted(CHECKSUM_ALGOS)}（REQ-D-001 AC-2 fail-closed）")
+        clean_rule = spec.get("clean_rule")
+        if clean_rule is not None and clean_rule not in CLEAN_RULE_NAMES:
+            raise ValueError(
+                f"data_elements['{eid}'] clean_rule='{clean_rule}' 未在 op 注册表注册，"
+                f"可用 {sorted(CLEAN_RULE_NAMES)}")
+        # REQ-D-016：合规扫描相关字段装载期校验（fail-closed，扫描期不做容错）
+        fmt = spec.get("format")
+        if fmt is not None:
+            if not isinstance(fmt, str) or not fmt.strip():
+                raise ValueError(f"data_elements['{eid}'] format 必须是非空正则字符串")
+            try:
+                re.compile(fmt)
+            except re.error as e:
+                raise ValueError(f"data_elements['{eid}'] format 正则非法：{e}") from e
+        rng = spec.get("range")
+        if rng is not None:
+            if (not isinstance(rng, dict) or not rng
+                    or any(k not in ("min", "max") for k in rng)):
+                raise ValueError(
+                    f"data_elements['{eid}'] range 必须是 {{min?, max?}} 非空映射")
+        enum_vals = spec.get("enum")
+        if enum_vals is not None:
+            if (not isinstance(enum_vals, list) or not enum_vals
+                    or any(not isinstance(x, (str, int, float)) for x in enum_vals)):
+                raise ValueError(
+                    f"data_elements['{eid}'] enum 必须是非空数组（代码表）")
+    return elements
+
+
+# REQ-D-016：合规检查项（AC-6 可经 data_elements.json 顶层 compliance_checks 启停）
+COMPLIANCE_CHECK_NAMES = ("format", "checksum", "range", "enum")
+
+
+def load_compliance_checks(pack: str = "default",
+                           base_dir: Path | None = None) -> dict:
+    """返回合规检查项启停声明（REQ-D-016 AC-6）：data_elements.json 顶层
+    compliance_checks（{检查项: bool}）；缺失 → {}（调用方回落全开）。
+    键非法或值非 bool 硬失败（fail-closed）。"""
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "data_elements.json"
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text(encoding="utf-8"))
+    decl = data.get("compliance_checks")
+    if decl is None:
+        return {}
+    if not isinstance(decl, dict):
+        raise ValueError("data_elements.json compliance_checks 必须是映射 {检查项: bool}")
+    for k, v in decl.items():
+        if k not in COMPLIANCE_CHECK_NAMES:
+            raise ValueError(
+                f"data_elements.json compliance_checks 未知检查项 '{k}'，"
+                f"允许 {COMPLIANCE_CHECK_NAMES}")
+        if not isinstance(v, bool):
+            raise ValueError(
+                f"data_elements.json compliance_checks['{k}'] 值必须是 bool")
+    return dict(decl)
+
+
 def _read_json(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
@@ -171,7 +289,8 @@ def _parse_jian(d: dict, ctx: str) -> tuple[str, str]:
 # ----------------------------------------------------------------------
 # objects（类型层）
 # ----------------------------------------------------------------------
-def _load_objects(path: Path) -> list[ObjectType]:
+def _load_objects(path: Path,
+                  element_ids: set[str] | None = None) -> list[ObjectType]:
     data = _read_json(path)
     out: list[ObjectType] = []
     seen: set[str] = set()
@@ -189,7 +308,48 @@ def _load_objects(path: Path) -> list[ObjectType]:
         props = o.get("properties", {})
         if not isinstance(props, dict):
             raise ValueError(f"{ctx}（{name}）properties 必须是映射 {{属性名: 值类型}}")
-        bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
+        # REQ-D-013：属性值可为 string 或映射 {"type": ..., "composite": true}
+        # REQ-D-016/002：映射还允许 {"data_element": "DE_X"} 引用数据元（loader 校验 ID 已注册）
+        composite: list[str] = []
+        prop_de: dict[str, str] = {}
+        norm_props: dict[str, str] = {}
+        bad: dict = {}
+        for p, t in props.items():
+            if isinstance(t, dict):
+                unknown = {k for k in t
+                           if k not in ("type", "composite", "data_element")}
+                if unknown:
+                    raise ValueError(
+                        f"{ctx}（{name}）属性 '{p}' 声明映射含未知键 {sorted(unknown)}"
+                        f"（fail-closed；允许键：type/composite/data_element，"
+                        f"REQ-D-013/REQ-D-016）")
+                base = t.get("type")
+                if base not in TYPE_NAMES:
+                    bad[p] = base
+                    continue
+                if t.get("composite"):
+                    if base != "string":
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' composite 降级仅支持 string 类型"
+                            f"（当前 {base}；复合列整列保留，不参与 CAST，REQ-D-013）")
+                    composite.append(p)
+                de = t.get("data_element")
+                if de is not None:
+                    if not isinstance(de, str) or not de.strip():
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' data_element 必须是非空元素 ID")
+                    if element_ids is not None and de not in element_ids:
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' 引用未注册数据元：'{de}'"
+                            f"（REQ-D-002 AC-6：未知 ID 硬失败；"
+                            f"已注册 {sorted(element_ids)}）")
+                    prop_de[p] = de
+                norm_props[p] = base
+            elif t in TYPE_NAMES:
+                norm_props[p] = t
+            else:
+                bad[p] = t
+        props = norm_props
         if bad:
             raise ValueError(f"{ctx}（{name}）属性值类型非法：{bad}，允许 {TYPE_NAMES}")
         if o["pk"] in props:
@@ -199,6 +359,10 @@ def _load_objects(path: Path) -> list[ObjectType]:
             raise ValueError(
                 f"{ctx}（{name}）name_property='{name_prop}' 必须是已声明属性，"
                 f"或等于 pk（自引用）")
+        if name_prop in composite:
+            raise ValueError(
+                f"{ctx}（{name}）name_property '{name_prop}' 不得声明 composite"
+                f"（REQ-D-013 AC-5：身份列不参与复合降级）")
 
         # REQ-041 AC2: enum 属性必须有 enum_values 白名单，装载期校验
         enum_values: dict[str, list[str]] = {}
@@ -244,6 +408,8 @@ def _load_objects(path: Path) -> list[ObjectType]:
             enum_values=enum_values,
             jian=jian, jian_source=jian_source,
             metadata_props=tuple(md),
+            composite_props=tuple(composite),
+            prop_data_elements=prop_de,
         ))
     return out
 
@@ -331,8 +497,54 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
 # ----------------------------------------------------------------------
 # bindings（管道层）
 # ----------------------------------------------------------------------
+def _parse_on_cast_error_map(raw, otype: ObjectType, ctx: str, name: str,
+                             structured: bool) -> tuple:
+    """REQ-D-010：on_cast_error 声明 → 属性级映射 ((属性, 状态), ...)。
+
+    仅结构化源（source）绑定支持（手写 source_sql 请自行保证 CAST 语义）；
+    属性必须是已声明的非 string 类型（string 无 CAST，无从失败）；
+    状态仅允许 "fail"（硬 CAST 回退能力）/ "quarantine"（TRY_CAST 失败行隔离），
+    未声明属性缺省 = null（TRY_CAST 降级 NULL，B2-08 现状）；
+    quarantine 别名不得以 __raw_ 开头（与隔离检测隐藏列命名冲突）。
+    """
+    if raw is None:
+        return ()
+    if not structured:
+        raise ValueError(
+            f"{ctx}（{name}）on_cast_error 仅支持结构化源（source）绑定；"
+            f"手写 source_sql 的 CAST 语义请在上游 SQL 内保证")
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            f"{ctx}（{name}）on_cast_error 必须是非空属性级映射 "
+            f"{{属性: \"fail\"|\"quarantine\"}}（REQ-D-010）")
+    items: list[tuple[str, str]] = []
+    for prop, state in raw.items():
+        if prop not in otype.properties:
+            raise ValueError(
+                f"{ctx}（{name}）on_cast_error 属性 '{prop}' 不在对象属性声明 "
+                f"{sorted(otype.properties)} 内")
+        if otype.properties[prop] == "string":
+            raise ValueError(
+                f"{ctx}（{name}）on_cast_error 属性 '{prop}' 是 string 类型——"
+                f"string 投影无 CAST，无从失败（REQ-D-010：仅允许非 string 值类型）")
+        if state is None:
+            continue   # 显式 null = 保持缺省 TRY_CAST 降级语义
+        if state not in ("fail", "quarantine"):
+            raise ValueError(
+                f"{ctx}（{name}）on_cast_error['{prop}'] 状态 '{state}' 非法，"
+                f"仅允许 fail / quarantine（null=缺省降级 NULL）（REQ-D-010）")
+        if str(prop).startswith("__raw_"):
+            raise ValueError(
+                f"{ctx}（{name}）on_cast_error 属性 '{prop}' 不得以 __raw_ 开头"
+                f"（与隔离检测隐藏列命名冲突，REQ-D-010）")
+        items.append((prop, state))
+    return tuple(items)
+
+
 def _compile_structured_source(src: dict, otype: ObjectType,
-                               ctx: str) -> tuple[str, str, tuple, tuple]:
+                               ctx: str,
+                               transform_map: tuple = (),
+                               on_cast_error_map: tuple = ()) -> tuple[str, str, tuple, tuple]:
     """
     结构化源 → (source_sql, source_table, typed_raw, projections)。
     类型感知：非 string 属性编译期 TRY_CAST（与 TYPE_SQL 物化列类型同口径）——
@@ -340,23 +552,162 @@ def _compile_structured_source(src: dict, otype: ObjectType,
     构建期按列计数经 run_health 落诊断（source_value_cast_failed），不静默丢失。
     typed_raw = ((别名, 源列, 值类型), ...) 非 string 属性，供构建期脏值计数；
     projections = ((别名, 源列, 值类型), ...) 全列，供缺列预检后重渲染类型化 NULL。
+    transform_map（REQ-D-009 / AD-1）：((别名, (op, ...)), ...) 属性级声明，
+    声明式 op 链编译为 SQL 表达式注入 TRY_CAST 之前；未声明属性行为不变。
+    on_cast_error_map（REQ-D-010）：((别名, 状态), ...)——fail 属性渲染硬 CAST
+    （脏值中断 build 的回退能力）；quarantine 属性保持 TRY_CAST 并追加 __raw_<别名>
+    隐藏列（原始源列值，构建期据此检出失败行整行隔离）。
     """
     _require(src, ("table", "columns"), f"{ctx}.source")
     table, columns = src["table"], src["columns"]
     if not isinstance(columns, dict) or not columns:
         raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
+    # REQ-D-012 1:1 约束守护：同一 binding 内一源列只允许映射一个别名（可追溯性底线）。
+    # 出路：从同一列派生多属性请改用 source_sql 在上游处理（派生属性豁免，不在此列）。
+    seen_cols: dict[str, str] = {}
+    for alias, raw in columns.items():
+        col = str(raw)
+        dup = seen_cols.get(col)
+        if dup is not None:
+            raise ValueError(
+                f"{ctx}.source 同一源列映射多个属性：'{col}' 同时被别名 "
+                f"'{dup}' 与 '{alias}' 引用（REQ-D-012：一源列一属性；"
+                f"如需从同一列派生多个属性，请改用 source_sql 在上游处理）")
+        seen_cols[col] = alias
+    tf_map = {alias: ops for alias, ops in transform_map}
+    oce = {alias: state for alias, state in on_cast_error_map}
     parts: list[str] = []
     typed: list[tuple] = []
     projections: list[tuple] = []
     for alias, raw in columns.items():
         t = otype.properties.get(alias, "string")
         projections.append((alias, raw, t))
-        if t == "string":
-            parts.append(f'"{raw}" AS {alias}')
-        else:
-            parts.append(f'TRY_CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
+        parts.append(_render_projection(alias, raw, t, tf_map.get(alias),
+                                        hard=(oce.get(alias) == "fail")))
+        if oce.get(alias) == "quarantine":
+            parts.append(f'"{raw}" AS "__raw_{alias}"')
+        if t != "string":
             typed.append((alias, raw, t))
     return f"SELECT {', '.join(parts)} FROM {table}", table, tuple(typed), tuple(projections)
+
+
+# REQ-D-012：split 类 op 识别（split / split_part / split_str 等，大小写敏感的声明约定）。
+_SPLIT_OP_RE = re.compile(r"split(_\w+)?")
+
+
+def _transform_split_ops(transform) -> list[str]:
+    """收集 transform 声明中的 split 类 op 名。
+
+    transform 形态（属性级映射，批 D2 全量校验）：{属性: [op, ...] | op}；
+    op 允许携带参数（"op:param"），取冒号前的 op 名判定。
+    非 dict / 结构错误的 transform 交由 transform 层（REQ-D-009）校验，这里只守护 split。
+    """
+    ops: list[str] = []
+    if not isinstance(transform, dict):
+        return ops
+    for v in transform.values():
+        for tok in (v if isinstance(v, list) else [v]):
+            op = str(tok).split(":", 1)[0].strip()
+            if _SPLIT_OP_RE.fullmatch(op):
+                ops.append(op)
+    return ops
+
+
+def _parse_op_list(ops, ctx: str, where: str) -> tuple:
+    """op 列表归一：str → [str]；非字符串元素硬失败。"""
+    if isinstance(ops, str):
+        ops = [ops]
+    if not isinstance(ops, list) or not all(isinstance(o, str) and o.strip() for o in ops):
+        raise ValueError(f"{ctx} {where} 必须是 op 名字符串数组（或单个 op 名字符串）")
+    return tuple(o.strip() for o in ops)
+
+
+def _parse_clean_map(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
+    """REQ-D-005：clean 声明 → 属性级映射 ((属性, (op, ...)), ...)。
+
+    数组形式向后兼容 = {"_name": [...]}（_name 为名称列约定别名）；
+    映射形式的键必须是 _name 或对象已声明属性。规则按声明顺序执行（AC-4）。
+    校验：op 必须已注册（clean 层可用名，即 CLEAN_RULE_NAMES）且 impl=py
+    （clean 在 Python 侧执行，SQL op 属 transform 层）。
+    """
+    if raw is None or raw == () or raw == []:
+        return ()
+    if isinstance(raw, list):
+        raw = {"_name": raw} if raw else ()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{ctx}（{name}）clean 必须是 op 名数组或属性级映射 "
+            f"{{属性: [op, ...]}}（REQ-D-005；数组形式等价 {{\"_name\": [...]}}）")
+    allowed = set(otype.properties) | {"_name"}
+    items: list[tuple[str, tuple]] = []
+    for prop, ops in raw.items():
+        if prop not in allowed:
+            raise ValueError(
+                f"{ctx}（{name}）clean 属性 '{prop}' 不在对象属性声明 "
+                f"{sorted(otype.properties)} 内（_name 表示名称列）")
+        ops_t = _parse_op_list(ops, ctx, f"clean.{prop}")
+        if ops_t:
+            items.append((prop, ops_t))
+    flat = {op for _, ops in items for op in ops}
+    unknown = flat - set(CLEAN_RULE_NAMES)
+    if unknown:
+        raise ValueError(f"{ctx}（{name}）引用未注册清洗规则：{sorted(unknown)}，"
+                         f"可用 {sorted(CLEAN_RULE_NAMES)}")
+    non_py = sorted(op for op in flat if _clean_ops.OPS[op].impl != "py")
+    if non_py:
+        raise ValueError(
+            f"{ctx}（{name}）clean 引用非 Python op：{non_py}——clean 在 Python 侧"
+            f"执行，SQL op（如 strip_thousands）属 transform 层（REQ-D-009）")
+    return tuple(items)
+
+
+def _parse_transform_map(raw, otype: ObjectType, ctx: str, name: str,
+                         structured: bool) -> tuple:
+    """REQ-D-009：transform 声明 → 属性级映射 ((属性, (op, ...)), ...)。
+
+    仅结构化源（source）绑定支持——transform 编译进 SQL 投影，手写 source_sql
+    请在上游完成变换。校验（AC-6）：未知 op 硬失败；仅允许 impl=sql 的
+    transform 层声明式 op；带参 op（"op:param"）属批 D5 参数化机制，显式拒绝。
+    """
+    if raw is None:
+        return ()
+    if not structured:
+        raise ValueError(
+            f"{ctx}（{name}）transform 仅支持结构化源（source）绑定；"
+            f"手写 source_sql 的变换请在上游 SQL 内完成")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{ctx}（{name}）transform 必须是属性级映射 {{属性: [op, ...]}}（REQ-D-009）")
+    allowed = set(otype.properties) | {"_name"}
+    items: list[tuple[str, tuple]] = []
+    for prop, ops in raw.items():
+        if prop not in allowed:
+            raise ValueError(
+                f"{ctx}（{name}）transform 属性 '{prop}' 不在对象属性声明 "
+                f"{sorted(otype.properties)} 内（_name 表示名称列）")
+        ops_t = _parse_op_list(ops, ctx, f"transform.{prop}")
+        if ops_t:
+            items.append((prop, ops_t))
+    if not items:
+        return ()
+    flat = {op for _, ops in items for op in ops}
+    param_ops = sorted(op for op in flat if ":" in op)
+    if param_ops:
+        raise ValueError(
+            f"{ctx}（{name}）transform 带参 op {param_ops} 属批 D5 参数化机制"
+            f"（当前仅支持无参声明式 op）")
+    avail = _clean_ops.transform_layer_names()
+    unknown = flat - avail
+    if unknown:
+        raise ValueError(
+            f"{ctx}（{name}）transform 引用未注册 op：{sorted(unknown)}，"
+            f"可用 {sorted(avail)}（REQ-D-009 AC-6）")
+    non_sql = sorted(op for op in flat if _clean_ops.OPS[op].impl != "sql")
+    if non_sql:
+        raise ValueError(
+            f"{ctx}（{name}）transform 引用非 SQL op：{non_sql}——transform 在 SQL "
+            f"投影内编译执行，仅支持 impl=sql 的声明式 op（py op 属 clean 层）")
+    return tuple(items)
 
 
 # ----------------------------------------------------------------------
@@ -431,9 +782,26 @@ def _load_bindings(path: Path, objects: list[ObjectType],
         source_sql, source_table = b.get("source_sql", ""), b.get("source_table", "")
         typed_raw: tuple = ()
         projections: tuple = ()
+        # REQ-D-012：禁止 transform 声明 split 类 op——任何形式的列拆分不得进入声明层。
+        # 出路：复合列在 source_sql 中于上游拆分（声明层仍 1:1），或显式 composite 降级（REQ-D-013）。
+        split_ops = _transform_split_ops(b.get("transform"))
+        if split_ops:
+            raise ValueError(
+                f"{ctx}（{name}）transform 声明含 split 类 op：{sorted(set(split_ops))}"
+                f"（REQ-D-012：禁止列拆分进入声明层；请在 source_sql 中于上游完成拆分，"
+                f"保持一源列一属性）")
+        # ---- REQ-D-009：transform 属性级映射（仅结构化源，SQL 投影内 TRY_CAST 前注入）----
+        # 解析先于结构化源编译（编译期需按属性注入 op 表达式）
+        transform_map = _parse_transform_map(
+            b.get("transform"), otype, ctx, name,
+            structured=("source" in b))
+        # ---- REQ-D-010：on_cast_error 三态（解析先于编译——fail/quarantine 决定 CAST 渲染）----
+        on_cast_error = _parse_on_cast_error_map(
+            b.get("on_cast_error"), otype, ctx, name,
+            structured=("source" in b))
         if "source" in b:
             sql, table, typed_raw, projections = _compile_structured_source(
-                b["source"], otype, ctx)
+                b["source"], otype, ctx, transform_map, on_cast_error)
             source_sql, source_table = sql, table
             # optional_columns：可选源列名（缺列降级类型化 NULL，不硬失败，鲁棒性 B5-01）
             opt_cols = b.get("optional_columns", [])
@@ -468,17 +836,19 @@ def _load_bindings(path: Path, objects: list[ObjectType],
                 raise ValueError(
                     f"{ctx}（{name}）结构化源缺少 name_property 列 '{otype.name_property}'")
 
-        clean = tuple(b.get("clean", ()))
-        unknown_rules = set(clean) - CLEAN_RULE_NAMES
-        if unknown_rules:
-            raise ValueError(f"{ctx}（{name}）引用未注册清洗规则：{sorted(unknown_rules)}，"
-                             f"可用 {sorted(CLEAN_RULE_NAMES)}")
+        # ---- REQ-D-005：clean 属性级作用域 ----
+        # 数组形式向后兼容（= {"_name": [...]}，_name 为名称列约定别名）；
+        # 映射形式 {属性: [op, ...] | op}，属性按声明顺序、规则按声明顺序执行。
+        clean_map = _parse_clean_map(b.get("clean"), otype, ctx, name)
+        clean = tuple(dict.fromkeys(
+            op for _, ops in clean_map for op in ops))   # 去重平集（既有字段口径）
 
         obj_out[name] = ObjectBinding(
             object=name, source_sql=source_sql, source_table=source_table,
             clean=clean, optional=bool(b.get("optional", False)),
             typed_raw=typed_raw, projections=projections,
-            optional_raw=optional_raw)
+            optional_raw=optional_raw, clean_map=clean_map,
+            transform=transform_map, on_cast_error=on_cast_error)
 
     missing_obj = [o.name for o in objects if not o.runtime and o.name not in obj_out]
     if missing_obj:
@@ -499,6 +869,21 @@ def _load_bindings(path: Path, objects: list[ObjectType],
         if not isinstance(norm, list):
             raise ValueError(f"{ctx} normalize 必须是列表（REQ-P-033）")
         normalize = _validate_normalize(norm, b["build_sql"], ctx)
+        # REQ-D-013 AC-3：composite 属性不得作为归一 JOIN 的 ON 键（编译期可判定——
+        # 复合列拆分前不可参与实体关联，否则归并/画像语义全部失真）
+        for j, it in enumerate(normalize):
+            obj_name = str(it["table"])[4:]   # table 形如 obj_<name>
+            ot = obj_map.get(obj_name)
+            if ot is None or not ot.composite_props:
+                continue
+            on_cols = set(re.findall(
+                rf"\b{re.escape(str(it['alias']))}\.(\w+)", str(it["on"])))
+            hit = sorted(on_cols & set(ot.composite_props))
+            if hit:
+                raise ValueError(
+                    f"{ctx} normalize[{j}] 的 ON 条件引用对象 '{obj_name}' 的复合列 "
+                    f"{hit}（REQ-D-013 AC-3：composite 属性不得作为归一 JOIN 键——"
+                    f"复合列拆分前不可参与实体关联）")
         link_out[name] = LinkBinding(link=name, build_sql=b["build_sql"],
                                      normalize=normalize)
 

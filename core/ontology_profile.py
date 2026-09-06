@@ -20,10 +20,12 @@ M3 范围（.trae/documents/REQ-P/REQ-P实施计划.md §三 P0）：
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field, asdict
 
 from core.functions import load_case_knowledge
+from core.ontology import _mask_sample
 from core.ontology_loader import load_pack
 from core.run_health import get_health
 from core.threshold import load_profiler_settings
@@ -31,7 +33,8 @@ from core.value_type import analyze_column
 
 
 def connectable_props(pack: str = "default") -> dict[str, list[str]]:
-    """可连接属性清单：string 属性 − metadata_props − runtime 对象。
+    """可连接属性清单：string 属性 − metadata_props − composite_props（REQ-D-013 AC-3）
+    − runtime 对象。
 
     返回 {对象名: [属性名, ...]}（声明序）；全部属性被排除/无 string 属性的
     对象（如 clue 全列 metadata）不出现在结果中。
@@ -42,7 +45,8 @@ def connectable_props(pack: str = "default") -> dict[str, list[str]]:
         if o.runtime:
             continue
         props = [p for p, t in o.properties.items()
-                 if t == "string" and p not in o.metadata_props]
+                 if t == "string" and p not in o.metadata_props
+                 and p not in o.composite_props]
         if props:
             out[o.name] = props
     return out
@@ -75,6 +79,23 @@ def _entity_resolution():
         sys.modules["_ontology_profile_entity_resolution"] = mod
         spec.loader.exec_module(mod)
         return mod
+
+
+# 复合列疑似分隔符（REQ-D-013 AC-4：半角/全角竖线与分号）
+_COMPOSITE_SPLIT_RE = re.compile(r"[|｜;；]")
+
+
+def _composite_suspects(vals) -> list:
+    """疑似复合值检出（REQ-D-013 AC-4）：按分隔符分片 ≥2 且全片非空。
+
+    只做画像期观察（不扣分、不改值）；上游拆分或显式 composite 降级由分析师决定。
+    """
+    out = []
+    for v in vals or []:
+        parts = _COMPOSITE_SPLIT_RE.split(str(v))
+        if len(parts) >= 2 and all(p.strip() for p in parts):
+            out.append(v)
+    return out
 
 
 class EntityLinkExplorer:
@@ -214,7 +235,8 @@ class OntologyProfiler:
                  focus_entities: list | None = None,
                  anchor_date: str | None = None,
                  window_days: int | None = None,
-                 health=None):
+                 health=None,
+                 clean_stats: list | None = None):
         self._gw = gateway
         self._pack = pack
         self._spec = load_pack(pack)
@@ -222,11 +244,31 @@ class OntologyProfiler:
         self._anchor = anchor_date
         # REQ-P-021：health=None → NullRunHealth（空操作，既有调用零行为变化）
         self._health = get_health(health)
+        # REQ-D-008 AC-6：构建期清洗统计（build_ontology stats["clean_stats"]）
+        # 由调用方传入 → 画像每属性展示清洗前后行数
+        self._clean_map = self._aggregate_clean(clean_stats)
         settings = load_profiler_settings(pack)
         self._window = (int(window_days) if window_days is not None
                         else int(settings["window_days"]))
         self._sample_limit = int(settings["value_sample_limit"])
         self._explorer = EntityLinkExplorer(gateway, pack)
+
+    # ---- REQ-D-008：清洗统计聚合（AC-6 画像展示每属性清洗前后行数）----
+    @staticmethod
+    def _aggregate_clean(clean_stats: list | None) -> dict:
+        out: dict[tuple[str, str], dict] = {}
+        for e in (clean_stats or []):
+            k = (e.get("object"), e.get("property"))
+            a = out.setdefault(k, {"rows_before": 0, "rows_after": 0,
+                                   "dropped_rows": 0, "rules": []})
+            a["dropped_rows"] += int(e.get("dropped_rows") or 0)
+            a["rows_before"] = max(a["rows_before"],
+                                   int(e.get("rows_before") or 0))
+            if e.get("rule") not in a["rules"]:
+                a["rules"].append(e.get("rule"))
+        for a in out.values():
+            a["rows_after"] = a["rows_before"] - a["dropped_rows"]
+        return out
 
     # ---- 入口 ----
     def profile_all(self) -> dict:
@@ -246,6 +288,15 @@ class OntologyProfiler:
         mat_props = self._gw.materialized_props()
         connectable = connectable_props(self._pack)
         known = self._known_entities(mat_objects)
+        # REQ-D-013：复合列显式降级声明（整列保留不拆分 → 画像显示 declared_unsplit）
+        self._composite = {o.name: set(o.composite_props)
+                           for o in self._spec.objects}
+        # REQ-D-016：合规扫描（存在数据元引用属性时；聚合违规率进画像）
+        self._compliance = None
+        if any(o.prop_data_elements for o in self._spec.objects
+               if not o.runtime):
+            from core import compliance
+            self._compliance = compliance.scan(self._gw, health=self._health)
 
         l1l2: list[dict] = []
         l3: list[dict] = []
@@ -262,9 +313,12 @@ class OntologyProfiler:
                     reason=f"对象 {o.name} 未物化，画像占位（表不存在）",
                     object=o.name)
             for prop, ptype in o.properties.items():
-                l1l2.append(self._profile_prop(
+                entry = self._profile_prop(
                     o.name, prop, ptype, obj_mat, mat_props,
-                    connectable.get(o.name, []), known, l3, deductions))
+                    connectable.get(o.name, []), known, l3, deductions)
+                if prop in self._composite.get(o.name, set()):
+                    entry["composite"] = "declared_unsplit"   # 显式降级未拆分（无告警）
+                l1l2.append(entry)
             # 对象级：资金属性无万元整数 → 告警（decimal 不在可连接属性内，
             # 故挂对象级，不破坏"只对可连接属性计属性级分"的口径）
             if obj_mat:
@@ -277,6 +331,7 @@ class OntologyProfiler:
             "l3": l3,
             "l4": self._jian_map(mat_objects),
             "l5": self._score(deductions),
+            "compliance": self._compliance,   # REQ-D-016：无数据元引用时为 None
             "params": {"window_days": self._window,
                        "anchor_date": self._anchor,
                        "focus_entities": self._focus},
@@ -295,6 +350,15 @@ class OntologyProfiler:
             "materialized_object": obj_mat,
             "materialized_prop": bool(mat_props.get(key, False)),
         }
+        # REQ-D-008 AC-6：清洗前后行数（构建期 clean_stats 由调用方传入）
+        c = self._clean_map.get((obj, prop))
+        if c:
+            entry["clean"] = c
+        # REQ-D-016：该属性被合规扫描覆盖时挂聚合违规率
+        if self._compliance:
+            cp = self._compliance["by_property"].get(key)
+            if cp:
+                entry["compliance"] = cp
         if not obj_mat:
             entry["status"] = "unmaterialized_object"
             if is_conn:
@@ -363,6 +427,21 @@ class OntologyProfiler:
             self._deduct(deductions, "prop", key, "has_variants",
                          f"变体候选 {len(rv) + len(av)} 个（规则 {len(rv)}/别名 {len(av)}）",
                          "warn")
+        # REQ-D-013 AC-4：疑似复合值检出（分隔符分片 ≥2）——只告警不扣分，
+        # 出路：上游 source_sql 拆分为原子字段，或显式 composite: true 降级。
+        # 声明 composite 的属性不进本函数（非 connectable）→ 不误报。
+        suspects = _composite_suspects(vals)
+        if suspects:
+            entry["composite_suspect"] = {
+                "count": len(suspects),
+                "samples": [_mask_sample(v) for v in suspects[:3]],
+                "suggestion": "上游 source_sql 拆分为原子字段（保持 1:1），"
+                              "或显式 composite: true 降级（REQ-D-013）"}
+            self._health.record(
+                "composite_column_detected", "warning",
+                source="ontology_profile", object=obj, prop=prop,
+                reason=f"{key} 检出疑似复合值 {len(suspects)} 个"
+                       f"（分隔符分片；建议拆分或显式 composite 降级）")
         # L3：关注命中 / 与已知实体重合
         if self._focus:
             l3.append({"obj": obj, "prop": prop,

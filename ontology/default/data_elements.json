@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-D-001 数据元标准注册（第 14 声明文件）：值该长什么样的规范层。属性经 objects.json 的 data_element 引用（REQ-D-002，批 D5 接线）。clean_rule 只能引用已注册 op（core/clean_ops.py，与 binding→clean 同口径）；checksum 只能引用已注册算法（core/data_elements.py）。",
+  "elements": {
+    "DE_IDCARD": {
+      "name": "公民身份号码",
+      "type": "string",
+      "length": 18,
+      "format": "^[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]$",
+      "checksum": "idcard_mod11",
+      "sensitive": true,
+      "mask": "partial"
+    }
+  }
+}
