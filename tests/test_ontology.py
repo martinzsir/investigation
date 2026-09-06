@@ -423,7 +423,7 @@ class TestOntologyLoader(unittest.TestCase):
             name="transaction", title="交易", pk="txn_id", kind="event",
             name_property="from_raw",
             properties={"from_raw": "string", "amount": "decimal", "date": "date"})
-        sql, table, typed_raw = _compile_structured_source(
+        sql, table, typed_raw, projections = _compile_structured_source(
             {"table": "银行流水",
              "columns": {"from_raw": "主体", "amount": "金额", "date": "日期"}},
             otype, "ctx")
@@ -433,6 +433,10 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn('TRY_CAST("日期" AS DATE) AS date', sql)      # date → DATE（脏值降级 NULL）
         self.assertEqual(sorted(typed_raw),
                          [("amount", "金额", "decimal"), ("date", "日期", "date")])
+        self.assertEqual(sorted(projections),
+                         [("amount", "金额", "decimal"),
+                          ("date", "日期", "date"),
+                          ("from_raw", "主体", "string")])
 
     def test_坏包硬失败(self):
         import tempfile

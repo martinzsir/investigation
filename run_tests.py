@@ -119,6 +119,7 @@ GROUPS = {
     "entitytrace": ("REQ-G-006 实体解析跳过/插件留痕", [sys.executable, "-m", "unittest", "tests.test_entity_trace"]),
     "entityredline":("红线 R-1 同名实体强证据分区", [sys.executable, "-m", "unittest", "tests.test_entity_redline"]),
     "dirtydate":    ("脏日期 TRY_CAST 降级（鲁棒性 B2-08）", [sys.executable, "-m", "unittest", "tests.test_dirty_date"]),
+    "misscol":      ("缺列预检：可选降级/必填硬失败（鲁棒性 B5-01/03）", [sys.executable, "-m", "unittest", "tests.test_missing_column"]),
     "versionanchor":("REQ-G-007/001 版本锚定+缓存失效令牌", [sys.executable, "-m", "unittest", "tests.test_version_anchor", "tests.test_derived"]),
     # ---- REQ-G 统一降级协议（第二波：治理口径）----
     "policyversion":("REQ-G-016 policies/case_knowledge 版本收口", [sys.executable, "-m", "unittest", "tests.test_policy_version"]),

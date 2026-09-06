@@ -90,6 +90,8 @@ class ObjectBinding:
     clean: tuple[str, ...] = ()        # 清洗规则名（见 CLEAN_RULE_NAMES）
     optional: bool = False             # True=源表缺失/缺列时跳过（如 clue 尾部物化）
     typed_raw: tuple = ()              # 结构化源 (别名, 源列, 值类型)×非string——构建期 TRY_CAST 脏值计数用
+    projections: tuple = ()            # 结构化源 (别名, 源列, 值类型)×全列——缺列预检后重渲染 NULL 用
+    optional_raw: tuple = ()           # 声明为可选的源列名（缺列降级 NULL 不硬失败，鲁棒性 B5-01）
 
 
 @dataclass
@@ -283,7 +285,7 @@ def build_ontology(conn, pack: str = "default") -> dict:
     from core.ontology_loader import load_pack
     spec = load_pack(pack)
 
-    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": []}
+    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": []}
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
 
@@ -468,6 +470,19 @@ def _apply_entity_mapping(rows: list, cols: list[str], mapping: dict) -> list:
     return out
 
 
+def _rerender_source_sql(b: "ObjectBinding", missing: set) -> str:
+    """可选源列缺失后重渲染结构化源 SQL：缺失列投影为类型化 NULL（列集/列序不变）。"""
+    parts = []
+    for alias, raw, t in b.projections:
+        if raw in missing:
+            parts.append(f'CAST(NULL AS {TYPE_SQL[t]}) AS {alias}')
+        elif t == "string":
+            parts.append(f'"{raw}" AS {alias}')
+        else:
+            parts.append(f'TRY_CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
+    return f"SELECT {', '.join(parts)} FROM {b.source_table}"
+
+
 def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                          org_names: set[str], stats: dict | None = None,
                          mapping: dict | None = None):
@@ -485,6 +500,36 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
             tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
             stats["skipped"].append(f"obj_{otype.name}{tag}")
         return None
+    # 列级预检（鲁棒性 B5-01/03）：结构化源在编译 SQL 前先 DESCRIBE 源表——
+    # 必填列缺失 → 硬失败但报错直指缺失列名（不再裸抛 BinderException）；
+    # 声明为 optional_columns 的可选列缺失 → 该投影重渲染为类型化 NULL，
+    # 列集保持稳定、不破坏 obj_* 物化 schema，并降级留痕（source_column_missing）。
+    if b.projections and src_table:
+        try:
+            avail = {r[0] for r in conn.execute(f'DESCRIBE "{src_table}"').fetchall()}
+        except Exception:
+            avail = None
+        if avail is not None:
+            missing = list(dict.fromkeys(
+                raw for _, raw, _ in b.projections if raw not in avail))
+            if missing:
+                req_missing = [c for c in missing if c not in b.optional_raw]
+                if req_missing:
+                    if b.optional:
+                        # 整对象可选：源表存在但缺列（如旧版公开OSINT 仅 4 列），
+                        # 维持 optional 跳过语义（与编译失败跳过同口径，预检前置而已）
+                        if stats is not None:
+                            stats["skipped"].append(
+                                f"obj_{otype.name}(源列缺失已跳过: {req_missing})")
+                        return None
+                    raise ValueError(
+                        f"obj_{otype.name} 必填源列缺失 {req_missing}（源表 {src_table} "
+                        f"实际列 {sorted(avail)}）——补数据，或在 bindings.json 该 binding "
+                        f"声明 optional_columns（仅限可空属性）")
+                b.source_sql = _rerender_source_sql(b, set(missing))
+                if stats is not None:
+                    stats["degraded"].append(
+                        f"obj_{otype.name} 可选源列缺失 {missing}（已降级类型化 NULL）")
     # TRY_CAST 降级留痕：源列非空但 TRY_CAST 为 NULL 的行数（结构化源才带 typed_raw）。
     # 脏值（如 2024-02-30）在编译期已降级 NULL 不中断 build，此处按列计数进 stats["dirty"]，
     # 由调用方经 run_health.record_build_dirty 落 run_diagnostic（source_value_cast_failed）。
@@ -650,7 +695,7 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     spec = load_pack(pack)
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
-    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
+    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": [],
                    "rewritten_rows": 0, "plan_mode": plan.mode}
 
     conn.execute("BEGIN TRANSACTION")

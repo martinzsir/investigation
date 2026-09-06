@@ -332,13 +332,14 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
 # bindings（管道层）
 # ----------------------------------------------------------------------
 def _compile_structured_source(src: dict, otype: ObjectType,
-                               ctx: str) -> tuple[str, str, tuple]:
+                               ctx: str) -> tuple[str, str, tuple, tuple]:
     """
-    结构化源 → (source_sql, source_table, typed_raw)。
+    结构化源 → (source_sql, source_table, typed_raw, projections)。
     类型感知：非 string 属性编译期 TRY_CAST（与 TYPE_SQL 物化列类型同口径）——
     脏值（如 2024-02-30、2025-13-01）降级 NULL 不中断 build（鲁棒性 B2-08/09/10），
     构建期按列计数经 run_health 落诊断（source_value_cast_failed），不静默丢失。
-    typed_raw = ((别名, 源列, 值类型), ...) 供构建期脏值计数。
+    typed_raw = ((别名, 源列, 值类型), ...) 非 string 属性，供构建期脏值计数；
+    projections = ((别名, 源列, 值类型), ...) 全列，供缺列预检后重渲染类型化 NULL。
     """
     _require(src, ("table", "columns"), f"{ctx}.source")
     table, columns = src["table"], src["columns"]
@@ -346,14 +347,16 @@ def _compile_structured_source(src: dict, otype: ObjectType,
         raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
     parts: list[str] = []
     typed: list[tuple] = []
+    projections: list[tuple] = []
     for alias, raw in columns.items():
         t = otype.properties.get(alias, "string")
+        projections.append((alias, raw, t))
         if t == "string":
             parts.append(f'"{raw}" AS {alias}')
         else:
             parts.append(f'TRY_CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
             typed.append((alias, raw, t))
-    return f"SELECT {', '.join(parts)} FROM {table}", table, tuple(typed)
+    return f"SELECT {', '.join(parts)} FROM {table}", table, tuple(typed), tuple(projections)
 
 
 # ----------------------------------------------------------------------
@@ -427,9 +430,29 @@ def _load_bindings(path: Path, objects: list[ObjectType],
 
         source_sql, source_table = b.get("source_sql", ""), b.get("source_table", "")
         typed_raw: tuple = ()
+        projections: tuple = ()
         if "source" in b:
-            sql, table, typed_raw = _compile_structured_source(b["source"], otype, ctx)
+            sql, table, typed_raw, projections = _compile_structured_source(
+                b["source"], otype, ctx)
             source_sql, source_table = sql, table
+            # optional_columns：可选源列名（缺列降级类型化 NULL，不硬失败，鲁棒性 B5-01）
+            opt_cols = b.get("optional_columns", [])
+            if not isinstance(opt_cols, list) or not all(
+                    isinstance(c, str) and c for c in opt_cols):
+                raise ValueError(f"{ctx}（{name}）optional_columns 必须是源列名字符串数组")
+            raw_cols = set(b["source"]["columns"].values())
+            unknown_opt = [c for c in opt_cols if c not in raw_cols]
+            if unknown_opt:
+                raise ValueError(
+                    f"{ctx}（{name}）optional_columns {unknown_opt} 不在 source.columns "
+                    f"源列 {sorted(raw_cols)} 内（只能声明实际投影的源列）")
+            optional_raw = tuple(opt_cols)
+        else:
+            optional_raw = ()
+            if "optional_columns" in b:
+                raise ValueError(
+                    f"{ctx}（{name}）optional_columns 仅支持结构化源（source）绑定；"
+                    f"手写 source_sql 的缺列请用 optional:true 整表降级")
         if not source_sql:
             raise ValueError(f"{ctx}（{name}）必须声明 source 或 source_sql")
         if "source" in b:
@@ -454,7 +477,8 @@ def _load_bindings(path: Path, objects: list[ObjectType],
         obj_out[name] = ObjectBinding(
             object=name, source_sql=source_sql, source_table=source_table,
             clean=clean, optional=bool(b.get("optional", False)),
-            typed_raw=typed_raw)
+            typed_raw=typed_raw, projections=projections,
+            optional_raw=optional_raw)
 
     missing_obj = [o.name for o in objects if not o.runtime and o.name not in obj_out]
     if missing_obj:

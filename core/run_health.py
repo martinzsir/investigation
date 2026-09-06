@@ -43,6 +43,7 @@ KINDS = (
     "profile_unmaterialized",     # REQ-P-021：画像对象未物化（info，非错误）
     "map_normalize_gap",          # REQ-P-021：数据地图检出归一缺口（M 波 build_sql 未 JOIN 实体表）
     "source_value_cast_failed",   # TRY_CAST 脏值降级（源列非空→NULL，构建/入库期计数，鲁棒性 B2-08）
+    "source_column_missing",      # 可选源列缺失降级类型化 NULL（鲁棒性 B5-01；必填列缺失为硬失败不产生诊断）
 )
 
 SEVERITIES = ("info", "warning", "critical")
@@ -236,5 +237,22 @@ def record_build_dirty(db: Any, stats: dict | None, run_id: str | None = None,
     rh = RunHealth(db, run_id=run_id)
     for e in entries:
         rh.record("source_value_cast_failed", severity="warning",
+                  source=source, reason=str(e))
+    return len(entries)
+
+
+def record_build_degraded(db: Any, stats: dict | None, run_id: str | None = None,
+                          source: str = "build_ontology") -> int:
+    """把 build stats["degraded"]（可选源列缺失降级类型化 NULL）落 run_diagnostic。
+
+    必填列缺失是硬失败（抛错不产生诊断）；仅声明为 optional_columns 的可选列缺失
+    走降级路径并在此留痕（鲁棒性 B5-01：不崩溃 + 降级标注）。返回落账条数。
+    """
+    entries = (stats or {}).get("degraded") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("source_column_missing", severity="warning",
                   source=source, reason=str(e))
     return len(entries)

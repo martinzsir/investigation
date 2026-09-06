@@ -171,11 +171,16 @@ def main():
         print(f"  lnk_{name:<12} {n} 行")
     for s in ontology_stats["skipped"]:
         print(f"  ⚠ 跳过 {s}")
-    from core.run_health import record_build_dirty
+    from core.run_health import record_build_dirty, record_build_degraded
     n_dirty = record_build_dirty(store, ontology_stats, run_id=health.run_id)
     if n_dirty:
         print(f"  ⚠ TRY_CAST 脏值降级 {n_dirty} 项（已置 NULL，诊断 kind=source_value_cast_failed）")
         for d in ontology_stats["dirty"]:
+            print(f"    · {d}")
+    n_deg = record_build_degraded(store, ontology_stats, run_id=health.run_id)
+    if n_deg:
+        print(f"  ⚠ 可选源列缺失降级 {n_deg} 项（已置类型化 NULL，诊断 kind=source_column_missing）")
+        for d in ontology_stats["degraded"]:
             print(f"    · {d}")
 
     # ===== 7-8. 侦查主流程（skill_invoke 驱动）=====
