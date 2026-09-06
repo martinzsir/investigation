@@ -156,6 +156,11 @@ GROUPS = {
     "wordlist":    ("REQ-D-007 清洗词表外置 clean_rules.json", [sys.executable, "-m", "unittest", "tests.test_wordlist"]),
     "codetable":   ("REQ-D-003 代码表数据元派生/枚举去人名/快照锁定", [sys.executable, "-m", "unittest", "tests.test_codetable"]),
     "recommend":   ("REQ-D-021 数据元驱动落点推荐（只进 draft）", [sys.executable, "-m", "unittest", "tests.test_recommend"]),
+    # ---- REQ-D 批 D6（P2 增强，4 需求 4 组）----
+    "null_policy":    ("REQ-D-014 属性级空值策略 allow/reject/quarantine（空值先于 CAST）", [sys.executable, "-m", "unittest", "tests.test_null_policy"]),
+    "dedup_key":      ("REQ-D-015 业务键去重 keep_latest/keep_first/fail", [sys.executable, "-m", "unittest", "tests.test_dedup_key"]),
+    "data_freshness": ("REQ-D-019 数据时间新鲜度（与本体版本新鲜度分开）", [sys.executable, "-m", "unittest", "tests.test_data_freshness"]),
+    "unit_consistency": ("REQ-D-020 单位/口径一致性扫描（元/万元混用提示）", [sys.executable, "-m", "unittest", "tests.test_unit_consistency"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
 }
 

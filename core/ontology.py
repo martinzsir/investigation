@@ -112,6 +112,15 @@ class ObjectBinding:
     # 状态 ∈ {fail: CAST 硬失败回退能力, quarantine: TRY_CAST 失败行整行隔离落 build_quarantine}；
     # 缺省（未声明）= null：TRY_CAST 降级 NULL + 脏值计数（B2-08 现状口径）
     on_cast_error: tuple = ()
+    # REQ-D-014 属性级空值策略 ((属性别名, 状态), ...)；状态 ∈ {allow, reject, quarantine}。
+    # allow=现状（NULL 保留）；reject=空值行剔除（记 clean_stats，rule=null_policy:reject）；
+    # quarantine=空值行整行隔离落 build_quarantine（reason=null_value）。
+    # 优先级：空值先于 CAST——真空值（源列也空）走本策略，CAST 失败（源列非空→NULL）走 on_cast_error。
+    null_policy: tuple = ()
+    # REQ-D-015 业务键去重：dedup_key=业务键列名元组，dedup_on_conflict ∈
+    # {keep_latest, keep_first, fail}；去重在代理键分配**之前**按业务键（非全行比对）。
+    dedup_key: tuple = ()
+    dedup_on_conflict: str = ""
 
 
 @dataclass
@@ -736,6 +745,136 @@ def _quarantine_cast_failures(conn, otype: ObjectType, b: ObjectBinding,
     return rows, cols
 
 
+def _is_blank(v) -> bool:
+    return v is None or str(v).strip() == ""
+
+
+def _apply_null_policy(conn, otype: ObjectType, b: ObjectBinding,
+                       rows: list, cols: list[str], stats: dict | None):
+    """REQ-D-014 属性级空值策略（fetch 后、CAST 隔离前执行——空值先于 CAST）。
+
+    三态：allow（缺省，NULL 保留，与现状一致）；reject（空值行剔除，落
+    clean_stats，rule=null_policy:reject）；quarantine（空值行整行隔离落
+    build_quarantine，reason=null_value）。
+
+    与 on_cast_error 的优先级边界：真空值（投影列空 **且** 源列 __raw_ 也空）
+    走本策略；源列非空但 TRY_CAST 为 NULL（CAST 失败）不在此处理，留给
+    _quarantine_cast_failures。手写 source_sql 无 __raw_ 列时，投影列空即空值。
+    处理后剔除全部 __raw_ 前缀隐藏列（本策略只处理空值，不裁剪 CAST 失败行——
+    那些行 __raw_ 非空，会保留给后续 CAST 隔离）。
+    """
+    pol = {alias: state for alias, state in (b.null_policy or ())}
+    active = {a: s for a, s in pol.items() if s in ("reject", "quarantine") and a in cols}
+    if not active:
+        return rows, cols
+    conn.execute(_QUARANTINE_DDL)
+    proj = {alias: raw for alias, raw, _ in (b.projections or ())}
+    src_table = b.source_table or _guess_source_table(b.source_sql)
+    rejects: dict[str, list] = {}     # 属性 → 脱敏样本（reject）
+    quarantines: dict[str, list] = {} # 属性 → 脱敏样本（quarantine）
+    kept: list = []
+    for r in rows:
+        r = list(r)
+        drop = None   # (alias, state, sample_masked)
+        for alias, state in active.items():
+            a_idx = cols.index(alias)
+            if not _is_blank(r[a_idx]):
+                continue
+            raw_col = f"__raw_{alias}"
+            if raw_col in cols:
+                # 源列非空 = CAST 失败（非真空值），交给 on_cast_error 处理
+                if not _is_blank(r[cols.index(raw_col)]):
+                    continue
+            sample = _mask_sample(r[0])   # 名称列脱敏样本
+            drop = (alias, state, sample)
+            break
+        if drop is None:
+            kept.append(tuple(r))
+            continue
+        alias, state, sample = drop
+        if state == "quarantine":
+            quarantines.setdefault(alias, []).append(sample)
+            conn.execute(
+                "INSERT INTO build_quarantine (object, property, src_column, "
+                "reason, sample_masked, name_value, source_table) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [otype.name, alias, proj.get(alias, ""), "null_value",
+                 sample, sample, src_table])
+        else:
+            rejects.setdefault(alias, []).append(sample)
+    if stats is not None:
+        n_before = len(rows)
+        for alias, samples in rejects.items():
+            stats.setdefault("clean_stats", []).append({
+                "object": otype.name, "property": alias,
+                "rule": "null_policy:reject", "dropped_rows": len(samples),
+                "rows_before": n_before, "sample_masked": samples[:3]})
+        for alias, samples in quarantines.items():
+            stats.setdefault("quarantine", []).append({
+                "object": otype.name, "property": alias,
+                "column": proj.get(alias, ""), "reason": "null_value",
+                "quarantined_rows": len(samples), "sample_masked": samples[:3]})
+    return kept, cols
+
+
+def _apply_dedup_key(otype: ObjectType, b: ObjectBinding,
+                     rows: list, cols: list[str], stats: dict | None) -> list:
+    """REQ-D-015 业务键去重（clean/归并后、代理键分配**之前**执行）。
+
+    按 binding 声明的业务键列（dedup_key）识别重复——同一业务键多行即重复导入，
+    非全行比对。on_conflict：keep_first 保留首行 / keep_latest 保留末行 /
+    fail 冲突即硬失败。业务键任一列为空的行不参与去重、整行剔除并留痕
+    （rule=null_business_key，不静默保留）。返回去重后 rows。
+    """
+    key_cols = [c for c in (b.dedup_key or ()) if c in cols]
+    if not key_cols:
+        return rows
+    policy = b.dedup_on_conflict or "keep_latest"
+    kidx = [cols.index(c) for c in key_cols]
+
+    def kblank(r):
+        return any(_is_blank(r[i]) for i in kidx)
+
+    # 业务键含空值：剔除并留痕（AC-5，不静默）
+    valid, null_key = [], []
+    for r in rows:
+        (null_key if kblank(r) else valid).append(r)
+    if stats is not None and null_key:
+        stats.setdefault("clean_stats", []).append({
+            "object": otype.name, "property": "/".join(key_cols),
+            "rule": "dedup_key_null", "dropped_rows": len(null_key),
+            "rows_before": len(rows),
+            "sample_masked": [_mask_sample(r[0]) for r in null_key[:3]]})
+
+    # 按业务键分组（保序），记录冲突
+    groups: dict[tuple, list] = {}
+    order: list[tuple] = []
+    for r in valid:
+        k = tuple(r[i] for i in kidx)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(r)
+    conflicts = sum(1 for k in order if len(groups[k]) > 1)
+    if policy == "fail" and conflicts:
+        dup = next(k for k in order if len(groups[k]) > 1)
+        raise ValueError(
+            f"obj_{otype.name} 业务键 {key_cols} 存在 {conflicts} 组冲突"
+            f"（on_conflict=fail），首组重复键值 {[str(v)[:20] for v in dup]}——"
+            f"改为 keep_latest/keep_first，或清理重复导入")
+    out: list = []
+    for k in order:
+        g = groups[k]
+        out.append(g[-1] if policy == "keep_latest" else g[0])
+    if stats is not None and conflicts:
+        stats.setdefault("dedup_conflicts", []).append({
+            "object": otype.name, "key_columns": key_cols,
+            "policy": policy, "conflict_groups": conflicts,
+            "duplicate_rows": len(valid) - len(out),
+            "rows_before": len(valid)})
+    return out
+
+
 def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                          org_names: set[str], stats: dict | None = None,
                          mapping: dict | None = None):
@@ -821,6 +960,10 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                     f"obj_{otype.name}(编译失败,源列缺失已跳过: {type(e).__name__})")
             return None
         raise
+    # REQ-D-014 空值策略：fetch 后最先执行（空值先于 CAST）——真空值行按
+    # reject/quarantine 处置；CAST 失败行（__raw_ 非空）不在此处理，留给下一段。
+    if b.null_policy:
+        rows, cols = _apply_null_policy(conn, otype, b, rows, cols, stats)
     # REQ-D-010 quarantine：TRY_CAST 失败行整行隔离（fetch 后、clean 前执行，
     # 并剔除 __raw_ 隐藏列——obj_* schema 与隔离前完全一致）
     if b.on_cast_error:
@@ -830,6 +973,9 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
         rows = _apply_clean(rows, cols, otype, b, org_names, stats)
     # REQ-016：正兵确认的归并映射在代理键分配前应用（对象+事件双侧名字列）
     rows = _apply_entity_mapping(rows, cols, mapping or {})
+    # REQ-D-015 业务键去重：归并后、代理键分配前按业务键（非全行比对）去重
+    if b.dedup_key:
+        rows = _apply_dedup_key(otype, b, rows, cols, stats)
     prefix = otype.pk.split("_")[0]
     if otype.kind == "event":
         rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))

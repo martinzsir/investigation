@@ -686,6 +686,70 @@ def _parse_on_cast_error_map(raw, otype: ObjectType, ctx: str, name: str,
     return tuple(items)
 
 
+NULL_POLICY_STATES = ("allow", "reject", "quarantine")
+DEDUP_CONFLICT_POLICIES = ("keep_latest", "keep_first", "fail")
+
+
+def _parse_null_policy(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
+    """REQ-D-014：null_policy 声明 → 属性级映射 ((属性, 状态), ...)。
+
+    状态 ∈ allow（缺省，NULL 保留，与现状一致）/ reject（空值行剔除）/
+    quarantine（空值行整行隔离）。空值策略对 string 与非 string 都适用
+    （"金额为空"与"备注为空"严重性不同），且支持手写 source_sql（空值判定
+    不依赖 __raw_ 隐藏列）；只返回 reject/quarantine 动作项（allow=不动作）。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(
+            f"{ctx}（{name}）null_policy 必须是非空属性级映射 "
+            f"{{属性: \"allow\"|\"reject\"|\"quarantine\"}}（REQ-D-014）")
+    items: list[tuple[str, str]] = []
+    for prop, state in raw.items():
+        if prop not in otype.properties:
+            raise ValueError(
+                f"{ctx}（{name}）null_policy 属性 '{prop}' 不在对象属性声明 "
+                f"{sorted(otype.properties)} 内")
+        if state is None or state == "allow":
+            continue   # 显式 allow/null = 缺省语义（NULL 保留）
+        if state not in NULL_POLICY_STATES:
+            raise ValueError(
+                f"{ctx}（{name}）null_policy['{prop}'] 状态 '{state}' 非法，"
+                f"仅允许 allow / reject / quarantine（REQ-D-014）")
+        items.append((prop, state))
+    return tuple(items)
+
+
+def _parse_dedup_key(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
+    """REQ-D-015：key 声明 → (业务键列元组, on_conflict 策略)。
+
+    key = {"columns": ["serial_no", ...], "on_conflict": "keep_latest"}；
+    columns 必须是非空属性名数组（业务键，非全行比对）；on_conflict ∈
+    keep_latest（缺省）/ keep_first / fail。
+    """
+    if raw is None:
+        return (), ""
+    if not isinstance(raw, dict) or not raw.get("columns"):
+        raise ValueError(
+            f"{ctx}（{name}）key 必须是 {{\"columns\": [业务键列...], "
+            f"\"on_conflict\"?: ...}} 非空映射（REQ-D-015）")
+    cols = raw["columns"]
+    if not isinstance(cols, list) or not all(isinstance(c, str) and c for c in cols):
+        raise ValueError(
+            f"{ctx}（{name}）key.columns 必须是非空字符串数组（REQ-D-015）")
+    unknown = [c for c in cols if c not in otype.properties]
+    if unknown:
+        raise ValueError(
+            f"{ctx}（{name}）key.columns {unknown} 不在对象属性声明 "
+            f"{sorted(otype.properties)} 内（REQ-D-015）")
+    conflict = raw.get("on_conflict", "keep_latest")
+    if conflict not in DEDUP_CONFLICT_POLICIES:
+        raise ValueError(
+            f"{ctx}（{name}）key.on_conflict='{conflict}' 非法，仅允许 "
+            f"{DEDUP_CONFLICT_POLICIES}（REQ-D-015）")
+    return tuple(cols), conflict
+
+
 def _compile_structured_source(src: dict, otype: ObjectType,
                                ctx: str,
                                transform_map: tuple = (),
@@ -935,6 +999,10 @@ def _load_bindings(path: Path, objects: list[ObjectType],
         on_cast_error = _parse_on_cast_error_map(
             b.get("on_cast_error"), otype, ctx, name,
             structured=("source" in b))
+        # ---- REQ-D-014：null_policy 属性级空值策略（allow/reject/quarantine）----
+        null_policy = _parse_null_policy(b.get("null_policy"), otype, ctx, name)
+        # ---- REQ-D-015：业务键去重（key.columns + on_conflict）----
+        dedup_key, dedup_conflict = _parse_dedup_key(b.get("key"), otype, ctx, name)
         if "source" in b:
             sql, table, typed_raw, projections = _compile_structured_source(
                 b["source"], otype, ctx, transform_map, on_cast_error)
@@ -984,7 +1052,9 @@ def _load_bindings(path: Path, objects: list[ObjectType],
             clean=clean, optional=bool(b.get("optional", False)),
             typed_raw=typed_raw, projections=projections,
             optional_raw=optional_raw, clean_map=clean_map,
-            transform=transform_map, on_cast_error=on_cast_error)
+            transform=transform_map, on_cast_error=on_cast_error,
+            null_policy=null_policy, dedup_key=dedup_key,
+            dedup_on_conflict=dedup_conflict)
 
     missing_obj = [o.name for o in objects if not o.runtime and o.name not in obj_out]
     if missing_obj:

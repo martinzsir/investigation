@@ -195,13 +195,18 @@ def main():
     n_clean = record_clean_stats(store, ontology_stats, run_id=health.run_id)
     if n_clean:
         print(f"  ⚠ 清洗剔除 {n_clean} 个属性有剔除落账（诊断 kind=clean_drop_rate）")
+    # REQ-D-015：业务键去重冲突规模落健康度（null_policy 空值剔除已含在 clean_stats/quarantine）
+    from core.run_health import record_dedup_conflicts
+    n_dd = record_dedup_conflicts(store, ontology_stats, run_id=health.run_id)
+    if n_dd:
+        print(f"  ⚠ 业务键去重冲突 {n_dd} 项（按业务键收敛，诊断 kind=dedup_key_conflict）")
 
-    # ===== 6.6 构建后质量门：数据元合规扫描 + 敏感列启发式（REQ-D-016/018）=====
+    # ===== 6.6 构建后质量门：合规/敏感/新鲜度/单位（REQ-D-016/018/019/020）=====
     # 只告警不阻断：违规/疑似落 run_diagnostic，绝不抛异常中断侦查管线。
-    step("6.6 构建后质量门：合规扫描（REQ-D-016）+ 敏感列启发式（REQ-D-018）")
+    step("6.6 构建后质量门：合规（016）+ 敏感列（018）+ 数据新鲜度（019）+ 单位一致性（020）")
     try:
         from core.gateway import OntologyReadGateway
-        from core import compliance, sensitive_scan
+        from core import compliance, sensitive_scan, data_freshness, unit_scan
         gw = OntologyReadGateway(store.conn)
         comp = compliance.scan(gw, health=health)
         if comp["violations"]:
@@ -215,6 +220,20 @@ def main():
                   f"（诊断 kind=sensitive_column_suspect，只告警不阻断）")
         else:
             print(f"  · 敏感列扫描：{sens['scanned']} 属性无疑似")
+        fresh = data_freshness.scan(gw, health=health)
+        if fresh["stale"]:
+            print(f"  ⚠ 数据时间超期 {fresh['stale']} 个对象属性"
+                  f"（诊断 kind=data_freshness_stale，与本体版本新鲜度分开）")
+        else:
+            print(f"  · 数据新鲜度：{len(fresh['objects'])} 个时间属性均在阈值内")
+        unit = unit_scan.scan(gw, health=health)
+        if unit["mismatches"]:
+            print(f"  ⚠ 单位/量级疑似混用 {len(unit['mismatches'])} 组"
+                  f"（诊断 kind=unit_mismatch，只提示不定性）")
+        if unit["missing_unit"]:
+            print(f"  · 单位声明缺失提示 {len(unit['missing_unit'])} 个金额属性（info，非硬失败）")
+        if not unit["mismatches"] and not unit["missing_unit"]:
+            print(f"  · 单位一致性：{len(unit['groups'])} 组金额数据元无疑似")
     except Exception as e:   # 质量门自身故障不阻断侦查（诊断层同理）
         print(f"  ⚠ 质量门执行异常（不阻断）：{e}")
         health.record("quality_gate_failed", "warning", source="quality_gate",

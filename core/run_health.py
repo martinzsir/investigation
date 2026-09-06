@@ -50,6 +50,9 @@ KINDS = (
     "compliance_violation",       # REQ-D-016：数据元合规违规行（对象.属性+代理键+违规码，样本脱敏）
     "sensitive_column_suspect",   # REQ-D-018：疑似敏感列未声明遮蔽（列名/值模式证据，只告警不阻断）
     "quality_gate_failed",        # REQ-D-016/018：构建后质量门自身执行异常（不阻断，但留痕可见）
+    "dedup_key_conflict",         # REQ-D-015：业务键去重冲突计数（按业务键非全行比对，冲突组数可下钻）
+    "data_freshness_stale",       # REQ-D-019：对象数据时间超期（最新数据时间 vs 当前日期，与本体版本新鲜度分开）
+    "unit_mismatch",              # REQ-D-020：单位/口径疑似混用（元/万元、金额量级突增、单位缺失提示，只告警不阻断）
 )
 
 SEVERITIES = ("info", "warning", "critical")
@@ -330,3 +333,28 @@ def record_clean_stats(db: Any, stats: dict | None, run_id: str | None = None,
                   rate=round(rate, 4), rules=a["rules"],
                   sample_masked=a["samples"][:3])
     return len(agg)
+
+
+def record_dedup_conflicts(db: Any, stats: dict | None,
+                           run_id: str | None = None,
+                           source: str = "build_ontology") -> int:
+    """把 build stats["dedup_conflicts"]（REQ-D-015 业务键去重冲突计数）落 run_diagnostic。
+
+    去重按 binding 声明的业务键（非全行比对）；冲突组按 keep_latest/keep_first
+    收敛后，冲突规模留痕（kind=dedup_key_conflict，info——已按策略收敛非错误，
+    但重复导入规模需可见）。fail 策略在构建期已硬失败，不产生此诊断。
+    返回落账条数；无冲突返回 0。
+    """
+    entries = (stats or {}).get("dedup_conflicts") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("dedup_key_conflict", severity="info", source=source,
+                  reason=(f"{e.get('object')} 业务键 {e.get('key_columns')} "
+                          f"去重冲突 {e.get('conflict_groups')} 组 / "
+                          f"{e.get('duplicate_rows')} 重复行（策略 {e.get('policy')}，已收敛）"),
+                  object=e.get("object"), key_columns=e.get("key_columns"),
+                  policy=e.get("policy"), conflict_groups=e.get("conflict_groups"),
+                  duplicate_rows=e.get("duplicate_rows"))
+    return len(entries)
