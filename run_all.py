@@ -171,6 +171,12 @@ def main():
         print(f"  lnk_{name:<12} {n} 行")
     for s in ontology_stats["skipped"]:
         print(f"  ⚠ 跳过 {s}")
+    from core.run_health import record_build_dirty
+    n_dirty = record_build_dirty(store, ontology_stats, run_id=health.run_id)
+    if n_dirty:
+        print(f"  ⚠ TRY_CAST 脏值降级 {n_dirty} 项（已置 NULL，诊断 kind=source_value_cast_failed）")
+        for d in ontology_stats["dirty"]:
+            print(f"    · {d}")
 
     # ===== 7-8. 侦查主流程（skill_invoke 驱动）=====
     step("7-8. 侦查主流程：庙算→知己→虚实/奇正/用间 + 血缘去重 + 优先级")

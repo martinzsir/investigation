@@ -42,6 +42,7 @@ KINDS = (
     "profile_missing_column",     # REQ-P-012/021：对象已物化但表缺列（schema 演进）
     "profile_unmaterialized",     # REQ-P-021：画像对象未物化（info，非错误）
     "map_normalize_gap",          # REQ-P-021：数据地图检出归一缺口（M 波 build_sql 未 JOIN 实体表）
+    "source_value_cast_failed",   # TRY_CAST 脏值降级（源列非空→NULL，构建/入库期计数，鲁棒性 B2-08）
 )
 
 SEVERITIES = ("info", "warning", "critical")
@@ -219,3 +220,21 @@ def get_health(health) -> RunHealth | NullRunHealth:
     if health is None:
         return NullRunHealth()
     return health
+
+
+def record_build_dirty(db: Any, stats: dict | None, run_id: str | None = None,
+                       source: str = "build_ontology") -> int:
+    """把 build_ontology/incremental stats["dirty"]（TRY_CAST 脏值降级计数）落 run_diagnostic。
+
+    脏值已在语义层编译期降级 NULL（不中断 build），此处只做留痕标注（鲁棒性 B2-08：
+    期望"不崩溃 + 降级标注"而非静默丢失）。返回落账条数；无脏值返回 0。
+    run_id 传入时与主管道诊断同一 run_id（run_all 全链路口径），否则自建。
+    """
+    entries = (stats or {}).get("dirty") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("source_value_cast_failed", severity="warning",
+                  source=source, reason=str(e))
+    return len(entries)

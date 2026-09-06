@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  lnk_{name:<12} {n} 行")
     for s in stats["skipped"]:
         print(f"  ⚠ 跳过 {s}")
+    for d in stats.get("dirty", ()):
+        print(f"  ⚠ 脏值降级 {d}")
     print(f"  声明：{len(pack.objects)} 对象 / {len(pack.links)} 链接 / "
           f"{len(pack.actions)} 动作 / {len(pack.functions)} 函数")
 

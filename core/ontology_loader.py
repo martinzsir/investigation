@@ -332,23 +332,28 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
 # bindings（管道层）
 # ----------------------------------------------------------------------
 def _compile_structured_source(src: dict, otype: ObjectType,
-                               ctx: str) -> tuple[str, str]:
+                               ctx: str) -> tuple[str, str, tuple]:
     """
-    结构化源 → (source_sql, source_table)。
-    类型感知：非 string 属性编译期 CAST（与 TYPE_SQL 物化列类型同口径）。
+    结构化源 → (source_sql, source_table, typed_raw)。
+    类型感知：非 string 属性编译期 TRY_CAST（与 TYPE_SQL 物化列类型同口径）——
+    脏值（如 2024-02-30、2025-13-01）降级 NULL 不中断 build（鲁棒性 B2-08/09/10），
+    构建期按列计数经 run_health 落诊断（source_value_cast_failed），不静默丢失。
+    typed_raw = ((别名, 源列, 值类型), ...) 供构建期脏值计数。
     """
     _require(src, ("table", "columns"), f"{ctx}.source")
     table, columns = src["table"], src["columns"]
     if not isinstance(columns, dict) or not columns:
         raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
     parts: list[str] = []
+    typed: list[tuple] = []
     for alias, raw in columns.items():
         t = otype.properties.get(alias, "string")
         if t == "string":
             parts.append(f'"{raw}" AS {alias}')
         else:
-            parts.append(f'CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
-    return f"SELECT {', '.join(parts)} FROM {table}", table
+            parts.append(f'TRY_CAST("{raw}" AS {TYPE_SQL[t]}) AS {alias}')
+            typed.append((alias, raw, t))
+    return f"SELECT {', '.join(parts)} FROM {table}", table, tuple(typed)
 
 
 # ----------------------------------------------------------------------
@@ -421,8 +426,9 @@ def _load_bindings(path: Path, objects: list[ObjectType],
             raise ValueError(f"{ctx} runtime 对象 '{name}' 不得有 binding（由 Action 副作用创建）")
 
         source_sql, source_table = b.get("source_sql", ""), b.get("source_table", "")
+        typed_raw: tuple = ()
         if "source" in b:
-            sql, table = _compile_structured_source(b["source"], otype, ctx)
+            sql, table, typed_raw = _compile_structured_source(b["source"], otype, ctx)
             source_sql, source_table = sql, table
         if not source_sql:
             raise ValueError(f"{ctx}（{name}）必须声明 source 或 source_sql")
@@ -447,7 +453,8 @@ def _load_bindings(path: Path, objects: list[ObjectType],
 
         obj_out[name] = ObjectBinding(
             object=name, source_sql=source_sql, source_table=source_table,
-            clean=clean, optional=bool(b.get("optional", False)))
+            clean=clean, optional=bool(b.get("optional", False)),
+            typed_raw=typed_raw)
 
     missing_obj = [o.name for o in objects if not o.runtime and o.name not in obj_out]
     if missing_obj:

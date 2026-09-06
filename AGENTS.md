@@ -16,7 +16,8 @@ data/ladybug/*.lbug（L4 图库，可选）
 **类型层与管道层分离**：
 - objects.json / links.json（类型层）：Object/Link 是什么——pk、kind(entity|event)、
   name_property、`properties{属性:值类型}`（string/integer/decimal/date/boolean）；
-  值类型经 TYPE_SQL 驱动物化列类型，结构化 source 编译期 CAST，不含任何数据来源信息
+  值类型经 TYPE_SQL 驱动物化列类型，结构化 source 编译期 TRY_CAST（脏值降级 NULL+
+  source_value_cast_failed 诊断，不中断 build），不含任何数据来源信息
 - bindings.json（管道层）：object_bindings（source/source_sql/clean/optional）+
   link_bindings（build_sql）；换数据源/新案件改这里，不改检测器代码
 - rules.json（规则手册）：自然语言判据 rule_text（分析师写、LLM 经 `rule_list` 读取解释、
@@ -75,7 +76,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 ## 验证
 
-改完代码跑 `python run_tests.py`。70 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/rowuri/audit/access/policy/export/action/writeback/reconcile/reviewloop/deferred/r5knowledge/golden/overlap/threshold/derived/object_set/metrics/rule_dsl/llmpolicy/llmfallback/proposal/reviewwrite/injection/caselib/params/search/types/pack/views/benchmarks/llm/runhealth/rulezerodiag/emptydegrade/eventtrace/wakecond/entitytrace/versionanchor/policyversion/dimecoverage/overridealert/auditinteg/dispatchfailclosed/declconfig/anomalychannel/geo/initcold/exportendpoints/reqpm1/datamap/valuetype/profiler/drafts/e2e）全绿才算完成。组名以 `run_tests.py` 的 GROUPS 注册表为准（新增测试组须同步注册）。
+改完代码跑 `python run_tests.py`。72 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/rowuri/audit/access/policy/export/action/writeback/reconcile/reviewloop/deferred/r5knowledge/golden/overlap/threshold/derived/object_set/metrics/rule_dsl/llmpolicy/llmfallback/proposal/reviewwrite/injection/caselib/params/search/types/pack/views/benchmarks/llm/runhealth/rulezerodiag/emptydegrade/eventtrace/wakecond/entitytrace/entityredline/dirtydate/versionanchor/policyversion/dimecoverage/overridealert/auditinteg/dispatchfailclosed/declconfig/anomalychannel/geo/initcold/exportendpoints/reqpm1/datamap/valuetype/profiler/drafts/e2e）全绿才算完成。组名以 `run_tests.py` 的 GROUPS 注册表为准（新增测试组须同步注册）。
 改了 MCP 相关额外跑 `python -m scripts.mcp_client_test`。
 
 ## 已知坑

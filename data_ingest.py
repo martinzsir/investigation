@@ -49,9 +49,15 @@ def _detect_separator(sample: str) -> str:
 
 
 def _coerce_types(df) -> Any:
-    """自动推断列类型：金额去逗号/货币符号转数值，日期列转 datetime。"""
+    """自动推断列类型：金额去逗号/货币符号转数值，日期列转 datetime。
+
+    日期列无法解析的值 coerce 为 NaT（不中断接入，鲁棒性 B2-08），
+    损失计数落 df.attrs["coerce_lost"]（{列名: 行数}），随接入记录一并上报——
+    只降级不静默，供管道侧落 run_diagnostic 或人工核查。
+    """
     if pd is None:
         return df
+    coerce_lost: dict = {}
     for col in df.columns:
         # 金额列：含逗号的字符串 → 数值
         if df[col].dtype == object and df[col].str.contains(",|¥|元", na=False).any():
@@ -67,9 +73,15 @@ def _coerce_types(df) -> Any:
         # 日期列：自动解析
         if col in ("日期", "date", "时间", "通话时间"):
             try:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                lost = int(df[col].notna().sum() - parsed.notna().sum())
+                if lost > 0:
+                    coerce_lost[str(col)] = lost
+                df[col] = parsed
             except Exception:
                 pass
+    if coerce_lost:
+        df.attrs["coerce_lost"] = coerce_lost
     return df
 
 
@@ -217,7 +229,10 @@ class DataIngestManager:
         stype = source_type or self._detect_type(path.name)
         adapter = ADAPTERS[ext](path, **kwargs)
         df = adapter.read()
+        coerce_lost = dict(df.attrs.get("coerce_lost") or {})
         df = self._validate(df, stype)
+        if coerce_lost and not df.attrs.get("coerce_lost"):
+            df.attrs["coerce_lost"] = coerce_lost   # _validate 过滤重建 df 后保留计数
         df["_source_file"] = str(path)
 
         # 写入 DuckDB（CREATE OR REPLACE，保留全量；生产可改为追加+分区）
@@ -231,6 +246,8 @@ class DataIngestManager:
             "file": str(path), "format": ext.lstrip("."), "source_type": stype,
             "rows": len(df), "columns": list(df.columns), "status": "success",
         }
+        if df.attrs.get("coerce_lost"):
+            record["coerce_lost"] = dict(df.attrs["coerce_lost"])
         self.ingestion_log.append(record)
         return record
 

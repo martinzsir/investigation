@@ -85,10 +85,11 @@ class ObjectType:
 class ObjectBinding:
     """对象绑定声明（管道层）：对象类型的数据从哪来、怎么清洗。"""
     object: str                        # 指向 ObjectType.name
-    source_sql: str                    # 来源查询（结构化源由 loader 编译生成，含类型 CAST）
+    source_sql: str                    # 来源查询（结构化源由 loader 编译生成，含类型 TRY_CAST）
     source_table: str = ""             # 溯源标注用主源表（结构化源自动取 table）
     clean: tuple[str, ...] = ()        # 清洗规则名（见 CLEAN_RULE_NAMES）
     optional: bool = False             # True=源表缺失/缺列时跳过（如 clue 尾部物化）
+    typed_raw: tuple = ()              # 结构化源 (别名, 源列, 值类型)×非string——构建期 TRY_CAST 脏值计数用
 
 
 @dataclass
@@ -282,7 +283,7 @@ def build_ontology(conn, pack: str = "default") -> dict:
     from core.ontology_loader import load_pack
     spec = load_pack(pack)
 
-    stats: dict = {"objects": {}, "links": {}, "skipped": []}
+    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": []}
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
 
@@ -484,6 +485,20 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
             tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
             stats["skipped"].append(f"obj_{otype.name}{tag}")
         return None
+    # TRY_CAST 降级留痕：源列非空但 TRY_CAST 为 NULL 的行数（结构化源才带 typed_raw）。
+    # 脏值（如 2024-02-30）在编译期已降级 NULL 不中断 build，此处按列计数进 stats["dirty"]，
+    # 由调用方经 run_health.record_build_dirty 落 run_diagnostic（source_value_cast_failed）。
+    if stats is not None and b.typed_raw and src_table:
+        for alias, raw, t in b.typed_raw:
+            try:
+                n = conn.execute(
+                    f'SELECT COUNT(*) FROM "{src_table}" WHERE "{raw}" IS NOT NULL '
+                    f'AND TRY_CAST("{raw}" AS {TYPE_SQL[t]}) IS NULL').fetchone()[0]
+            except Exception:
+                continue   # 计数失败不拖垮物化（列可能已被 clean/视图改名等边缘情形）
+            if n:
+                stats["dirty"].append(
+                    f"obj_{otype.name}.{alias}<-{raw}: {n} 行不可转 {t}（已置 NULL）")
     try:
         q = (f"SELECT {otype.name_property}, * EXCLUDE ({otype.name_property}) "
              f"FROM ({b.source_sql})")
@@ -635,7 +650,7 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     spec = load_pack(pack)
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
-    stats: dict = {"objects": {}, "links": {}, "skipped": [],
+    stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
                    "rewritten_rows": 0, "plan_mode": plan.mode}
 
     conn.execute("BEGIN TRANSACTION")
