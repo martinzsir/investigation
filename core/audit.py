@@ -97,12 +97,27 @@ def _compute_signature(event_id: str, case_id: str, ontology_version: str,
 
 
 class AuditChain:
-    """持久化审计链（DuckDB 表 audit_chain）。"""
+    """持久化审计链（DuckDB 表 audit_chain；M3 起支持 sqlite 后端）。
 
-    def __init__(self, conn, case_id: str = "default", health=None):
+    backend（D-M3-1，纯追加参数，缺省 "duckdb" 既有路径零变化）：
+      - "duckdb"：案件版本文件（CLI/MCP/run_all 既有路径）；
+      - "sqlite"：Web 业务状态库 state.sqlite（WAL，Worker 处置快速通道写入）。
+        两后端 SQL 方言兼容（? 占位符 / INSERT OR IGNORE / UPSERT / DDL 类型名
+        sqlite 按亲和性接受），签名算法共用 _compute_signature——同输入两后端
+        同 signature、同 root_hash（statesink 测试组等价断言）。
+    ontology_version：sqlite 后端的版本锚点显式传入（state 库无
+        meta_ontology_state 表）；缺省 None 时走既有查表/unknown 回落路径。
+    """
+
+    def __init__(self, conn, case_id: str = "default", health=None,
+                 backend: str = "duckdb", ontology_version: str | None = None):
         from core.run_health import get_health
+        if backend not in ("duckdb", "sqlite"):
+            raise ValueError(f"backend 必须是 duckdb/sqlite，收到 {backend!r}")
         self._conn = conn
         self._case_id = case_id
+        self._backend = backend
+        self._ontology_version_override = ontology_version
         self.health = get_health(health)
         conn.execute(_DDL)
         self._seq = self._next_seq()
@@ -121,7 +136,12 @@ class AuditChain:
 
         REQ-G-007：取不到版本锚点时回退 "unknown" 不崩，但落 version_anchor_missing
         诊断（warning），避免"审计链记录了 unknown 版本却无人知晓"。
+
+        sqlite 后端（Web state.sqlite）无 meta_ontology_state 表，版本锚点由
+        构造参数 ontology_version 显式传入（Worker 取案件数据版本 vN）。
         """
+        if self._ontology_version_override:
+            return self._ontology_version_override
         try:
             from core.ontology_version import current_version
             ver = current_version(self._conn, "default")
@@ -355,16 +375,23 @@ class AuditChain:
     # W-023：Web 审计查看（追加式只读，不改任何既有函数）
     # ------------------------------------------------------------------
     @classmethod
-    def readonly(cls, conn, case_id: str = "default", health=None) -> "AuditChain":
+    def readonly(cls, conn, case_id: str = "default", health=None,
+                 backend: str = "duckdb",
+                 ontology_version: str | None = None) -> "AuditChain":
         """只读打开既有审计链（Web 查看路径，不落任何写）。
 
         DuckDB read_only 连接拒绝一切 CREATE 语句（即使表已存在），
         故跳过 __init__ 的建表 DDL；表不存在时 SELECT 自然抛
         CatalogException，由调用方按空链处理。
+        backend/ontology_version 语义同 __init__（sqlite 后端读 state.sqlite）。
         """
+        if backend not in ("duckdb", "sqlite"):
+            raise ValueError(f"backend 必须是 duckdb/sqlite，收到 {backend!r}")
         obj = cls.__new__(cls)
         obj._conn = conn
         obj._case_id = case_id
+        obj._backend = backend
+        obj._ontology_version_override = ontology_version
         from core.run_health import get_health
         obj.health = get_health(health)
         obj._seq = obj._next_seq()

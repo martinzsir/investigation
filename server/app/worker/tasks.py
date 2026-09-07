@@ -34,6 +34,9 @@ from server.app.store import StoreFactory
 TASK_BUILD = "BUILD"
 TASK_PING = "PING"
 TASK_ARCHIVE = "ARCHIVE"  # W-008 AC-5：已封存案件版本压实
+TASK_DISPOSE = "DISPOSE"  # W-020：线索处置快速通道（秒级，不产版本文件，写 state.sqlite）
+TASK_RESCAN = "RESCAN"   # W-014 AC-6：规则工坊调参/启停后重跑（MVP=复用 BUILD 编排产新版本）
+TASK_IMPORT = "IMPORT"   # W-010/012：数据导入（五格式→冷层 parquet→链式 BUILD）
 
 
 class TaskExecError(RuntimeError):
@@ -101,13 +104,41 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
     progress(5.0, "prepare", "准备构建", f"目标 v{nxt}（基线 v{cur}）")
     store = factory.for_case(case.id, mode="write", version=nxt)
     try:
+        # W-010/012：导入的冷层 parquet 先 CTAS 为同名源表（无导入则 no-op），
+        # bindings.source.table 编译期即可命中
+        try:
+            from server.app.worker.ingest import mount_case_cold
+            mounted = mount_case_cold(store.write_conn, repo, factory,
+                                      case.id)
+            if mounted:
+                progress(10.0, "mount", "挂载冷层数据源",
+                         "、".join(mounted))
+        except Exception as e:
+            raise TaskExecError("COLD_MOUNT_FAILED",
+                                f"冷层数据源挂载失败：{e}")
         result = builder(
             store.write_conn, pack=case.pack_id,
             base_dir=snapshot_base_for(case.id), progress=progress)
     finally:
         store.close()
 
-    # H3：构建成功才切指针（builder 抛异常则指针不动、版本不前进）
+    # D-M3-2：线索检测 + 报告产物（cases/<cid>/artifacts/clues_v<nxt>.json，
+    # 随版本不可变；线索读面/处置均消费它）。检测失败视同 BUILD 失败：
+    # 版本指针不前进，v<nxt> 残留由下次重试清理（H3 同语义）。
+    try:
+        from server.app.worker.detect import run_detection
+        det = run_detection(
+            version_file=target, case_dir=factory.case_dir(case.id),
+            version=nxt, pack=case.pack_id,
+            snapshot_base=snapshot_base_for(case.id))
+        progress(98.0, "detect", "线索检测完成",
+                 f"产物 {det['clues']} 条线索（规则命中 {det['raw_findings']}）")
+    except TaskExecError:
+        raise
+    except Exception as e:
+        raise TaskExecError("DETECTION_FAILED", f"线索检测失败：{e}")
+
+    # H3：构建成功才切指针（builder/检测抛异常则指针不动、版本不前进）
     repo.set_version(case.id, nxt, by="worker")
     progress(100.0, "done", "构建完成", f"v{nxt} 已生效")
     return {"version": nxt, "stats": result}
@@ -152,8 +183,29 @@ def handle_archive(task: TaskRow, *, repo: MetaRepo,
     return {"kept_version": cur, "removed_versions": removed}
 
 
+def _dispose_handler(task, **kw):
+    # 惰性导入：dispose.py 反向依赖本模块 TaskExecError，模块底导入避免循环
+    from server.app.worker.dispose import handle_dispose
+    return handle_dispose(task, **kw)
+
+
+def _rescan_handler(task, **kw):
+    # 惰性导入：rescan.py 复用本模块 handle_build，模块底导入避免循环
+    from server.app.worker.rescan import handle_rescan
+    return handle_rescan(task, **kw)
+
+
+def _import_handler(task, **kw):
+    # 惰性导入：ingest.py 引用本模块常量/入队，模块底导入避免循环
+    from server.app.worker.ingest import handle_import
+    return handle_import(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
     TASK_ARCHIVE: handle_archive,
+    TASK_DISPOSE: _dispose_handler,  # W-020 处置快速通道
+    TASK_RESCAN: _rescan_handler,    # W-014 AC-6 规则变更重跑
+    TASK_IMPORT: _import_handler,    # W-010/012 数据导入
 }

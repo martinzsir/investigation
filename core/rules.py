@@ -132,11 +132,12 @@ def _classify_zero(rule, out, scan_rows: int) -> tuple[str, str]:
 
 def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
               rule_ids: "set[str] | list[str] | None" = None,
-              health=None) -> list[dict]:
+              health=None, base_dir=None) -> list[dict]:
     """按 stage 跑规则；命中的产出 findings。stage=None 跑全部阶段。
 
     rule_ids 非空时只重算指定规则（REQ-016 增量重算：无关规则结果不变）。
     health：REQ-G-010 运行诊断；None 时零命中静默（旧行为，NullRunHealth）。
+    base_dir：案件快照基目录（Web 案件包隔离）；None=共享 ontology/（CLI/MCP 现状）。
     """
     from core.functions import FunctionExecutor
     from core.run_health import get_health
@@ -148,8 +149,8 @@ def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
     except Exception:
         _has_threshold = False
 
-    spec = load_pack(pack)
-    fx = FunctionExecutor(store, pack, health=health)
+    spec = load_pack(pack, base_dir=base_dir)
+    fx = FunctionExecutor(store, pack, health=health, base_dir=base_dir)
     fspecs = fx._specs()
     wanted = set(rule_ids) if rule_ids else None
     findings: list[dict] = []
@@ -157,6 +158,9 @@ def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
         if stage and r.stage != stage:
             continue
         if wanted is not None and r.id not in wanted:
+            continue
+        if not getattr(r, "enabled", True):
+            # W-014 AC-5：规则工坊停用——不执行、不产 finding、不记零命中诊断
             continue
         params = dict(r.params)
         if _has_threshold:

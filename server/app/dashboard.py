@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.disposal import status_counts
+from core.registry import ClueStatus
 from core.run_health import RunHealth
 
 # 双覆盖两路的 source 标识（与 core/hypotheses.py record 调用同源）
@@ -43,8 +44,12 @@ def _run_rows(conn) -> list[dict]:
         return []
 
 
-def assemble(case_id: str, conn, repo=None) -> dict:
-    """组装仪表盘首屏（全部只读；任一节失败降级不阻塞整卡）。"""
+def assemble(case_id: str, conn, repo=None, state_counts: dict | None = None) -> dict:
+    """组装仪表盘首屏（全部只读；任一节失败降级不阻塞整卡）。
+
+    state_counts：M3 处置真值卡片——state.sqlite clue_disposal_status 聚合
+    （core.status_counts 同构复用）；None 时回落库内留痕旧路径。
+    """
     # 1) 健康度横幅（healthy/degraded/critical + 计数）
     try:
         health = {"available": True, **_latest_run(conn).health_section()}
@@ -74,10 +79,19 @@ def assemble(case_id: str, conn, repo=None) -> dict:
         "empirical": _cov_card(_COVERAGE_EMPIRICAL),
     }
 
-    # 4) 待办计数：线索处置（库内留痕聚合）+ 实体裁决（候选为管道运行期
-    #    构造、无持久化表，M3 处置端点接线后补真实来源）
+    # 4) 待办计数：线索处置（M3 起真值在 state.sqlite；缺省回落库内留痕
+    #    聚合）+ 实体裁决（候选为管道运行期构造、无持久化表，后续接线）
+    try:
+        disposal = state_counts if state_counts is not None else status_counts(conn)
+    except Exception:
+        disposal = {"available": False, "total": 0,
+                    "by_status": {s: 0 for s in (
+                        ClueStatus.PENDING, ClueStatus.VERIFYING,
+                        ClueStatus.EXCLUDED, ClueStatus.CONFIRMED,
+                        ClueStatus.FILED)}}
+    disposal["source"] = "state" if state_counts is not None else "version"
     todo = {
-        "disposal": status_counts(conn),
+        "disposal": disposal,
         "review": {"available": False, "pending": 0,
                    "note": "实体裁决候选无持久化读面（M3 接线）"},
     }

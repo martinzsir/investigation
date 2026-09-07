@@ -65,9 +65,16 @@ def _now() -> str:
 
 
 class ActionExecutor:
-    def __init__(self, store=None, pack: str = "default", access=None, health=None):
+    def __init__(self, store=None, pack: str = "default", access=None,
+                 health=None, sink=None):
         self.store = store
         self.pack = pack
+        # D-M3-1：Web 处置快速通道写后端（state.sqlite 适配）。
+        # sink 为鸭子类型窄协议：.conn（sqlite 连接，action_request 与
+        # clue_disposal_status SQL 方言兼容直接复用）、.case_id、
+        # .ontology_version、create_decision()。None 时全部走既有 DuckDB
+        # 路径（CLI/MCP/run_all 零感知）。core 不 import sink 实现（server→core）。
+        self.sink = sink
         # REQ-009：access=None → system 旁路（既有调用行为不变）
         from core.access import system_context
         self.access = access if access is not None else system_context()
@@ -86,7 +93,16 @@ class ActionExecutor:
         两阶段 dispatch() 共用的 _apply() 统一取链——一处接线两路径同时生效。
         无 store 的内存/兼容路径回落 None：set_status/set_filed 仅写内存
         audit_log（registry 层向后兼容语义不变），不抛错。
+
+        sink 路径（Web state.sqlite，D-M3-1）：AuditChain 走 sqlite 后端，
+        版本锚点显式传入（state 库无 meta_ontology_state）。
         """
+        if self._audit_chain is None and self.sink is not None:
+            from core.audit import AuditChain
+            self._audit_chain = AuditChain(
+                self.sink.conn, case_id=self.sink.case_id,
+                health=self.health, backend="sqlite",
+                ontology_version=getattr(self.sink, "ontology_version", None))
         if self._audit_chain is None and self.store is not None \
                 and hasattr(self.store, "conn"):
             from core.audit import AuditChain
@@ -318,7 +334,13 @@ class ActionExecutor:
         """事件总线可选接线：无 store/总线异常不阻断主流程（审计另有 audit_chain）。
 
         REQ-G-004：发布落盘失败不再静默吞——落运行诊断（warning），但不阻断主流程。
+
+        sink 路径（Web state.sqlite）：state 库不承载事件总线（事件总线随
+        版本文件语义层），平台审计由 server 侧 meta platform_audit 记录，
+        此处直接返回不建表。
         """
+        if self.sink is not None:
+            return
         if self.store is None or not hasattr(self.store, "conn"):
             return
         try:
@@ -334,6 +356,10 @@ class ActionExecutor:
 
     # ---- 副作用：创建决策对象（runtime 对象，DDL 由 objects/links 类型声明生成）----
     def _create_decision(self, spec, clue, operator, params, json_dumps) -> dict:
+        # D-M3-1：sink 路径（Web state.sqlite）决策落 state.review_decision，
+        # 不写版本文件 obj_decision/lnk_decision_for 语义表（决策不随 BUILD 丢失）。
+        if self.sink is not None:
+            return self.sink.create_decision(spec, clue, operator, params)
         if self.store is None or not hasattr(self.store, "conn"):
             return {"decision_id": None, "persisted": False,
                     "note": "无 store，决策对象未持久化"}

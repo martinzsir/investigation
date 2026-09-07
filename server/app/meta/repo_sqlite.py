@@ -141,6 +141,24 @@ CREATE TABLE IF NOT EXISTS platform_audit (
     detail    TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_pa_event ON platform_audit(event, ts);
+-- W-010/012：数据源注册表（上传暂存/已导入；指纹=文件名+内容 sha256+行数，幂等判定用）
+CREATE TABLE IF NOT EXISTS case_sources (
+    case_id      VARCHAR NOT NULL,
+    upload_id    VARCHAR NOT NULL,
+    filename     VARCHAR NOT NULL,
+    fmt          VARCHAR NOT NULL,
+    fingerprint  VARCHAR NOT NULL,
+    table_name   VARCHAR NOT NULL DEFAULT '',
+    rows         INTEGER NOT NULL DEFAULT 0,
+    columns_json TEXT NOT NULL DEFAULT '{}',
+    mapping_json TEXT NOT NULL DEFAULT '{}',
+    status       VARCHAR NOT NULL DEFAULT 'staged',
+    parquet_path VARCHAR NOT NULL DEFAULT '',
+    created_by   VARCHAR NOT NULL DEFAULT '',
+    created_at   VARCHAR NOT NULL,
+    PRIMARY KEY (case_id, upload_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cs_fp ON case_sources(case_id, fingerprint);
 """
 
 
@@ -737,6 +755,102 @@ class SqliteMetaRepo(MetaRepo):
         conn = self._connect()
         try:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        finally:
+            conn.close()
+
+    # ---- 数据源注册（W-010/012：上传暂存/导入幂等）----
+    def register_source(self, *, case_id: str, upload_id: str,
+                        filename: str, fmt: str, fingerprint: str,
+                        rows: int, columns: dict,
+                        created_by: str = "") -> dict:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO case_sources (case_id,upload_id,filename,fmt,"
+                "fingerprint,rows,columns_json,status,created_by,created_at) "
+                "VALUES (?,?,?,?,?,?,?,'staged',?,?)",
+                (case_id, upload_id, filename, fmt, fingerprint, int(rows),
+                 json.dumps(columns, ensure_ascii=False, default=str),
+                 created_by, _now()))
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_source(case_id, upload_id)
+
+    def get_source(self, case_id: str, upload_id: str) -> dict | None:
+        conn = self._connect()
+        try:
+            r = conn.execute(
+                "SELECT * FROM case_sources WHERE case_id=? AND upload_id=?",
+                (case_id, upload_id)).fetchone()
+            return dict(r) if r else None
+        finally:
+            conn.close()
+
+    def find_source_by_fingerprint(self, case_id: str, fingerprint: str,
+                                   exclude_upload_id: str | None = None
+                                   ) -> dict | None:
+        """W-012 AC-1：同指纹（文件名+sha256+行数）已注册即视为重复。
+
+        exclude_upload_id：排除当前导入请求自身的暂存行（取其余行的最新）。
+        """
+        sql = ("SELECT * FROM case_sources WHERE case_id=? AND fingerprint=?")
+        args: list = [case_id, fingerprint]
+        if exclude_upload_id is not None:
+            sql += " AND upload_id<>?"
+            args.append(exclude_upload_id)
+        sql += " ORDER BY rowid DESC LIMIT 1"
+        conn = self._connect()
+        try:
+            r = conn.execute(sql, args).fetchone()
+            return dict(r) if r else None
+        finally:
+            conn.close()
+
+    def list_sources(self, case_id: str) -> list[dict]:
+        conn = self._connect()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM case_sources WHERE case_id=? "
+                "ORDER BY rowid DESC", (case_id,)).fetchall()]
+        finally:
+            conn.close()
+
+    def set_source_status(self, case_id: str, upload_id: str,
+                          status: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE case_sources SET status=? "
+                "WHERE case_id=? AND upload_id=?",
+                (status, case_id, upload_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_source_imported(self, case_id: str, upload_id: str, *,
+                             table_name: str, parquet_path: str,
+                             mapping: dict) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE case_sources SET status='imported', table_name=?, "
+                "parquet_path=?, mapping_json=? WHERE case_id=? AND upload_id=?",
+                (table_name, parquet_path,
+                 json.dumps(mapping, ensure_ascii=False, default=str),
+                 case_id, upload_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def imported_sources(self, case_id: str) -> list[dict]:
+        """BUILD 挂载用：status=imported 的源（表名 + parquet 绝对路径）。"""
+        conn = self._connect()
+        try:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM case_sources WHERE case_id=? "
+                "AND status='imported' ORDER BY rowid",
+                (case_id,)).fetchall()]
         finally:
             conn.close()
 

@@ -54,11 +54,16 @@ class DisposalBoard:
     """
 
     def __init__(self, clues: list[LineageClue], store=None, pack: str = "default",
-                 health=None):
+                 health=None, sink=None, access=None):
         self.clues: dict[str, LineageClue] = {c.clue_id: c for c in clues}
         self.store = store  # Store 实例（含 .conn），可选
+        # D-M3-1：Web state.sqlite 写后端（None=既有 DuckDB 路径，零变化）。
+        # sink 路径下 store 即 sink（鸭子类型 .conn=sqlite 连接），persist/restore
+        # 经 save_statuses/load_statuses 方言兼容直接落 state 库。
+        self.sink = sink
         from core.action_executor import ActionExecutor
-        self.executor = ActionExecutor(store, pack=pack, health=health)
+        self.executor = ActionExecutor(store, pack=pack, health=health,
+                                       sink=sink, access=access)
 
     # ---- 查询 ----
     def get(self, clue_id: str) -> LineageClue:

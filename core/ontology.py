@@ -221,6 +221,9 @@ class RuleSpec:
     # REQ-G-002：零命中语义声明。True=分析师显式声明"本规则空结果属正常（clean_scan）"；
     # 默认 False=空结果标 empty_result_suspect（疑似匹配失效），机器不擅自下"排除"结论。
     zero_is_clean: bool = False
+    # 规则工坊启停（W-014 AC-5）：False=规则停用，检测期跳过（不产 finding、
+    # 不记零命中诊断）；声明仍在 rules.json，绑定关系可审计，可随时重新启用。
+    enabled: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -156,17 +156,30 @@ class StateStoreTest(unittest.TestCase):
             st.close()
         conn.close()
 
-    # ---- 5：grep 门禁（无写路径接线）----
+    # ---- 5：grep 门禁（M3 起 state 接进 Web 读写面）----
     def test_grep_gates_no_write_path_wiring(self):
         # 只匹配真实 import 语句（文档字符串提及不算）
         pat = re.compile(
             r"(from\s+[\w.]*state_store\s+import|import\s+[\w.]*state_store)")
+        # M3 边界：state_store 可被 Web 数据面（store/ 实现 + routers/ 读面 +
+        # worker/ 写面）与 tests/ 消费；唯一硬不变量是 core/ 不得依赖
+        # state_store（依赖方向 server→core，core 对 Web state 零感知）。
+        allowed_parents = {
+            (ROOT / "server" / "app" / "store").resolve(),
+            (ROOT / "server" / "app" / "routers").resolve(),
+            (ROOT / "server" / "app" / "worker").resolve(),
+        }
         hits = [str(f) for f in (ROOT / "server").rglob("*.py")
-                if f.name != "state_store.py"
+                if f.resolve().parent not in allowed_parents
                 and pat.search(f.read_text(encoding="utf-8"))]
         self.assertEqual(
             hits, [],
-            f"state_store 只能被 store/ 与 tests/ 引用（M2 无写路径接线）：{hits}")
+            f"state_store 仅限 store/routers/worker 与 tests 引用：{hits}")
+        # core/ 永远不得依赖 state_store（依赖方向 server→core）
+        core_hits = [str(f) for f in (ROOT / "core").rglob("*.py")
+                     if pat.search(f.read_text(encoding="utf-8"))]
+        self.assertEqual(core_hits, [],
+                         f"core/ 不得 import state_store：{core_hits}")
         # sqlite3.connect 越界门禁（与 test_audit_view 双保险）
         pat_sq = re.compile(r"sqlite3\.connect\(")
         allowed = {"repo_sqlite.py", "state_store.py"}

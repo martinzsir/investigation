@@ -15,8 +15,22 @@ from server.app.deps import WebContext, get_ctx, get_principal
 from server.app.envelope import ERR_NOT_FOUND, APIError, ok
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
+from core.disposal import status_counts
 
 router = APIRouter(tags=["dashboard"])
+
+
+def _state_counts(ctx: WebContext, case_id: str) -> dict | None:
+    """M3：处置待办真值读 state.sqlite（不存在→None，回落版本库旧路径）。"""
+    path = ctx.factory.case_dir(case_id) / "state.sqlite"
+    if not path.exists():
+        return None
+    from server.app.store.state_store import StateStore
+    st = StateStore(case_id, path)
+    try:
+        return status_counts(st.conn)
+    finally:
+        st.close()
 
 
 @router.get("/cases/{case_id}/dashboard")
@@ -26,14 +40,17 @@ def get_dashboard(case_id: str,
     _get_owned_case(case_id, p, ctx.cases)
     store = None
     data: dict
+    state_counts = _state_counts(ctx, case_id)
     try:
         try:
             store = ctx.factory.for_case(case_id, mode="read")
             data = dashboard.assemble(case_id, store.read_conn,
-                                      repo=ctx.repo)
+                                      repo=ctx.repo,
+                                      state_counts=state_counts)
         except FileNotFoundError:
             # 未 BUILD（无版本文件）：全卡降级，仍返回信封
-            data = dashboard.assemble(case_id, None, repo=ctx.repo)
+            data = dashboard.assemble(case_id, None, repo=ctx.repo,
+                                      state_counts=state_counts)
     finally:
         if store is not None:
             store.close()

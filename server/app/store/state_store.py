@@ -108,12 +108,71 @@ class StateStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
+    @property
+    def conn(self):
+        """sqlite3 写连接（StateSink 暴露给 core ActionExecutor/AuditChain）。"""
+        return self._conn
+
     def close(self) -> None:
         if self._conn is not None:
             try:
                 self._conn.close()
             finally:
                 self._conn = None
+
+    # ---- 写面（M3 D1 接线；core 经 StateSink 窄协议调用）----
+    def insert_decision(self, *, kind: str, target_id: str | None,
+                        verdict: str, decided_by: str,
+                        payload: dict) -> dict:
+        """file 动作副作用：决策落 state.review_decision（不写版本文件语义表）。"""
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+        decision_id = f"decision_{_uuid.uuid4().hex[:12]}"
+        decided_at = _time.strftime("%Y-%m-%d %H:%M:%S")
+        self._conn.execute(
+            "INSERT INTO review_decision "
+            "(decision_id, kind, target_id, verdict, decided_by, decided_at, "
+            " payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [decision_id, kind, target_id, verdict, decided_by, decided_at,
+             _json.dumps(payload, ensure_ascii=False, default=str)])
+        self._conn.commit()
+        return {"decision_id": decision_id, "persisted": True,
+                "created_at": decided_at}
+
+    def status_map(self) -> dict[str, dict]:
+        """处置状态真值只读面（clue_id → {status,note,operator,updated_at}）。"""
+        rows = self._conn.execute(
+            "SELECT clue_id, status, note, operator, updated_at "
+            "FROM clue_disposal_status").fetchall()
+        return {r["clue_id"]: {"status": r["status"], "note": r["note"],
+                               "operator": r["operator"],
+                               "updated_at": r["updated_at"]}
+                for r in rows}
+
+    def list_decisions(self, target_id: str | None = None) -> list[dict]:
+        """决策只读列表（审计/详情面用）。"""
+        import json as _json
+        if target_id is not None:
+            rows = self._conn.execute(
+                "SELECT decision_id, kind, target_id, verdict, decided_by, "
+                "decided_at, payload_json FROM review_decision "
+                "WHERE target_id=? ORDER BY decided_at",
+                [target_id]).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT decision_id, kind, target_id, verdict, decided_by, "
+                "decided_at, payload_json FROM review_decision "
+                "ORDER BY decided_at").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = _json.loads(d.pop("payload_json") or "{}")
+            except _json.JSONDecodeError:
+                d["payload"] = {}
+            out.append(d)
+        return out
 
     def __enter__(self) -> "StateStore":
         return self

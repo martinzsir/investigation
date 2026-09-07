@@ -175,6 +175,13 @@ GROUPS = {
     "auditview":   ("M2 W-023/024 审计时间线/自检空链红线/平台审计", [sys.executable, "-m", "unittest", "tests.test_audit_view"]),
     "dashboard":   ("M2 W-018 治理仪表盘组装+诊断下钻", [sys.executable, "-m", "unittest", "tests.test_dashboard"]),
     "statestore":  ("M2 D1 state.sqlite 骨架+幂等迁移演练", [sys.executable, "-m", "unittest", "tests.test_state_store"]),
+    # ---- Web M3（研判主流程：state 接线/处置/线索/规则工坊/接入）----
+    "statesink":   ("M3 D1 写路径接线 StateSink+五动作 sqlite 后端+红线", [sys.executable, "-m", "unittest", "tests.test_state_sink"]),
+    "disposeapi":  ("M3 W-020 处置动作 DISPOSE 快速通道+状态机红线", [sys.executable, "-m", "unittest", "tests.test_dispose_api"]),
+    "cluesread":   ("M3 W-019 线索读面列表/详情/suppressed+state 真值", [sys.executable, "-m", "unittest", "tests.test_clues_read"]),
+    "ruleworkshop":("M3 W-014/025 规则工坊读写+RESCAN+LLM 守卫", [sys.executable, "-m", "unittest", "tests.test_rule_workshop"]),
+    "ingestapi":   ("M3 W-010/012 数据接入五格式上传+幂等+冷层导入", [sys.executable, "-m", "unittest", "tests.test_ingest_api"]),
+    "m3chain":     ("M3 阶段F 研判主流程全链路冒烟（接入→BUILD→线索→处置→审计→RESCAN）", [sys.executable, "-m", "unittest", "tests.test_m3_chain"]),
 }
 
 

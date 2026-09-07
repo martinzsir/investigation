@@ -26,7 +26,10 @@ from server.app.meta.repo_sqlite import SqliteMetaRepo
 from server.app.routers import auth as auth_router
 from server.app.routers import audit as audit_router
 from server.app.routers import cases as cases_router
+from server.app.routers import clues as clues_router
 from server.app.routers import dashboard as dashboard_router
+from server.app.routers import ingest as ingest_router
+from server.app.routers import rule_workshop as rule_workshop_router
 from server.app.routers import tasks as tasks_router
 from server.app.store import StoreFactory
 
@@ -78,6 +81,9 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(audit_router.router, prefix=API_PREFIX)
     app.include_router(audit_router.admin_router, prefix=API_PREFIX)
     app.include_router(dashboard_router.router, prefix=API_PREFIX)
+    app.include_router(clues_router.router, prefix=API_PREFIX)
+    app.include_router(rule_workshop_router.router, prefix=API_PREFIX)
+    app.include_router(ingest_router.router, prefix=API_PREFIX)
     return app
 
 

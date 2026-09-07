@@ -17,6 +17,7 @@ audit_chain 表不存在（纯建案未 BUILD）→ 按空链处理，不 500。
 from __future__ import annotations
 
 import duckdb
+import sqlite3
 from fastapi import APIRouter, Depends, Query
 
 from core.audit import AuditChain
@@ -25,6 +26,7 @@ from server.app.deps import WebContext, get_ctx, get_principal
 from server.app.envelope import ERR_FORBIDDEN, APIError, ok
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
+from server.app.store.state_store import StateStore
 
 router = APIRouter(tags=["audit"])                         # /cases/{cid}/audit*
 admin_router = APIRouter(prefix="/audit", tags=["audit"])  # /audit/events
@@ -39,6 +41,27 @@ _EMPTY_INTEGRITY: dict = {
 
 # 案件版本文件缺失 / audit_chain 表不存在 → 按空链处理
 _EMPTY_ERRORS = (FileNotFoundError, duckdb.CatalogException, duckdb.IOException)
+# state.sqlite 未建 audit_chain 表 / 只读查询异常 → 按空源处理
+_STATE_ERRORS = (sqlite3.Error, OSError)
+
+
+def _state_timeline(factory, case_id: str, *, operator, from_ts, to_ts,
+                    action, clue_id, limit) -> list[dict]:
+    """D-M3-5：state.sqlite 审计链（M3 起处置事件真值源）；无文件/无表→[]。"""
+    path = factory.case_dir(case_id) / "state.sqlite"
+    if not path.exists():
+        return []
+    st = StateStore(case_id, path)
+    try:
+        chain = AuditChain.readonly(st.conn, case_id, backend="sqlite")
+        result = chain.timeline(operator=operator, from_ts=from_ts,
+                                to_ts=to_ts, action=action, clue_id=clue_id,
+                                limit=limit)
+        return [{**it, "chain_source": "state"} for it in result["items"]]
+    except _STATE_ERRORS:
+        return []
+    finally:
+        st.close()
 
 
 def _integrity_dto(integ: dict) -> dict:
@@ -74,10 +97,20 @@ def audit_timeline(
         page_size: int = Query(50, ge=1, le=200),
         p: Principal = Depends(get_principal),
         ctx: WebContext = Depends(get_ctx)):
-    """W-023 AC-1/2：审计时间线（操作人/状态迁移/法定依据/本体版本 + 筛选分页）。"""
+    """W-023 AC-1/2：审计时间线（操作人/状态迁移/法定依据/本体版本 + 筛选分页）。
+
+    D-M3-5：双源拼接——state.sqlite 链（M3 起处置事件真值源）+ 案件版本文件
+    DuckDB 历史链（旧链只读、不迁移、不丢历史）；按 occurred_at/seq 归并排序，
+    每条带 chain_source(state/version) 可溯源。筛选下推两源后归并分页。
+    """
     _get_owned_case(case_id, p, ctx.cases)  # 跨租户 404
-    items: list[dict] = []
-    total = 0
+    merged: list[dict] = []
+    # 1) state.sqlite（新处置事件）
+    merged.extend(_state_timeline(
+        ctx.factory, case_id, operator=operator, from_ts=from_ts,
+        to_ts=to_ts, action=action, clue_id=clue_id,
+        limit=page * page_size + page_size))
+    # 2) DuckDB 历史链（CLI/MCP 时代事件，只读追加展示）
     store = None
     try:
         try:
@@ -85,15 +118,19 @@ def audit_timeline(
             chain = AuditChain.readonly(store.read_conn, case_id)
             result = chain.timeline(operator=operator, from_ts=from_ts,
                                     to_ts=to_ts, action=action,
-                                    clue_id=clue_id, limit=page_size,
-                                    offset=(page - 1) * page_size)
-            items, total = result["items"], result["total"]
+                                    clue_id=clue_id,
+                                    limit=page * page_size + page_size)
+            merged.extend({**it, "chain_source": "version"}
+                          for it in result["items"])
         except _EMPTY_ERRORS:
-            pass  # 未 BUILD / 链表未建 → 空时间线
+            pass  # 未 BUILD / 链表未建 → 该源为空
     finally:
         if store is not None:
             store.close()
-    return ok({"items": items, "total": total,
+    merged.sort(key=lambda x: (x.get("occurred_at") or "", x.get("seq") or 0))
+    total = len(merged)
+    start = (page - 1) * page_size
+    return ok({"items": merged[start:start + page_size], "total": total,
                "page": page, "page_size": page_size})
 
 
@@ -110,17 +147,32 @@ def audit_verify(case_id: str,
     _get_owned_case(case_id, p, ctx.cases)
     integ: dict
     store = None
+    state_path = ctx.factory.case_dir(case_id) / "state.sqlite"
+    st = StateStore(case_id, state_path) if state_path.exists() else None
     try:
-        try:
-            store = ctx.factory.for_case(case_id, mode="read")
-            integ = AuditChain.readonly(store.read_conn,
-                                        case_id).chain_integrity()
-        except _EMPTY_ERRORS:
-            integ = dict(_EMPTY_INTEGRITY)
+        # D-M3-5：state.sqlite 是 M3 起活链（处置写真值源）——自检以它为准；
+        # 无 state（纯旧案件/未处置）回落版本文件 DuckDB 链。
+        if st is not None:
+            try:
+                integ = AuditChain.readonly(
+                    st.conn, case_id, backend="sqlite").chain_integrity()
+            except _STATE_ERRORS:
+                integ = dict(_EMPTY_INTEGRITY)
+        else:
+            try:
+                store = ctx.factory.for_case(case_id, mode="read")
+                integ = AuditChain.readonly(store.read_conn,
+                                            case_id).chain_integrity()
+            except _EMPTY_ERRORS:
+                integ = dict(_EMPTY_INTEGRITY)
     finally:
+        if st is not None:
+            st.close()
         if store is not None:
             store.close()
-    return ok(_integrity_dto(integ))
+    dto = _integrity_dto(integ)
+    dto["chain_source"] = "state" if st is not None else "version"
+    return ok(dto)
 
 
 @admin_router.get("/events")

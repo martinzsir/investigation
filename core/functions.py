@@ -454,9 +454,12 @@ def _overpass_two_hop(store, params: dict) -> dict:
 class FunctionExecutor:
     """按 functions.json 声明执行只读计算。"""
 
-    def __init__(self, store, pack: str = "default", access=None, health=None):
+    def __init__(self, store, pack: str = "default", access=None, health=None,
+                 base_dir=None):
         self.store = store
         self.pack = pack
+        # 案件快照基目录（Web 案件包隔离）：None=共享 ontology/（CLI/MCP 现状）
+        self.base_dir = base_dir
         # REQ-009：access=None → system 旁路（既有调用行为不变）
         from core.access import system_context
         self.access = access if access is not None else system_context()
@@ -467,7 +470,7 @@ class FunctionExecutor:
         self.health = get_health(health)
 
     def _specs(self) -> dict:
-        return load_pack(self.pack).functions
+        return load_pack(self.pack, base_dir=self.base_dir).functions
 
     def catalog(self) -> list[dict]:
         """可发现的函数目录（MCP function_list 消费）。"""
