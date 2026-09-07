@@ -169,6 +169,12 @@ GROUPS = {
     "casesnap":    ("M1 阶段C 案件生命周期+pack快照锁定", [sys.executable, "-m", "unittest", "tests.test_case_snapshot"]),
     "taskqueue":   ("M1 阶段D/E 版本原子切换+任务队列Worker", [sys.executable, "-m", "unittest", "tests.test_task_queue"]),
     "apibase":     ("M1 阶段F FastAPI骨架+S1~S6红线", [sys.executable, "-m", "unittest", "tests.test_api_base"]),
+    # ---- Web M2（可信首页：回收/孤儿/审计/仪表盘/state 骨架）----
+    "reclaim":     ("M2 W-008 版本延迟回收+读者租约+归档压实", [sys.executable, "-m", "unittest", "tests.test_version_reclaim"]),
+    "orphanscan":  ("M2 W-009 孤儿版本扫描+隔离区TTL", [sys.executable, "-m", "unittest", "tests.test_orphan_scan"]),
+    "auditview":   ("M2 W-023/024 审计时间线/自检空链红线/平台审计", [sys.executable, "-m", "unittest", "tests.test_audit_view"]),
+    "dashboard":   ("M2 W-018 治理仪表盘组装+诊断下钻", [sys.executable, "-m", "unittest", "tests.test_dashboard"]),
+    "statestore":  ("M2 D1 state.sqlite 骨架+幂等迁移演练", [sys.executable, "-m", "unittest", "tests.test_state_store"]),
 }
 
 

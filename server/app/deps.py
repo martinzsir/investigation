@@ -66,12 +66,26 @@ def get_principal(request: Request,
                   ctx: WebContext = Depends(get_ctx)) -> Principal:
     token = bearer_token(request.headers.get("authorization"))
     if not token:
+        # W-024：鉴权失败（缺令牌）落平台审计
+        ctx.repo.record_platform_event(
+            "auth_failure", operator="",
+            detail={"reason": "missing_token",
+                    "ip": request.client.host if request.client else ""})
         raise APIError(ERR_UNAUTHORIZED, "缺少 Bearer 令牌（S1：不开旁路）", 401)
     sess = ctx.repo.get_session(token)
     if not _session_valid(sess):
+        ctx.repo.record_platform_event(
+            "auth_failure",
+            operator=sess.operator if sess else "",
+            detail={"reason": "session_invalid",
+                    "ip": request.client.host if request.client else ""})
         raise APIError(ERR_UNAUTHORIZED, "会话无效或已过期", 401)
     user = ctx.repo.get_user(sess.operator)
     if user is None or user.status != USER_ACTIVE:
+        ctx.repo.record_platform_event(
+            "auth_failure", operator=sess.operator,
+            detail={"reason": "user_invalid",
+                    "ip": request.client.host if request.client else ""})
         raise APIError(ERR_UNAUTHORIZED, "用户不存在或已停用", 401)
     return Principal(operator=user.operator, role=user.role,
                      clearance=user.clearance, tenant_id=user.tenant_id,

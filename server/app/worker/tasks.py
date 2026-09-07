@@ -22,13 +22,18 @@ from typing import Any, Callable
 
 from core.ontology import build_ontology
 
-from server.app.meta.models import TaskRow
+from server.app.meta.models import (
+    CASE_ARCHIVED,
+    TaskRow,
+    VER_RECLAIMED,
+)
 from server.app.meta.repo import MetaRepo
 from server.app.store import StoreFactory
 
 # 任务类型
 TASK_BUILD = "BUILD"
 TASK_PING = "PING"
+TASK_ARCHIVE = "ARCHIVE"  # W-008 AC-5：已封存案件版本压实
 
 
 class TaskExecError(RuntimeError):
@@ -115,7 +120,40 @@ def handle_ping(task: TaskRow, *, repo: MetaRepo, **_: Any) -> dict[str, Any]:
     return {"pong": True}
 
 
+def handle_archive(task: TaskRow, *, repo: MetaRepo,
+                   factory: StoreFactory, **_: Any) -> dict[str, Any]:
+    """W-008 AC-5：已封存（ARCHIVED）案件版本压实——仅保留最终版本。
+
+    遍历版本历史：非当前版本的文件一律物理删除、状态置 reclaimed
+    （历史无记录但状态为 active/pending_reclaim 的行也一并收敛）；
+    当前版本文件与 state.sqlite 不触碰（决策 D1：决策不随重建丢失）。
+    """
+    case = repo.get_case(task.case_id)
+    if case is None:
+        raise TaskExecError("CASE_NOT_FOUND", f"案件不存在：{task.case_id}")
+    if case.status != CASE_ARCHIVED:
+        raise TaskExecError(
+            "CASE_NOT_ARCHIVED",
+            f"案件状态为 {case.status!r}，仅已封存案件可压实（先归档再压实）")
+    cur = repo.current_version(case.id)
+    removed: list[int] = []
+    for row in repo.list_version_history(case.id):
+        if row.version == cur:
+            continue  # 最终版本保留
+        path = factory.version_path(case.id, row.version)
+        if path.exists():
+            path.unlink()
+            removed.append(row.version)
+        if row.status != VER_RECLAIMED:
+            repo.mark_version_status(case.id, row.version, VER_RECLAIMED,
+                                     by="worker:archive")
+    repo.record_ops("case_archived", case.id,
+                    {"kept_version": cur, "removed_versions": removed})
+    return {"kept_version": cur, "removed_versions": removed}
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
+    TASK_ARCHIVE: handle_archive,
 }

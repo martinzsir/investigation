@@ -97,6 +97,7 @@ class CaseStore(StoreBackend):
         self._on_close = on_close
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._closed = False
+        self.lease_id: str | None = None  # W-008：读者租约（工厂登记时写入）
 
     @property
     def version(self) -> int:
@@ -203,11 +204,13 @@ class StoreFactory:
     """
 
     def __init__(self, cases_root: str | Path | None = None,
-                 meta: _MetaPointer | None = None):
+                 meta: _MetaPointer | None = None,
+                 lease_ttl_seconds: float = 60.0):
         self.cases_root = Path(cases_root) if cases_root else Path("cases")
         self._meta = meta
         self._lock = threading.Lock()
         self._readers: dict[tuple[str, int], int] = {}
+        self._lease_ttl = float(lease_ttl_seconds)
 
     # ---- 版本指针 ----
     def current_version(self, case_id: str) -> int:
@@ -239,6 +242,15 @@ class StoreFactory:
             with self._lock:
                 key = (case_id, version)
                 self._readers[key] = self._readers.get(key, 0) + 1
+            # W-008：跨进程读者租约（meta 层事实源）；meta 不支持租约
+            # （本地桩/最小句柄）时优雅降级——进程内计数仍生效
+            acquire = getattr(self._meta, "acquire_lease", None)
+            if acquire is not None:
+                import uuid as _uuid
+                lease = acquire(case_id, version,
+                                lease_id=_uuid.uuid4().hex,
+                                ttl_seconds=self._lease_ttl)
+                store.lease_id = lease.lease_id
         return store
 
     def for_local(self, *, mode: str = "read", root: str | Path = "data",
@@ -266,3 +278,9 @@ class StoreFactory:
                 self._readers[key] = n - 1
             else:
                 self._readers.pop(key, None)
+        # W-008：释放跨进程读者租约（与登记同构，meta 不支持则跳过）
+        if store.lease_id is not None:
+            release = getattr(self._meta, "release_lease", None)
+            if release is not None:
+                release(store.lease_id)
+                store.lease_id = None

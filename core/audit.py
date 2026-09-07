@@ -350,3 +350,106 @@ class AuditChain:
         """链中事件数。"""
         row = self._conn.execute("SELECT COUNT(*) FROM audit_chain").fetchone()
         return row[0] if row else 0
+
+    # ------------------------------------------------------------------
+    # W-023：Web 审计查看（追加式只读，不改任何既有函数）
+    # ------------------------------------------------------------------
+    @classmethod
+    def readonly(cls, conn, case_id: str = "default", health=None) -> "AuditChain":
+        """只读打开既有审计链（Web 查看路径，不落任何写）。
+
+        DuckDB read_only 连接拒绝一切 CREATE 语句（即使表已存在），
+        故跳过 __init__ 的建表 DDL；表不存在时 SELECT 自然抛
+        CatalogException，由调用方按空链处理。
+        """
+        obj = cls.__new__(cls)
+        obj._conn = conn
+        obj._case_id = case_id
+        from core.run_health import get_health
+        obj.health = get_health(health)
+        obj._seq = obj._next_seq()
+        return obj
+
+    @staticmethod
+    def _event_action(after: Any) -> str:
+        """事件动作派生标签（W-023 AC-2 筛选用；与 _is_disposal_event 同源）。"""
+        if _is_disposal_event(after):
+            return "disposal"
+        if isinstance(after, dict):
+            if "proposal_id" in after:
+                return "proposal"
+            if "set_id" in after:
+                return "parameter_set"
+        return "generic"
+
+    def timeline(self, *, operator: str | None = None,
+                 from_ts: str | None = None, to_ts: str | None = None,
+                 action: str | None = None, clue_id: str | None = None,
+                 limit: int = 50, offset: int = 0) -> dict:
+        """审计链时间线只读 listing（W-023 AC-1/2）。
+
+        返回 {"items": [...], "total": N}；items 按 seq 升序，含操作人、
+        状态迁移（status_from/status_to）、法定依据（after.legal_basis）、
+        本体版本号（AC-1 四要素）。
+
+        筛选语义（确定性）：
+          - operator 精确匹配列值；from_ts/to_ts 为 occurred_at 字符串范围
+            （ISO 格式字典序即时间序）；
+          - action 为派生标签：disposal/proposal/parameter_set/generic；
+          - clue_id：审计链无独立线索列，按 before/after/source_row_ids
+            的 JSON 包含匹配；
+          - limit/offset 在筛选后切片，total 为筛选命中总数。
+        """
+        rows = self._conn.execute(
+            """SELECT seq, event_id, case_id, ontology_version, rule_version,
+                      function_version, params_hash, source_row_ids, operator,
+                      before_state, after_state, occurred_at
+               FROM audit_chain ORDER BY seq""").fetchall()
+        items: list[dict] = []
+        for r in rows:
+            (seq, event_id, case_id, ontology_version, rule_version,
+             function_version, params_hash, source_row_ids_json, op,
+             before_json, after_json, occurred_at) = r
+            try:
+                source_row_ids = (json.loads(source_row_ids_json)
+                                  if source_row_ids_json else [])
+            except json.JSONDecodeError:
+                source_row_ids = []
+            try:
+                before = json.loads(before_json) if before_json else None
+                after = json.loads(after_json) if after_json else None
+            except json.JSONDecodeError:
+                before, after = None, None
+            if operator is not None and op != operator:
+                continue
+            if from_ts is not None and occurred_at < from_ts:
+                continue
+            if to_ts is not None and occurred_at > to_ts:
+                continue
+            act = self._event_action(after)
+            if action is not None and act != action:
+                continue
+            if clue_id is not None:
+                haystack = (f"{before_json or ''}{after_json or ''}"
+                            f"{source_row_ids_json or ''}")
+                if clue_id not in haystack:
+                    continue
+            status_from = (before or {}).get("status") if isinstance(before, dict) else None
+            status_to = (after or {}).get("status") if isinstance(after, dict) else None
+            legal_basis = (after or {}).get("legal_basis") if isinstance(after, dict) else None
+            note = (after or {}).get("note") if isinstance(after, dict) else None
+            items.append({
+                "seq": seq, "event_id": event_id, "case_id": case_id,
+                "occurred_at": occurred_at, "operator": op,
+                "action": act,
+                "status_from": status_from, "status_to": status_to,
+                "legal_basis": legal_basis, "note": note,
+                "ontology_version": ontology_version,
+                "rule_version": rule_version,
+                "function_version": function_version,
+                "params_hash": params_hash,
+                "source_row_ids": source_row_ids,
+            })
+        total = len(items)
+        return {"items": items[offset:offset + max(0, limit)],
+                "total": total}

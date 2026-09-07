@@ -118,6 +118,30 @@ class RunHealth:
         except Exception as e:  # 诊断层自身故障：不阻断侦查，但留内存痕迹
             self._dropped.append({"kind": kind, "error": str(e)})
 
+    @classmethod
+    def readonly(cls, conn, run_id: str | None = None) -> "RunHealth":
+        """只读打开运行诊断（Web 查看路径，W-018）：不建表、不落任何写。
+
+        DuckDB read_only 连接拒绝一切 CREATE（即使表已存在），故跳过
+        __init__ 的建表 DDL——与 core/audit.py AuditChain.readonly 同因同法。
+        run_id 缺省取库内最新一条诊断所属 run；表不存在时置空串
+        （后续 rows/summary 由调用方按"无诊断"降级处理）。
+        """
+        obj = cls.__new__(cls)
+        obj._conn = conn
+        obj._dropped = []
+        if run_id is not None:
+            obj.run_id = run_id
+            return obj
+        try:
+            row = conn.execute(
+                "SELECT run_id FROM run_diagnostic "
+                "ORDER BY created_at DESC, seq DESC LIMIT 1").fetchone()
+            obj.run_id = row[0] if row else ""
+        except Exception:
+            obj.run_id = ""
+        return obj
+
     # ------------------------------------------------------------------
     # 查询 / 汇总
     # ------------------------------------------------------------------

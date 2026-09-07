@@ -24,7 +24,9 @@ from server.app.deps import WebContext
 from server.app.envelope import APIError, error_body, ok
 from server.app.meta.repo_sqlite import SqliteMetaRepo
 from server.app.routers import auth as auth_router
+from server.app.routers import audit as audit_router
 from server.app.routers import cases as cases_router
+from server.app.routers import dashboard as dashboard_router
 from server.app.routers import tasks as tasks_router
 from server.app.store import StoreFactory
 
@@ -73,6 +75,9 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(cases_router.router, prefix=API_PREFIX)
     app.include_router(tasks_router.router, prefix=API_PREFIX)
+    app.include_router(audit_router.router, prefix=API_PREFIX)
+    app.include_router(audit_router.admin_router, prefix=API_PREFIX)
+    app.include_router(dashboard_router.router, prefix=API_PREFIX)
     return app
 
 

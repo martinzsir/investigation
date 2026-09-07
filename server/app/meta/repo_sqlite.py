@@ -20,6 +20,7 @@ from server.app.meta.models import (
     CaseVersion,
     IllegalTransition,
     PackSnapshot,
+    ReaderLease,
     Session,
     TASK_PENDING,
     TASK_RUNNING,
@@ -28,6 +29,10 @@ from server.app.meta.models import (
     TASK_FAILED,
     TaskRow,
     User,
+    VER_ACTIVE,
+    VER_PENDING_RECLAIM,
+    VER_RECLAIMED,
+    VersionStatusRow,
     assert_case_transition,
 )
 from server.app.meta.repo import MetaRepo
@@ -41,7 +46,8 @@ CREATE TABLE IF NOT EXISTS meta_users (
     clearance     INTEGER NOT NULL DEFAULT 1,
     tenant_id     VARCHAR NOT NULL,
     status        VARCHAR NOT NULL DEFAULT 'active',
-    created_at    VARCHAR NOT NULL
+    created_at    VARCHAR NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta_sessions (
     token      VARCHAR PRIMARY KEY,
@@ -99,6 +105,42 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_case ON tasks(case_id, created_at);
+CREATE TABLE IF NOT EXISTS case_version_history (
+    case_id    VARCHAR NOT NULL,
+    version    INTEGER NOT NULL,
+    status     VARCHAR NOT NULL DEFAULT 'active',
+    created_at VARCHAR NOT NULL,
+    updated_at VARCHAR NOT NULL,
+    updated_by VARCHAR NOT NULL DEFAULT '',
+    PRIMARY KEY (case_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_cvh_status ON case_version_history(status, case_id);
+CREATE TABLE IF NOT EXISTS case_reader_lease (
+    lease_id    VARCHAR PRIMARY KEY,
+    case_id     VARCHAR NOT NULL,
+    version     INTEGER NOT NULL,
+    pid         INTEGER NOT NULL DEFAULT 0,
+    acquired_at VARCHAR NOT NULL,
+    expires_at  VARCHAR NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crl_case ON case_reader_lease(case_id, version);
+CREATE TABLE IF NOT EXISTS ops_events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      VARCHAR NOT NULL,
+    kind    VARCHAR NOT NULL,
+    case_id VARCHAR NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ops_kind ON ops_events(kind, ts);
+CREATE TABLE IF NOT EXISTS platform_audit (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        VARCHAR NOT NULL,
+    tenant_id VARCHAR NOT NULL DEFAULT '',
+    operator  VARCHAR NOT NULL DEFAULT '',
+    event     VARCHAR NOT NULL,
+    detail    TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_pa_event ON platform_audit(event, ts);
 """
 
 
@@ -131,8 +173,18 @@ class SqliteMetaRepo(MetaRepo):
                 conn.execute("PRAGMA synchronous=NORMAL")
             # executescript 隐式提交并自行管理 DDL 事务，不再外包 BEGIN/COMMIT
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """既有库的追加式迁移（M2）：meta_users 补 is_admin 列（W-024）。"""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(meta_users)")}
+        if "is_admin" not in cols:
+            conn.execute(
+                "ALTER TABLE meta_users ADD COLUMN is_admin INTEGER "
+                "NOT NULL DEFAULT 0")
 
     # ---- 行映射 ----
     @staticmethod
@@ -140,7 +192,21 @@ class SqliteMetaRepo(MetaRepo):
         return User(operator=r["operator"], password_hash=r["password_hash"],
                     salt=r["salt"], role=r["role"], clearance=r["clearance"],
                     tenant_id=r["tenant_id"], status=r["status"],
-                    created_at=r["created_at"])
+                    created_at=r["created_at"], is_admin=r["is_admin"])
+
+    @staticmethod
+    def _lease(r: sqlite3.Row) -> ReaderLease:
+        return ReaderLease(lease_id=r["lease_id"], case_id=r["case_id"],
+                           version=r["version"], pid=r["pid"],
+                           acquired_at=r["acquired_at"],
+                           expires_at=r["expires_at"])
+
+    @staticmethod
+    def _ver_row(r: sqlite3.Row) -> VersionStatusRow:
+        return VersionStatusRow(case_id=r["case_id"], version=r["version"],
+                                status=r["status"], created_at=r["created_at"],
+                                updated_at=r["updated_at"],
+                                updated_by=r["updated_by"])
 
     @staticmethod
     def _session(r: sqlite3.Row) -> Session:
@@ -182,10 +248,11 @@ class SqliteMetaRepo(MetaRepo):
         try:
             conn.execute(
                 "INSERT INTO meta_users (operator,password_hash,salt,role,"
-                "clearance,tenant_id,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                "clearance,tenant_id,status,created_at,is_admin) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (user.operator, user.password_hash, user.salt, user.role,
                  user.clearance, user.tenant_id, user.status,
-                 user.created_at or _now()))
+                 user.created_at or _now(), int(user.is_admin)))
         finally:
             conn.close()
 
@@ -203,6 +270,15 @@ class SqliteMetaRepo(MetaRepo):
         try:
             conn.execute("UPDATE meta_users SET status=? WHERE operator=?",
                          (status, operator))
+        finally:
+            conn.close()
+
+    def set_user_admin(self, operator: str, is_admin: bool) -> None:
+        """管理面标志（W-024：平台审计事件查询等管理端点门槛）。"""
+        conn = self._connect()
+        try:
+            conn.execute("UPDATE meta_users SET is_admin=? WHERE operator=?",
+                         (int(is_admin), operator))
         finally:
             conn.close()
 
@@ -495,10 +571,205 @@ class SqliteMetaRepo(MetaRepo):
             # cases.current_version 冗余同步（列表展示用）
             conn.execute("UPDATE cases SET current_version=? WHERE id=?",
                          (version, case_id))
+            # W-008 版本历史：新版本记 active，原 active 版本降级 pending_reclaim
+            # （延迟回收：物理删除由 Worker 回收器在租约清零后执行）
+            now = _now()
+            conn.execute(
+                "UPDATE case_version_history SET status=?, updated_at=?, "
+                "updated_by=? WHERE case_id=? AND status=?",
+                (VER_PENDING_RECLAIM, now, by, case_id, VER_ACTIVE))
+            conn.execute(
+                "INSERT INTO case_version_history "
+                "(case_id,version,status,created_at,updated_at,updated_by) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(case_id,version) DO UPDATE "
+                "SET status=excluded.status, updated_at=excluded.updated_at, "
+                "updated_by=excluded.updated_by",
+                (case_id, version, VER_ACTIVE, now, now, by))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
             raise
+        finally:
+            conn.close()
+
+    # ---- 版本历史与回收（W-008）----
+    def version_status(self, case_id: str, version: int) -> str | None:
+        conn = self._connect()
+        try:
+            r = conn.execute(
+                "SELECT status FROM case_version_history "
+                "WHERE case_id=? AND version=?",
+                (case_id, version)).fetchone()
+            return r["status"] if r else None
+        finally:
+            conn.close()
+
+    def list_version_history(self, case_id: str) -> list[VersionStatusRow]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM case_version_history WHERE case_id=? "
+                "ORDER BY version", (case_id,)).fetchall()
+            return [self._ver_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def list_versions_by_status(
+            self, status: str) -> list[VersionStatusRow]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM case_version_history WHERE status=? "
+                "ORDER BY case_id, version", (status,)).fetchall()
+            return [self._ver_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def mark_version_status(self, case_id: str, version: int, status: str,
+                            by: str = "") -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE case_version_history SET status=?, updated_at=?, "
+                "updated_by=? WHERE case_id=? AND version=?",
+                (status, _now(), by, case_id, version))
+        finally:
+            conn.close()
+
+    def claim_version_reclaim(self, case_id: str, version: int) -> bool:
+        """原子回收认定：pending_reclaim→reclaimed，前提是该版本当前无活跃
+        租约（租约校验与状态翻转在同一 meta 事务内，删文件前的二次确认）。"""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "UPDATE case_version_history SET status=?, updated_at=? "
+                "WHERE case_id=? AND version=? AND status=? AND NOT EXISTS ("
+                "  SELECT 1 FROM case_reader_lease l "
+                "  WHERE l.case_id=case_version_history.case_id "
+                "    AND l.version=case_version_history.version "
+                "    AND l.expires_at>?)",
+                (VER_RECLAIMED, _now(), case_id, version,
+                 VER_PENDING_RECLAIM, _now()))
+            conn.execute("COMMIT")
+            return cur.rowcount == 1
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    # ---- 读者租约（W-008：跨进程读者计数事实源）----
+    def acquire_lease(self, case_id: str, version: int, *,
+                      lease_id: str, ttl_seconds: float = 60.0,
+                      pid: int = 0) -> ReaderLease:
+        now = datetime.now()
+        lease = ReaderLease(
+            lease_id=lease_id, case_id=case_id, version=version, pid=pid,
+            acquired_at=now.isoformat(timespec="seconds"),
+            expires_at=(now + timedelta(seconds=ttl_seconds)).isoformat(
+                timespec="seconds"))
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO case_reader_lease (lease_id,case_id,version,pid,"
+                "acquired_at,expires_at) VALUES (?,?,?,?,?,?)",
+                (lease.lease_id, lease.case_id, lease.version, lease.pid,
+                 lease.acquired_at, lease.expires_at))
+        finally:
+            conn.close()
+        return lease
+
+    def release_lease(self, lease_id: str) -> bool:
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM case_reader_lease WHERE lease_id=?", (lease_id,))
+            return cur.rowcount == 1
+        finally:
+            conn.close()
+
+    def active_lease_count(self, case_id: str, version: int,
+                           now_iso: str | None = None) -> int:
+        conn = self._connect()
+        try:
+            r = conn.execute(
+                "SELECT COUNT(*) FROM case_reader_lease "
+                "WHERE case_id=? AND version=? AND expires_at>?",
+                (case_id, version, now_iso or _now())).fetchone()
+            return int(r[0]) if r else 0
+        finally:
+            conn.close()
+
+    def purge_expired_leases(self, now_iso: str | None = None) -> int:
+        """清理过期租约（API 进程崩溃的僵尸读者兜底），返回清理条数。"""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "DELETE FROM case_reader_lease WHERE expires_at<=?",
+                (now_iso or _now(),))
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    # ---- 运维事件（W-009 AC-5：扫描结果进健康度）----
+    def record_ops(self, kind: str, case_id: str = "",
+                   payload: dict | None = None) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO ops_events (ts,kind,case_id,payload) "
+                "VALUES (?,?,?,?)",
+                (_now(), kind, case_id,
+                 json.dumps(payload or {}, ensure_ascii=False, default=str)))
+        finally:
+            conn.close()
+
+    def list_ops(self, *, kind: str | None = None,
+                 limit: int = 50) -> list[dict]:
+        sql = "SELECT * FROM ops_events WHERE 1=1"
+        args: list = []
+        if kind is not None:
+            sql += " AND kind=?"
+            args.append(kind)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        conn = self._connect()
+        try:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        finally:
+            conn.close()
+
+    # ---- 平台审计（W-024：登录/登出/鉴权失败等平台级事件）----
+    def record_platform_event(self, event: str, *, operator: str = "",
+                              tenant_id: str = "",
+                              detail: dict | None = None) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO platform_audit (ts,tenant_id,operator,event,"
+                "detail) VALUES (?,?,?,?,?)",
+                (_now(), tenant_id, operator, event,
+                 json.dumps(detail or {}, ensure_ascii=False, default=str)))
+        finally:
+            conn.close()
+
+    def list_platform_events(self, *, tenant_id: str | None = None,
+                             event: str | None = None,
+                             limit: int = 100) -> list[dict]:
+        sql = "SELECT * FROM platform_audit WHERE 1=1"
+        args: list = []
+        if tenant_id is not None:
+            sql += " AND tenant_id=?"
+            args.append(tenant_id)
+        if event is not None:
+            sql += " AND event=?"
+            args.append(event)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(limit)
+        conn = self._connect()
+        try:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
         finally:
             conn.close()
 

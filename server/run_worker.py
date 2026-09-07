@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
 from server.app.cases import CaseService  # noqa: E402
 from server.app.meta.repo_sqlite import SqliteMetaRepo  # noqa: E402
 from server.app.store import StoreFactory  # noqa: E402
+from server.app.worker.orphan_scan import scan_once  # noqa: E402
 from server.app.worker.pool import WorkerPool  # noqa: E402
+from server.app.worker.reclaim import VersionReclaimer  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=2, help="全局并发数")
     ap.add_argument("--once", action="store_true",
                     help="单步执行一条任务后退出")
+    ap.add_argument("--reclaim-interval", type=float, default=60.0,
+                    help="版本回收/孤儿扫描周期（秒，W-008/009）")
+    ap.add_argument("--orphan-ttl-days", type=float, default=7.0,
+                    help="孤儿隔离区保留天数（默认 7，W-009 AC-3）")
+    ap.add_argument("--orphan-dry-run", action="store_true",
+                    help="孤儿扫描只记 ops_events 不移动文件")
     args = ap.parse_args(argv)
 
     repo = SqliteMetaRepo(args.meta)
@@ -55,14 +63,32 @@ def main(argv: list[str] | None = None) -> int:
         print("[worker] --once:", "executed one task" if ran else "no task")
         return 0
 
+    # W-009：启动时先跑一轮孤儿扫描（异常不阻塞 Worker 主流程）
+    try:
+        scan_stats = scan_once(repo, factory, dry_run=args.orphan_dry_run,
+                               ttl_days=args.orphan_ttl_days)
+        print(f"[worker] orphan scan: cases={scan_stats['scanned_cases']} "
+              f"orphans={len(scan_stats['orphans'])} "
+              f"quarantined={scan_stats['quarantined']} "
+              f"cleaned={scan_stats['cleaned']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[worker] orphan scan failed (ignored): {type(e).__name__}: {e}")
+
+    # W-008：版本延迟回收器（常驻，与任务池并行）
+    reclaimer = VersionReclaimer(repo, factory,
+                                 interval=args.reclaim_interval)
+    reclaimer.start()
+
     pool.start()
     print(f"[worker] started workers={args.workers} meta={args.meta} "
-          f"cases={args.cases} (Ctrl+C 停止)")
+          f"cases={args.cases} reclaim_interval={args.reclaim_interval}s "
+          f"(Ctrl+C 停止)")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[worker] stopping...")
+        reclaimer.stop()
         pool.stop()
     return 0
 

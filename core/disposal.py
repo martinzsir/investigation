@@ -25,6 +25,27 @@ from core.registry import ClueStatus, LineageClue
 from core.lineage import save_statuses, load_statuses
 
 
+def status_counts(conn) -> dict:
+    """处置状态计数（只读聚合，W-018 Web 仪表盘待办卡片用）。
+
+    clue_disposal_status 表未建（尚无处置留痕）→ available=False 计数归零
+    （降级可见而非报错）；五态键恒齐全，库内未知状态键也如实计数。
+    """
+    ordered = (ClueStatus.PENDING, ClueStatus.VERIFYING, ClueStatus.EXCLUDED,
+               ClueStatus.CONFIRMED, ClueStatus.FILED)
+    try:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) FROM clue_disposal_status "
+            "GROUP BY status").fetchall()
+    except Exception:
+        return {"available": False, "total": 0,
+                "by_status": {s: 0 for s in ordered}}
+    by: dict[str, int] = {s: 0 for s in ordered}
+    for status, n in rows:
+        by[status] = by.get(status, 0) + int(n)
+    return {"available": True, "total": sum(by.values()), "by_status": by}
+
+
 class DisposalBoard:
     """正兵处置看板：内存线索 + DuckDB 持久化的统一封装。
 

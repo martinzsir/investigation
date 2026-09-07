@@ -34,6 +34,13 @@ TASK_STATUSES = (TASK_PENDING, TASK_RUNNING, TASK_SUCCEEDED, TASK_FAILED)
 USER_ACTIVE = "active"
 USER_DISABLED = "disabled"
 
+# ---- 版本历史状态（W-008 版本延迟回收）----
+VER_ACTIVE = "active"                    # 当前生效版本
+VER_PENDING_RECLAIM = "pending_reclaim"  # 已被新版本取代，待回收
+VER_RECLAIMED = "reclaimed"              # 已物理删除
+
+VERSION_STATUSES = (VER_ACTIVE, VER_PENDING_RECLAIM, VER_RECLAIMED)
+
 
 class IllegalTransition(ValueError):
     """案件/任务状态机非法迁移。"""
@@ -49,6 +56,7 @@ class User:
     tenant_id: str
     status: str = USER_ACTIVE
     created_at: str = ""
+    is_admin: int = 0  # 0/1：平台审计事件查询等管理面门槛（W-024）
 
 
 @dataclass
@@ -111,6 +119,28 @@ class CaseVersion:
     version: int
     updated_at: str = ""
     updated_by: str = ""
+
+
+@dataclass
+class VersionStatusRow:
+    """case_version_history 行（W-008）：一个 (案件, 版本) 的生命周期状态。"""
+    case_id: str
+    version: int
+    status: str = VER_ACTIVE
+    created_at: str = ""
+    updated_at: str = ""
+    updated_by: str = ""
+
+
+@dataclass
+class ReaderLease:
+    """case_reader_lease 行（W-008）：跨进程读者租约，回收判定的唯一事实源。"""
+    lease_id: str
+    case_id: str
+    version: int
+    pid: int = 0
+    acquired_at: str = ""
+    expires_at: str = ""
 
 
 def assert_case_transition(current: str, target: str) -> None:
