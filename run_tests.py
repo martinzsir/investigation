@@ -163,6 +163,12 @@ GROUPS = {
     "data_freshness": ("REQ-D-019 数据时间新鲜度（与本体版本新鲜度分开）", [sys.executable, "-m", "unittest", "tests.test_data_freshness"]),
     "unit_consistency": ("REQ-D-020 单位/口径一致性扫描（元/万元混用提示）", [sys.executable, "-m", "unittest", "tests.test_unit_consistency"]),
     "e2e":         ("端到端集成", [sys.executable, "-m", "unittest", "tests.test_run_all"]),
+    # ---- Web M1（server/ 服务端地基）----
+    "storeback":   ("M1 阶段A StoreBackend 抽象+服务端开库门禁", [sys.executable, "-m", "unittest", "tests.test_store_backend"]),
+    "metastore":   ("M1 阶段B 元数据层 SQLite-WAL+状态机+幂等", [sys.executable, "-m", "unittest", "tests.test_meta_store"]),
+    "casesnap":    ("M1 阶段C 案件生命周期+pack快照锁定", [sys.executable, "-m", "unittest", "tests.test_case_snapshot"]),
+    "taskqueue":   ("M1 阶段D/E 版本原子切换+任务队列Worker", [sys.executable, "-m", "unittest", "tests.test_task_queue"]),
+    "apibase":     ("M1 阶段F FastAPI骨架+S1~S6红线", [sys.executable, "-m", "unittest", "tests.test_api_base"]),
 }
 
 

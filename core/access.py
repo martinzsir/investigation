@@ -31,7 +31,7 @@ ROLE_RANK: dict[str, int] = {
     "system": 99,
 }
 
-NETWORKS = ("local", "isolated")
+NETWORKS = ("local", "isolated", "web")
 
 # human 专属终态（can_transition 用；REQ-012 两阶段提交时细化）
 HUMAN_ONLY_STATUSES = frozenset({"已立案"})
@@ -77,8 +77,8 @@ class AccessContext:
 
     # ---- 判定接口（方案设计四 can_* + LLM）----
     def can_llm_call(self) -> bool:
-        """isolated 网络禁止一切 LLM 调用（AC4）。"""
-        return self.network == "local"
+        """isolated 网络禁止一切 LLM 调用（AC4）；local/web 允许。"""
+        return self.network in ("local", "web")
 
     def can_read_object(self, name: str, engine=None) -> bool:
         """对象级读权限：有策略引擎则委托（fail-closed），无则放行。

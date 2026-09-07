@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 
 from core.registry import ClueStatusMachine
 
@@ -369,15 +370,19 @@ def _table_exists(conn, table: str) -> bool:
     ).fetchone()[0] > 0
 
 
-def build_ontology(conn, pack: str = "default") -> dict:
+def build_ontology(conn, pack: str = "default", base_dir=None) -> dict:
     """
     从 ontology/<pack> 声明编译 obj_* / lnk_* 语义表（幂等，可重跑）。
     类型层（objects/links）决定 schema（值类型→列类型），管道层（bindings）决定数据来源。
     返回 {"objects": {name: n_rows}, "links": {name: n_rows}, "skipped": [...]}。
     runtime 对象/链接（如 decision）不由编译器物化，仅由 ensure_runtime_tables 建空表。
+
+    base_dir：ontology 根目录（Path/str），缺省 None=平台 ontology/ 根（既有行为不变）。
+    案件服务端（server/）传 cases/<cid>/ontology 快照根，实现 W-005 快照隔离：
+    案件构建只读取建案时锁定的包声明，平台包后续升级不影响在办案件。
     """
     from core.ontology_loader import load_pack
-    spec = load_pack(pack)
+    spec = load_pack(pack, base_dir=Path(base_dir) if base_dir else None)
 
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
                    "degraded": [], "clean_stats": [], "quarantine": []}

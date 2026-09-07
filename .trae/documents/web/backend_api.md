@@ -79,6 +79,7 @@
 - **框架选 FastAPI**：pydantic 模型与 ontology 声明 JSON 校验同构；SSE 原生支持；自动 OpenAPI 契约（前端可直接生成 TS client）；DuckDB 为同步驱动，读查询经 `anyio.to_thread` 线程池执行，不阻塞事件循环。
 - **只读连接请求作用域**：请求结束即关闭归还（ADR 3.4 硬要求——读者不排空，写者永远拿不到锁）。用依赖注入管理连接生命周期；跨案件 ATTACH 连接按案件组合缓存复用。
 - **Nginx 职责**：静态托管 + `/api`、`/sse` 反代；SSE 需 `proxy_buffering off`、`proxy_read_timeout` 拉长。
+- **CORS 默认关闭**：经环境变量 `SUNZI_CORS_ORIGINS` 配置允许来源白名单。Web 同源经 Nginx 不触发 CORS；Electron 经 IPC 桥（main 进程转发，renderer 无网络权限）亦不触发；白名单仅供 dev server 与 renderer 直连调试（决策 D6，详见 [api_access_layer_plan.md](api_access_layer_plan.md)）。
 
 ## 2.2 读路径（高频、毫秒级）
 
@@ -167,7 +168,7 @@ PENDING → RUNNING → SUCCEEDED
 
 **约定**：
 
-- 基址 `/api`；案件作用域路径为 `/api/cases/{cid}/...`，每请求过租户 + 密级校验。
+- 基址 **`/api/v1`**（决策 D8，发布即冻结；本清单路径写作 `/api/...` 均为省略写法，实际挂载于 `/api/v1` 之下）；案件作用域路径为 `/api/cases/{cid}/...`，每请求过租户 + 密级校验。
 - 🔒 = 写操作（operator 强制取会话，经 ActionExecutor/任务队列）；⚡ = 异步任务（返回 202 + task_id，进度走 SSE）；其余为同步只读。
 - pack 作用域路径 `/api/packs/{pack}/...`：平台共享 pack 对所有租户可见，租户级 pack 仅本租户可见（REQ-W-030 AC-6）。
 
@@ -178,6 +179,7 @@ PENDING → RUNNING → SUCCEEDED
 | POST | `/api/auth/login` | 账号 + 密码 + 双因子；失败统一报错（红线八：不泄露账号存在性）；成功记平台审计 |
 | POST | `/api/auth/logout` | 记平台审计 |
 | GET | `/api/auth/me` | 当前用户：operator/role/clearance/tenant/可访问案件 |
+| GET | `/api/health` | **免认证**存活/就绪探针：服务版本、元数据层状态、Worker 最近心跳；供 Electron 连接探测（含 sidecar 就绪等待）与 Nginx 健康检查（S5，见 [api_access_layer_plan.md](api_access_layer_plan.md)） |
 | GET | `/api/settings/queue` | Worker 并发上限、max_retries、队列积压 |
 | PUT | `/api/settings/queue` 🔒 | 仅管理员；非管理员返回 403 + 只读原因（页面 25 只读态） |
 | GET | `/api/settings/resources` | max_rows、查询超时、存储限额与占用 |
@@ -307,9 +309,10 @@ PENDING → RUNNING → SUCCEEDED
 
 ## 4.1 鉴权与会话
 
-- 认证：Authorization Bearer token；会话存元数据库，支持超时失效（REQ-W-030 AC-4）；超时后任何案件数据请求 401。
+- 认证：Authorization Bearer token；会话存元数据库，支持超时失效（REQ-W-030 AC-4）；超时后任何案件数据请求 401。**不引入 Cookie 会话**（无 CSRF 面）。
+- **SSE 与普通端点同一鉴权（Bearer）**：客户端以 fetch + ReadableStream 消费 SSE（`@microsoft/fetch-event-source`），**不使用原生 EventSource**（无法携带 Authorization 头）；服务端不为 SSE 开 query-token 通道（token 进 query 会落入 Nginx 日志）（决策 D7）。
 - **operator 绑定**（REQ-W-024）：operator/role/clearance/tenant 一律取自服务端会话，请求体中的 operator 字段忽略；非 system 会话 operator 与 AccessContext 不一致直接拒绝；审计链 operator 与登录记录可一一对应。
--  AccessContext 构造：`AccessContext(operator=会话用户, role=会话角色, clearance=会话密级, network="web")`；LLM 相关路径 network 判定不变（isolated 拒网默认）。
+-  AccessContext 构造：`AccessContext(operator=会话用户, role=会话角色, clearance=会话密级, network="web")`；内核 `NETWORKS` 枚举增加 `"web"`（LLM 语义同 `local`：允许 LLM 辅助但脱敏闸门不变；审计可区分 Web 来源，决策 D5）；LLM 相关路径 network 判定不变（isolated 拒网默认）。
 
 ## 4.2 响应信封
 
@@ -336,6 +339,7 @@ PENDING → RUNNING → SUCCEEDED
 | `NOT_FOUND` | 404 | 案件/线索/任务不存在（跨租户探测同样返回 404，不返回 403，避免存在性泄漏） |
 | `IDEMPOTENCY_CONFLICT` | 409 | 幂等键命中，返回既有任务 |
 | `STATE_MACHINE_REJECTED` | 409 | 处置状态迁移非法（如非"已固证"→file） |
+| `DEGRADED_WRITE_REJECTED` | 409 | 系统降级运行时尝试写/导出/立案（UI 侧同步禁用，API 强制拦截；S4，见 api_access_layer_plan.md） |
 | `DECLARATION_INVALID` | 422 | 声明校验失败（未知名/缺必填列/枚举非法），附定位 |
 | `COLUMN_MISSING_REQUIRED` | 422 | 必填属性缺列硬失败 |
 | `OPERATOR_MISMATCH` | 403 | operator 与会话不一致/占位名 |
@@ -348,6 +352,7 @@ PENDING → RUNNING → SUCCEEDED
 
 - 所有 🔒 与 🔒⚡ 端点支持 `Idempotency-Key` 请求头；任务类以 `(case_id, task_type, idempotency_key)` 数据库唯一约束兜底。
 - 导入指纹 = 文件名 + 内容 SHA-256 + 行数；BUILD 天然幂等可重跑；EXPORT/ARCHIVE 天然幂等。
+- **重试不耗幂等键（S6）**：Worker 内部重试沿用原 task_id、递增 retry_count，不走幂等通道（否则命中 UNIQUE 报 409 导致永远重试失败）；仅客户端主动重发携带 `Idempotency-Key`。前端访问层对同一逻辑动作复用同一键。
 
 ## 4.5 遮蔽与数据最小化
 
@@ -358,6 +363,7 @@ PENDING → RUNNING → SUCCEEDED
 ## 4.6 SSE 约定
 
 - 端点：`GET /api/tasks/{tid}/events`，`Content-Type: text/event-stream`。
+- 鉴权与普通端点一致（Bearer，见 4.1）；**不提供 Cookie/query token 旁路**。客户端不用原生 EventSource，统一 fetch 流（Web）或 IPC 桥转发（Electron）。
 - 事件结构：`event: progress` / `event: succeeded` / `event: failed`；`data` 为 ADR 2.5 的进度 JSON；支持 `Last-Event-ID` 断线重放。
 - Nginx 需关闭缓冲。MVP 服务端 500ms 轮询 task 表推送，Postgres 阶段升级为 NOTIFY 触发。
 
@@ -425,6 +431,12 @@ API 契约可先行冻结，但端点上线依赖地基顺序（req.md 实施路
 | D2 | 元数据层 MVP 选型 | **SQLite-WAL 起步**，Repository 层隔离方言，Postgres 为生产切换项 | meta/ 目录双实现：repo_sqlite.py / repo_postgres.py（见 2.5、第五部分） |
 | D3 | Worker 与 API 部署形态 | **私有化单机同机、进程分置**；Worker 并发数 N 可配 | 交付物含独立启动入口（api / worker 两个命令）与 systemd/进程编排配置；Worker 崩溃不影响 API |
 | D4 | SSE 进度源 | **MVP 轮询 task 表（500ms 节流）**，Postgres 阶段升级 LISTEN/NOTIFY | sse.py 先实现轮询版，接口形态不变，后续无感切换（见 2.3、4.6） |
+| D5 | AccessContext network 枚举 | 内核新增 `"web"`（LLM 语义同 `local`，审计区分来源） | core/access.py `NETWORKS` 一行 + 测试；API 会话 `network="web"`（见 4.1） |
+| D6 | Electron 通信架构 | **IPC 桥**：renderer 不持 token、不发 HTTP，main 进程转发；Web 用 fetch；两实现同一 `HttpTransport` 接口 | 访问层 transport 双实现；CORS 默认关闭仅白名单调试（见 2.1、api_access_layer_plan.md） |
+| D7 | 认证与 SSE 载体 | **全程 Bearer（含 SSE）**；客户端 fetch + ReadableStream 消费 SSE，弃用原生 EventSource；不引入 Cookie/CSRF | 服务端 auth 中间件零特殊处理；前端用 `@microsoft/fetch-event-source`（见 4.1、4.6） |
+| D8 | API 版本前缀 | 基址 **`/api/v1`** 发布即冻结 | M1 路由前缀；本清单 `/api/...` 为省略写法（见第三部分约定） |
+| D9 | token 存储 | Web：内存 + sessionStorage；Electron：main 进程 safeStorage 加密 | 访问层分端实现，ApiClient 不感知存储位置 |
+| D10 | 契约先行 | FastAPI OpenAPI → `openapi-typescript` 生成 TS 类型 + MSW mock | 前端访问层与 M1 并行开发，骨架出 OpenAPI 后替换手写类型 |
 
 ---
 

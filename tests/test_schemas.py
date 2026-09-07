@@ -125,7 +125,7 @@ class TestSchemas(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "run_tests.py"],
             capture_output=True, text=True, cwd=str(ROOT),
-            timeout=600, env=env)
+            timeout=1200, env=env)  # M1 新增 5 组（约 90s），预算 600→1200s
         self.assertEqual(r.returncode, 0,
                          f"run_tests.py 失败：\n{r.stdout}\n{r.stderr}")
 
