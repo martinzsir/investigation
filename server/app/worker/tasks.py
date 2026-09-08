@@ -37,6 +37,7 @@ TASK_ARCHIVE = "ARCHIVE"  # W-008 AC-5：已封存案件版本压实
 TASK_DISPOSE = "DISPOSE"  # W-020：线索处置快速通道（秒级，不产版本文件，写 state.sqlite）
 TASK_RESCAN = "RESCAN"   # W-014 AC-6：规则工坊调参/启停后重跑（MVP=复用 BUILD 编排产新版本）
 TASK_IMPORT = "IMPORT"   # W-010/012：数据导入（五格式→冷层 parquet→链式 BUILD）
+TASK_REVIEW = "REVIEW"   # W-021：实体人审裁决（合并/驳回，落 state 不产版本）
 
 
 class TaskExecError(RuntimeError):
@@ -201,6 +202,12 @@ def _import_handler(task, **kw):
     return handle_import(task, **kw)
 
 
+def _review_handler(task, **kw):
+    # 惰性导入：review.py 引用本模块常量，模块底导入避免循环
+    from server.app.worker.review import handle_review
+    return handle_review(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -208,4 +215,5 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_DISPOSE: _dispose_handler,  # W-020 处置快速通道
     TASK_RESCAN: _rescan_handler,    # W-014 AC-6 规则变更重跑
     TASK_IMPORT: _import_handler,    # W-010/012 数据导入
+    TASK_REVIEW: _review_handler,    # W-021 实体裁决
 }

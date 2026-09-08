@@ -30,6 +30,13 @@ from server.app.routers import clues as clues_router
 from server.app.routers import dashboard as dashboard_router
 from server.app.routers import ingest as ingest_router
 from server.app.routers import rule_workshop as rule_workshop_router
+from server.app.routers import model_designer as model_designer_router
+from server.app.routers import access_config as access_config_router
+from server.app.routers import knowledge as knowledge_router
+from server.app.routers import views as views_router
+from server.app.routers import anomaly as anomaly_router
+from server.app.routers import data_governance as data_governance_router
+from server.app.routers import review as review_router
 from server.app.routers import tasks as tasks_router
 from server.app.store import StoreFactory
 
@@ -84,6 +91,13 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(clues_router.router, prefix=API_PREFIX)
     app.include_router(rule_workshop_router.router, prefix=API_PREFIX)
     app.include_router(ingest_router.router, prefix=API_PREFIX)
+    app.include_router(model_designer_router.router, prefix=API_PREFIX)
+    app.include_router(access_config_router.router, prefix=API_PREFIX)
+    app.include_router(knowledge_router.router, prefix=API_PREFIX)
+    app.include_router(views_router.router, prefix=API_PREFIX)
+    app.include_router(anomaly_router.router, prefix=API_PREFIX)
+    app.include_router(data_governance_router.router, prefix=API_PREFIX)
+    app.include_router(review_router.router, prefix=API_PREFIX)
     return app
 
 

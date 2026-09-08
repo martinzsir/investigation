@@ -38,7 +38,8 @@ SCHEMA_VERSION = 2
 PACK_ROOT = Path(__file__).resolve().parent.parent / "ontology"
 
 ALLOWED_ROLES = {"any", "human"}
-ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision"}
+ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision",
+                        "merge_entity", "dismiss_review"}
 ALLOWED_IMPL_KINDS = {"sql", "py"}
 ALLOWED_OUTPUT_TYPES = {"rows", "scalar", "report"}
 ALLOWED_RULE_STAGES = {"xu_shi", "qi_zheng", "yong_jian"}

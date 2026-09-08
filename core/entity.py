@@ -310,6 +310,48 @@ class OrganizationResolver:
         }
 
 
+def merge_entities(resolver: "OrganizationResolver", candidate_id: str) -> dict:
+    """W-021 实体裁决：人工确认合并一个 needs_review 候选。
+
+    纯函数：只修改 resolver 内存状态（标 needs_review=False、confidence=1.0、
+    追加合并依据），返回裁决记录供调用方持久化（state.review_decision）。
+    不修改 obj_* 语义表、不写 SQL。
+    """
+    for c in resolver.clusters():
+        if c.entity_id == candidate_id and c.needs_review:
+            c.needs_review = False
+            c.confidence = 1.0
+            c.merge_reason = (c.merge_reason or "") + " [人工确认合并]"
+            return {
+                "candidate_id": candidate_id,
+                "action": "merge",
+                "canonical_name": c.canonical_name,
+                "variants": list(c.variants),
+            }
+    raise ValueError(f"候选不存在或无需复核：{candidate_id}")
+
+
+def reject_review(resolver: "OrganizationResolver", candidate_id: str,
+                  reason: str) -> dict:
+    """W-021 实体裁决：人工驳回一个 needs_review 候选（不合并）。
+
+    纯函数：标 needs_review=False（不再入队），追加驳回依据，返回裁决记录。
+    驳回后该候选不再出现在 review_candidates()（AC-4 驳回后不重复出现）。
+    """
+    for c in resolver.clusters():
+        if c.entity_id == candidate_id and c.needs_review:
+            c.needs_review = False
+            c.merge_reason = (c.merge_reason or "") + f" [人工驳回：{reason}]"
+            return {
+                "candidate_id": candidate_id,
+                "action": "reject",
+                "reason": reason,
+                "canonical_name": c.canonical_name,
+                "variants": list(c.variants),
+            }
+    raise ValueError(f"候选不存在或无需复核：{candidate_id}")
+
+
 # ----------------------------------------------------------------------
 # 便捷函数：从 DuckDB 工商表采集
 # ----------------------------------------------------------------------

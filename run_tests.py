@@ -182,6 +182,13 @@ GROUPS = {
     "ruleworkshop":("M3 W-014/025 规则工坊读写+RESCAN+LLM 守卫", [sys.executable, "-m", "unittest", "tests.test_rule_workshop"]),
     "ingestapi":   ("M3 W-010/012 数据接入五格式上传+幂等+冷层导入", [sys.executable, "-m", "unittest", "tests.test_ingest_api"]),
     "m3chain":     ("M3 阶段F 研判主流程全链路冒烟（接入→BUILD→线索→处置→审计→RESCAN）", [sys.executable, "-m", "unittest", "tests.test_m3_chain"]),
+    "modeldesigner":("M4 W-013 对象模型设计器 objects/links/validate", [sys.executable, "-m", "unittest", "tests.test_model_designer"]),
+    "accessconfig": ("M4 W-015 权限与字段遮蔽配置", [sys.executable, "-m", "unittest", "tests.test_access_config"]),
+    "knowledgeapi": ("M4 W-016 知识包维护", [sys.executable, "-m", "unittest", "tests.test_knowledge_api"]),
+    "viewsapi":     ("M4 W-017 角色视图配置", [sys.executable, "-m", "unittest", "tests.test_views_api"]),
+    "anomalyapi":   ("M4 W-022 异常线索通道", [sys.executable, "-m", "unittest", "tests.test_anomaly_api"]),
+    "datagov":      ("M4 W-011 数据治理缺列降级", [sys.executable, "-m", "unittest", "tests.test_data_governance"]),
+    "reviewapi":    ("M4 W-021 人审队列与实体裁决", [sys.executable, "-m", "unittest", "tests.test_review_api"]),
 }
 
 

@@ -59,6 +59,31 @@
       "terminal": true,
       "side_effects": ["set_clue_status", "create_decision"],
       "description": "受控终态：仅已固证可迁移、须法定依据、仅具名正兵；副作用创建 obj_decision 决策对象"
+    },
+    {
+      "name": "review_merge",
+      "title": "实体裁决-确认合并",
+      "target_status": "待查",
+      "parameters": [
+        {"name": "candidate_id", "type": "string", "required": true, "description": "待复核候选 entity_id"}
+      ],
+      "requires_role": "human",
+      "terminal": false,
+      "side_effects": ["merge_entity", "create_decision"],
+      "description": "W-021：人工确认合并 needs_review 实体候选；落 state.review_decision，不产版本"
+    },
+    {
+      "name": "review_reject",
+      "title": "实体裁决-驳回",
+      "target_status": "待查",
+      "parameters": [
+        {"name": "candidate_id", "type": "string", "required": true, "description": "待复核候选 entity_id"},
+        {"name": "reason", "type": "string", "required": true, "description": "驳回理由"}
+      ],
+      "requires_role": "human",
+      "terminal": false,
+      "side_effects": ["dismiss_review", "create_decision"],
+      "description": "W-021：人工驳回实体候选（不合并）；驳回后不再入队"
     }
   ]
 }

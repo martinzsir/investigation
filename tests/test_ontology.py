@@ -270,7 +270,8 @@ class TestActionRegistry(unittest.TestCase):
 
     def test_注册表完整(self):
         self.assertEqual(set(self.actions),
-                         {"verify", "reset", "exclude", "confirm", "file"})
+                         {"verify", "reset", "exclude", "confirm", "file",
+                          "review_merge", "review_reject"})
 
     def test_allowed_from反向派生自状态机(self):
         T = ClueStatusMachine._TRANSITIONS
