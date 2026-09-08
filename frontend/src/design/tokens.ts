@@ -103,6 +103,12 @@ export const cssVariables: Record<string, string> = {
   '--sun-filed-bg': colors.filed.bg,
   '--sun-filed-border': colors.filed.border,
   '--sun-filed-text': colors.filed.text,
+  // FE-D-007 五间色（资金/通讯/行为/关系/时间）：仅横条/雷达/热力，不进状态标签
+  '--sun-jian-fund': colors.jian.fund,
+  '--sun-jian-comms': colors.jian.comms,
+  '--sun-jian-behavior': colors.jian.behavior,
+  '--sun-jian-relation': colors.jian.relation,
+  '--sun-jian-time': colors.jian.time,
 }
 
 export const themeOverrides: GlobalThemeOverrides = {

@@ -44,7 +44,11 @@ const options: MenuOption[] = NAV_GROUPS.map((g) => ({
   })),
 }))
 
-const activeKey = computed(() => String(route.params.section ?? ''))
+const activeKey = computed(() => {
+  // 线索详情页高亮「线索列表」
+  if (route.path.startsWith('/c/clue/')) return 'clues'
+  return String(route.params.section ?? '')
+})
 </script>
 
 <template>
