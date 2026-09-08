@@ -63,18 +63,24 @@ class OntologyReadGateway:
 
     def __init__(self, conn, pack: str = "default", *,
                  access: AccessContext | None = None,
-                 allow_stale: bool = False):
+                 allow_stale: bool = False,
+                 base_dir: "str | Path | None" = None):
+        # base_dir：案件快照 ontology 根目录（server 读建案锁定快照时传）；
+        # 缺省 None = 模板包（CLI/MCP 既有行为零变化）。
+        from pathlib import Path
         self._conn = conn
         self._pack = pack
         self._allow_stale = allow_stale
         self._access = access if access is not None else system_context()
-        self._policy = PolicyEngine(pack)
-        spec = load_pack(pack)
+        base = Path(base_dir) if base_dir else None
+        self._policy = PolicyEngine(
+            pack, path=(base / pack / "policies.json") if base else None)
+        spec = load_pack(pack, base_dir=base)
         self._spec = spec
         self._object_names = {o.name for o in spec.objects}
         self._link_names = {l.name for l in spec.links}
         # REQ-046：合并显式声明视图 + 标准视图（标准视图不覆盖显式声明）
-        self._views = all_views(pack)
+        self._views = all_views(pack, base_dir=base)
 
     # ---- 状态 ----
     def materialization_state(self) -> str:

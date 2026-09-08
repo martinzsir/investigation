@@ -372,15 +372,19 @@ def _tipoff_cross_reference(store, params: dict) -> dict:
 
 
 # ---- 关系维度：工商登记利益关联（R5，REQ-024 知识包参数化）----
-def load_case_knowledge(pack: str = "default") -> dict:
+def load_case_knowledge(pack: str = "default",
+                        base_dir: "Path | None" = None) -> dict:
     """加载 ontology/<pack>/case_knowledge.json；无知识包时返回空骨架（零命中不报错）。
 
     REQ-G-016：知识包存在时必须带 schema_version=2（与其余 ontology 声明同源）；
     版本不符/缺失硬失败，防止旧版知识包被静默装载。文件缺失仍回落空骨架（config_missing）。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
     """
     import json
+    from pathlib import Path
     from core.ontology_loader import PACK_ROOT, SCHEMA_VERSION
-    p = PACK_ROOT / pack / "case_knowledge.json"
+    root = Path(base_dir) if base_dir else PACK_ROOT
+    p = root / pack / "case_knowledge.json"
     if not p.exists():
         return {"knowledge_version": None, "subject_aliases": {},
                 "relation_assertions": []}

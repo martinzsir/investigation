@@ -134,6 +134,21 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
     if src is None:
         raise TaskExecError("UPLOAD_NOT_FOUND",
                            f"上传件不存在：{upload_id}")
+
+    # W-P-003：请求未显式带目标表/映射时，回落向导草稿（PUT /sources/{uid}
+    # 保存的 mapping_json）；显式参数优先（不改既有导入契约）。
+    if not target_table or not column_map:
+        try:
+            saved = json.loads(src.get("mapping_json") or "{}")
+        except (ValueError, TypeError):
+            saved = {}
+        if not target_table:
+            target_table = (saved.get("target_table") or "").strip()
+        if not column_map and isinstance(saved.get("column_map"), dict):
+            column_map = saved["column_map"]
+        if not clean and isinstance(saved.get("clean"), list):
+            clean = saved["clean"]
+
     stage_dir = factory.case_dir(task.case_id) / "uploads"
     staged = stage_dir / f"{upload_id}.{src['fmt']}"
     if not staged.exists():

@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS meta_ontology_state (
 
 
 def _ensure_meta_table(conn) -> None:
+    # read-only 连接（OntologyReadGateway 经 CaseStore.read_conn）拒绝一切
+    # CREATE——即使 IF NOT EXISTS 且表已存在。先查 information_schema
+    # （只读安全）：表已存在直接跳过；不存在才尝试 DDL（写连接建表，
+    # 只读连接在未 BUILD 场景本就无表可读，由上层 FileNotFoundError 降级）。
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'meta_ontology_state'").fetchone()
+    except Exception:
+        exists = None
+    if exists:
+        return
     conn.execute(_META_DDL)
 
 

@@ -192,6 +192,10 @@ GROUPS = {
     "crosscase":    ("M5 W-026/027 跨案件查询与全有或全无鉴权", [sys.executable, "-m", "unittest", "tests.test_cross_case_api"]),
     "packageapi":   ("M5 W-028/029 案件包导出导入", [sys.executable, "-m", "unittest", "tests.test_package_api"]),
     "escapehatch":  ("M5 W-031 代码逃生舱代码桩生成", [sys.executable, "-m", "unittest", "tests.test_escape_hatch_api"]),
+    # ---- Web M6（前端配套端点：看板/向导/图谱）----
+    "m6board":      ("M6 W-P-001~004 处置看板+列分析+映射草稿+关系图谱", [sys.executable, "-m", "unittest", "tests.test_m6_board"]),
+    "m6insight":    ("M6 W-P-005~010 庙算+画像+推荐+质检+隔离+留痕", [sys.executable, "-m", "unittest", "tests.test_m6_insight"]),
+    "m6govern":     ("M6 W-P-011~015/017 数据元+ETL管道+系统设置+任务取消+门户归档+配置中心", [sys.executable, "-m", "unittest", "tests.test_m6_govern"]),
 }
 
 

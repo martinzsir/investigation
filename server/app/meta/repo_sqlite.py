@@ -24,6 +24,7 @@ from server.app.meta.models import (
     Session,
     TASK_PENDING,
     TASK_RUNNING,
+    TASK_CANCELLED,
     TASK_STATUSES,
     TASK_SUCCEEDED,
     TASK_FAILED,
@@ -159,6 +160,13 @@ CREATE TABLE IF NOT EXISTS case_sources (
     PRIMARY KEY (case_id, upload_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cs_fp ON case_sources(case_id, fingerprint);
+CREATE TABLE IF NOT EXISTS settings_kv (
+    k          VARCHAR PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_by VARCHAR NOT NULL DEFAULT '',
+    updated_at VARCHAR NOT NULL,
+    reason     VARCHAR NOT NULL DEFAULT ''
+);
 """
 
 
@@ -828,6 +836,26 @@ class SqliteMetaRepo(MetaRepo):
         finally:
             conn.close()
 
+    def save_source_mapping(self, case_id: str, upload_id: str, *,
+                            target_table: str, mapping: dict,
+                            by: str = "") -> dict | None:
+        """W-P-003：向导草稿映射落 case_sources.mapping_json（不触发任务、
+        不改指纹；导入时 handle_import 回落读取）。返回更新后的源行。"""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE case_sources SET table_name=?, mapping_json=? "
+                "WHERE case_id=? AND upload_id=?",
+                (target_table,
+                 json.dumps(mapping, ensure_ascii=False, default=str),
+                 case_id, upload_id))
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        finally:
+            conn.close()
+        return self.get_source(case_id, upload_id)
+
     def mark_source_imported(self, case_id: str, upload_id: str, *,
                              table_name: str, parquet_path: str,
                              mapping: dict) -> None:
@@ -884,6 +912,85 @@ class SqliteMetaRepo(MetaRepo):
         conn = self._connect()
         try:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        finally:
+            conn.close()
+
+    # ---- W-P-013/017：平台设置 KV（平台级，不作案件快照回灌）----
+    def get_setting(self, key: str, default=None):
+        conn = self._connect()
+        try:
+            r = conn.execute("SELECT value_json FROM settings_kv WHERE k=?",
+                             (key,)).fetchone()
+            if r is None:
+                return default
+            return json.loads(r[0])
+        finally:
+            conn.close()
+
+    def set_setting(self, key: str, value, *, by: str = "",
+                    reason: str = "") -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO settings_kv (k,value_json,updated_by,updated_at,"
+                "reason) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(k) DO UPDATE SET value_json=excluded.value_json,"
+                "updated_by=excluded.updated_by,updated_at=excluded.updated_at,"
+                "reason=excluded.reason",
+                (key, json.dumps(value, ensure_ascii=False, default=str),
+                 by, _now(), reason))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_settings(self, keys: list[str] | None = None) -> dict:
+        """批量读取（缺省全量；白名单由调用方裁）。"""
+        conn = self._connect()
+        try:
+            if keys:
+                placeholders = ",".join("?" * len(keys))
+                rows = conn.execute(
+                    f"SELECT k,value_json FROM settings_kv "
+                    f"WHERE k IN ({placeholders})", keys).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT k,value_json FROM settings_kv").fetchall()
+            return {r[0]: json.loads(r[1]) for r in rows}
+        finally:
+            conn.close()
+
+    # ---- W-P-014：任务取消（仅 PENDING；条件 UPDATE 原子语义）----
+    def cancel_task(self, task_id: str, *, by: str = "",
+                    reason: str = "") -> TaskRow | None:
+        """PENDING → CANCELLED 条件 UPDATE；非 PENDING/不存在返回 None。"""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "UPDATE tasks SET status=?, error_code=?, error_message=?, "
+                "finished_at=?, updated_at=? WHERE id=? AND status=?",
+                (TASK_CANCELLED, "cancelled", reason or "用户取消",
+                 _now(), _now(), task_id, TASK_PENDING))
+            conn.execute("COMMIT")
+            if cur.rowcount != 1:
+                return None
+            return self.get_task(task_id)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    # ---- W-P-017：本体快照列表 ----
+    def list_pack_snapshots(self) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT s.case_id, c.name AS case_name, s.pack_id, "
+                "s.version, s.locked_at FROM case_pack_snapshots s "
+                "LEFT JOIN cases c ON c.id=s.case_id "
+                "ORDER BY s.locked_at DESC").fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 

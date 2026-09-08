@@ -78,6 +78,26 @@ CREATE TABLE IF NOT EXISTS review_decision (
     decided_at  TEXT NOT NULL,
     payload_json TEXT DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS quality_check (
+    check_id     TEXT PRIMARY KEY,
+    created_at   TEXT NOT NULL,
+    created_by   TEXT NOT NULL DEFAULT '',
+    data_version INTEGER NOT NULL DEFAULT 0,
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    checks_json  TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS de_recommendation (
+    rid                  TEXT PRIMARY KEY,
+    upload_id            TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT '待核实',
+    created_at           TEXT NOT NULL,
+    created_by           TEXT NOT NULL DEFAULT '',
+    decided_by           TEXT NOT NULL DEFAULT '',
+    decided_at           TEXT NOT NULL DEFAULT '',
+    note                 TEXT NOT NULL DEFAULT '',
+    recommendations_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_de_reco_upload ON de_recommendation(upload_id);
 """
 
 _AC_COLUMNS = (
@@ -173,6 +193,91 @@ class StateStore:
                 d["payload"] = {}
             out.append(d)
         return out
+
+    # ---- W-P-008 质量检查（短频写；落 state 不产 DuckDB 版本）----
+    def save_quality_check(self, *, check_id: str, created_at: str,
+                           created_by: str, data_version: int,
+                           summary: dict, checks: list) -> None:
+        import json as _json
+        self._conn.execute(
+            "INSERT OR REPLACE INTO quality_check "
+            "(check_id, created_at, created_by, data_version, summary_json, "
+            " checks_json) VALUES (?, ?, ?, ?, ?, ?)",
+            [check_id, created_at, created_by, int(data_version),
+             _json.dumps(summary, ensure_ascii=False, default=str),
+             _json.dumps(checks, ensure_ascii=False, default=str)])
+        self._conn.commit()
+
+    def latest_quality_check(self) -> dict | None:
+        import json as _json
+        row = self._conn.execute(
+            "SELECT check_id, created_at, created_by, data_version, "
+            "summary_json, checks_json FROM quality_check "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        return {
+            "check_id": row["check_id"], "created_at": row["created_at"],
+            "created_by": row["created_by"],
+            "data_version": row["data_version"],
+            "summary": _json.loads(row["summary_json"] or "{}"),
+            "checks": _json.loads(row["checks_json"] or "[]"),
+        }
+
+    # ---- W-P-007 数据元智能推荐（待核实/采纳/驳回；永不自动生效）----
+    def save_de_reco(self, *, rid: str, upload_id: str, created_at: str,
+                     created_by: str, recommendations: list,
+                     status: str = "待核实") -> None:
+        import json as _json
+        self._conn.execute(
+            "INSERT OR REPLACE INTO de_recommendation "
+            "(rid, upload_id, status, created_at, created_by, decided_by, "
+            " decided_at, note, recommendations_json) "
+            "VALUES (?, ?, ?, ?, ?, '', '', '', ?)",
+            [rid, upload_id, status, created_at, created_by,
+             _json.dumps(recommendations, ensure_ascii=False, default=str)])
+        self._conn.commit()
+
+    def get_de_reco(self, rid: str) -> dict | None:
+        return self._de_reco_row(
+            "SELECT * FROM de_recommendation WHERE rid=?", [rid])
+
+    def find_de_reco_by_upload(self, upload_id: str) -> dict | None:
+        return self._de_reco_row(
+            "SELECT * FROM de_recommendation WHERE upload_id=? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1", [upload_id])
+
+    def list_de_reco(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM de_recommendation ORDER BY created_at DESC, "
+            "rowid DESC").fetchall()
+        return [self._de_reco_dict(r) for r in rows]
+
+    def decide_de_reco(self, rid: str, *, status: str, decided_by: str,
+                       decided_at: str, note: str) -> dict | None:
+        cur = self._conn.execute(
+            "UPDATE de_recommendation SET status=?, decided_by=?, "
+            "decided_at=?, note=? WHERE rid=?",
+            [status, decided_by, decided_at, note, rid])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_de_reco(rid)
+
+    def _de_reco_row(self, sql: str, args: list) -> dict | None:
+        row = self._conn.execute(sql, args).fetchone()
+        return self._de_reco_dict(row) if row is not None else None
+
+    @staticmethod
+    def _de_reco_dict(row) -> dict:
+        import json as _json
+        d = dict(row)
+        try:
+            d["recommendations"] = _json.loads(
+                d.pop("recommendations_json") or "[]")
+        except _json.JSONDecodeError:
+            d["recommendations"] = []
+        return d
 
     def __enter__(self) -> "StateStore":
         return self

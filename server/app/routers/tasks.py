@@ -19,12 +19,14 @@ from server.app.deps import (
     task_dto,
 )
 from server.app.envelope import (
+    ERR_CONFLICT,
+    ERR_FORBIDDEN,
     ERR_NOT_FOUND,
     ERR_VALIDATION,
     APIError,
     ok,
 )
-from server.app.meta.models import TaskRow
+from server.app.meta.models import TASK_PENDING, TaskRow
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.sse import sse_response
@@ -37,6 +39,10 @@ class CreateTaskIn(BaseModel):
     task_type: str = TASK_BUILD
     idem_key: str = ""
     params: dict = Field(default_factory=dict)
+
+
+class CancelIn(BaseModel):
+    reason: str = ""
 
 
 def _get_owned_task(task_id: str, p: Principal, ctx: WebContext) -> TaskRow:
@@ -95,3 +101,34 @@ def task_events(task_id: str, request: Request,
     _get_owned_task(task_id, p, ctx)  # S1：SSE 同样 Bearer 鉴权
     return sse_response(ctx.repo, task_id,
                         request.headers.get("last-event-id"))
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str, body: CancelIn = CancelIn(),
+                p: Principal = Depends(get_principal),
+                ctx: WebContext = Depends(get_ctx)):
+    """W-P-014：取消任务。仅 PENDING 可取消（RUNNING/终态 409，不协作中断）；
+    权限=任务创建人或 admin。"""
+    task = _get_owned_task(task_id, p, ctx)
+    user = ctx.repo.get_user(p.operator)
+    is_admin = (user is not None and user.is_admin == 1) or p.role == "system"
+    if task.created_by != p.operator and not is_admin:
+        ctx.repo.record_platform_event(
+            "authz_failure", operator=p.operator, tenant_id=p.tenant_id,
+            detail={"endpoint": f"/tasks/{task_id}/cancel",
+                    "reason": "非创建人且非管理员"})
+        raise APIError(ERR_FORBIDDEN, "仅任务创建人或管理员可取消", 403)
+    if task.status != TASK_PENDING:
+        raise APIError(ERR_CONFLICT,
+                       f"任务状态为 {task.status}，仅排队中（PENDING）可取消",
+                       409)
+    updated = ctx.repo.cancel_task(task_id, by=p.operator, reason=body.reason)
+    if updated is None:  # 竞态：被 Worker 抢先认领
+        fresh = ctx.repo.get_task(task_id)
+        raise APIError(ERR_CONFLICT,
+                       f"任务状态为 {fresh.status if fresh else '?'}，"
+                       f"仅排队中（PENDING）可取消", 409)
+    ctx.repo.record_ops("task_cancel", task.case_id,
+                        {"task_id": task_id, "by": p.operator,
+                         "reason": body.reason})
+    return ok({"task_id": task_id, "status": updated.status})

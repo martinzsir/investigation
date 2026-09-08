@@ -62,18 +62,27 @@ def _value_evidence(vals: list, hit_ratio: float) -> dict | None:
 
 
 def scan(gateway, *, health=None, sample_limit: int = 200,
-         hit_ratio: float = 0.3, policy: PolicyEngine | None = None) -> dict:
+         hit_ratio: float = 0.3, policy: PolicyEngine | None = None,
+         base_dir: "Path | None" = None) -> dict:
     """扫描未声明遮蔽的疑似敏感列。返回 {suspects, scanned, details}。
 
     policy：策略引擎实例（None = 按 pack 默认路径装载 PolicyEngine；
     临时案件包测试可显式传入以指定 policies.json 路径）。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包；传入时 policy
+    未显式给出则按快照 policies.json 装载）。
     suspects：疑似列数；scanned：实际取值扫描的 string 属性数（误报率分母）；
     details：逐列证据（object/property/evidence/suggestion）。
     """
+    from pathlib import Path
     rh = get_health(health)
     pack = gateway.explain()["pack"]
-    spec = load_pack(pack)
-    pe = policy if policy is not None else PolicyEngine(pack)
+    spec = load_pack(pack, base_dir=base_dir)
+    if policy is not None:
+        pe = policy
+    elif base_dir is not None:
+        pe = PolicyEngine(pack, path=Path(base_dir) / pack / "policies.json")
+    else:
+        pe = PolicyEngine(pack)
     declared = pe.property_policies   # (obj, prop) → 已声明遮蔽
     mat = set(gateway.materialized_objects())
     mat_props = gateway.materialized_props()

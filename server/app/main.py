@@ -41,6 +41,12 @@ from server.app.routers import cross_case as cross_case_router
 from server.app.routers import package as package_router
 from server.app.routers import escape_hatch as escape_hatch_router
 from server.app.routers import tasks as tasks_router
+from server.app.routers import disposal as disposal_router
+from server.app.routers import graph as graph_router
+from server.app.routers import research as research_router
+from server.app.routers import quality as quality_router
+from server.app.routers import etl as etl_router
+from server.app.routers import settings as settings_router
 from server.app.store import StoreFactory
 
 API_PREFIX = "/api/v1"
@@ -61,7 +67,7 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
     )
 
@@ -104,6 +110,12 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(cross_case_router.router, prefix=API_PREFIX)
     app.include_router(package_router.router, prefix=API_PREFIX)
     app.include_router(escape_hatch_router.router, prefix=API_PREFIX)
+    app.include_router(disposal_router.router, prefix=API_PREFIX)
+    app.include_router(graph_router.router, prefix=API_PREFIX)
+    app.include_router(research_router.router, prefix=API_PREFIX)
+    app.include_router(quality_router.router, prefix=API_PREFIX)
+    app.include_router(etl_router.router, prefix=API_PREFIX)
+    app.include_router(settings_router.router, prefix=API_PREFIX)
     return app
 
 

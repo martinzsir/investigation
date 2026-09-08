@@ -41,17 +41,19 @@ def _median(vals: list[float]) -> float:
     return float(statistics.median(vals))
 
 
-def scan(gateway, *, health=None, ratio_threshold: float = 10000.0) -> dict:
+def scan(gateway, *, health=None, ratio_threshold: float = 10000.0,
+         base_dir: "Path | None" = None) -> dict:
     """扫描金额类数据元跨表单位/量级一致性。
 
     返回 {groups, mismatches, missing_unit}：groups 为每个金额类数据元的逐列
     中位数与声明单位；mismatches 为跨列量级差 ≥ ratio_threshold 的疑似混用；
     missing_unit 为未声明 unit 的金额类数据元属性（AC-3 提示）。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
     """
     rh = get_health(health)
     pack = gateway.explain()["pack"]
-    elements = load_data_elements(pack)
-    spec = load_pack(pack)
+    elements = load_data_elements(pack, base_dir)
+    spec = load_pack(pack, base_dir=base_dir)
     mat = set(gateway.materialized_objects())
     mat_props = gateway.materialized_props()
 

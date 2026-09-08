@@ -38,15 +38,17 @@ def _to_date(v):
         return None
 
 
-def scan(gateway, *, health=None, stale_days: int = 180, as_of=None) -> dict:
+def scan(gateway, *, health=None, stale_days: int = 180, as_of=None,
+         base_dir: "Path | None" = None) -> dict:
     """扫描各含时间属性对象的最新数据时间，超期告警。
 
     stale_days：超期阈值（天，默认 180≈半年，AC-2 可配）；as_of：参照日期
     （测试注入，默认 date.today()）。返回 {objects, stale, stale_days, as_of}。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
     """
     rh = get_health(health)
     pack = gateway.explain()["pack"]
-    spec = load_pack(pack)
+    spec = load_pack(pack, base_dir=base_dir)
     mat = set(gateway.materialized_objects())
     mat_props = gateway.materialized_props()
     ref = as_of or _dt.date.today()

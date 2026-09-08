@@ -33,14 +33,16 @@ from core.threshold import load_profiler_settings
 from core.value_type import analyze_column
 
 
-def connectable_props(pack: str = "default") -> dict[str, list[str]]:
+def connectable_props(pack: str = "default",
+                      base_dir: Path | None = None) -> dict[str, list[str]]:
     """可连接属性清单：string 属性 − metadata_props − composite_props（REQ-D-013 AC-3）
     − runtime 对象。
 
     返回 {对象名: [属性名, ...]}（声明序）；全部属性被排除/无 string 属性的
     对象（如 clue 全列 metadata）不出现在结果中。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
     """
-    spec = load_pack(pack)
+    spec = load_pack(pack, base_dir=base_dir)
     out: dict[str, list[str]] = {}
     for o in spec.objects:
         if o.runtime:
@@ -110,15 +112,17 @@ class EntityLinkExplorer:
     """
 
     def __init__(self, gateway, pack: str = "default",
-                 aliases: dict[str, list[str]] | None = None):
+                 aliases: dict[str, list[str]] | None = None,
+                 base_dir: "Path | None" = None):
         self._gw = gateway
         self._pack = pack
+        self._base_dir = base_dir
         # 别名轨默认读 case_knowledge.json；显式传入可覆盖（测试/自定义包）
         self._aliases = aliases
 
     # ---- 属性清单 / 物化判定（全部经 gateway / 声明） ----
     def connectable_props(self) -> dict[str, list[str]]:
-        return connectable_props(self._pack)
+        return connectable_props(self._pack, base_dir=self._base_dir)
 
     def materialized_objects(self) -> list[str]:
         return self._gw.materialized_objects()
@@ -156,7 +160,8 @@ class EntityLinkExplorer:
         """别名轨：subject_aliases 命中（canonical ↔ alias 共现于同列）。"""
         aliases = self._aliases
         if aliases is None:
-            aliases = load_case_knowledge(self._pack).get("subject_aliases") or {}
+            aliases = load_case_knowledge(
+                self._pack, base_dir=self._base_dir).get("subject_aliases") or {}
         present = {str(v).strip() for v in values
                    if v is not None and str(v).strip()}
         out = []
@@ -176,7 +181,8 @@ class EntityLinkExplorer:
         只接受可连接属性（REQ-P-009）：metadata 属性 / runtime 对象硬失败——
         其值类型分布与变体对实体连接无意义（org.status「存续」刷屏问题）。
         """
-        props = connectable_props(self._pack).get(obj, [])
+        props = connectable_props(
+            self._pack, base_dir=self._base_dir).get(obj, [])
         if prop not in props:
             raise ValueError(
                 f"{obj}.{prop} 不是可连接属性（string − metadata_props；"
@@ -184,7 +190,9 @@ class EntityLinkExplorer:
         values = self._gw.distinct_values(obj, prop)
         if self._aliases is None:
             has_alias_track = bool(
-                load_case_knowledge(self._pack).get("subject_aliases"))
+                load_case_knowledge(
+                    self._pack, base_dir=self._base_dir
+                ).get("subject_aliases"))
         else:
             has_alias_track = bool(self._aliases)
         return {
@@ -242,10 +250,12 @@ class OntologyProfiler:
                  anchor_date: str | None = None,
                  window_days: int | None = None,
                  health=None,
-                 clean_stats: list | None = None):
+                 clean_stats: list | None = None,
+                 base_dir: "Path | None" = None):
         self._gw = gateway
         self._pack = pack
-        self._spec = load_pack(pack)
+        self._base_dir = base_dir
+        self._spec = load_pack(pack, base_dir=base_dir)
         self._focus = [str(v) for v in (focus_entities or []) if v]
         self._anchor = anchor_date
         # REQ-P-021：health=None → NullRunHealth（空操作，既有调用零行为变化）
@@ -253,11 +263,11 @@ class OntologyProfiler:
         # REQ-D-008 AC-6：构建期清洗统计（build_ontology stats["clean_stats"]）
         # 由调用方传入 → 画像每属性展示清洗前后行数
         self._clean_map = self._aggregate_clean(clean_stats)
-        settings = load_profiler_settings(pack)
+        settings = load_profiler_settings(pack, base_dir=base_dir)
         self._window = (int(window_days) if window_days is not None
                         else int(settings["window_days"]))
         self._sample_limit = int(settings["value_sample_limit"])
-        self._explorer = EntityLinkExplorer(gateway, pack)
+        self._explorer = EntityLinkExplorer(gateway, pack, base_dir=base_dir)
 
     # ---- REQ-D-008：清洗统计聚合（AC-6 画像展示每属性清洗前后行数）----
     @staticmethod
@@ -292,7 +302,7 @@ class OntologyProfiler:
 
         mat_objects = set(self._gw.materialized_objects())
         mat_props = self._gw.materialized_props()
-        connectable = connectable_props(self._pack)
+        connectable = connectable_props(self._pack, base_dir=self._base_dir)
         known = self._known_entities(mat_objects)
         # REQ-D-013：复合列显式降级声明（整列保留不拆分 → 画像显示 declared_unsplit）
         self._composite = {o.name: set(o.composite_props)
@@ -302,7 +312,8 @@ class OntologyProfiler:
         if any(o.prop_data_elements for o in self._spec.objects
                if not o.runtime):
             from core import compliance
-            self._compliance = compliance.scan(self._gw, health=self._health)
+            self._compliance = compliance.scan(
+                self._gw, health=self._health, base_dir=self._base_dir)
 
         l1l2: list[dict] = []
         l3: list[dict] = []
@@ -641,7 +652,8 @@ class TableProfile:
 def build_table_profile(table_name: str, columns: list[str], rows: list,
                         gateway=None, pack: str = "default",
                         min_ratio: float | None = None,
-                        sample_limit: int = 2000) -> TableProfile:
+                        sample_limit: int = 2000,
+                        base_dir: "Path | None" = None) -> TableProfile:
     """从 raw 读取的外部表构建画像（只读；不写任何库表）。
 
     rows: list[list/tuple]，值按原始字符串传入（profile_table 固定 raw 模式，
@@ -650,13 +662,16 @@ def build_table_profile(table_name: str, columns: list[str], rows: list,
     gateway: 提供时计算候选关联（外部列 distinct ∩ obj_* 可连接属性值）；
              None 时 candidates=[]（无库环境纯列画像）。
     min_ratio: 候选关联阈值，None 时读 thresholds.json profiler.draft_overlap_min_ratio。
+    base_dir: 案件快照 ontology 根（缺省 None = 模板包）。
     """
     if min_ratio is None:
-        min_ratio = float(load_profiler_settings(pack)["draft_overlap_min_ratio"])
+        min_ratio = float(
+            load_profiler_settings(pack, base_dir=base_dir
+                                   )["draft_overlap_min_ratio"])
 
     # REQ-D-021：数据元驱动推荐（只读数据元注册，不写任何声明）
     try:
-        elements = load_data_elements(pack)
+        elements = load_data_elements(pack, base_dir)
     except Exception:
         elements = {}
 
@@ -689,7 +704,7 @@ def build_table_profile(table_name: str, columns: list[str], rows: list,
     if gateway is not None:
         try:
             mat = set(gateway.materialized_objects())
-            spec = load_pack(pack)
+            spec = load_pack(pack, base_dir=base_dir)
             # 候选关联落点只取各对象身份列（name_property）：链接端点 ref 指向身份列，
             # relation/from_raw 等可连接属性不是归一目标（否则单值列会对所有含同值的列误报）
             targets = [(o.name, o.name_property) for o in spec.objects

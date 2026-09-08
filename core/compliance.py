@@ -102,29 +102,33 @@ def _applicable_checks(element: dict, enabled: tuple) -> list[str]:
     return [c for c in enabled if element.get(_CHECK_FIELDS[c])]
 
 
-def resolve_checks(pack: str, checks: tuple | None) -> tuple:
+def resolve_checks(pack: str, checks: tuple | None,
+                   base_dir: "Path | None" = None) -> tuple:
     """生效检查项：显式参数优先；否则按 data_elements.json 顶层
-    compliance_checks 声明（未声明的检查项默认开，AC-6）。"""
+    compliance_checks 声明（未声明的检查项默认开，AC-6）。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包）。"""
     if checks is not None:
         return tuple(checks)
-    off = load_compliance_checks(pack)
+    off = load_compliance_checks(pack, base_dir)
     return tuple(c for c in COMPLIANCE_CHECK_NAMES if off.get(c, True))
 
 
-def scan(gateway, *, health=None, checks=None, max_records: int = 200) -> dict:
+def scan(gateway, *, health=None, checks=None, max_records: int = 200,
+         base_dir: "Path | None" = None) -> dict:
     """对已物化对象执行合规扫描，返回聚合摘要（画像/健康度消费）。
 
     checks：显式启用检查项元组（None = 按 data_elements.json 顶层
     compliance_checks 声明，未声明项默认全开）。
     max_records：run_diagnostic 违规明细落账上限（超出部分仍计数，可经
     by_property 下钻；防止脏数据放大成诊断风暴）。
+    base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
     """
     rh = get_health(health)
     pack = gateway.explain()["pack"]
-    elements = load_data_elements(pack)
-    enabled = resolve_checks(pack, checks)
+    elements = load_data_elements(pack, base_dir)
+    enabled = resolve_checks(pack, checks, base_dir)
     targets: list = []
-    for o in load_pack(pack).objects:
+    for o in load_pack(pack, base_dir=base_dir).objects:
         if o.runtime or not o.prop_data_elements:
             continue
         for prop, de in o.prop_data_elements.items():

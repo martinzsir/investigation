@@ -15,13 +15,14 @@ W-010 数据源注册与列映射向导 + W-012 导入幂等。
 """
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, UploadFile, File
 from pydantic import BaseModel
 
-from server.app import ingest_io
+from server.app import ingest_io, source_analyze
 from server.app.deps import WebContext, get_ctx, get_principal, task_dto
 from server.app.envelope import (
     ERR_CONFLICT,
@@ -43,6 +44,30 @@ class ImportIn(BaseModel):
     target_table: str
     column_map: dict[str, str] = {}
     clean: list[str] = []
+
+
+class AnalyzeIn(BaseModel):
+    target_table: str | None = None
+
+
+class MappingIn(BaseModel):
+    target_table: str
+    mapping: dict[str, str] = {}   # {声明列(属性): 上传件源列}
+    notes: str | None = None
+
+
+def _source_dto(r: dict) -> dict:
+    try:
+        mapping = json.loads(r.get("mapping_json") or "{}")
+    except (ValueError, TypeError):
+        mapping = {}
+    return {
+        "upload_id": r["upload_id"], "filename": r["filename"],
+        "format": r["fmt"], "fingerprint": r["fingerprint"],
+        "rows": r["rows"], "status": r["status"],
+        "table_name": r["table_name"], "mapping_json": mapping,
+        "created_by": r["created_by"], "created_at": r["created_at"],
+    }
 
 
 def _require_analyst(p: Principal) -> None:
@@ -116,15 +141,7 @@ def list_sources(case_id: str,
     """数据源注册表（staged/imported）。"""
     _get_owned_case(case_id, p, ctx.cases)
     rows = ctx.repo.list_sources(case_id)
-    out = []
-    for r in rows:
-        out.append({
-            "upload_id": r["upload_id"], "filename": r["filename"],
-            "format": r["fmt"], "fingerprint": r["fingerprint"],
-            "rows": r["rows"], "status": r["status"],
-            "table_name": r["table_name"],
-            "created_by": r["created_by"], "created_at": r["created_at"],
-        })
+    out = [_source_dto(r) for r in rows]
     return ok({"items": out, "total": len(out)},
               data_version=ctx.repo.current_version(case_id))
 
@@ -169,3 +186,113 @@ def import_source(case_id: str, upload_id: str, body: ImportIn,
         idem_key=f"import:{upload_id}", created_by=p.operator)
     ctx.repo.set_source_status(case_id, upload_id, "queued")
     return ok(task_dto(task), data_version=ctx.repo.current_version(case_id))
+
+
+def _staged_file(ctx: WebContext, case_id: str, src: dict) -> Path:
+    staged = ctx.factory.case_dir(case_id) / "uploads" / f"{src['upload_id']}.{src['fmt']}"
+    if not staged.exists():
+        raise APIError(ERR_NOT_FOUND, f"暂存文件已丢失：{staged.name}", 404)
+    return staged
+
+
+@router.post("/cases/{case_id}/sources/{upload_id}/analyze")
+def analyze_source(case_id: str, upload_id: str,
+                   body: AnalyzeIn | None = None,
+                   p: Principal = Depends(get_principal),
+                   ctx: WebContext = Depends(get_ctx)):
+    """W-P-002 列分析（同步只读计算；不产任务、不写映射、不改状态）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
+    src = ctx.repo.get_source(case_id, upload_id)
+    if src is None:
+        raise APIError(ERR_NOT_FOUND, f"上传件不存在：{upload_id}", 404)
+    staged = _staged_file(ctx, case_id, src)
+
+    try:
+        df = ingest_io.read_table(staged, src["fmt"])
+    except Exception as e:
+        raise APIError(ERR_VALIDATION, f"文件解析失败：{e}", 400)
+
+    base_dir = ctx.cases.snapshot_ontology_root(case_id)
+    try:
+        result = source_analyze.analyze_source(
+            df=df, pack=case.pack_id, base_dir=base_dir,
+            target_table=(body.target_table if body else None))
+    except (FileNotFoundError, ValueError) as e:
+        raise APIError(ERR_VALIDATION, f"案件快照装载失败：{e}", 400)
+
+    return ok({
+        "upload_id": upload_id,
+        "filename": src["filename"],
+        "format": src["fmt"],
+        "row_count": int(src["rows"]),
+        "sha256": ingest_io.sha256_file(staged),
+        "fingerprint": src["fingerprint"],
+        **result,
+    }, data_version=ctx.repo.current_version(case_id))
+
+
+@router.put("/cases/{case_id}/sources/{upload_id}")
+def save_source_mapping(case_id: str, upload_id: str, body: MappingIn,
+                        p: Principal = Depends(get_principal),
+                        ctx: WebContext = Depends(get_ctx)):
+    """W-P-003 向导映射草稿保存（仅 staged/queued 可改；导入时回落读取）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
+    src = ctx.repo.get_source(case_id, upload_id)
+    if src is None:
+        raise APIError(ERR_NOT_FOUND, f"上传件不存在：{upload_id}", 404)
+    if src["status"] not in ("staged", "queued"):
+        raise APIError(ERR_CONFLICT,
+                       f"数据源状态为 {src['status']}，映射不可修改"
+                       "（仅暂存/排队中的数据源可改映射）", 409)
+
+    base_dir = ctx.cases.snapshot_ontology_root(case_id)
+    try:
+        declared = declared_source_tables(pack=case.pack_id, base_dir=base_dir)
+    except Exception as e:
+        raise APIError(ERR_VALIDATION, f"案件快照装载失败：{e}", 400)
+    if body.target_table not in declared:
+        raise APIError(ERR_VALIDATION,
+                       f"目标源表 {body.target_table!r} 未在案件快照 bindings 声明，"
+                       f"可用 {sorted(declared)}", 400)
+
+    try:
+        src_cols = set(json.loads(src.get("columns_json") or "{}").keys())
+    except (ValueError, TypeError):
+        src_cols = set()
+    decl_cols = set(declared[body.target_table])
+    bad_targets = sorted({k for k in body.mapping if k not in decl_cols})
+    bad_sources = sorted({v for v in body.mapping.values() if v not in src_cols})
+    if bad_targets:
+        raise APIError(ERR_VALIDATION,
+                       f"映射目标列 {bad_targets} 不在表 {body.target_table} "
+                       f"声明列 {sorted(decl_cols)} 内", 400)
+    if bad_sources:
+        raise APIError(ERR_VALIDATION,
+                       f"上传件不存在源列 {bad_sources}（可用 {sorted(src_cols)}）",
+                       400)
+
+    # 体向转换：body.mapping 为 {声明列: 源列}（向导视角），管线 column_map
+    # 为 {源列: 声明列}（rename 视角）；空值忽略。
+    column_map = {v: k for k, v in body.mapping.items() if k and v}
+    try:
+        validate_mapping(body.target_table, column_map, declared)
+    except TaskExecError as e:
+        raise APIError(ERR_VALIDATION, e.message, 400)
+
+    saved_mapping = {
+        "target_table": body.target_table,
+        "column_map": column_map,
+        "mapping": body.mapping,
+        "notes": body.notes or "",
+        "updated_by": p.operator,
+    }
+    row = ctx.repo.save_source_mapping(
+        case_id, upload_id, target_table=body.target_table,
+        mapping=saved_mapping, by=p.operator)
+    ctx.repo.record_ops(
+        "source_mapping_save", case_id,
+        {"upload_id": upload_id, "table": body.target_table,
+         "mapped": len(column_map), "by": p.operator})
+    return ok(_source_dto(row), data_version=ctx.repo.current_version(case_id))

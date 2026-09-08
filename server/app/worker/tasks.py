@@ -40,6 +40,9 @@ TASK_IMPORT = "IMPORT"   # W-010/012：数据导入（五格式→冷层 parquet
 TASK_REVIEW = "REVIEW"   # W-021：实体人审裁决（合并/驳回，落 state 不产版本）
 TASK_EXPORT = "EXPORT"   # W-028：案件包导出（压实 + 审计链冻结 + SHA-256 + zip）
 TASK_IMPORT_PACKAGE = "IMPORT_PACKAGE"  # W-029：案件包导入（校验 + init_pack + 登记）
+TASK_QUALITY = "QUALITY_CHECK"        # W-P-008：数据质量检查（四扫描汇总落 state，不产版本）
+TASK_DE_RECO = "DE_RECOMMEND"         # W-P-007：数据元智能推荐生成（读暂存件采样，落 state）
+TASK_DE_DECIDE = "DE_RECO_DECIDE"     # W-P-007：推荐采纳/驳回裁决（只记 state+审计，不改 bindings）
 
 
 class TaskExecError(RuntimeError):
@@ -220,6 +223,21 @@ def _import_package_handler(task, **kw):
     return handle_import_package(task, **kw)
 
 
+def _quality_handler(task, **kw):
+    from server.app.worker.quality import handle_quality
+    return handle_quality(task, **kw)
+
+
+def _de_reco_handler(task, **kw):
+    from server.app.worker.recommend import handle_de_reco
+    return handle_de_reco(task, **kw)
+
+
+def _de_decide_handler(task, **kw):
+    from server.app.worker.recommend import handle_de_decide
+    return handle_de_decide(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -230,4 +248,7 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_REVIEW: _review_handler,    # W-021 实体裁决
     TASK_EXPORT: _export_handler,    # W-028 案件包导出
     TASK_IMPORT_PACKAGE: _import_package_handler,  # W-029 案件包导入
+    TASK_QUALITY: _quality_handler,         # W-P-008 数据质量检查
+    TASK_DE_RECO: _de_reco_handler,         # W-P-007 数据元推荐生成
+    TASK_DE_DECIDE: _de_decide_handler,     # W-P-007 推荐裁决
 }
