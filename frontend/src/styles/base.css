@@ -1,0 +1,22 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--sun-bg-base, #030a14);
+  color: var(--sun-text-primary, #e9f7fa);
+  font-family: var(--sun-font-sans, sans-serif);
+}
+
+/* FE-D-004：URI/哈希/ID/金额等一律等宽字体 */
+.mono {
+  font-family: var(--sun-font-mono, monospace);
+}
+
+/* FE-D-009：默认 compact 密度（main.ts 设 data-density） */
+[data-density='compact'] {
+  font-size: 12px;
+}

@@ -1,0 +1,36 @@
+{
+  "name": "sunwu-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit -p tsconfig.app.json && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "msw:init": "msw init public/"
+  },
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.5",
+    "@fontsource/noto-sans-sc": "^5.2.5",
+    "@microsoft/fetch-event-source": "^2.0.1",
+    "@vicons/ionicons5": "^0.13.0",
+    "naive-ui": "^2.43.0",
+    "pinia": "^3.0.3",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "happy-dom": "^18.0.1",
+    "msw": "^2.10.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.5"
+  }
+}
