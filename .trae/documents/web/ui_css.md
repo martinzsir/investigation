@@ -7,8 +7,10 @@
 
 # 孙武侦查官 SaaS · 组件规范 v1.0
 
-**适用**：React 19 + Tailwind v4 + shadcn/ui(Base UI)
+**适用**：~~React 19 + Tailwind v4 + shadcn/ui(Base UI)~~ → **2026-09-08 起技术栈定案为 Vue 3 + Naive UI**（见 `frontend/前端需求清单.md` v1.7 决策 12）。Tailwind `@theme`/变体类名/shadcn 组件名不再直接适用，**落地方式改为 Naive UI `themeOverrides` + CSS 变量 + `design/tokens.ts` 单一事实源三处派生**（FE-D-011）；组件参数（尺寸/间距/状态色/结构）与 token 值仍按本文执行。
 **原则**：所有颜色、间距、字号**只走 token**，禁止在组件里写死色值。
+
+> **v1.7 吸收说明**：本文框架无关内容已全部回写清单——五间色板（FE-D-007）、语义色三档与 ECharts sunwu-dark 主题（FE-D-008）、密度切换（FE-D-009）、字号层级（FE-D-010）、MatrixCell 斜纹拒绝态（FE-C-031）、EmptyState 三类型（FE-C-032）、KanbanCard（FE-C-033）、审计时间线规范（FE-C-018）。**冲突处置**：色值以登录页实测为准（bg `#030A14`/card `#051522`/边框 `#6EDEE9`/按钮白字 `#E9F7FA`，FE-D-001），本文推演值（`#0A0E1A`/`#121826`/按钮深字）作废；圆角以 FE-D-005 实测体系为准（卡片 6px/徽章 12px），本文推演值（卡片 8px/徽章 4px）作废。
 
 ---
 

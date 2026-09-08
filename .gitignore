@@ -19,3 +19,5 @@ data/t3.sqlite
 .trae/documents/map/impl/
 .trae/documents/profile/impl/
 
+/web/*.jpeg
+

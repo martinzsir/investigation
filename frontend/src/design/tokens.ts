@@ -33,6 +33,22 @@ export const colors = {
   info: { bg: '#0B2130', border: '#2E6E8C', text: '#7BC8E8' },
   /** 已立案金橙（与五间资金色靠锁图标 + 法定依据文字区分） */
   filed: { bg: '#241A08', border: '#A8792E', text: '#EFC983' },
+  /** 23a 实测：绝密★内部 金色 */
+  gold: '#F2B54D',
+} as const
+
+/** 23a 实测：登录按钮青→蓝渐变 / 卡片顶部光线 / 青色辉光 */
+export const gradient = {
+  primary: 'linear-gradient(92deg, #00E6D4 0%, #00B6E9 52%, #1E96FF 100%)',
+  primaryHover: 'linear-gradient(92deg, #33EFE0 0%, #2CC6F2 52%, #42A6FF 100%)',
+  cardLine:
+    'linear-gradient(90deg, rgba(110,222,233,0) 0%, #9DF4FB 25%, #6EDEE9 55%, rgba(110,222,233,0) 100%)',
+} as const
+
+export const glow = {
+  cyanSoft: '0 0 24px rgba(0, 210, 220, 0.18)',
+  cyanStrong: '0 0 18px rgba(0, 220, 230, 0.45)',
+  card: '0 0 32px rgba(0, 190, 220, 0.16), inset 0 0 24px rgba(0, 190, 220, 0.04)',
 } as const
 
 /** FE-D-005：卡片 6px / 按钮 4px / 徽章 12px */
@@ -55,18 +71,38 @@ export const density = {
 export const cssVariables: Record<string, string> = {
   '--sun-bg-base': colors.bgBase,
   '--sun-bg-card': colors.bgCard,
+  '--sun-bg-card-hover': colors.bgCardHover,
   '--sun-bg-sider': colors.bgSider,
+  '--sun-input-bg': colors.inputBg,
   '--sun-border': colors.border,
   '--sun-border-active': colors.borderActive,
   '--sun-text-primary': colors.textPrimary,
   '--sun-text-secondary': colors.textSecondary,
+  '--sun-text-tertiary': colors.textTertiary,
+  '--sun-gold': colors.gold,
+  '--sun-gradient-primary': gradient.primary,
+  '--sun-gradient-primary-hover': gradient.primaryHover,
+  '--sun-gradient-card-line': gradient.cardLine,
+  '--sun-glow-cyan-soft': glow.cyanSoft,
+  '--sun-glow-cyan-strong': glow.cyanStrong,
+  '--sun-glow-card': glow.card,
   '--sun-font-sans': fontFamily.sans,
   '--sun-font-mono': fontFamily.mono,
   '--sun-ok-bg': colors.ok.bg,
+  '--sun-ok-border': colors.ok.border,
+  '--sun-ok-text': colors.ok.text,
   '--sun-warn-bg': colors.warn.bg,
+  '--sun-warn-border': colors.warn.border,
+  '--sun-warn-text': colors.warn.text,
   '--sun-error-bg': colors.error.bg,
+  '--sun-error-border': colors.error.border,
+  '--sun-error-text': colors.error.text,
   '--sun-info-bg': colors.info.bg,
+  '--sun-info-border': colors.info.border,
+  '--sun-info-text': colors.info.text,
   '--sun-filed-bg': colors.filed.bg,
+  '--sun-filed-border': colors.filed.border,
+  '--sun-filed-text': colors.filed.text,
 }
 
 export const themeOverrides: GlobalThemeOverrides = {

@@ -1,3 +1,5 @@
+> **⚠️ 2026-09-08 技术栈决策注记**：本文推荐的 **React 19 + shadcn/ui + Tailwind + TanStack 全家桶选型已作废**，经裁决定案为 **Vue 3 + TypeScript + Vite + Naive UI**（见 `frontend/前端需求清单.md` v1.7 决策 12）。以下映射关系按 Vue 生态替换：组件库 → Naive UI（themeOverrides 对接 token）；表格 → NDataTable（**分页非虚拟滚动**，清单决策 6）；拖拽 → vuedraggable；Monaco → @guolao/vue-monaco-editor；图表 → vue-echarts；服务端状态 → TanStack Query Vue；路由 → Vue Router；状态 → Pinia。**本文框架无关的内容继续有效**：私有化部署四必做（Monaco 离线 worker / 字体本地化 / 图标内联 / dist 外链扫描，已落为 FE-B-005/006）、密度切换（FE-D-009）、逐页技术映射与 G6 <1000 节点性能结论、热力图/雷达图/力导图的图表选型（ECharts 6 / G6 v5 不变）。文中 token 推演值（如 `#0A0E1A`）与登录页实测冲突时以清单 FE-D-001 实测值为准。
+
 先说一个容易被忽略但决定性的约束：**原型里的每个视觉特征都会淘汰一批技术**。把约束理清楚，选型几乎是自证的。
 
 ---
