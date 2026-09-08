@@ -31,6 +31,15 @@ class UnsupportedOperation(RuntimeError):
     """该 Store 后端不支持请求的操作（如 read 模式写、跨案件 ATTACH 未实现）。"""
 
 
+def open_readonly_conn(path: str | Path) -> duckdb.DuckDBPyConnection:
+    """store 层唯一允许的直连 DuckDB（只读）辅助函数。
+
+    供 worker 层校验外部 DuckDB 文件可读性时调用（如案件包校验），
+    避免 worker 层直接 duckdb.connect（tests/test_store_backend.py 门禁）。
+    """
+    return duckdb.connect(str(path), read_only=True)
+
+
 class _MetaPointer(Protocol):
     """版本指针提供者（meta 元数据层鸭子类型，阶段 D 接入）。"""
 
@@ -154,45 +163,6 @@ class CaseStore(StoreBackend):
             self._on_close(self)
 
 
-class CrossCaseStore(StoreBackend):
-    """跨案件只读 ATTACH 后端（M1 骨架，M5 实现）。
-
-    backend_api.md 跨案件约束：READ_ONLY ATTACH + max_rows + 超时 +
-    禁 DDL/DML + 全有或全无授权。M1 不开放，任何连接获取均抛
-    UnsupportedOperation，防止误用。
-    """
-
-    case_id = "*cross-case*"
-
-    def __init__(self, authorized_cases: list[str]):
-        self._authorized = list(authorized_cases)
-
-    @property
-    def version(self) -> int:
-        return 0
-
-    @property
-    def authorized_cases(self) -> list[str]:
-        return list(self._authorized)
-
-    @property
-    def read_conn(self) -> duckdb.DuckDBPyConnection:
-        raise UnsupportedOperation(
-            "跨案件只读 ATTACH 未实现（M5）：M1 仅登记骨架，"
-            f"已授权案件 {self._authorized}")
-
-    @property
-    def write_conn(self) -> duckdb.DuckDBPyConnection:
-        raise UnsupportedOperation(
-            "跨案件后端永远只读（READ_ONLY ATTACH，禁 DDL/DML）")
-
-    def query(self, sql: str, params: tuple | list = ()) -> list[dict]:
-        raise UnsupportedOperation("跨案件 ATTACH 未实现（M5）")
-
-    def close(self) -> None:
-        return None
-
-
 class StoreFactory:
     """存储后端工厂（服务端开库唯一入口）。
 
@@ -260,8 +230,18 @@ class StoreFactory:
         return CaseStore(path, case_id="local", version=0, mode=mode,
                          on_close=None)
 
-    def for_cross_case(self, authorized_cases: list[str]) -> CrossCaseStore:
-        return CrossCaseStore(authorized_cases)
+    def for_cross_case(self, authorized_cases: list[str]) -> "CrossCaseStore":
+        """M5：跨案件只读 ATTACH 后端。
+
+        解析每个授权案件的当前版本文件路径，交给 CrossCaseStore 做
+        ATTACH READ_ONLY。调用方须已完成全有或全无鉴权（W-027）。
+        """
+        from server.app.store.backend_cross import CrossCaseStore
+        version_paths: dict[str, Path] = {}
+        for cid in authorized_cases:
+            ver = self.current_version(cid)
+            version_paths[cid] = self.version_path(cid, ver)
+        return CrossCaseStore(authorized_cases, version_paths=version_paths)
 
     # ---- 引用计数 ----
     def reader_count(self, case_id: str, version: int) -> int:

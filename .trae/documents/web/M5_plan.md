@@ -164,4 +164,55 @@
 
 ## 八、实施记录
 
-（待实施完成后回填）
+（2026-09-08 实施完成回填）
+
+### 阶段 A：跨案件查询 W-026/027 — ✅ 9 例全绿
+
+**新增**：
+- `server/app/store/backend_cross.py`：CrossCaseStore ATTACH READ_ONLY 实现
+  - `read_conn`：惰性 ATTACH 各授权案件，连接按 `frozenset(case_ids)` LRU 缓存（上限 16）
+  - `query`：SQL 首词白名单（SELECT/WITH/PRAGMA）+ 强制 `LIMIT max_rows` + 超时 PRAGMA
+  - `write_conn`：永远 `UnsupportedOperation`
+- `server/app/routers/cross_case.py`：`POST /cross-case/query`（全有或全无鉴权→ATTACH→审计）、`GET /cross-case/history`
+
+**修改**：
+- `server/app/store/backend.py`：移除 CrossCaseStore 骨架（迁移至 backend_cross.py）；`for_cross_case` 解析版本路径
+- `server/app/store/__init__.py`：从 backend_cross 导入 CrossCaseStore
+- `server/app/main.py`：挂载 cross_case router
+
+**测试**：`test_cross_case_api.py`(9) — ATTACH 查询/禁 DDL/禁 DML/max_rows/全有或全无鉴权（拒绝在 ATTACH 前）/拒绝审计/连接缓存/history/重复 ID 拒绝
+
+### 阶段 B：案件包导出导入 W-028/029 — ✅ 6 例全绿
+
+**新增**：
+- `server/app/worker/package.py`：`verify_package`（7 步校验）、`handle_export`（压实副本→审计链冻结→SHA-256 manifest→README→zip）、`handle_import_package`（解压→校验→复制快照+DuckDB→init_pack→元数据登记）
+- `server/app/routers/package.py`：`POST /cases/{cid}/package/export`、`GET /packages/{task_id}/download`、`POST /packages/verify`、`POST /packages/import`
+
+**修改**：
+- `server/app/worker/tasks.py`：新增 TASK_EXPORT/TASK_IMPORT_PACKAGE 任务类型与处理器
+- `server/app/main.py`：挂载 package router
+
+**测试**：`test_package_api.py`(6) — 13 声明+SHA-256 manifest+case_knowledge sensitive+README、版本压实、篡改一字节失败、缺声明失败、schema_version 不一致失败、导入后可查询
+
+### 阶段 C：代码逃生舱 W-031 — ✅ 8 例全绿
+
+**新增**：
+- `server/app/worker/escape_hatch.py`：`generate_stub(ext_type, name, description)` 四类模板（function/value_type/clean_rule/side_effect），返回 `{files, registration_points}`，不写文件不注册
+- `server/app/routers/escape_hatch.py`：`POST /escape-hatch/generate`、`GET /escape-hatch/stats`
+
+**修改**：`server/app/main.py` 挂载 escape_hatch router
+
+**测试**：`test_escape_hatch_api.py`(8) — 四类代码桩含契约+测试骨架（初始失败）+注册点、非法类型拒绝、stats 统计、不注册 core
+
+### 阶段 D：收口
+
+- 全量回归 `run_tests.py` 121 组（118 + crosscase/packageapi/escapehatch）
+- MCP `scripts.mcp_client_test` 69 项
+- backend_api.md M5 标已实施
+- git 分拣提交（排除 data/ 产物）
+
+### core diff 实际触点汇总
+
+**零改动**。M5 全部实现集中在 `server/` 目录：
+- ATTACH、SHA-256、manifest、代码桩生成均为 server 层职责
+- 复用 `PackManager.init_pack`、`AuditChain`、`FUNCTION_IMPLS`/`TYPE_SQL`/`ALLOWED_SIDE_EFFECTS` 既有接口

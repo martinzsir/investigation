@@ -37,6 +37,9 @@ from server.app.routers import views as views_router
 from server.app.routers import anomaly as anomaly_router
 from server.app.routers import data_governance as data_governance_router
 from server.app.routers import review as review_router
+from server.app.routers import cross_case as cross_case_router
+from server.app.routers import package as package_router
+from server.app.routers import escape_hatch as escape_hatch_router
 from server.app.routers import tasks as tasks_router
 from server.app.store import StoreFactory
 
@@ -98,6 +101,9 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(anomaly_router.router, prefix=API_PREFIX)
     app.include_router(data_governance_router.router, prefix=API_PREFIX)
     app.include_router(review_router.router, prefix=API_PREFIX)
+    app.include_router(cross_case_router.router, prefix=API_PREFIX)
+    app.include_router(package_router.router, prefix=API_PREFIX)
+    app.include_router(escape_hatch_router.router, prefix=API_PREFIX)
     return app
 
 

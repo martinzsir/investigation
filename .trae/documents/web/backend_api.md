@@ -415,7 +415,7 @@ API 契约可先行冻结，但端点上线依赖地基顺序（req.md 实施路
 | M2 可信首页 | 批 4（W-008/009/018/023/024） | 治理仪表盘、审计链与自检、operator 绑定 | ✅ 已实施（2026-09-07；W-008 版本延迟回收+读者租约、W-009 孤儿扫描、W-018 治理仪表盘、W-023 时间线/verify 空链红线、W-024 平台审计 platform_audit+`/api/audit/events`、D1 state.sqlite 骨架；处置/线索端点仍属 M3） |
 | M3 研判主流程 | 批 5（W-010/012/014/019/020/025） | 线索列表/详情/处置、数据接入、规则工坊、LLM 守卫 | ✅ 已实施（2026-09-08；W-010/012 五格式上传+指纹幂等+冷层导入链式 BUILD、W-019 线索三端点+suppressed、W-020 DISPOSE 快速通道+file 红线、W-014 规则工坊+RESCAN、W-025 LLM 守卫层 503/注入/输出白名单、D1 state.sqlite 写路径接线 sink 注入、D-M3-2 线索产物 artifacts/clues_v{N}.json、D-M3-5 审计时间线双源拼接；LLM 仅守卫层未接模型） |
 | M4 配置与人审 | 批 6（W-011/013/015/016/017/021/022） | 模型设计器、权限遮蔽、知识包、视图、实体裁决、异常通道、治理页 18-22 | ✅ 已实施（2025-01；W-013 模型设计器 objects/links/validate、W-015 policies 遮蔽、W-016 knowledge、W-017 views、W-022 anomalies 异常通道、W-011 governance/missing-columns、W-021 review 队列/证据/裁决；core 仅 W-021 追加 merge_entities/reject_review + actions.json 声明；118 组测试全绿） |
-| M5 高级能力 | 批 7-9（W-026→027、028→029、031） | 跨案件查询、案件包导入导出、代码逃生舱 | 未实施 |
+| M5 高级能力 | 批 7-9（W-026→027、028→029、031） | 跨案件查询、案件包导入导出、代码逃生舱 | ✅ 已实施（2026-09-08；W-026/027 CrossCaseStore ATTACH READ_ONLY + 全有或全无鉴权、W-028/029 案件包导出导入（版本压实+SHA-256 manifest+审计链冻结）、W-031 代码逃生舱四类代码桩生成；core 零改动，全部实现在 server/；121 组测试全绿） |
 
 **顺序硬约束**：S5（版本化文件）先于跨案件 ATTACH（spike H7：无版本化时 ATTACH 锁死写）。
 

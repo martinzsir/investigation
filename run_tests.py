@@ -189,6 +189,9 @@ GROUPS = {
     "anomalyapi":   ("M4 W-022 异常线索通道", [sys.executable, "-m", "unittest", "tests.test_anomaly_api"]),
     "datagov":      ("M4 W-011 数据治理缺列降级", [sys.executable, "-m", "unittest", "tests.test_data_governance"]),
     "reviewapi":    ("M4 W-021 人审队列与实体裁决", [sys.executable, "-m", "unittest", "tests.test_review_api"]),
+    "crosscase":    ("M5 W-026/027 跨案件查询与全有或全无鉴权", [sys.executable, "-m", "unittest", "tests.test_cross_case_api"]),
+    "packageapi":   ("M5 W-028/029 案件包导出导入", [sys.executable, "-m", "unittest", "tests.test_package_api"]),
+    "escapehatch":  ("M5 W-031 代码逃生舱代码桩生成", [sys.executable, "-m", "unittest", "tests.test_escape_hatch_api"]),
 }
 
 

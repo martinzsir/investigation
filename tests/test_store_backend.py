@@ -162,17 +162,43 @@ class TestCaseIsolation(unittest.TestCase):
 
 class TestCrossCaseSkeleton(unittest.TestCase):
 
-    def test_cross_case_all_rejected_m1(self):
-        x = StoreFactory().for_cross_case(["caseA", "caseB"])
-        self.assertEqual(x.authorized_cases, ["caseA", "caseB"])
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.f = StoreFactory(cases_root=self.tmp)
+
+    def tearDown(self):
+        from server.app.store.backend_cross import evict_cache
+        evict_cache()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_cross_case_attach_readonly(self):
+        """M5：CrossCaseStore ATTACH READ_ONLY + 只读查询。"""
+        # 造两个案件版本文件
+        for cid in ("caseA", "caseB"):
+            db = self.f.version_path(cid, 1)
+            db.parent.mkdir(parents=True, exist_ok=True)
+            conn = duckdb.connect(str(db))
+            conn.execute(f"CREATE TABLE t (v VARCHAR)")
+            conn.execute(f"INSERT INTO t VALUES ('{cid}')")
+            conn.close()
+        # 用 version_paths 直接构造（绕过 meta 指针）
+        from server.app.store.backend_cross import CrossCaseStore
+        paths = {cid: self.f.version_path(cid, 1)
+                 for cid in ("caseA", "caseB")}
+        x = CrossCaseStore(["caseA", "caseB"], version_paths=paths)
+        self.assertEqual(sorted(x.authorized_cases), ["caseA", "caseB"])
         self.assertEqual(x.case_id, "*cross-case*")
-        with self.assertRaises(UnsupportedOperation):
-            x.read_conn
+        # ATTACH 后可跨库查询
+        rows = x.query("SELECT v FROM case_caseA.t UNION ALL "
+                       "SELECT v FROM case_caseB.t")
+        self.assertEqual(sorted(r["v"] for r in rows), ["caseA", "caseB"])
+        # write_conn 永远拒绝
         with self.assertRaises(UnsupportedOperation):
             x.write_conn
+        # DDL/DML 拒绝
         with self.assertRaises(UnsupportedOperation):
-            x.query("SELECT 1")
-        x.close()  # 无连接可释放，不报错
+            x.query("CREATE TABLE x (i INT)")
+        x.close()
 
 
 class TestFactoryPointerAndRefs(unittest.TestCase):

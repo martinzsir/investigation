@@ -38,6 +38,8 @@ TASK_DISPOSE = "DISPOSE"  # W-020：线索处置快速通道（秒级，不产�
 TASK_RESCAN = "RESCAN"   # W-014 AC-6：规则工坊调参/启停后重跑（MVP=复用 BUILD 编排产新版本）
 TASK_IMPORT = "IMPORT"   # W-010/012：数据导入（五格式→冷层 parquet→链式 BUILD）
 TASK_REVIEW = "REVIEW"   # W-021：实体人审裁决（合并/驳回，落 state 不产版本）
+TASK_EXPORT = "EXPORT"   # W-028：案件包导出（压实 + 审计链冻结 + SHA-256 + zip）
+TASK_IMPORT_PACKAGE = "IMPORT_PACKAGE"  # W-029：案件包导入（校验 + init_pack + 登记）
 
 
 class TaskExecError(RuntimeError):
@@ -208,6 +210,16 @@ def _review_handler(task, **kw):
     return handle_review(task, **kw)
 
 
+def _export_handler(task, **kw):
+    from server.app.worker.package import handle_export
+    return handle_export(task, **kw)
+
+
+def _import_package_handler(task, **kw):
+    from server.app.worker.package import handle_import_package
+    return handle_import_package(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -216,4 +228,6 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_RESCAN: _rescan_handler,    # W-014 AC-6 规则变更重跑
     TASK_IMPORT: _import_handler,    # W-010/012 数据导入
     TASK_REVIEW: _review_handler,    # W-021 实体裁决
+    TASK_EXPORT: _export_handler,    # W-028 案件包导出
+    TASK_IMPORT_PACKAGE: _import_package_handler,  # W-029 案件包导入
 }
