@@ -305,6 +305,63 @@ PENDING → RUNNING → SUCCEEDED
 
 ---
 
+## L. M6 前端配套补齐端点（W-P-001~017，2026-09 交付）
+
+> 实际前缀 `/api/v1`；下表写相对路径。鉴权/信封/错误码沿用第四部分。
+> 🔒=clearance≥2（require_analyst：偏将及以上或 human/system）；
+> 👑=仅平台 admin（is_admin=1 或 system）；⚡=202 入队长任务。
+> 未 BUILD 案件的读端点一律返回 `{available:false,…空结构}`，不 500；
+> 跨租户一律 404。
+
+### L.1 研判页配套（09/10/11/07/08/21/22）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/cases/{cid}/disposal/board` | W-P-001 五泳道看板（待查/查证中/已排除/已固证/已立案）+ 停留天数 + 超期（stale_days 缺省 14） |
+| GET | `/cases/{cid}/graph?node_limit=300&edge_limit=500` | W-P-004 图谱节点/边；节点 id 域 `"<obj>:<pk>"` |
+| POST | `/cases/{cid}/sources/{uid}/analyze` | W-P-002 同步列分析（置信度 exact 1.0/normalized 0.85/fuzzy 0.6；<0.70 低置信） |
+| PUT | `/cases/{cid}/sources/{uid}` | W-P-003 映射草稿保存（meta 层，导入时回落） |
+| GET | `/cases/{cid}/hypotheses` | W-P-005 庙算：heatmap 五间×三级别 5×3、coverage（声明/实证）、candidates top20（**无升格字段**）、内间 restricted 秩级过滤 |
+| GET | `/cases/{cid}/profiles?focus=&anchor_date=` | W-P-006 数据画像（gateway allow_stale；focus 缺省 person 前 10；无物化对象 available:false） |
+| GET | `/cases/{cid}/de-recommendations` | W-P-007 数据元建议列表（state） |
+| POST | `/cases/{cid}/de-recommendations` ⚡ | 生成建议（幂等：同 upload 已存在回 reused；进行中 409） |
+| POST | `/cases/{cid}/de-recommendations/{rid}/decide` ⚡ | 采纳/驳回（decision=adopt|reject，非法 400；**只记 state 不改 bindings**） |
+| POST | `/cases/{cid}/quality-checks` ⚡🔒 | W-P-008 质检（四扫描：合规/新鲜度/敏感词/单位；**heuristic 恒 suggest 不出 block**；进行中幂等回跳；无版本 400） |
+| GET | `/cases/{cid}/quality-checks/latest` | 最近质检（无记录 `{available:false}`） |
+| GET | `/cases/{cid}/quarantine?reason=&page=&page_size=` | W-P-009 隔离区（reason=cast_error|null_value|dedup|other，非法 400；零隔离必给非空 empty_message） |
+| GET | `/cases/{cid}/clean-trace?object=&page=&page_size=` | W-P-010 清洗留痕（按 object.property 聚合；rows_after=rows_before-dropped_rows） |
+
+### L.2 数据治理配置（18/19/20，案件快照级）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/cases/{cid}/data-elements` | W-P-011 快照 data_elements.json 直出 |
+| PUT | `/cases/{cid}/data-elements` 🔒 | 全量更新；**临时副本写新内容过 load_pack 校验，失败 400 不落盘**，成功 os.replace 原子写 + ops 审计 |
+| GET | `/cases/{cid}/etl-pipeline` | W-P-012 从 bindings 派生 sources（clean/on_cast_error/null_policy/dedup_key/dedup_on_conflict） |
+| PUT | `/cases/{cid}/etl-pipeline` 🔒 | 按 object 回写 bindings.json（同校验范式；body={sources:[…]}，形态错 400） |
+| POST | `/cases/{cid}/etl-pipeline/validate` | 映射预检（**不写盘**）：冲突 one_to_one（给 target_a/target_b）/unknown_prop/missing_column；`paths` 固定 A_split_source_sql、B_degrade_column；**响应无 force/ignore/continue** |
+
+### L.3 平台与门户（23b/24/25，不带 case_id）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/cases/{cid}/summary` | W-P-015 门户汇总：{case, data_version, todos{clues_pending,review_pending,anomalies_pending}, recent_tasks 前 5, health{chain_ok,degraded,diagnostics_warn}} |
+| POST | `/cases/{cid}/archive` ⚡🔒 | W-P-015 归档：非法状态迁移/重复归档 409；成功转已封存并入队 ARCHIVE 版本压实 |
+| POST | `/tasks/{tid}/cancel` | W-P-014 取消任务：**仅 PENDING**（RUNNING/终态 409）；创建人或 admin（非授权 403 + authz_failure 事件）；跨租户 404 |
+| GET/PUT | `/settings/queue` 👑 | W-P-013 队列配置；白名单 max_workers(1-16)、poll_interval_ms(≥10) |
+| GET/PUT | `/settings/resources` 👑 | 白名单 max_rows_default、query_timeout_ms；storage_root 只读出透传不可写 |
+| GET | `/settings/health` | 登录可读：{meta_ok, queue{pending,running}, worker{pool_alive:false,max_workers,poll_interval_ms}, versions} |
+| GET/PUT | `/settings/policies-thresholds` 👑 | W-P-017 平台默认阈值（cross_level_min_sources≥1、cross_level_min_clues≥2、stale_days 1-3650）；**平台值仅用于新案默认，生效以案件快照 thresholds.json 为准** |
+| GET | `/settings/snapshots` 👑 | 跨案件本体快照列表 |
+| GET/PUT | `/settings/features` 👑 | 白名单 ui_density（compact|comfortable）；**llm_enabled 等红线/安全键不在白名单 → 400** |
+
+平台设置写纪律（全部 /settings PUT）：仅 admin（非 admin 403 + authz_failure
+平台事件）、**reason 必填**（空 400）、白名单外键 400、区间/enum 越界 400、
+写后 record_platform_event("settings_change")；配置存 meta.settings_kv，
+不回灌既有案件快照。
+
+---
+
 # 第四部分：横切约定
 
 ## 4.1 鉴权与会话
