@@ -158,6 +158,98 @@ class IngestApiTest(unittest.TestCase):
             files={"file": ("木马.exe", b"MZ\x90\x00")})
         self.assertEqual(r.status_code, 400)
 
+    def test_upload_semicolon_csv_split_columns(self):
+        """分号分隔 CSV（中文 Excel/银行导出常见）：表头不得塌成一列。
+
+        回归：read_table 曾硬编码 sep=','，分号分隔文件的整行表头
+        "日期;主体;对方;金额" 被当成单个列名，向导映射页只剩一个源列选项，
+        四个声明列全部退化为 60% 模糊匹配。
+        """
+        content = "日期;主体;对方;金额\n" + "\n".join(
+            f"2026-03-{28 + i:02d};张某{i};李某{i};{10000 * (i + 1)}"
+            for i in range(3)) + "\n"
+        up = self._upload("流水分号.csv", content.encode("utf-8"))
+        self.assertEqual(up["rows"], 3)
+        self.assertEqual(set(up["columns"]),
+                         {"日期", "主体", "对方", "金额"})
+        # analyze：四列精确命中，不再退化为整列模糊 60%
+        r = self.client.post(
+            f"/api/v1/cases/c1/sources/{up['upload_id']}/analyze",
+            headers=self.auth_h, json={})
+        self.assertEqual(r.status_code, 200, r.text)
+        sug = r.json()["data"]["suggestion"]
+        self.assertEqual(sug["target_table"], "银行流水")
+        match_types = {m["target_prop"]: m["match_type"]
+                       for m in sug["matches"]}
+        for col in FLOW_COLS:
+            self.assertEqual(match_types.get(col), "exact", col)
+        self.assertEqual(sug["missing_required"], [])
+
+    def test_upload_parquet_nulls_not_literal_nan(self):
+        """Parquet 空值不得字符串化为字面量 "nan"（与 CSV 空串口径一致）。
+
+        回归：read_parquet(...).astype(str) 把 null/None/NaT 全部变成
+        "nan" 文本，污染列画像并随冷层落地（主体名变 "nan"、数值列
+        TRY_CAST 误报）。
+        """
+        df = pd.DataFrame({
+            "付款方": ["张某0", None, "张某2"],
+            "收款方": ["李某0", "李某1", None],
+            "金额（元）": ["10000", None, "30000"],
+            "交易日期": ["2026-03-28", "2026-03-29", None],
+        })
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        up = self._upload("流水.parquet", buf.getvalue())
+        self.assertEqual(up["rows"], 3)
+        # 列画像：样本不得出现字面量 "nan"/"None"
+        for col, prof in up["columns"].items():
+            self.assertNotIn("nan", prof["samples"], col)
+            self.assertNotIn("None", prof["samples"], col)
+        # 端到端导入冷层：空值落为空（null/空串），不是 "nan"
+        r = self._import(up["upload_id"])
+        self.assertEqual(r.status_code, 200, r.text)
+        self._drain()
+        cold = pd.read_parquet(
+            self.factory.case_dir("c1") / "cold" / "银行流水.parquet")
+        lit = cold.fillna("").astype(str)
+        self.assertFalse((lit == "nan").any().any(), "冷层出现字面量 nan")
+        self.assertFalse((lit == "None").any().any(), "冷层出现字面量 None")
+        # 非空值完好
+        self.assertIn("张某0", set(cold["主体"].dropna()))
+        self.assertIn("李某1", set(cold["对方"].dropna()))
+
+    def test_upload_json_nulls_jsonl_content_and_suffix(self):
+        """JSON 三形态：records 含 null 归一空串 / .json 内容实为 JSONL /
+        .jsonl 后缀放行。"""
+        # 1) records 数组 + null
+        payload = json.dumps([
+            {"付款方": "张某0", "收款方": "李某0",
+             "金额（元）": "10000", "交易日期": "2026-03-28"},
+            {"付款方": None, "收款方": "李某1",
+             "金额（元）": None, "交易日期": "2026-03-29"},
+        ], ensure_ascii=False)
+        up = self._upload("流水.json", payload.encode("utf-8"))
+        self.assertEqual(up["format"], "json")
+        self.assertEqual(up["rows"], 2)
+        for col, prof in up["columns"].items():
+            self.assertNotIn("nan", prof["samples"], col)
+        # 2) .json 后缀但内容是行分隔 JSONL（暂存统一改名 .json，靠内容双试）
+        jsonl = (
+            '{"付款方":"张某0","收款方":"李某0","金额（元）":"10000",'
+            '"交易日期":"2026-03-28"}\n'
+            '{"付款方":"张某1","收款方":"李某1","金额（元）":"20000",'
+            '"交易日期":"2026-03-29"}\n'
+        )
+        up2 = self._upload("流水行.json", jsonl.encode("utf-8"))
+        self.assertEqual(up2["rows"], 2)
+        self.assertEqual(set(up2["columns"]),
+                         {"付款方", "收款方", "金额（元）", "交易日期"})
+        # 3) .jsonl 后缀直接放行
+        up3 = self._upload("流水.jsonl", jsonl.encode("utf-8"))
+        self.assertEqual(up3["format"], "json")
+        self.assertEqual(up3["rows"], 2)
+
     # ------------------------------------------------------------------
     # 端到端：导入→冷层→BUILD→语义表
     # ------------------------------------------------------------------

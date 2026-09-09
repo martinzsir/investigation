@@ -227,7 +227,7 @@ function reset(): void {
               <input
                 ref="fileInput"
                 type="file"
-                accept=".csv,.xlsx,.xls,.parquet,.json,.sqlite,.db"
+                accept=".csv,.tsv,.txt,.xlsx,.xls,.parquet,.pq,.json,.ndjson,.jsonl,.sqlite,.db,.sqlite3"
                 style="display:none"
                 @change="onFileChange"
               />

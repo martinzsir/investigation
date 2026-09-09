@@ -13,6 +13,7 @@ W-010/012 数据接入：五格式解析、指纹、列画像、冷层 parquet �
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import os
 import shutil
@@ -25,13 +26,32 @@ SUPPORTED_FORMATS = {
     ".csv": "csv", ".tsv": "csv", ".txt": "csv",
     ".xlsx": "excel", ".xls": "excel",
     ".parquet": "parquet", ".pq": "parquet",
-    ".json": "json", ".ndjson": "json",
+    ".json": "json", ".ndjson": "json", ".jsonl": "json",
     ".db": "sqlite", ".sqlite": "sqlite", ".sqlite3": "sqlite",
 }
 
 
 def sniff_format(filename: str) -> str | None:
     return SUPPORTED_FORMATS.get(Path(filename).suffix.lower())
+
+
+def sniff_csv_sep(path: Path) -> str:
+    """嗅探文本分隔符（逗号/分号/制表符/管道四选一）。
+
+    中文 Windows 环境下 Excel 另存或银行导出的 CSV 常为分号分隔（区域
+    设置中小数点用逗号时分隔符被迫改用分号）；若硬按逗号拆列，整行表头
+    会塌成一列（如 "日期;主体;对方;金额"），向导映射页只剩一个源列选项。
+    嗅探失败/空文件/单列无分隔符时回落逗号。
+    """
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace",
+                  newline="") as f:
+            sample = f.read(8192)
+        if not sample.strip():
+            return ","
+        return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+    except (csv.Error, OSError):
+        return ","
 
 
 def sha256_file(path: Path) -> str:
@@ -53,21 +73,40 @@ def fingerprint(filename: str, content_hash: str, rows: int) -> str:
     return h.hexdigest()[:24]
 
 
+def _stringify(df: pd.DataFrame) -> pd.DataFrame:
+    """读入后统一字符串化：NaN/NaT/None 归一为空串。
+
+    parquet/json/sqlite 路径若直接 astype(str)，空值会变成字面量 "nan"
+    （float NaN）/"None"（object None），污染列画像（null_rate/samples）并
+    随冷层落地——主体名变 "nan"、数值/日期列 TRY_CAST 全部误报降级。
+    CSV 路径以 keep_default_na=False 读入空值即空串，本函数把其余格式
+    拉齐到同一口径（StringDtype 保留 <NA>，fillna 后转普通 str）。
+    """
+    return df.astype("string").fillna("").astype(str)
+
+
 def read_table(path: Path, fmt: str) -> pd.DataFrame:
     """五格式 → DataFrame（统一 str 友好：SQLite 取第一张表）。"""
     if fmt == "csv":
-        sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        return pd.read_csv(path, sep=sep, dtype=str, keep_default_na=False)
+        if path.suffix.lower() == ".tsv":
+            sep = "\t"
+        else:
+            sep = sniff_csv_sep(path)
+        return pd.read_csv(path, sep=sep, dtype=str, keep_default_na=False,
+                           encoding="utf-8-sig")
     if fmt == "excel":
         return pd.read_excel(path, dtype=str, keep_default_na=False,
                              engine="openpyxl")
     if fmt == "parquet":
-        return pd.read_parquet(path).astype(str)
+        return _stringify(pd.read_parquet(path))
     if fmt == "json":
+        # 暂存文件统一改名 .json，无法靠后缀区分 JSONL；按内容双试：
+        # 整文件 JSON（records 数组/columns 对象）先行，行分隔 JSONL 回落
+        # （lines=False 对 JSONL 报 "Trailing data"）。
         try:
-            return pd.read_json(path, dtype=str, lines=path.suffix.lower() == ".ndjson")
+            return _stringify(pd.read_json(path, dtype=str, lines=False))
         except ValueError:
-            return pd.read_json(path, dtype=str)
+            return _stringify(pd.read_json(path, dtype=str, lines=True))
     if fmt == "sqlite":
         # 走 pandas+sqlalchemy 的 sqlite URI（不在本文件出现直连字面量，
         # 符合"store/ 外不得直连数据库"的静态门禁）。
@@ -75,8 +114,7 @@ def read_table(path: Path, fmt: str) -> pd.DataFrame:
         name = pd.read_sql_query(
             "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
             uri).iloc[0, 0]
-        return pd.read_sql_query(
-            f'SELECT * FROM "{name}"', uri).astype(str)
+        return _stringify(pd.read_sql_query(f'SELECT * FROM "{name}"', uri))
     raise ValueError(f"不支持的格式：{fmt}")
 
 
