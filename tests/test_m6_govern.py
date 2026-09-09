@@ -374,6 +374,67 @@ class M6GovernTest(unittest.TestCase):
                              headers=self.auth_l, json={"reason": "x"})
         self.assertEqual(r.status_code, 404, r.text)
 
+    # ---- 失败/已取消任务重试（POST /tasks/{id}/retry）----
+    def test_014b_retry_failed_build_creates_new_task(self):
+        tid = self._enqueue(self.auth_h)
+        # PENDING（非终态）不可重试 → 409
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.repo.fail_task(tid, error_code="BUILD_FAIL", error_message="boom")
+
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertNotEqual(d["id"], tid)            # 新任务 id
+        self.assertEqual(d["task_type"], "BUILD")
+        self.assertEqual(d["status"], "PENDING")
+        self.assertEqual(d["idem_key"], "")          # 不沿用旧幂等键
+        self.assertEqual(d["created_by"], "王检察官")
+        # 旧任务保留 FAILED 留痕；新任务可被 Worker 认领
+        self.assertEqual(self.repo.get_task(tid).status, "FAILED")
+        self.assertTrue(self.repo.claim_task(d["id"]))
+        # 同一条旧任务可再次重试（每次都是独立新任务）
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_014b_retry_permissions_and_tenant(self):
+        tid = self._enqueue(self.auth_s)
+        self.repo.fail_task(tid, error_code="X", error_message="boom")
+        # 非创建人、非 admin → 403
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 403, r.text)
+        # 跨租户 → 404（先于权限判断）
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_l)
+        self.assertEqual(r.status_code, 404, r.text)
+        # admin 可重试他人任务，新任务发起人记 admin
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_a)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["data"]["created_by"], "赵管理")
+
+    def test_014b_retry_cancelled_build(self):
+        tid = self._enqueue(self.auth_h)
+        r = self.client.post(f"{API}/tasks/{tid}/cancel", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertEqual(d["status"], "PENDING")
+        self.assertEqual(d["task_type"], "BUILD")
+        self.assertEqual(self.repo.get_task(tid).status, "CANCELLED")
+
+    def test_014b_retry_import_missing_upload(self):
+        # IMPORT 重试：params 指向不存在的上传件登记 → 404
+        r = self.client.post(f"{API}/cases/c1/tasks", headers=self.auth_h,
+                             json={"task_type": "IMPORT",
+                                   "params": {"upload_id": "up_nope",
+                                              "target_table": "通话记录",
+                                              "column_map": {}}})
+        self.assertEqual(r.status_code, 200, r.text)
+        tid = r.json()["data"]["id"]
+        self.repo.fail_task(tid, error_code="X", error_message="boom")
+        r = self.client.post(f"{API}/tasks/{tid}/retry", headers=self.auth_h)
+        self.assertEqual(r.status_code, 404, r.text)
+
     # ---- W-P-015 门户汇总 + 归档 ----
     def test_015_summary_unbuilt(self):
         r = self.client.get(f"{API}/cases/c1/summary", headers=self.auth_a)

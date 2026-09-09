@@ -8,13 +8,15 @@ import {
   NSpin, NButton, NInput, NSelect, useMessage,
 } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
+import { useAuthStore } from '../stores/auth'
 import { tasksApi } from '../api/endpoints/tasks'
 import { taskEvents } from '../api/sse'
 import type { StreamHandle } from '../api/transport/types'
 import { presentError } from '../api/errors'
 import {
   isActive, isTerminal, mergeProgress, taskTypeLabel,
-  TASK_STATUS_META, reconnectHint, type TaskRow, type TaskStats,
+  TASK_STATUS_META, reconnectHint, canRetry,
+  type TaskRow, type TaskStats,
 } from '../domain/task'
 import { PAGE_SIZE_DEFAULT, totalPages, clampPage, jumpPageError } from '../domain/pagination'
 import TaskProgressCard from '../components/task/TaskProgressCard.vue'
@@ -22,6 +24,7 @@ import MetricCard from '../components/common/MetricCard.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 
 const cs = useCaseStore()
+const auth = useAuthStore()
 const message = useMessage()
 
 const loading = ref(false)
@@ -220,6 +223,29 @@ async function onCancel(id: string): Promise<void> {
   }
 }
 
+/** 重试按钮 loading 态（按旧任务 id 跟踪） */
+const retrying = ref<Set<string>>(new Set())
+
+/** 与后端同口径：仅任务创建人或管理员可重试 */
+function canRetryTask(t: TaskRow): boolean {
+  return canRetry(t.status) && (t.created_by === auth.operator || auth.isAdmin)
+}
+
+async function onRetry(t: TaskRow): Promise<void> {
+  retrying.value = new Set(retrying.value).add(t.id)
+  try {
+    const nt = await tasksApi.retry(t.id)
+    message.success(`「${taskTypeLabel(t.task_type)}」已重新入队（新任务 ${nt.id}）`, { duration: 5000 })
+    await reload()
+  } catch (e) {
+    message.error(presentError(e).title)
+  } finally {
+    const rest = new Set(retrying.value)
+    rest.delete(t.id)
+    retrying.value = rest
+  }
+}
+
 function fmtTime(s: string): string {
   return s ? s.replace('T', ' ').slice(0, 19) : '—'
 }
@@ -288,7 +314,7 @@ function fmtTime(s: string): string {
               <thead>
                 <tr>
                   <th>任务 ID</th><th>类型</th><th>状态</th><th>进度</th>
-                  <th>明细 / 错误</th><th>创建人</th><th>更新时间</th>
+                  <th>明细 / 错误</th><th>创建人</th><th>更新时间</th><th class="row-actions">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -309,6 +335,19 @@ function fmtTime(s: string): string {
                   </td>
                   <td class="dim">{{ t.created_by || '—' }}</td>
                   <td class="mono dim">{{ fmtTime(t.updated_at || t.created_at) }}</td>
+                  <td class="row-actions">
+                    <NButton
+                      v-if="canRetryTask(t)"
+                      size="tiny"
+                      type="warning"
+                      ghost
+                      :loading="retrying.has(t.id)"
+                      @click="onRetry(t)"
+                    >
+                      重试
+                    </NButton>
+                    <span v-else class="dim">—</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -367,6 +406,7 @@ function fmtTime(s: string): string {
 .dim { color: var(--sun-text-tertiary); }
 .err-text { color: var(--sun-error-text); }
 .detail-cell { max-width: 360px; }
+.row-actions { white-space: nowrap; text-align: center; }
 .status-badge {
   display: inline-block; font-size: 11px; padding: 0 8px; border-radius: 10px; border: 1px solid;
 }

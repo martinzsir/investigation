@@ -6,7 +6,7 @@ import { setTransport } from '../src/api/transport'
 import { clearToken } from '../src/api/token'
 import { FakeTransport, okEnvelope } from './helpers'
 import {
-  isActive, isTerminal, canCancel, mergeProgress, normPct, isIndeterminate,
+  isActive, isTerminal, canCancel, canRetry, mergeProgress, normPct, isIndeterminate,
   taskStats, reconnectHint, failureSummary, taskTypeLabel, type TaskRow,
 } from '../src/domain/task'
 import {
@@ -128,6 +128,14 @@ describe('任务状态机与统计', () => {
     expect(canCancel('PENDING')).toBe(true)
     expect(canCancel('RUNNING')).toBe(false)
     expect(canCancel('SUCCEEDED')).toBe(false)
+  })
+
+  it('可重试判定：仅 FAILED / CANCELLED', () => {
+    expect(canRetry('FAILED')).toBe(true)
+    expect(canRetry('CANCELLED')).toBe(true)
+    expect(canRetry('PENDING')).toBe(false)
+    expect(canRetry('RUNNING')).toBe(false)
+    expect(canRetry('SUCCEEDED')).toBe(false)
   })
 
   it('taskStats 五统计 + 失败摘要含 error_code 与重试次数', () => {
@@ -312,6 +320,19 @@ describe('MVP-3 API 契约', () => {
     expect(fake.calls[0].headers?.['Idempotency-Key']).toBeTruthy()
   })
 
+  it('tasksApi.retry → POST /tasks/:id/retry 带幂等键，返回新任务', async () => {
+    const fake = new FakeTransport([
+      { match: (r) => r.path.includes('/retry'), respond: () => okEnvelope(task({ id: 't-new', status: 'PENDING', idem_key: '' })) },
+    ])
+    setTransport(fake)
+    const nt = await tasksApi.retry('t-old')
+    expect(fake.calls[0].method).toBe('POST')
+    expect(fake.calls[0].path).toContain('/tasks/t-old/retry')
+    expect(fake.calls[0].headers?.['Idempotency-Key']).toBeTruthy()
+    expect(nt.id).toBe('t-new')
+    expect(nt.status).toBe('PENDING')
+  })
+
   it('sourcesApi.import → POST column_map 为 {源列:声明列}，带幂等键', async () => {
     const fake = new FakeTransport([
       { match: (r) => r.path.includes('/import'), respond: () => okEnvelope(task({ id: 't-import' })) },
@@ -347,6 +368,16 @@ describe('MVP-3 页面结构红线', () => {
     expect(s).toContain('reconnectHint')
     expect(s).toContain('taskEvents')
     expect(s).toContain('PAGE_SIZE_DEFAULT')
+  })
+
+  it('TaskCenterView：失败/已取消任务可重试（创建人/admin 闸门 + 操作列）', () => {
+    const s = view('views/TaskCenterView.vue')
+    expect(s).toContain('tasksApi.retry')
+    expect(s).toContain('canRetryTask')
+    // 与后端同口径：创建人或管理员
+    expect(s).toContain("t.created_by === auth.operator || auth.isAdmin")
+    // 操作列与点击处理
+    expect(s).toContain('@click="onRetry(t)"')
   })
 
   it('TaskCenterView：分页栏常驻（共 N 条）+ 跳页，单页不再整体隐藏', () => {

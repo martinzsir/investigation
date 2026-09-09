@@ -74,6 +74,20 @@ export const tasksApi = {
     return res.data
   },
 
+  /**
+   * POST /tasks/{tid}/retry 🔒 仅 FAILED/CANCELLED 可重试；创建人或 admin。
+   * 返回的是新任务（新 id、PENDING、空幂等键），旧任务保留终态留痕。
+   */
+  async retry(taskId: string): Promise<TaskRow> {
+    const res = await api.post<TaskRow>(
+      `/tasks/${encodeURIComponent(taskId)}/retry`,
+      {},
+      { idempotencyAction: `task-retry:${taskId}` },
+    )
+    noteDataVersion(res.data.case_id, res.dataVersion)
+    return res.data
+  },
+
   /** GET /tasks/{tid}/events（SSE 订阅，自动重连由 transport 内建） */
   stream(taskId: string, handlers: TaskStreamHandlers): StreamHandle {
     return streamTaskEvents(taskId, handlers)

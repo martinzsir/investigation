@@ -26,11 +26,16 @@ from server.app.envelope import (
     APIError,
     ok,
 )
-from server.app.meta.models import TASK_PENDING, TaskRow
+from server.app.meta.models import (
+    TASK_CANCELLED,
+    TASK_FAILED,
+    TASK_PENDING,
+    TaskRow,
+)
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.sse import sse_response
-from server.app.worker.tasks import HANDLERS, TASK_BUILD, enqueue_task
+from server.app.worker.tasks import HANDLERS, TASK_BUILD, TASK_IMPORT, enqueue_task
 
 router = APIRouter(tags=["tasks"])
 
@@ -188,3 +193,53 @@ def cancel_task(task_id: str, body: CancelIn = CancelIn(),
                         {"task_id": task_id, "by": p.operator,
                          "reason": body.reason})
     return ok({"task_id": task_id, "status": updated.status})
+
+
+@router.post("/tasks/{task_id}/retry")
+def retry_task(task_id: str, p: Principal = Depends(get_principal),
+               ctx: WebContext = Depends(get_ctx)):
+    """重试终态任务：仅 FAILED/CANCELLED 可调。
+
+    - 新建同类型同参数的新任务（新 task_id、空幂等键），旧任务保留留痕，
+      新任务 created_by 为发起人；权限=任务创建人或 admin（与取消同口径）；
+    - IMPORT 额外要求：上传件登记仍在、uploads 暂存原件仍在，且把源状态
+      重置为 queued（与首次导入同口径）；暂存件丢失须重新上传；
+    - 链式 BUILD 的幂等键按 upload_id 生成，FAILED IMPORT 未走到入队
+      BUILD 一步，重试不会撞到旧终态行。
+    """
+    task = _get_owned_task(task_id, p, ctx)
+    user = ctx.repo.get_user(p.operator)
+    is_admin = (user is not None and user.is_admin == 1) or p.role == "system"
+    if task.created_by != p.operator and not is_admin:
+        ctx.repo.record_platform_event(
+            "authz_failure", operator=p.operator, tenant_id=p.tenant_id,
+            detail={"endpoint": f"/tasks/{task_id}/retry",
+                    "reason": "非创建人且非管理员"})
+        raise APIError(ERR_FORBIDDEN, "仅任务创建人或管理员可重试", 403)
+    if task.status not in (TASK_FAILED, TASK_CANCELLED):
+        raise APIError(ERR_CONFLICT,
+                       f"任务状态为 {task.status}，仅失败（FAILED）或已取消"
+                       f"（CANCELLED）的任务可重试", 409)
+
+    if task.task_type == TASK_IMPORT:
+        upload_id = (task.params or {}).get("upload_id", "")
+        src = ctx.repo.get_source(task.case_id, upload_id)
+        if src is None:
+            raise APIError(ERR_NOT_FOUND, f"上传件不存在：{upload_id}", 404)
+        staged = (ctx.factory.case_dir(task.case_id) / "uploads"
+                  / f"{upload_id}.{src['fmt']}")
+        if not staged.exists():
+            raise APIError(ERR_CONFLICT,
+                           "原始暂存文件已不存在，无法重试，请重新上传", 409)
+        ctx.repo.set_source_status(task.case_id, upload_id, "queued")
+
+    new_task = enqueue_task(
+        ctx.repo, case_id=task.case_id, task_type=task.task_type,
+        params=dict(task.params or {}), idem_key="",
+        created_by=p.operator)
+    ctx.repo.record_ops("task_retry", task.case_id,
+                        {"old_task_id": task_id,
+                         "new_task_id": new_task.id,
+                         "by": p.operator, "task_type": task.task_type})
+    return ok(task_dto(new_task),
+              data_version=ctx.repo.current_version(task.case_id))

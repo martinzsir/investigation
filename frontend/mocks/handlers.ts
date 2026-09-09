@@ -834,6 +834,29 @@ export const handlers = [
     return ok({ task_id: t.id, status: 'CANCELLED' })
   }),
 
+  // 重试终态任务：新任务（新 id / PENDING / 空幂等键），旧任务保留
+  http.post('*/api/v1/tasks/:tid/retry', ({ params }) => {
+    const t = findTask(String(params.tid))
+    if (!t) return fail('NOT_FOUND', `任务不存在：${params.tid}`, 404)
+    if (t.status !== 'FAILED' && t.status !== 'CANCELLED') {
+      return fail('CONFLICT', `任务状态为 ${t.status}，仅失败或已取消的任务可重试`, 409)
+    }
+    taskSeq += 1
+    const nt: MockTask = {
+      ...t,
+      id: `task-r-${taskSeq}`,
+      status: 'PENDING',
+      progress_pct: 0, progress_stage: '', progress_label: '', progress_detail: '',
+      retry_count: 0, idem_key: '',
+      created_at: '2026-09-10T09:00:00', updated_at: '2026-09-10T09:00:00',
+      started_at: '', finished_at: '', error_code: '', error_message: '',
+      created_by: '王检察官',
+    }
+    mockTasks[t.case_id] = mockTasks[t.case_id] ?? []
+    mockTasks[t.case_id].push(nt)
+    return ok({ ...nt })
+  }),
+
   // SSE：脚本化进度流（progress → terminal），终态帧后关闭
   http.get('*/api/v1/tasks/:tid/events', ({ params }) => {
     const tid = String(params.tid)

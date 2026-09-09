@@ -47,6 +47,11 @@ export function canCancel(status: TaskStatus | string): boolean {
   return status === 'PENDING'
 }
 
+/** 可重试：失败或已取消（后端 POST /tasks/:id/retry 门控；创建人或 admin） */
+export function canRetry(status: TaskStatus | string): boolean {
+  return status === 'FAILED' || status === 'CANCELLED'
+}
+
 export function isFailed(status: TaskStatus | string): boolean {
   return status === 'FAILED'
 }
