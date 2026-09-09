@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // FE-P-007 数据画像（MVP-2）：列级空值率/ distinct / 画像分、书写变体、扣分明细。
-// 后端 /profiles 待补（⛔）——当前由 MSW mock 供演示；真后端无数据时走
-// 「尚未接入数据源」空态（非红线功能，允许 mock）。
-import { computed, ref, watch } from 'vue'
+// 后端 GET /cases/{cid}/profiles 已实现（六层报告），前端 adaptProfile 适配。
+// 案件未 BUILD → available:false → 「尚未接入数据源」空态。
+import { ref, watch } from 'vue'
 import { NSpin, NButton } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { profileApi } from '../api/endpoints/profile'
@@ -26,8 +26,8 @@ async function load(): Promise<void> {
   notAvailable.value = false
   try {
     data.value = await profileApi.get(cs.currentCaseId)
+    if (!data.value.available) notAvailable.value = true
   } catch {
-    // 后端端点未就绪/案件未接入：统一空态（不弹错误，属待补能力）
     data.value = null
     notAvailable.value = true
   } finally {
@@ -37,10 +37,9 @@ async function load(): Promise<void> {
 
 watch(() => cs.currentCaseId, load, { immediate: true })
 
-const maxDist = computed(() =>
-  Math.max(1, ...(data.value?.variants.flatMap((v) => v.distribution.map((d) => d.count)) ?? [1])),
-)
-const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低' }
+const sevLabel: Record<string, string> = {
+  block: '阻断', warn: '告警', high: '高', medium: '中', low: '低',
+}
 </script>
 
 <template>
@@ -60,26 +59,26 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
 
       <NSpin :show="loading">
         <EmptyState
-          v-if="!loading && (notAvailable || !data)"
+          v-if="!loading && (notAvailable || !data || !data.available)"
           type="empty"
           title="尚未接入数据源"
-          desc="数据画像端点（GET /profiles）待后端补齐；接入数据源并完成 BUILD 后，将展示列级空值率、书写变体与扣分明细"
+          desc="案件尚未导入数据或未完成 BUILD；接入数据源并完成 BUILD 后，将展示列级空值率、书写变体与扣分明细"
         />
-        <template v-else-if="data">
+        <template v-else-if="data && data.available">
           <div class="metrics">
             <MetricCard label="整库画像分" :value="data.overall_score.toFixed(1)" tone="ok" />
-            <MetricCard label="已接入数据源" :value="data.source_count" unit="个" tone="cyan" />
+            <MetricCard label="已物化对象" :value="data.source_count" unit="个" tone="cyan" />
             <MetricCard label="问题项" :value="data.issue_count" unit="项" tone="warn" />
-            <MetricCard label="已对齐实体" :value="data.aligned_entities" unit="个" tone="info" />
+            <MetricCard label="关注实体" :value="data.aligned_entities" unit="个" tone="info" />
           </div>
 
           <section class="panel">
-            <h3>属性画像</h3>
+            <h3>属性画像（L1/L2）</h3>
             <table class="p-table">
               <thead>
                 <tr>
                   <th>对象</th><th>属性</th><th>值类型</th><th>空值率</th><th>distinct</th>
-                  <th>混装</th><th style="width:160px">画像分</th><th>问题标签</th>
+                  <th>混装</th><th style="width:160px">列评分</th><th>问题标签</th>
                 </tr>
               </thead>
               <tbody>
@@ -107,7 +106,7 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
                   </td>
                   <td>
                     <span v-for="t in c.issues" :key="t" class="issue-tag">{{ t }}</span>
-                    <span v-if="!c.issues.length" class="dim">—</span>
+                    <span v-if="!c.issues.length" class="dim">{{ c.status === 'ok' ? '—' : c.status }}</span>
                   </td>
                 </tr>
               </tbody>
@@ -116,34 +115,28 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
 
           <div class="two-col">
             <section class="panel">
-              <h3>实体书写变体</h3>
-              <div v-for="v in data.variants" :key="v.canonical" class="variant-group">
+              <h3>书写变体候选</h3>
+              <p v-if="!data.variants.length" class="dim hint">无可连接属性的变体候选</p>
+              <div v-for="v in data.variants" :key="`${v.object}.${v.prop}`" class="variant-group">
                 <p class="variant-title">
-                  {{ v.group }} · <b>{{ v.canonical }}</b>
+                  <span class="mono">{{ v.object }}.{{ v.prop }}</span>
                 </p>
-                <div class="variant-chips">
-                  <code v-for="name in v.variants" :key="name" class="variant-chip">{{ name }}</code>
-                </div>
-                <div class="dist">
-                  <div v-for="d in v.distribution" :key="d.value" class="dist-row">
-                    <span class="dist-label">{{ d.value }}</span>
-                    <div class="dist-track">
-                      <div class="dist-fill" :style="{ width: `${(d.count / maxDist) * 100}%` }" />
-                    </div>
-                    <span class="dist-count mono">{{ d.count }}</span>
-                  </div>
+                <div class="variant-stats">
+                  <span class="vstat" title="规则轨：同语言异写（拼音/编辑距离相似）">规则 {{ v.rule_count }}</span>
+                  <span class="vstat" title="别名轨：case_knowledge 命中">别名 {{ v.alias_count }}</span>
+                  <span class="vstat total">合计 {{ v.total }}</span>
                 </div>
               </div>
             </section>
 
             <section class="panel">
-              <h3>扣分明细</h3>
+              <h3>扣分明细（L5）</h3>
               <table class="p-table">
                 <thead>
-                  <tr><th>范围</th><th>代码</th><th>原因</th><th>严重度</th></tr>
+                  <tr><th>范围</th><th>代码</th><th>原因</th><th>严重度</th><th>扣分</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="d in data.deductions" :key="d.code">
+                  <tr v-for="(d, i) in data.deductions" :key="`${d.code}-${i}`">
                     <td class="dim">{{ d.scope }}</td>
                     <td class="mono">{{ d.ref }}<br /><b>{{ d.code }}</b></td>
                     <td>{{ d.reason }}</td>
@@ -152,6 +145,7 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
                         {{ sevLabel[d.severity] ?? d.severity }}
                       </span>
                     </td>
+                    <td class="mono" :class="d.points < 0 ? 'neg' : 'dim'">{{ d.points }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -225,15 +219,13 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
 .dim {
   color: var(--sun-text-tertiary);
 }
-.band--ok {
-  color: var(--sun-ok-text);
+.hint {
+  font-size: 12px;
+  padding: 8px 0;
 }
-.band--warn {
-  color: var(--sun-warn-text);
-}
-.band--error {
-  color: var(--sun-error-text);
-}
+.band--ok { color: var(--sun-ok-text); }
+.band--warn { color: var(--sun-warn-text); }
+.band--error { color: var(--sun-error-text); }
 .mix-warn {
   color: var(--sun-warn-text);
   font-size: 12px;
@@ -249,15 +241,9 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
   height: 100%;
   border-radius: 5px;
 }
-.score-fill.band--ok {
-  background: var(--sun-ok-border);
-}
-.score-fill.band--warn {
-  background: var(--sun-warn-border);
-}
-.score-fill.band--error {
-  background: var(--sun-error-border);
-}
+.score-fill.band--ok { background: var(--sun-ok-border); }
+.score-fill.band--warn { background: var(--sun-warn-border); }
+.score-fill.band--error { background: var(--sun-error-border); }
 .score-num {
   position: absolute;
   right: 6px;
@@ -290,14 +276,11 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
   font-size: 12px;
   color: var(--sun-text-secondary);
 }
-.variant-chips {
+.variant-stats {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 8px;
 }
-.variant-chip {
-  font-family: var(--sun-font-mono);
+.vstat {
   font-size: 11px;
   color: var(--sun-info-text);
   background: var(--sun-info-bg);
@@ -305,37 +288,10 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
   border-radius: 4px;
   padding: 1px 8px;
 }
-.dist-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 3px;
-}
-.dist-label {
-  width: 110px;
-  font-size: 11px;
-  color: var(--sun-text-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.dist-track {
-  flex: 1;
-  height: 8px;
-  background: var(--sun-input-bg);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.dist-fill {
-  height: 100%;
-  background: var(--sun-info-border);
-  border-radius: 4px;
-}
-.dist-count {
-  width: 40px;
-  text-align: right;
-  font-size: 11px;
-  color: var(--sun-text-secondary);
+.vstat.total {
+  color: var(--sun-warn-text);
+  background: var(--sun-warn-bg);
+  border-color: var(--sun-warn-border);
 }
 .sev-badge {
   display: inline-block;
@@ -343,5 +299,8 @@ const sevLabel: Record<string, string> = { high: '高', medium: '中', low: '低
   padding: 1px 10px;
   border-radius: 10px;
   border: 1px solid;
+}
+.neg {
+  color: var(--sun-error-text);
 }
 </style>

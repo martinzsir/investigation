@@ -53,12 +53,15 @@ async function loadFirst(): Promise<void> {
   loading.value = true
   errorMsg.value = ''
   try {
-    const q = await reviewApi.queue(cs.currentCaseId, 1, PAGE_SIZE)
+    const [q, hist] = await Promise.all([
+      reviewApi.queue(cs.currentCaseId, 1, PAGE_SIZE),
+      reviewApi.history(cs.currentCaseId).catch(() => ({ items: [], total: 0 })),
+    ])
     queue.value = q.items
     total.value = q.total
     serverPage.value = 1
     cursor.value = 0
-    history.value = q.history ?? []
+    history.value = q.history ?? hist.items
     loaded.value = true
     await loadEvidence()
   } catch (e) {
@@ -77,7 +80,7 @@ async function loadMore(): Promise<void> {
     queue.value = mergeQueuePage(queue.value, q)
     total.value = q.total
     serverPage.value += 1
-    if (q.history?.length) history.value = q.history
+    // history 由专用端点获取（不再从 queue 返回）
   } catch (e) {
     message.error(presentError(e).title)
   } finally {

@@ -309,6 +309,47 @@ class OrganizationResolver:
             "clusters": [c.to_dict() for c in clusters],
         }
 
+    def per_variant_attributes(self, entity_id: str) -> list[dict]:
+        """W-021b 证据详情：某簇各变体的属性值（供双栏对比）。
+
+        返回 [{"label": "组织名称", "values": {"蓝海贸易": "蓝海贸易",
+                    "蓝海贸易(上海)": "蓝海贸易(上海)"}, "basis": False}, ...]
+        basis=True 表示该属性是合并依据（与 evidence.common_* 对应）。
+        """
+        cluster = next((c for c in self.clusters() if c.entity_id == entity_id), None)
+        if cluster is None:
+            return []
+        recs = _records_for_cluster(cluster, self._records)
+        # 按 variant 名称分组（一个变体可能有多条记录，取第一条非空值）
+        by_variant: Dict[str, dict] = {}
+        for r in recs:
+            name = r.get("name", "")
+            if not name or name in by_variant:
+                continue
+            by_variant[name] = r
+
+        ATTR_DEFS = [
+            ("组织名称", "name", False, "common_names"),
+            ("统一社会信用代码", "credit_code", True, "common_credit_codes"),
+            ("法定代表人", "legal_rep", True, "common_legal_reps"),
+            ("注册地址", "address", True, "common_addresses"),
+            ("银行账号", "account", True, "common_accounts"),
+        ]
+        rows: list[dict] = []
+        for label, attr_key, is_basis, ev_key in ATTR_DEFS:
+            values: Dict[str, str] = {}
+            for vname, rec in by_variant.items():
+                val = rec.get(attr_key, "")
+                values[vname] = val if val else "—"
+            # basis: 该属性在 evidence.common_* 中有值（共享证据）
+            ev_list = getattr(cluster.evidence, ev_key, []) if is_basis else []
+            rows.append({
+                "label": label,
+                "values": values,
+                "basis": is_basis and bool(ev_list),
+            })
+        return rows
+
 
 def merge_entities(resolver: "OrganizationResolver", candidate_id: str) -> dict:
     """W-021 实体裁决：人工确认合并一个 needs_review 候选。

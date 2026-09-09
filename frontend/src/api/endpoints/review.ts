@@ -30,10 +30,32 @@ export interface ReviewQueue {
   note?: string
 }
 
-/** 证据详情双栏属性行（mock 扩展字段；后端 evidence 为聚合键值） */
+/** 证据详情双栏属性行（适配后；后端 per_variant_attributes 派生） */
 export interface ReviewAttributeRow extends CompareRow {
   mask?: 'phone' | 'idcard' | 'text'
   policy?: 'visible' | 'masked' | 'denied'
+}
+
+/** 后端 per_variant_attributes 原始行结构 */
+interface BackendAttributeRow {
+  label: string
+  values: Record<string, string>
+  basis: boolean
+}
+
+/** 后端原始证据响应（review_evidence 返回结构） */
+export interface ReviewEvidenceRaw {
+  candidate_id: string
+  canonical_name: string
+  variants: string[]
+  confidence: number
+  merge_reason: string
+  evidence: ReviewCandidate['evidence']
+  /** 后端 per_variant_attributes（W-021b） */
+  attributes?: BackendAttributeRow[]
+  /** mock 扩展：旧格式平坦行（mock 兼容） */
+  attributeRows?: ReviewAttributeRow[]
+  llm_inferences?: LlmInference[]
 }
 
 export interface ReviewEvidence {
@@ -43,9 +65,10 @@ export interface ReviewEvidence {
   confidence: number
   merge_reason: string
   evidence: ReviewCandidate['evidence']
-  attributes?: ReviewAttributeRow[]
-  /** LLM 判读参考（FE-C-023 三件套卡片；同源去重 FE-T-007 展示载体） */
-  llm_inferences?: LlmInference[]
+  /** 适配后的属性行（后端 evidence.common_* 派生，或 mock 直传） */
+  attributes: ReviewAttributeRow[]
+  /** LLM 判读参考（后端无此能力时为空数组） */
+  llm_inferences: LlmInference[]
 }
 
 export interface ReviewHistoryItem {
@@ -69,8 +92,74 @@ export interface ReviewDecisionResult {
   candidate_id: string
 }
 
+/** 后端 per_variant_attributes → 前端双栏对比行 */
+function adaptAttributes(
+  raw: BackendAttributeRow[] | undefined,
+  variants: string[],
+  ev: ReviewCandidate['evidence'],
+): ReviewAttributeRow[] {
+  // 优先用后端 per_variant_attributes（W-021b）
+  if (raw && raw.length > 0) {
+    // 取前两个变体做双栏对比（候选 vs 已归集）
+    const leftName = variants[0] ?? '候选'
+    const rightName = variants[1] ?? '已归集'
+    // 敏感属性遮蔽
+    const MASK_MAP: Record<string, 'text' | 'idcard'> = {
+      '统一社会信用代码': 'text',
+      '银行账号': 'text',
+    }
+    const POLICY_MAP: Record<string, 'visible' | 'masked'> = {
+      '统一社会信用代码': 'masked',
+      '银行账号': 'masked',
+    }
+    return raw.map((row) => ({
+      label: row.label,
+      left: row.values[leftName] ?? '—',
+      right: row.values[rightName] ?? '—',
+      basis: row.basis,
+      mask: MASK_MAP[row.label],
+      policy: POLICY_MAP[row.label],
+    }))
+  }
+  // 回落：从 evidence.common_* 派生（共享值，left=right）
+  if (!ev) return []
+  const rows: ReviewAttributeRow[] = []
+  const LABELS: Array<[keyof typeof ev, string, 'text' | 'idcard', 'visible' | 'masked']> = [
+    ['common_credit_codes', '统一社会信用代码', 'text', 'masked'],
+    ['common_legal_reps', '法定代表人', 'text', 'visible'],
+    ['common_addresses', '注册地址', 'text', 'visible'],
+    ['common_accounts', '共有账户', 'text', 'masked'],
+  ]
+  for (const [key, label, mask, policy] of LABELS) {
+    const vals = ev[key]
+    if (vals && vals.length > 0) {
+      const joined = vals.join(' / ')
+      rows.push({ label, left: joined, right: joined, mask, policy })
+    }
+  }
+  return rows
+}
+
+/** 后端原始响应 → 前端消费结构 */
+function adaptEvidence(raw: ReviewEvidenceRaw): ReviewEvidence {
+  return {
+    candidate_id: raw.candidate_id,
+    canonical_name: raw.canonical_name,
+    variants: raw.variants,
+    confidence: raw.confidence,
+    merge_reason: raw.merge_reason,
+    evidence: raw.evidence,
+    // mock 直传 attributeRows 优先（测试兼容），否则适配后端 attributes
+    attributes: raw.attributeRows ?? adaptAttributes(raw.attributes, raw.variants, raw.evidence),
+    llm_inferences: raw.llm_inferences ?? [],
+  }
+}
+
 export const reviewApi = {
-  /** GET /cases/{cid}/review/queue —— 待裁决候选队列（已裁决从 state.sqlite 排除） */
+  /**
+   * GET /cases/{cid}/review/queue —— 待裁决候选队列（服务端分页）。
+   * 已裁决候选从 state.sqlite 排除。
+   */
   async queue(caseId: string, page = 1, pageSize = 20): Promise<ReviewQueue> {
     const res = await api.get<ReviewQueue>(
       `/cases/${encodeURIComponent(caseId)}/review/queue?page=${page}&page_size=${pageSize}`,
@@ -79,13 +168,25 @@ export const reviewApi = {
     return res.data
   },
 
-  /** GET /cases/{cid}/review/{rid}/evidence —— 双栏对比证据 */
-  async evidence(caseId: string, rid: string): Promise<ReviewEvidence> {
-    const res = await api.get<ReviewEvidence>(
-      `/cases/${encodeURIComponent(caseId)}/review/${encodeURIComponent(rid)}/evidence`,
+  /**
+   * GET /cases/{cid}/review/history —— 已裁决记录（从 state.sqlite 读取）。
+   * 前端 VerdictView 初始化时获取，裁决后乐观更新。
+   */
+  async history(caseId: string): Promise<{ items: ReviewHistoryItem[]; total: number }> {
+    const res = await api.get<{ items: ReviewHistoryItem[]; total: number }>(
+      `/cases/${encodeURIComponent(caseId)}/review/history`,
     )
     noteDataVersion(caseId, res.dataVersion)
     return res.data
+  },
+
+  /** GET /cases/{cid}/review/{rid}/evidence —— 双栏对比证据（适配 common_* → attributes） */
+  async evidence(caseId: string, rid: string): Promise<ReviewEvidence> {
+    const res = await api.get<ReviewEvidenceRaw>(
+      `/cases/${encodeURIComponent(caseId)}/review/${encodeURIComponent(rid)}/evidence`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return adaptEvidence(res.data)
   },
 
   /**

@@ -660,7 +660,12 @@ export const handlers = [
       needs_review: c.needs_review,
       merge_reason: c.merge_reason,
     }))
-    return ok({ items, total: list.length, history: reviewHistory[cid] ?? [] })
+    return ok({ items, total: list.length, page, page_size: pageSize })
+  }),
+
+  http.get('*/api/v1/cases/:cid/review/history', ({ params }) => {
+    const cid = String(params.cid)
+    return ok({ items: reviewHistory[cid] ?? [], total: (reviewHistory[cid] ?? []).length })
   }),
 
   http.get('*/api/v1/cases/:cid/review/:rid/evidence', ({ params }) => {
@@ -675,7 +680,8 @@ export const handlers = [
       confidence: c.confidence,
       merge_reason: c.merge_reason,
       evidence: c.evidence,
-      attributes: c.attributes,
+      // mock 用 attributeRows 直传平坦行（adaptEvidence 直传不经适配器）
+      attributeRows: c.attributes,
       llm_inferences: c.llm_inferences ?? [],
     })
   }),
@@ -727,11 +733,12 @@ export const handlers = [
     return ok({ task_id: `task-${Date.now()}`, action: body.action, candidate_id: rid }, 200)
   }),
 
-  // ---------- 数据画像（FE-P-007；后端 /profiles 待补，mock 演示；c2 未接入 → 404 空态） ----------
+  // ---------- 数据画像（FE-P-007；后端已实现 profiles_view.assemble_profiles） ----------
+  // 后端返回六层报告结构；c2 未 BUILD → available:false（不 404，与后端一致）
 
   http.get('*/api/v1/cases/:cid/profiles', ({ params }) => {
     if (String(params.cid) !== 'c1') {
-      return fail('NOT_FOUND', '数据画像未接入：案件尚未 BUILD 或端点待补齐', 404)
+      return ok({ available: false, note: '尚未接入数据源（语义层未构建，先导入数据并 BUILD）' })
     }
     return ok(profileMock)
   }),
@@ -995,70 +1002,47 @@ const reviewHistory: Record<string, Array<{
   ],
 }
 
-// ---------- 数据画像 mock 数据（FE-P-007） ----------
+// ---------- 数据画像 mock 数据（与后端 profiles_view.assemble_profiles 同构） ----------
 
 const profileMock = {
-  overall_score: 98.7,
-  source_count: 156,
-  issue_count: 243,
-  aligned_entities: 1208,
-  columns: [
-    { object: 'obj_person', attribute: '姓名', value_type: 'string', null_rate: 0.002, distinct_count: 1180, mixed_type: false, score: 99, issues: [] },
-    { object: 'obj_person', attribute: '身份证号', value_type: 'string', null_rate: 0.061, distinct_count: 1175, mixed_type: false, score: 92, issues: ['空值偏高'] },
-    { object: 'obj_person', attribute: '手机号', value_type: 'string', null_rate: 0.183, distinct_count: 902, mixed_type: true, score: 68, issues: ['空值偏高', '混装值类型'] },
-    { object: 'obj_company', attribute: '统一社会信用代码', value_type: 'string', null_rate: 0.0, distinct_count: 320, mixed_type: false, score: 100, issues: [] },
-    { object: 'obj_company', attribute: '注册地址', value_type: 'string', null_rate: 0.044, distinct_count: 298, mixed_type: false, score: 94, issues: ['书写变体'] },
-    { object: 'obj_transaction', attribute: '交易金额', value_type: 'decimal', null_rate: 0.001, distinct_count: 8600, mixed_type: true, score: 72, issues: ['混装值类型', '单位不统一'] },
-    { object: 'obj_transaction', attribute: '交易时间', value_type: 'date', null_rate: 0.0, distinct_count: 9214, mixed_type: false, score: 97, issues: [] },
-    { object: 'obj_call', attribute: '通话时长', value_type: 'integer', null_rate: 0.214, distinct_count: 540, mixed_type: false, score: 61, issues: ['空值偏高'] },
+  available: true,
+  derived: true,
+  focus: ['蓝海贸易有限公司', '张伟'],
+  anchor_date: '2026-09-09',
+  pack: 'sunzi_default',
+  l0: 'not_applicable（物化后无文件层；L0 拓扑见 core.data_map.DataMap）',
+  l1_l2: [
+    { obj: 'person', prop: 'raw_name', declared_type: 'string', connectable: true, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 1208, non_null: 1205, null_rate: 0.002, distinct: 1180, samples: ['张伟', '李某某', '王某'] }, mixed: false, variants: { rule: 3, alias: 1 } },
+    { obj: 'person', prop: 'id_card', declared_type: 'string', connectable: true, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 1208, non_null: 1134, null_rate: 0.061, distinct: 1175, samples: ['310109****6633'] }, mixed: false },
+    { obj: 'person', prop: 'phone', declared_type: 'string', connectable: true, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 1208, non_null: 987, null_rate: 0.183, distinct: 902, samples: ['138****8888'] }, mixed: true, variants: { rule: 0, alias: 0 } },
+    { obj: 'company', prop: 'credit_code', declared_type: 'string', connectable: true, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 320, non_null: 320, null_rate: 0.0, distinct: 320, samples: ['91330104****XYZ'] }, mixed: false },
+    { obj: 'company', prop: 'address', declared_type: 'string', connectable: true, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 320, non_null: 306, null_rate: 0.044, distinct: 298, samples: ['富特北路211号'] }, mixed: false, variants: { rule: 2, alias: 1 } },
+    { obj: 'transaction', prop: 'amount', declared_type: 'decimal', connectable: false, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 9214, non_null: 9205, null_rate: 0.001, distinct: 8600, samples: ['50000.00'] }, mixed: true },
+    { obj: 'transaction', prop: 'txn_time', declared_type: 'date', connectable: false, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 9214, non_null: 9214, null_rate: 0.0, distinct: 9214, samples: ['2026-08-15'] }, mixed: false },
+    { obj: 'call', prop: 'duration', declared_type: 'integer', connectable: false, materialized_object: true, materialized_prop: true, status: 'ok', value_profile: { row_count: 2540, non_null: 1996, null_rate: 0.214, distinct: 540, samples: ['120'] }, mixed: false },
   ],
-  variants: [
-    {
-      canonical: '蓝海贸易有限公司',
-      group: '案件信息',
-      variants: ['蓝海贸易', '蓝海贸易（上海）', '上海蓝海贸易有限公司', '蓝海贸易商行'],
-      distribution: [
-        { value: '蓝海贸易有限公司', count: 86 },
-        { value: '蓝海贸易', count: 42 },
-        { value: '蓝海贸易（上海）', count: 17 },
-        { value: '上海蓝海贸易有限公司', count: 9 },
-      ],
-    },
-    {
-      canonical: '张伟',
-      group: '人员信息',
-      variants: ['張偉', '张伟（浦东）', '张伟（财务）'],
-      distribution: [
-        { value: '张伟', count: 120 },
-        { value: '張偉', count: 34 },
-        { value: '张伟（浦东）', count: 12 },
-      ],
-    },
-    {
-      canonical: '沪A·D88888',
-      group: '车辆信息',
-      variants: ['沪AD88888', '沪A-D88888', '沪A D88888'],
-      distribution: [
-        { value: '沪A·D88888', count: 28 },
-        { value: '沪AD88888', count: 11 },
-        { value: '沪A-D88888', count: 6 },
-      ],
-    },
-    {
-      canonical: '中国（上海）自由贸易试验区富特北路211号',
-      group: '地址',
-      variants: ['富特北路211号302室', '自贸区富特北路211号', '浦东新区富特北路211号'],
-      distribution: [
-        { value: '富特北路211号302室', count: 22 },
-        { value: '自贸区富特北路211号', count: 14 },
-        { value: '浦东新区富特北路211号', count: 8 },
-      ],
-    },
+  l3: [
+    { obj: 'person', prop: 'raw_name', metric: 'focus_hit_rate', status: 'ok', value: 0.92 },
+    { obj: 'person', prop: 'id_card', metric: 'focus_hit_rate', status: 'ok', value: 0.88 },
+    { obj: 'company', prop: 'address', metric: 'focus_hit_rate', status: 'ok', value: 0.76 },
   ],
-  deductions: [
-    { scope: 'obj_person.手机号', ref: 'obj_person#phone', code: 'DQ001', reason: '空值率 18.3% 超过阈值 5%，疑似源系统非必填字段', severity: 'high' as const },
-    { scope: 'obj_call.通话时长', ref: 'obj_call#duration', code: 'DQ002', reason: '空值率 21.4%，通话记录批量缺失时长字段', severity: 'high' as const },
-    { scope: 'obj_transaction.交易金额', ref: 'obj_transaction#amount', code: 'DQ003', reason: 'decimal 列混入字符串（"约5万"/"480000.00元"），TRY_CAST 降级 NULL', severity: 'medium' as const },
-    { scope: 'obj_company.注册地址', ref: 'obj_company#addr', code: 'DQ004', reason: '同一地址 4 种书写变体未对齐实体', severity: 'low' as const },
-  ],
+  l4: { person: 1, company: 2, transaction: 3, call: 4 },
+  l5: {
+    score: 79,
+    score_range: [79, 85],
+    deductions: [
+      { scope: 'prop', ref: 'person.phone', code: 'null_rate_high', reason: '空值率 18.3% 超过阈值 5%，疑似源系统非必填字段', severity: 'block', points: -10 },
+      { scope: 'prop', ref: 'call.duration', code: 'null_rate_high', reason: '空值率 21.4%，通话记录批量缺失时长字段', severity: 'block', points: -10 },
+      { scope: 'prop', ref: 'transaction.amount', code: 'mixed', reason: 'decimal 列混入字符串（"约5万"/"480000.00元"），TRY_CAST 降级 NULL', severity: 'block', points: -5 },
+      { scope: 'prop', ref: 'company.address', code: 'has_variants', reason: '同一地址 3 种书写变体未对齐实体', severity: 'warn', points: -5 },
+      { scope: 'prop', ref: 'person.phone', code: 'mixed', reason: '混装：落点 [phone, id_card]，归一落点不明确', severity: 'block', points: -5 },
+    ],
+    reviewable: true,
+    weights: { block: { null_rate_high: 10, mixed: 5 }, warn: { has_variants: 5 } },
+    note: '画像分 = 100 + Σ(扣分)，阻断项 -10/条，告警项 -5/条',
+  },
+  compliance: null,
+  params: { window_days: 90, anchor_date: '2026-09-09', focus_entities: ['蓝海贸易有限公司', '张伟'] },
+  health: { degraded: false, warnings: [] },
+  note: '六层画像（L0-L5）：L1/L2 列层/值层，L3 关注命中，L4 间分布，L5 质量分',
 }
