@@ -205,6 +205,53 @@ export interface ProfileData {
   deductions: ProfileDeduction[]
 }
 
+/** 属性行是否有问题（与画像表"问题"列口径一致：未物化/缺列/混装/复合/待确认/变体/扣分项） */
+export function columnHasIssue(c: ProfileColumn): boolean {
+  return c.status !== 'ok'
+    || c.mixed_type
+    || c.composite_suspect > 0
+    || c.needs_confirmation
+    || c.variants_rule + c.variants_alias > 0
+    || c.issues.length > 0
+}
+
+/** 对象分组（属性画像表按对象折叠） */
+export interface ProfileObjectGroup {
+  object: string
+  columns: ProfileColumn[]
+  /** 已物化（status=ok）属性数 */
+  live_count: number
+  /** 问题属性数（columnHasIssue 口径） */
+  issue_count: number
+}
+
+/**
+ * 按对象分组属性行：保持对象首次出现顺序与组内属性顺序（后端 l1_l2 已按
+ * 对象聚簇输出，此处不重排）。供属性画像表"同对象折叠、点开展开"。
+ */
+export function groupColumnsByObject(columns: ProfileColumn[]): ProfileObjectGroup[] {
+  const order: string[] = []
+  const map = new Map<string, ProfileColumn[]>()
+  for (const c of columns) {
+    let arr = map.get(c.object)
+    if (!arr) {
+      arr = []
+      map.set(c.object, arr)
+      order.push(c.object)
+    }
+    arr.push(c)
+  }
+  return order.map((object) => {
+    const cols = map.get(object)!
+    return {
+      object,
+      columns: cols,
+      live_count: cols.filter((c) => c.status === 'ok').length,
+      issue_count: cols.filter(columnHasIssue).length,
+    }
+  })
+}
+
 const METRIC_LABELS: Record<string, string> = {
   focus_hit_rate: '关注实体命中率',
   known_overlap_count: '与已知实体重合数',

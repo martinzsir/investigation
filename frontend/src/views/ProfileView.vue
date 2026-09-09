@@ -2,12 +2,12 @@
 // FE-P-007 数据画像（MVP-2）：六层报告（L1/L2 列层值层、L3 关注命中、L4 五间分布、L5 质量分）。
 // 后端 GET /cases/{cid}/profiles（profiles_view.assemble_profiles → OntologyProfiler.profile_all）。
 // 案件未 BUILD/无物化对象 → available:false → 「尚未接入数据源」空态。
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NSpin, NButton, NTooltip } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { profileApi } from '../api/endpoints/profile'
 import {
-  nullRateBand, scoreBand, severityBand, metricLabel,
+  nullRateBand, scoreBand, severityBand, metricLabel, groupColumnsByObject,
   type ProfileData, type ProfileColumn,
 } from '../domain/profile'
 import MetricCard from '../components/common/MetricCard.vue'
@@ -18,6 +18,30 @@ const cs = useCaseStore()
 const loading = ref(false)
 const notAvailable = ref(false)
 const data = ref<ProfileData | null>(null)
+
+// 属性画像按对象折叠：默认全部收起，点组头展开；换案件/刷新后重置为全折叠
+const collapsedObjects = ref<Set<string>>(new Set())
+const columnGroups = computed(() =>
+  data.value ? groupColumnsByObject(data.value.columns) : [])
+
+function toggleGroup(object: string): void {
+  const next = new Set(collapsedObjects.value)
+  if (next.has(object)) next.delete(object)
+  else next.add(object)
+  collapsedObjects.value = next
+}
+function expandAllGroups(): void {
+  collapsedObjects.value = new Set()
+}
+function collapseAllGroups(): void {
+  collapsedObjects.value = new Set(columnGroups.value.map((g) => g.object))
+}
+
+watch(data, (d) => {
+  collapsedObjects.value = d
+    ? new Set(groupColumnsByObject(d.columns).map((g) => g.object))
+    : new Set()
+})
 
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
@@ -138,7 +162,13 @@ function fmtMetric(v: number | null, metric: string): string {
 
           <!-- L1/L2 属性画像 -->
           <section class="panel">
-            <h3>属性画像（L1/L2 列层 / 值层）</h3>
+            <h3 class="l1l2-head">
+              属性画像（L1/L2 列层 / 值层）
+              <span class="grp-controls">
+                <button class="grp-link" @click="expandAllGroups">全部展开</button>
+                <button class="grp-link" @click="collapseAllGroups">全部折叠</button>
+              </span>
+            </h3>
             <div class="table-scroll">
               <table class="p-table">
                 <thead>
@@ -150,8 +180,25 @@ function fmtMetric(v: number | null, metric: string): string {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="c in data.columns" :key="`${c.object}.${c.attribute}`" :class="{ 'row--dead': isDead(c) }">
-                    <td class="mono">{{ c.object }}</td>
+                  <template v-for="g in columnGroups" :key="g.object">
+                    <tr class="group-row" @click="toggleGroup(g.object)">
+                      <td colspan="14">
+                        <span class="grp-arrow">{{ collapsedObjects.has(g.object) ? '▶' : '▼' }}</span>
+                        <span class="mono grp-name">{{ g.object }}</span>
+                        <span class="grp-badge">{{ g.columns.length }} 个属性</span>
+                        <span v-if="g.issue_count > 0" class="grp-badge grp-badge--issue">{{ g.issue_count }} 项问题</span>
+                        <span v-if="g.live_count < g.columns.length" class="grp-badge grp-badge--dead">
+                          {{ g.columns.length - g.live_count }} 未物化
+                        </span>
+                      </td>
+                    </tr>
+                    <tr
+                      v-for="c in g.columns"
+                      v-show="!collapsedObjects.has(g.object)"
+                      :key="`${c.object}.${c.attribute}`"
+                      :class="{ 'row--dead': isDead(c) }"
+                    >
+                    <td class="obj-cell"></td>
                     <td>{{ c.attribute }}</td>
                     <td class="mono dim">{{ c.value_type }}</td>
                     <td>
@@ -206,7 +253,8 @@ function fmtMetric(v: number | null, metric: string): string {
                       <span v-for="t in c.issues" :key="t" class="issue-tag">{{ t }}</span>
                       <span v-if="!c.mixed_type && !c.composite_suspect && !c.needs_confirmation && !c.variants_rule && !c.variants_alias && !c.issues.length && !isDead(c)" class="dim">—</span>
                     </td>
-                  </tr>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -308,6 +356,30 @@ function fmtMetric(v: number | null, metric: string): string {
 }
 .p-table td { padding: 7px 8px; border-bottom: 1px dashed rgba(16, 49, 74, 0.6); vertical-align: middle; }
 .row--dead { opacity: 0.55; }
+/* 对象分组折叠 */
+.l1l2-head { display: flex; align-items: center; gap: 12px; }
+.grp-controls { margin-left: auto; font-weight: 400; display: flex; gap: 10px; }
+.grp-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 12px; color: var(--sun-info-text);
+}
+.grp-link:hover { text-decoration: underline; }
+.group-row { cursor: pointer; background: var(--sun-input-bg); user-select: none; }
+.group-row:hover { background: var(--sun-hover-bg, rgba(64, 158, 255, 0.08)); }
+.group-row td { padding: 8px; border-bottom: 1px solid var(--sun-border); }
+.grp-arrow {
+  display: inline-block; width: 16px; font-size: 10px;
+  color: var(--sun-text-tertiary); transition: transform 0.1s;
+}
+.grp-name { font-weight: 600; margin-right: 10px; }
+.grp-badge {
+  display: inline-block; font-size: 11px; padding: 0 8px; margin-right: 6px;
+  border-radius: 10px; border: 1px solid var(--sun-border);
+  color: var(--sun-text-secondary); background: var(--sun-bg-card);
+}
+.grp-badge--issue { color: var(--sun-warn-text); border-color: var(--sun-warn-border); background: var(--sun-warn-bg); }
+.grp-badge--dead { color: var(--sun-text-tertiary); }
+.obj-cell { background: transparent; }
 .mono { font-family: var(--sun-font-mono); }
 .dim { color: var(--sun-text-tertiary); }
 .hint { font-size: 12px; padding: 8px 0; }

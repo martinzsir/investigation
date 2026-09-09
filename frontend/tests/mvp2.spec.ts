@@ -25,7 +25,10 @@ import {
   pageQuery,
   totalPages,
 } from '../src/domain/pagination'
-import { nullRateBand, scoreBand, severityBand } from '../src/domain/profile'
+import {
+  nullRateBand, scoreBand, severityBand,
+  groupColumnsByObject, columnHasIssue, type ProfileColumn,
+} from '../src/domain/profile'
 import { reviewApi } from '../src/api/endpoints/review'
 import type { ClueListItem } from '../src/api/endpoints/clues'
 
@@ -394,8 +397,66 @@ describe('MVP-2 页面结构红线', () => {
     expect(src).toContain('跳至')
   })
   it('LlmInferenceCard 三件套守卫 + 归属间标签', () => {
-    const src = readFileSync(comp('components/review/LlmInferenceCard.vue'), 'utf8')
-    expect(src).toContain('completeLlmInference')
-    expect(src).toContain('llm_model')
+     const src = readFileSync(comp('components/review/LlmInferenceCard.vue'), 'utf8')
+     expect(src).toContain('completeLlmInference')
+     expect(src).toContain('llm_model')
+   })
+ })
+
+// ---------- FE-P-007：属性画像按对象折叠分组 ----------
+
+describe('FE-P-007 属性画像 groupColumnsByObject 按对象折叠', () => {
+  const col = (object: string, attribute: string, over: Partial<ProfileColumn> = {}): ProfileColumn => ({
+    object, attribute,
+    value_type: 'string', connectable: false, status: 'ok',
+    row_count: 0, non_null: 0, null_rate: 0, distinct_count: 0, samples: [],
+    dropped_rows: null, clean_rule: null,
+    compliance_rate: null, compliance_element: null,
+    mixed_type: false, landing: [], needs_confirmation: false,
+    composite_suspect: 0, variants_rule: 0, variants_alias: 0,
+    score: 100, issues: [],
+    ...over,
+  })
+
+  it('空数组 → 空分组', () => {
+    expect(groupColumnsByObject([])).toEqual([])
+  })
+
+  it('保持对象首次出现顺序与组内属性顺序；live/issue 聚合计数', () => {
+    const groups = groupColumnsByObject([
+      col('person', 'name'),
+      col('call', 'caller_raw'),
+      col('person', 'id_no', { status: 'missing_column' }),
+      col('call', 'date', { issues: ['L5_NULL_HIGH'] }),
+      col('call', 'times'),
+    ])
+    expect(groups.map((g) => g.object)).toEqual(['person', 'call'])
+    expect(groups[0].columns.map((c) => c.attribute)).toEqual(['name', 'id_no'])
+    expect(groups[1].columns.map((c) => c.attribute)).toEqual(['caller_raw', 'date', 'times'])
+    // person：1 活 1 死（缺列同时计问题）
+    expect(groups[0].live_count).toBe(1)
+    expect(groups[0].issue_count).toBe(1)
+    // call：3 行全物化，date 有扣分 → 1 项问题
+    expect(groups[1].live_count).toBe(3)
+    expect(groups[1].issue_count).toBe(1)
+  })
+
+  it('columnHasIssue 口径：混装/复合/待确认/变体/缺列/扣分算问题，干净行不算', () => {
+    expect(columnHasIssue(col('x', 'a'))).toBe(false)
+    expect(columnHasIssue(col('x', 'a', { status: 'unmaterialized_object' }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { mixed_type: true }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { composite_suspect: 2 }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { needs_confirmation: true }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { variants_rule: 1 }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { variants_alias: 2 }))).toBe(true)
+    expect(columnHasIssue(col('x', 'a', { issues: ['L5_NULL_HIGH'] }))).toBe(true)
+  })
+
+  it('红线：ProfileView 属性画像表含分组折叠结构（组头行 + 全部展开/折叠）', () => {
+    const src = readFileSync(comp('views/ProfileView.vue'), 'utf8')
+    expect(src).toContain('group-row')
+    expect(src).toContain('toggleGroup')
+    expect(src).toContain('全部展开')
+    expect(src).toContain('全部折叠')
   })
 })
