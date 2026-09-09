@@ -53,8 +53,8 @@ const activeKey = computed(() => {
 
 <template>
   <div class="sidenav">
-    <div class="brand" :class="{ 'brand--collapsed': collapsed }">
-      <!-- 23b 品牌标：青色 Z（渐变填充，纯 SVG 内联，零外链） -->
+    <RouterLink to="/cases" class="brand" :class="{ 'brand--collapsed': collapsed }" title="案件门户">
+      <!-- 23b 品牌标：青色 Z（渐变填充，纯 SVG 内联，零外链）；点击回案件门户（平台页 /cases） -->
       <svg class="brand-mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <defs>
           <linearGradient id="brandZ" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
@@ -68,7 +68,7 @@ const activeKey = computed(() => {
         />
       </svg>
       <span v-if="!collapsed" class="brand-text">孙武侦查官</span>
-    </div>
+    </RouterLink>
     <NMenu
       :collapsed="collapsed"
       :options="options"
@@ -93,6 +93,8 @@ const activeKey = computed(() => {
   gap: 10px;
   padding: 0 16px;
   border-bottom: 1px solid var(--sun-border);
+  text-decoration: none;
+  cursor: pointer;
 }
 .brand--collapsed {
   justify-content: center;
