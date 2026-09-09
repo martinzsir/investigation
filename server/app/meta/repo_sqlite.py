@@ -496,6 +496,56 @@ class SqliteMetaRepo(MetaRepo):
         finally:
             conn.close()
 
+    @staticmethod
+    def _task_filters(case_ids, statuses, task_type):
+        """构造 tasks 表 WHERE 片段 + 参数（query/count 共用）。"""
+        sql = " WHERE 1=1"
+        args: list = []
+        if case_ids:
+            marks = ",".join("?" * len(case_ids))
+            sql += f" AND case_id IN ({marks})"
+            args.extend(case_ids)
+        if statuses:
+            marks = ",".join("?" * len(statuses))
+            sql += f" AND status IN ({marks})"
+            args.extend(statuses)
+        if task_type:
+            sql += " AND task_type=?"
+            args.append(task_type)
+        return sql, args
+
+    def query_tasks(self, *, case_ids=None, statuses=None, task_type=None,
+                    limit=50, offset=0) -> list[TaskRow]:
+        where, args = self._task_filters(case_ids, statuses, task_type)
+        sql = (f"SELECT * FROM tasks{where} "
+               "ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT ? OFFSET ?")
+        args.extend([max(1, limit), max(0, offset)])
+        conn = self._connect()
+        try:
+            return [self._task(r) for r in conn.execute(sql, args).fetchall()]
+        finally:
+            conn.close()
+
+    def count_tasks(self, *, case_ids=None, statuses=None, task_type=None) -> int:
+        where, args = self._task_filters(case_ids, statuses, task_type)
+        conn = self._connect()
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM tasks{where}", args).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def task_status_counts(self, *, case_ids=None) -> dict[str, int]:
+        where, args = self._task_filters(case_ids, None, None)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT status, COUNT(*) FROM tasks{where} GROUP BY status",
+                args).fetchall()
+            return {str(r[0]): int(r[1]) for r in rows}
+        finally:
+            conn.close()
+
     def list_leaseable(self) -> list[TaskRow]:
         """有 PENDING 且当前无 RUNNING 的案件优先，同案按创建时间 FIFO。"""
         sql = (

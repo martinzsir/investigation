@@ -71,20 +71,76 @@ def create_task(case_id: str, body: CreateTaskIn,
     return ok(task_dto(task), data_version=ctx.repo.current_version(case_id))
 
 
+_TASK_STATUSES = ("PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED")
+_STATUS_ALIAS = {"active": ("PENDING", "RUNNING")}
+
+
+def _parse_statuses(raw: str | None) -> list[str] | None:
+    """status 查询参数：逗号分隔；'active' 别名=排队+运行；非法值忽略。"""
+    if not raw:
+        return None
+    out: list[str] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if token in _STATUS_ALIAS:
+            out.extend(_STATUS_ALIAS[token])
+        elif token in _TASK_STATUSES:
+            out.append(token)
+    # 去重保序
+    seen: set[str] = set()
+    uniq = [s for s in out if not (s in seen or seen.add(s))]
+    return uniq or None
+
+
 @router.get("/tasks")
 def list_tasks(case_id: str | None = None,
+               status: str | None = None,
+               task_type: str | None = None,
+               page: int = 1,
+               page_size: int = 50,
                p: Principal = Depends(get_principal),
                ctx: WebContext = Depends(get_ctx)):
-    case_ids: list[str] = []
+    """W-P-024 任务列表：服务端分页 + 状态/类型过滤。
+    返回 {items,total,page,page_size,stats}；stats 为该范围全状态计数（不受过滤影响）。"""
     if case_id is not None:
         _get_owned_case(case_id, p, ctx.cases)
         case_ids = [case_id]
     else:
         case_ids = [c.id for c in ctx.cases.list_cases(p.tenant_id)]
-    rows: list[TaskRow] = []
-    for cid in case_ids:
-        rows.extend(ctx.repo.list_tasks(case_id=cid))
-    return ok([task_dto(t) for t in rows])
+
+    statuses = _parse_statuses(status)
+    page = max(1, page)
+    page_size = min(max(1, page_size), 200)
+
+    rows = ctx.repo.query_tasks(
+        case_ids=case_ids, statuses=statuses,
+        task_type=task_type or None,
+        limit=page_size, offset=(page - 1) * page_size)
+    total = ctx.repo.count_tasks(
+        case_ids=case_ids, statuses=statuses, task_type=task_type or None)
+
+    counts = ctx.repo.task_status_counts(case_ids=case_ids)
+    pending = counts.get("PENDING", 0)
+    running = counts.get("RUNNING", 0)
+    stats = {
+        "total": sum(counts.get(s, 0) for s in _TASK_STATUSES),
+        "pending": pending,
+        "running": running,
+        "active": pending + running,
+        "succeeded": counts.get("SUCCEEDED", 0),
+        "failed": counts.get("FAILED", 0),
+        "cancelled": counts.get("CANCELLED", 0),
+    }
+
+    return ok({
+        "items": [task_dto(t) for t in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "stats": stats,
+    }, data_version=ctx.repo.current_version(case_id) if case_id else None)
 
 
 @router.get("/tasks/{task_id}")

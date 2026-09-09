@@ -79,6 +79,24 @@ class MetaRepo(ABC):
                    status: str | None = None, limit: int = 100) -> list[TaskRow]: ...
 
     @abstractmethod
+    def query_tasks(self, *, case_ids: list[str] | None = None,
+                    statuses: list[str] | None = None,
+                    task_type: str | None = None,
+                    limit: int = 50, offset: int = 0) -> list[TaskRow]:
+        """分页任务查询（W-P-024）：多状态/类型过滤 + offset 分页，
+        按 updated_at/created_at 倒序。case_ids 为空表示不限案件。"""
+
+    @abstractmethod
+    def count_tasks(self, *, case_ids: list[str] | None = None,
+                    statuses: list[str] | None = None,
+                    task_type: str | None = None) -> int:
+        """与 query_tasks 同条件的总数（分页 total）。"""
+
+    @abstractmethod
+    def task_status_counts(self, *, case_ids: list[str] | None = None) -> dict[str, int]:
+        """按状态分组计数（任务中心五统计），不受 status/task_type 过滤。"""
+
+    @abstractmethod
     def list_leaseable(self) -> list[TaskRow]:
         """可认领任务：所属案件当前无 RUNNING 任务的 PENDING，按创建时间 FIFO。"""
 

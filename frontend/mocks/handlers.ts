@@ -742,6 +742,237 @@ export const handlers = [
     }
     return ok(profileMock)
   }),
+
+  // ---------- MVP-3 任务中心（tasks，服务端分页 + 状态/类型过滤）----------
+  http.get('*/api/v1/tasks', ({ request }) => {
+    const url = new URL(request.url)
+    const cid = url.searchParams.get('case_id') ?? ''
+    const status = url.searchParams.get('status')
+    const taskType = url.searchParams.get('task_type')
+    const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1)
+    const pageSize = Math.min(200, Math.max(1, parseInt(url.searchParams.get('page_size') ?? '50', 10) || 50))
+
+    const all = [...(mockTasks[cid] ?? [])]
+    const cnt = (s: string) => all.filter((t) => t.status === s).length
+    const stats = {
+      total: all.length,
+      pending: cnt('PENDING'), running: cnt('RUNNING'),
+      active: cnt('PENDING') + cnt('RUNNING'),
+      succeeded: cnt('SUCCEEDED'), failed: cnt('FAILED'), cancelled: cnt('CANCELLED'),
+    }
+
+    let list = all
+    if (status) {
+      const statuses = new Set<string>()
+      for (const part of status.split(',')) {
+        const tok = part.trim()
+        if (tok === 'active') { statuses.add('PENDING'); statuses.add('RUNNING') }
+        else if (['PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED'].includes(tok)) statuses.add(tok)
+      }
+      if (statuses.size) list = list.filter((t) => statuses.has(t.status))
+    }
+    if (taskType) list = list.filter((t) => t.task_type === taskType)
+    list.sort((a, b) => (b.updated_at || b.created_at).localeCompare(a.updated_at || a.created_at))
+
+    const total = list.length
+    const start = (page - 1) * pageSize
+    const items = list.slice(start, start + pageSize).map((t) => ({ ...t }))
+    return ok({ items, total, page, page_size: pageSize, stats })
+  }),
+
+  http.post('*/api/v1/cases/:cid/tasks', async ({ params, request }) => {
+    const body = (await request.json()) as { task_type?: string; params?: Record<string, unknown> }
+    const cid = String(params.cid)
+    const t = makeTask(cid, body.task_type ?? 'BUILD', body.params ?? {})
+    return ok(t)
+  }),
+
+  http.get('*/api/v1/tasks/:tid', ({ params }) => {
+    const t = findTask(String(params.tid))
+    if (!t) return fail('NOT_FOUND', `任务不存在：${params.tid}`, 404)
+    return ok({ ...t })
+  }),
+
+  http.post('*/api/v1/tasks/:tid/cancel', async ({ params }) => {
+    const t = findTask(String(params.tid))
+    if (!t) return fail('NOT_FOUND', `任务不存在：${params.tid}`, 404)
+    if (t.status !== 'PENDING') return fail('CONFLICT', `任务状态为 ${t.status}，仅排队中可取消`, 409)
+    t.status = 'CANCELLED'
+    t.finished_at = '2026-09-09T11:00:00'
+    return ok({ task_id: t.id, status: 'CANCELLED' })
+  }),
+
+  // SSE：脚本化进度流（progress → terminal），终态帧后关闭
+  http.get('*/api/v1/tasks/:tid/events', ({ params }) => {
+    const tid = String(params.tid)
+    const t = findTask(tid)
+    if (!t) return fail('NOT_FOUND', `任务不存在：${tid}`, 404)
+    const encoder = new TextEncoder()
+    const frame = (seq: number, event: string, data: unknown) =>
+      `id: ${seq}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+    const stream = new ReadableStream({
+      start(controller) {
+        let seq = 0
+        const send = (event: string, data: unknown) => {
+          seq += 1
+          controller.enqueue(encoder.encode(frame(seq, event, data)))
+        }
+        const close = () => {
+          try { controller.close() } catch { /* noop */ }
+        }
+        if (t.status === 'SUCCEEDED' || t.status === 'FAILED' || t.status === 'CANCELLED') {
+          send('terminal', t)
+          close()
+          return
+        }
+        // 进行中：脚本推进
+        const isImport = t.task_type === 'IMPORT'
+        const stages: Array<[number, string, string, string]> = isImport
+          ? [
+              [20, 'parse', '解析数据', t.params.filename ? String(t.params.filename) : '读取上传件'],
+              [60, 'cold', '写冷层 parquet', String(t.params.target_table ?? '银行流水')],
+              [100, 'done', '导入完成', `${t.params.target_table ?? '银行流水'} 1203 行 → BUILD 已入队`],
+            ]
+          : [
+              [30, 'prepare', '准备构建', '目标 v3（基线 v2）'],
+              [70, 'align', '实体对齐', '已对齐 243 / 待确认 6'],
+              [100, 'done', '构建完成', '语义层 v3 已生成'],
+            ]
+        stages.forEach(([pct, stage, label, detail], i) => {
+          setTimeout(() => {
+            t.status = 'RUNNING'
+            t.progress_pct = pct
+            t.progress_stage = stage
+            t.progress_label = label
+            t.progress_detail = detail
+            send('progress', { ...t })
+            if (i === stages.length - 1) {
+              setTimeout(() => {
+                t.status = 'SUCCEEDED'
+                t.finished_at = '2026-09-09T11:05:00'
+                send('terminal', { ...t })
+                close()
+              }, 700)
+            }
+          }, 800 * (i + 1))
+        })
+      },
+    })
+    return new HttpResponse(stream, {
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' },
+    })
+  }),
+
+  // ---------- MVP-3 数据接入（sources）----------
+  http.post('*/api/v1/cases/:cid/sources/upload', async ({ params, request }) => {
+    const cid = String(params.cid)
+    let filename = 'upload.csv'
+    try {
+      const fd = await request.formData()
+      const f = fd.get('file')
+      if (f && f instanceof File) filename = f.name
+    } catch { /* noop */ }
+    const ext = (filename.split('.').pop() ?? '').toLowerCase()
+    const supported = ['csv', 'xlsx', 'xls', 'parquet', 'json', 'sqlite', 'db']
+    if (!supported.includes(ext)) {
+      return fail('VALIDATION', `不支持的文件类型：${filename}（支持 CSV/Excel/Parquet/JSON/SQLite）`, 400)
+    }
+    const uid = `up_${Math.random().toString(16).slice(2, 12)}`
+    const src = {
+      upload_id: uid, filename, format: ext === 'xls' ? 'excel' : ext,
+      fingerprint: `fp_${filename}_sha256_${Math.random().toString(16).slice(2, 10)}_1203`,
+      rows: 1203, status: 'staged',
+      columns: bankSourceColumns(),
+      declared_tables: bankDeclaredTablesDict(),
+    }
+    mockSources[cid] = mockSources[cid] ?? []
+    mockSources[cid].push({ ...src, created_by: '王检察官', created_at: '2026-09-09 10:58:00' })
+    return ok(src)
+  }),
+
+  http.get('*/api/v1/cases/:cid/sources', ({ params }) => {
+    const items = mockSources[String(params.cid)] ?? []
+    return ok({ items, total: items.length })
+  }),
+
+  http.post('*/api/v1/cases/:cid/sources/:uid/analyze', ({ params }) => {
+    const cid = String(params.cid)
+    const src = (mockSources[cid] ?? []).find((s) => s.upload_id === params.uid)
+    if (!src) return fail('NOT_FOUND', `上传件不存在：${params.uid}`, 404)
+    return ok({
+      upload_id: String(params.uid),
+      filename: src.filename,
+      format: src.format,
+      row_count: src.rows,
+      sha256: src.fingerprint,
+      fingerprint: src.fingerprint,
+      columns: bankSourceColumns(),
+      declared_tables: bankDeclaredTablesView(),
+      suggestion: bankSuggestion(),
+      element_hints: [],
+    })
+  }),
+
+  http.put('*/api/v1/cases/:cid/sources/:uid', async ({ params, request }) => {
+    const cid = String(params.cid)
+    const src = (mockSources[cid] ?? []).find((s) => s.upload_id === params.uid)
+    if (!src) return fail('NOT_FOUND', `上传件不存在：${params.uid}`, 404)
+    const body = (await request.json()) as { target_table?: string }
+    if (body.target_table && !(body.target_table in bankDeclaredTablesDict())) {
+      return fail('VALIDATION', `目标源表未在 bindings 声明`, 400)
+    }
+    return ok(src)
+  }),
+
+  http.post('*/api/v1/cases/:cid/sources/:uid/import', async ({ params, request }) => {
+    const cid = String(params.cid)
+    const uid = String(params.uid)
+    const src = (mockSources[cid] ?? []).find((s) => s.upload_id === uid)
+    if (!src) return fail('NOT_FOUND', `上传件不存在：${uid}`, 404)
+    // 指纹幂等：同源已 queued/imported → 409
+    const dup = (mockTasks[cid] ?? []).find(
+      (t) => t.task_type === 'IMPORT' && (t.params.upload_id as string) !== uid && t.status === 'RUNNING',
+    )
+    if (dup) {
+      return fail('CONFLICT', `相同数据源已在导入（upload_id=${dup.params.upload_id}，指纹=${src.fingerprint}，状态=queued）`, 409)
+    }
+    const body = (await request.json()) as { target_table?: string; column_map?: Record<string, string> }
+    const task = makeTask(cid, 'IMPORT', {
+      upload_id: uid, target_table: body.target_table ?? '银行流水',
+      column_map: body.column_map ?? {}, filename: src.filename,
+    })
+    task.status = 'RUNNING'
+    task.progress_pct = 0
+    src.status = 'queued'
+    return ok(task)
+  }),
+
+  // ---------- MVP-3 接入建议（de-recommendations）----------
+  http.get('*/api/v1/cases/:cid/de-recommendations', ({ params }) => {
+    if (String(params.cid) !== 'c1') return ok({ items: [], total: 0 })
+    return ok({ items: mockDeRecos, total: mockDeRecos.length })
+  }),
+
+  http.post('*/api/v1/cases/:cid/de-recommendations', async ({ params }) => {
+    const cid = String(params.cid)
+    const t = makeTask(cid, 'DE_RECOMMEND', {})
+    return HttpResponse.json({ ok: true, data: t, data_version: 1 }, { status: 202 })
+  }),
+
+  http.post('*/api/v1/cases/:cid/de-recommendations/:rid/decide', async ({ params, request }) => {
+    const rid = String(params.rid)
+    const reco = mockDeRecos.find((r) => r.rid === rid)
+    if (!reco) return fail('NOT_FOUND', `推荐不存在：${rid}`, 404)
+    const body = (await request.json()) as { decision?: string }
+    if (body.decision !== 'adopt' && body.decision !== 'reject') {
+      return fail('VALIDATION', 'decision 非法：需 adopt|reject', 400)
+    }
+    reco.status = body.decision === 'adopt' ? '采纳' : '驳回'
+    reco.decided_by = '王检察官'
+    reco.decided_at = '2026-09-09 11:10:00'
+    const t = makeTask(String(params.cid), 'DE_RECO_DECIDE', { rid, decision: body.decision })
+    return HttpResponse.json({ ok: true, data: t, data_version: 1 }, { status: 202 })
+  }),
 ]
 
 // ---------- 实体裁决 mock 数据 ----------
@@ -1066,3 +1297,230 @@ const profileMock = {
   health: { degraded: false, warnings: [] },
   note: '结论均为【待核实】候选；画像只观察不写回，启发式扣分（肯定式识别/变体）可人工推翻',
 }
+
+// ---------- MVP-3 任务/接入 mock 数据 ----------
+
+interface MockTask {
+  id: string
+  case_id: string
+  task_type: string
+  params: Record<string, unknown>
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
+  progress_pct: number
+  progress_stage: string
+  progress_label: string
+  progress_detail: string
+  retry_count: number
+  max_retries: number
+  idem_key: string
+  created_at: string
+  updated_at: string
+  started_at: string
+  finished_at: string
+  error_code: string
+  error_message: string
+  created_by: string
+}
+
+interface MockSource {
+  upload_id: string
+  filename: string
+  format: string
+  fingerprint: string
+  rows: number
+  status: string
+  columns: Array<{ name: string; inferred_type?: string; null_rate?: number; distinct?: number; samples?: string[] }>
+  declared_tables: Record<string, string[]>
+  created_by: string
+  created_at: string
+}
+
+let taskSeq = 1000
+function makeTask(cid: string, taskType: string, params: Record<string, unknown>): MockTask {
+  taskSeq += 1
+  const id = `task-${taskSeq}`
+  const t: MockTask = {
+    id, case_id: cid, task_type: taskType, params,
+    status: 'PENDING', progress_pct: 0, progress_stage: '', progress_label: '', progress_detail: '',
+    retry_count: 0, max_retries: 3, idem_key: `idem-${id}`,
+    created_at: '2026-09-09T10:59:00', updated_at: '2026-09-09T10:59:00',
+    started_at: '', finished_at: '', error_code: '', error_message: '', created_by: '王检察官',
+  }
+  mockTasks[cid] = mockTasks[cid] ?? []
+  mockTasks[cid].push(t)
+  return t
+}
+
+function findTask(tid: string): MockTask | undefined {
+  for (const list of Object.values(mockTasks)) {
+    const found = list.find((t) => t.id === tid)
+    if (found) return found
+  }
+  return undefined
+}
+
+const mockTasks: Record<string, MockTask[]> = {
+  c1: [
+    {
+      id: 'task-0901', case_id: 'c1', task_type: 'BUILD', params: { target_version: 'v3', base_version: 'v2' },
+      status: 'SUCCEEDED', progress_pct: 100, progress_stage: 'done', progress_label: '构建完成',
+      progress_detail: '语义层 v3 已生成（目标 v3，基线 v2）', retry_count: 0, max_retries: 3,
+      idem_key: 'idem-0901', created_at: '2026-09-09T09:30:00', updated_at: '2026-09-09T09:32:10',
+      started_at: '2026-09-09T09:30:05', finished_at: '2026-09-09T09:32:10', error_code: '', error_message: '',
+      created_by: '王检察官',
+    },
+    {
+      id: 'task-0902', case_id: 'c1', task_type: 'IMPORT', params: { target_table: '银行流水', filename: '银行流水_8月.csv' },
+      status: 'SUCCEEDED', progress_pct: 100, progress_stage: 'done', progress_label: '导入完成',
+      progress_detail: '银行流水 1203 行 → BUILD 已入队', retry_count: 0, max_retries: 3,
+      idem_key: 'idem-0902', created_at: '2026-09-09T09:10:00', updated_at: '2026-09-09T09:11:40',
+      started_at: '2026-09-09T09:10:03', finished_at: '2026-09-09T09:11:40', error_code: '', error_message: '',
+      created_by: '王检察官',
+    },
+    {
+      id: 'task-0903', case_id: 'c1', task_type: 'IMPORT', params: { target_table: '通话记录', filename: '通话记录_破损.xlsx' },
+      status: 'FAILED', progress_pct: 40, progress_stage: 'parse', progress_label: '解析数据',
+      progress_detail: '通话记录_破损.xlsx 第 7 行列数不一致', retry_count: 2, max_retries: 3,
+      idem_key: 'idem-0903', created_at: '2026-09-09T08:50:00', updated_at: '2026-09-09T08:51:20',
+      started_at: '2026-09-09T08:50:05', finished_at: '2026-09-09T08:51:20',
+      error_code: 'IMPORT_PARSE', error_message: '文件解析失败：第 7 行列数与表头不一致',
+      created_by: '张助理',
+    },
+    {
+      id: 'task-0904', case_id: 'c1', task_type: 'QUALITY_CHECK', params: {},
+      status: 'CANCELLED', progress_pct: 15, progress_stage: 'prepare', progress_label: '准备扫描',
+      progress_detail: '用户取消', retry_count: 0, max_retries: 3,
+      idem_key: 'idem-0904', created_at: '2026-09-09T08:20:00', updated_at: '2026-09-09T08:20:30',
+      started_at: '', finished_at: '2026-09-09T08:20:30', error_code: '', error_message: '',
+      created_by: '王检察官',
+    },
+    {
+      id: 'task-0905', case_id: 'c1', task_type: 'DISPOSE', params: { clue_id: 'CLUE-003' },
+      status: 'SUCCEEDED', progress_pct: 100, progress_stage: 'done', progress_label: '处置完成',
+      progress_detail: '线索处置已记录', retry_count: 0, max_retries: 3,
+      idem_key: 'idem-0905', created_at: '2026-09-09T10:00:00', updated_at: '2026-09-09T10:00:02',
+      started_at: '2026-09-09T10:00:01', finished_at: '2026-09-09T10:00:02', error_code: '', error_message: '',
+      created_by: '王检察官',
+    },
+  ],
+}
+
+// 分页演示：补足 55 条 8 月历史终态任务（终态不进「进行中」区、不触发 SSE），
+// 使 c1 历史表达 60 条 / 2 页（page_size=50），任务中心分页栏可见可翻。
+;(() => {
+  const histTables = ['银行流水', '通话记录', '招投标', '轨迹']
+  for (let i = 0; i < 55; i++) {
+    const day = String(1 + Math.floor(i / 3)).padStart(2, '0')
+    const hh = String(9 + (i % 9)).padStart(2, '0')
+    const mm = String((i * 13) % 60).padStart(2, '0')
+    const ts = `2026-08-${day}T${hh}:${mm}:00`
+    const type = i % 3 === 0 ? 'IMPORT' : i % 3 === 1 ? 'BUILD' : 'QUALITY_CHECK'
+    const failed = i % 17 === 4
+    const cancelled = !failed && i % 23 === 7
+    const status = failed ? 'FAILED' : cancelled ? 'CANCELLED' : 'SUCCEEDED'
+    const table = histTables[i % histTables.length]
+    const ver = 2 + (i % 3)
+    const params = type === 'IMPORT'
+      ? { target_table: table, filename: `${table}_8月.csv` }
+      : type === 'BUILD'
+        ? { target_version: `v${ver}`, base_version: `v${ver - 1}` }
+        : {}
+    const doneDetail = type === 'IMPORT'
+      ? `${table} ${800 + i * 7} 行 → BUILD 已入队`
+      : type === 'BUILD' ? `语义层 v${ver} 已生成` : '质量扫描完成'
+    const doneLabel = type === 'IMPORT' ? '导入完成' : type === 'BUILD' ? '构建完成' : '扫描完成'
+    mockTasks.c1.push({
+      id: `task-h${String(i + 1).padStart(2, '0')}`,
+      case_id: 'c1', task_type: type, params,
+      status,
+      progress_pct: status === 'SUCCEEDED' ? 100 : status === 'FAILED' ? 40 + (i % 30) : 15,
+      progress_stage: status === 'SUCCEEDED' ? 'done' : status === 'FAILED' ? 'parse' : 'prepare',
+      progress_label: status === 'SUCCEEDED' ? doneLabel : status === 'FAILED' ? '解析数据' : '准备扫描',
+      progress_detail: status === 'FAILED'
+        ? `${table}_8月.csv 第 ${10 + i} 行列数不一致`
+        : status === 'CANCELLED' ? '用户取消' : doneDetail,
+      retry_count: failed ? 2 : 0, max_retries: 3,
+      idem_key: `idem-h${i + 1}`,
+      created_at: ts, updated_at: ts,
+      started_at: cancelled ? '' : ts,
+      finished_at: ts,
+      error_code: failed
+        ? (type === 'IMPORT' ? 'IMPORT_PARSE' : type === 'BUILD' ? 'BUILD_ALIGN' : 'QC_FAILED')
+        : '',
+      error_message: failed ? `文件解析失败：第 ${10 + i} 行列数与表头不一致` : '',
+      created_by: i % 4 === 0 ? '张助理' : '王检察官',
+    })
+  }
+})()
+
+const mockSources: Record<string, MockSource[]> = {}
+
+function bankSourceColumns() {
+  return [
+    { name: '交易时间', inferred_type: 'date', null_rate: 0.0, distinct: 360, samples: ['2026-08-21 10:14:22'] },
+    { name: '付款方名称', inferred_type: 'string', null_rate: 0.0, distinct: 88, samples: ['蓝海贸易有限公司'] },
+    { name: '收款方', inferred_type: 'string', null_rate: 0.0, distinct: 102, samples: ['张某'] },
+    { name: '交易金额', inferred_type: 'decimal', null_rate: 0.01, distinct: 980, samples: ['480000.00'] },
+    { name: '对方账号', inferred_type: 'string', null_rate: 0.03, distinct: 130, samples: ['6222****8843'] },
+    { name: '备注', inferred_type: 'string', null_rate: 0.42, distinct: 60, samples: ['货款'] },
+  ]
+}
+
+function bankDeclaredTablesDict(): Record<string, string[]> {
+  return { 银行流水: ['交易时间', '付款方', '收款方', '金额', '摘要'], 通话记录: ['通话时间', '主叫', '被叫', '通话时长'] }
+}
+
+function bankDeclaredTablesView() {
+  return [
+    { name: '银行流水', title: '银行流水', required_columns: ['交易时间', '付款方', '收款方', '金额', '摘要'], optional_columns: ['对方账号', '备注'] },
+    { name: '通话记录', title: '通话记录', required_columns: ['通话时间', '主叫', '被叫'], optional_columns: ['通话时长'] },
+  ]
+}
+
+function bankSuggestion() {
+  return {
+    target_table: '银行流水',
+    confidence: 0.77,
+    matches: [
+      { source_col: '交易时间', target_prop: '交易时间', match_type: 'exact', confidence: 1.0 },
+      { source_col: '付款方名称', target_prop: '付款方', match_type: 'normalized', confidence: 0.85 },
+      { source_col: '收款方', target_prop: '收款方', match_type: 'normalized', confidence: 0.85 },
+      { source_col: '交易金额', target_prop: '金额', match_type: 'fuzzy', confidence: 0.6 },
+      { source_col: null, target_prop: '摘要', match_type: 'none', confidence: 0.0 },
+      { source_col: '对方账号', target_prop: '对方账号', match_type: 'exact', confidence: 1.0 },
+      { source_col: '备注', target_prop: '备注', match_type: 'exact', confidence: 1.0 },
+    ],
+    missing_required: ['摘要'],
+    low_confidence: ['金额'],
+  }
+}
+
+const mockDeRecos = [
+  {
+    rid: 'der_aaa111bbb222',
+    upload_id: 'up_demo_bank',
+    status: '待核实',
+    created_at: '2026-09-09T10:30:00',
+    created_by: '王检察官',
+    decided_by: '',
+    decided_at: '',
+    note: '',
+    filename: '银行流水_8月.csv',
+    recommendations: [
+      {
+        col: '付款方名称',
+        element_id: 'DE_ORG_NAME',
+        element_name: '机构名称',
+        confidence: 0.9,
+        evidence: { match_values: ['蓝海贸易有限公司', '临港仓储有限公司', '宁波蓝海商贸'] },
+      },
+      {
+        col: '交易金额',
+        element_id: 'DE_AMOUNT_YUAN',
+        element_name: '金额（元）',
+        confidence: 0.6,
+        evidence: { match_values: ['480000.00', '50000.00'] },
+      },
+    ],
+  },
+]
