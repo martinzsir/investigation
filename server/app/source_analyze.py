@@ -31,7 +31,13 @@ def _norm(s: Any) -> str:
 
 
 def declared_tables_view(spec) -> list[dict]:
-    """object_bindings → 向导目标表（title/必选列/可选列）。"""
+    """object_bindings → 向导目标表（title/必选列/可选列）。
+
+    title 归属：只有结构化源绑定（source+投影列）才代表"这张表是什么"；
+    source_sql 借道绑定（如 person 用 UNION 从通话记录/轨迹/流水等多表
+    取人名，source_table 仅作挂载提示）不占有源表命名权——否则"通话记录"
+    表会被先遍历到的 person 显示成"自然人（通话记录）"。
+    """
     obj_title = {o.name: o.title for o in spec.objects}
     tables: dict[str, dict] = {}
     for _otype, b in spec.object_bindings.items():
@@ -39,11 +45,17 @@ def declared_tables_view(spec) -> list[dict]:
         if not tbl:
             continue
         optional = set(getattr(b, "optional_raw", ()) or ())
-        entry = tables.setdefault(tbl, {
-            "name": tbl,
-            "title": obj_title.get(b.object, tbl),
-            "required_columns": [], "optional_columns": []})
-        for _alias, raw, _t in (getattr(b, "projections", ()) or ()):
+        projs = tuple(getattr(b, "projections", ()) or ())
+        entry = tables.get(tbl)
+        if entry is None:
+            entry = tables.setdefault(tbl, {
+                "name": tbl,
+                "title": obj_title.get(b.object, tbl) if projs else tbl,
+                "required_columns": [], "optional_columns": []})
+        elif projs and entry["title"] == tbl:
+            # 先前被 source_sql 借道绑定用表名占位，结构化源补正式标题
+            entry["title"] = obj_title.get(b.object, tbl)
+        for _alias, raw, _t in projs:
             if raw in entry["required_columns"] or raw in entry["optional_columns"]:
                 continue
             bucket = "optional_columns" if raw in optional else "required_columns"
@@ -94,13 +106,18 @@ def _suggest_for(table: str, decl: dict, source_cols: list[str]) -> dict:
 
 
 def _auto_pick(tables: dict[str, dict], source_cols: list[str]) -> str | None:
-    """无预选表：按必选列平均置信选最高（全 0 → None）。"""
+    """无预选表：按全部声明列（必填+可选）平均置信选最高（全 0 → None）。
+
+    optional 列只表达"导入时缺了可降级"，不参与表识别降权——否则单必填列
+    的精简绑定会被任意含同名列的数据虚高命中（如含"主体"列的流水被误推荐
+    到工商表：必填只剩"主体"一列时平均置信恒为 1.0）。
+    """
     best_name, best_conf = None, 0.0
     for name, decl in tables.items():
-        req = decl["required_columns"] or decl["optional_columns"]
-        if not req:
+        cols = decl["required_columns"] + decl["optional_columns"]
+        if not cols:
             continue
-        conf = sum(_best_match(t, source_cols)["confidence"] for t in req) / len(req)
+        conf = sum(_best_match(t, source_cols)["confidence"] for t in cols) / len(cols)
         if conf > best_conf:
             best_name, best_conf = name, conf
     return best_name

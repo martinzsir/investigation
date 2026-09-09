@@ -44,16 +44,19 @@ class ImportIn(BaseModel):
     target_table: str
     column_map: dict[str, str] = {}
     clean: list[str] = []
+    sqlite_table: str | None = None
 
 
 class AnalyzeIn(BaseModel):
     target_table: str | None = None
+    sqlite_table: str | None = None
 
 
 class MappingIn(BaseModel):
     target_table: str
     mapping: dict[str, str] = {}   # {声明列(属性): 上传件源列}
     notes: str | None = None
+    sqlite_table: str | None = None
 
 
 def _source_dto(r: dict) -> dict:
@@ -114,6 +117,10 @@ async def upload_source(case_id: str, file: UploadFile = File(...),
         raise APIError(ERR_VALIDATION, f"文件解析失败：{e}", 400)
 
     columns = ingest_io.profile_columns(df)
+    warning = ingest_io.collapse_warning(df)
+    # SQLite：枚举库内全部表，供向导"库内表选择"（df 默认取首表画像）
+    sqlite_tables = (ingest_io.list_sqlite_tables(staged)
+                     if fmt == "sqlite" else [])
     content_hash = ingest_io.sha256_file(staged)
     fp = ingest_io.fingerprint(file.filename, content_hash, len(df))
     row = ctx.repo.register_source(
@@ -129,6 +136,8 @@ async def upload_source(case_id: str, file: UploadFile = File(...),
         "fingerprint": fp,
         "rows": len(df),
         "columns": columns,
+        "warning": warning,
+        "sqlite_tables": sqlite_tables,
         "declared_tables": targets,
         "status": row["status"],
     }, data_version=ctx.repo.current_version(case_id))
@@ -182,7 +191,8 @@ def import_source(case_id: str, upload_id: str, body: ImportIn,
         ctx.repo, case_id=case_id, task_type=TASK_IMPORT,
         params={"upload_id": upload_id,
                 "target_table": body.target_table,
-                "column_map": body.column_map, "clean": body.clean},
+                "column_map": body.column_map, "clean": body.clean,
+                "sqlite_table": body.sqlite_table},
         idem_key=f"import:{upload_id}", created_by=p.operator)
     ctx.repo.set_source_status(case_id, upload_id, "queued")
     return ok(task_dto(task), data_version=ctx.repo.current_version(case_id))
@@ -207,9 +217,10 @@ def analyze_source(case_id: str, upload_id: str,
     if src is None:
         raise APIError(ERR_NOT_FOUND, f"上传件不存在：{upload_id}", 404)
     staged = _staged_file(ctx, case_id, src)
+    sqlite_table = body.sqlite_table if body else None
 
     try:
-        df = ingest_io.read_table(staged, src["fmt"])
+        df = ingest_io.read_table(staged, src["fmt"], table=sqlite_table)
     except Exception as e:
         raise APIError(ERR_VALIDATION, f"文件解析失败：{e}", 400)
 
@@ -261,6 +272,16 @@ def save_source_mapping(case_id: str, upload_id: str, body: MappingIn,
         src_cols = set(json.loads(src.get("columns_json") or "{}").keys())
     except (ValueError, TypeError):
         src_cols = set()
+    # SQLite 选了非首表：注册画像只存首表列，源列以所选库内表为准
+    if src["fmt"] == "sqlite" and body.sqlite_table:
+        try:
+            tbls = {t["name"]: t["columns"]
+                    for t in ingest_io.list_sqlite_tables(
+                        _staged_file(ctx, case_id, src))}
+        except Exception:
+            tbls = {}
+        if body.sqlite_table in tbls:
+            src_cols = set(tbls[body.sqlite_table])
     decl_cols = set(declared[body.target_table])
     bad_targets = sorted({k for k in body.mapping if k not in decl_cols})
     bad_sources = sorted({v for v in body.mapping.values() if v not in src_cols})
@@ -285,6 +306,7 @@ def save_source_mapping(case_id: str, upload_id: str, body: MappingIn,
         "target_table": body.target_table,
         "column_map": column_map,
         "mapping": body.mapping,
+        "sqlite_table": body.sqlite_table,
         "notes": body.notes or "",
         "updated_by": p.operator,
     }

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
@@ -692,6 +693,41 @@ def _rerender_source_sql(b: "ObjectBinding", missing: set) -> str:
     return f"SELECT {', '.join(parts)} FROM {b.source_table}"
 
 
+def _prune_union_sql(conn, sql: str) -> tuple[str | None, list[str]]:
+    """按已挂载源表裁剪手写 source_sql 的顶层 UNION 分支。
+
+    多源聚合绑定（如 obj_person：通话记录/轨迹出行/公开OSINT/银行流水/
+    举报材料 UNION）只导入部分源表时，引用缺失表的分支须剔除——否则
+    DuckDB 抛 CatalogException（Table ... does not exist），整个 BUILD
+    硬失败，已导入的源也无法物化。
+
+    安全范围：SQL 不含括号（无 JOIN/子查询/派生表）、可按顶层
+    UNION [ALL] 切分；分支 FROM 引用的表全部存在才保留该分支。
+    形态不符（含括号）保守原样返回 (sql, [])，交既有编译路径处理。
+    所有分支引用的表都缺失 → (None, 去重后的缺失表名)。
+    """
+    if "(" in sql or ")" in sql:
+        return sql, []
+    branches = re.split(r"\s+UNION\s+(?:ALL\s+)?", sql, flags=re.IGNORECASE)
+    if len(branches) <= 1:
+        return sql, []
+    kept: list[str] = []
+    dropped: set[str] = set()
+    for br in branches:
+        tabs = re.findall(r"\bFROM\s+([^\s(),;]+)", br, re.IGNORECASE)
+        miss = [t for t in tabs if not _table_exists(conn, t)]
+        if miss:
+            dropped.update(miss)
+        else:
+            kept.append(br.strip())
+    if not kept:
+        return None, sorted(dropped)
+    if len(kept) == len(branches):
+        return sql, []
+    # 统一以裸 UNION（去重）重组：较 UNION ALL 更保守，不产生新增重复行
+    return " UNION ".join(kept), sorted(dropped)
+
+
 # REQ-D-010：CAST 失败隔离表（同 run_diagnostic 一样永不 DROP——重建语义层不丢隔离记录）
 _QUARANTINE_DDL = (
     "CREATE TABLE IF NOT EXISTS build_quarantine ("
@@ -900,6 +936,21 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
             tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
             stats["skipped"].append(f"obj_{otype.name}{tag}")
         return None
+    # 手写多源 UNION（source_sql）按已挂载源表裁剪分支：只导入部分源表时，
+    # 引用缺失表的分支剔除后再编译，避免 CatalogException 拖垮整个 BUILD；
+    # 全部分支缺失按源表缺失同口径跳过（如 obj_person 六源仅按需聚合）。
+    if b.source_sql and re.search(r"\bUNION\b", b.source_sql, re.IGNORECASE):
+        pruned, dropped = _prune_union_sql(conn, b.source_sql)
+        if pruned is None:
+            if stats is not None:
+                tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
+                stats["skipped"].append(f"obj_{otype.name}{tag}")
+            return None
+        if dropped:
+            b.source_sql = pruned
+            if stats is not None:
+                stats.setdefault("degraded", []).append(
+                    f"obj_{otype.name} 部分源表未导入，UNION 分支已裁剪: {dropped}")
     # 列级预检（鲁棒性 B5-01/03）：结构化源在编译 SQL 前先 DESCRIBE 源表——
     # 必填列缺失 → 硬失败但报错直指缺失列名（不再裸抛 BinderException）；
     # 声明为 optional_columns 的可选列缺失 → 该投影重渲染为类型化 NULL，

@@ -177,6 +177,25 @@ class TestOptionalColumnsValidation(unittest.TestCase):
                 ol.load_pack("p")
             self.assertIn("optional_columns", str(cm.exception))
 
+    def test_optional_columns_inside_source_hard_fails(self):
+        """装载期：optional_columns 错放进 source 对象内 → 硬失败（不得静默忽略）。
+
+        回归：default 包 call 绑定曾把 optional_columns 写在 source 内，
+        loader 读 binding 顶层字段致声明失效——向导仍把"日期"显示为必选、
+        BUILD 期按必填缺失硬失败。source 仅允许 table/columns。
+        """
+        bad = {"object": "track",
+               "source": {"table": "轨迹出行",
+                          "columns": {"person_raw": "主体", "location": "地点",
+                                      "date": "日期", "source_sys": "数据来源系统"},
+                          "optional_columns": ["数据来源系统"]}}
+        with _PackCtx([_OBJ], [bad]) as _:
+            with self.assertRaises(ValueError) as cm:
+                ol.load_pack("p")
+            msg = str(cm.exception)
+            self.assertIn("source", msg)
+            self.assertIn("optional_columns", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

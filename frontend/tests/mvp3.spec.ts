@@ -426,4 +426,13 @@ describe('MVP-3 页面结构红线', () => {
     expect(h).toContain('sources/upload')
     expect(h).toContain('de-recommendations')
   })
+
+  it('IngestView：SQLite 库内表选择并透传 analyze/import（方案C）', () => {
+    const s = view('views/IngestView.vue')
+    expect(s).toContain('sqliteTable')
+    expect(s).toContain('sqlite_tables')
+    expect(s).toContain('库内表')
+    expect(s).toContain('onSqliteTableChange')
+    expect(s).toContain('sqlite_table')
+  })
 })

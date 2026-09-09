@@ -62,6 +62,7 @@
           "times": "次数"
         }
       },
+      "optional_columns": ["对端号码_原始", "日期"],
       "clean": {
         "caller_raw": ["strip"],
         "callee_raw": ["strip"],

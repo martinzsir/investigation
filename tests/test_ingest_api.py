@@ -250,6 +250,60 @@ class IngestApiTest(unittest.TestCase):
         self.assertEqual(up3["format"], "json")
         self.assertEqual(up3["rows"], 2)
 
+    def test_upload_nested_json_flattened(self):
+        """嵌套包裹 JSON（{"data":{"records":[...]}}，API 响应式结构）须展平。
+
+        回归：pd.read_json 把外层 key 当列名、内层 dict 当单元格字符串，
+        通话记录.json 的 2 条记录塌成 1 行 1 列——向导无法映射，BUILD
+        必填列缺失硬失败。展平后应为 2 行 3 列且无塌缩预警。
+        """
+        payload = json.dumps({
+            "data": {"records": [
+                {"caller": "张卫国", "callee": "李志强", "count": 12},
+                {"caller": "张卫国", "callee": "王五", "count": 3},
+            ]}}, ensure_ascii=False)
+        up = self._upload("通话记录.json", payload.encode("utf-8"))
+        self.assertEqual(up["format"], "json")
+        self.assertEqual(up["rows"], 2)
+        self.assertEqual(set(up["columns"]),
+                         {"caller", "callee", "count"})
+        self.assertFalse(up.get("warning"))
+        # 记录间缺键补齐为空串（不产 "nan"）
+        self.assertEqual(up["columns"]["caller"]["samples"],
+                         ["张卫国", "张卫国"])
+
+    def test_upload_nested_json_other_wrapper_keys(self):
+        """其他常见包裹键（result/items）+ 更深层级同样展平；顶层数组直通。"""
+        payload = json.dumps({"result": {"items": [
+            {"主体": "张某0", "对方": "李某0", "金额": "100", "日期": "2026-03-28"},
+        ]}}, ensure_ascii=False)
+        up = self._upload("流水.json", payload.encode("utf-8"))
+        self.assertEqual(up["rows"], 1)
+        self.assertEqual(set(up["columns"]),
+                         {"主体", "对方", "金额", "日期"})
+        # 顶层 records 数组（无包裹）行为不变
+        up2 = self._upload("流水2.json", json.dumps([
+            {"主体": "张某0", "对方": "李某0", "金额": "100", "日期": "2026-03-28"},
+        ], ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(up2["rows"], 1)
+        self.assertEqual(set(up2["columns"]),
+                         {"主体", "对方", "金额", "日期"})
+
+    def test_upload_collapse_warning_double_encoded(self):
+        """records 是双重编码 JSON 字符串（无法展平）→ 1x1 塌缩预警。
+
+        预警把"结构化数据被当成纯文本"暴露在向导页之前，避免用户对着
+        一个源列硬配、直到 BUILD 才报必填列缺失。
+        """
+        inner = json.dumps([{"caller": "张卫国", "callee": "李志强"}],
+                           ensure_ascii=False)
+        payload = json.dumps({"data": {"records": inner}}, ensure_ascii=False)
+        up = self._upload("通话坏.json", payload.encode("utf-8"))
+        self.assertEqual(up["rows"], 1)
+        self.assertEqual(list(up["columns"]), ["data"])
+        self.assertTrue(up["warning"])
+        self.assertIn("1 行 1 列", up["warning"])
+
     # ------------------------------------------------------------------
     # 端到端：导入→冷层→BUILD→语义表
     # ------------------------------------------------------------------
@@ -280,6 +334,246 @@ class IngestApiTest(unittest.TestCase):
             n = store.read_conn.execute(
                 "SELECT COUNT(*) FROM obj_transaction").fetchone()[0]
             self.assertEqual(n, 4)
+        finally:
+            store.close()
+
+    def test_import_collapsed_json_hard_fails(self):
+        """worker 落库前塌缩硬闸：1x1 结构化串直接失败，不落冷层、不入队 BUILD。
+
+        回归事故（2026-09-10）：常驻 worker 未随 ingest_io 展平修复重启，旧代码
+        把 {"data":{"records":[...]}} 读成 1 行 1 列 data 并照常落冷层，
+        用户直到链式 BUILD 才看到晦涩的 BinderException（缺列）。双重编码 JSON
+        字符串（records 本身是串）在新版解析下同样塌缩——硬闸须快速失败并给
+        可操作中文诊断。
+        """
+        inner = json.dumps([
+            {"caller": "张卫国", "callee": "李志强", "count": 12},
+            {"caller": "张卫国", "callee": "王五", "count": 3},
+        ], ensure_ascii=False)
+        payload = json.dumps({"data": {"records": inner}}, ensure_ascii=False)
+        up = self._upload("通话记录.json", payload.encode("utf-8"))
+        self.assertEqual(up["rows"], 1)  # upload 阶段：1x1 + 软预警
+        self.assertIn("1 行 1 列", up.get("warning") or "")
+
+        # 映射目标合法（主体在银行流水声明列内），通过映射校验后须撞硬闸
+        r = self._import(up["upload_id"], target="银行流水",
+                         column_map={"data": "主体"})
+        self.assertEqual(r.status_code, 200, r.text)  # 导入任务已受理
+        self._drain()
+
+        tasks = self.repo.list_tasks(case_id="c1")
+        imports = [t for t in tasks if t.task_type == "IMPORT"]
+        self.assertEqual(len(imports), 1)
+        self.assertEqual(imports[0].status, TASK_FAILED)
+        self.assertEqual(imports[0].error_code, "SUSPECT_COLLAPSE")
+        self.assertIn("1 行 1 列", imports[0].error_message)
+        # 零残留：冷层无 parquet，且未链式入队 BUILD
+        self.assertFalse(
+            (self.factory.case_dir("c1") / "cold" / "银行流水.parquet").exists())
+        self.assertFalse(any(t.task_type == "BUILD" for t in tasks))
+        self.assertNotEqual(
+            self.repo.get_source("c1", up["upload_id"])["status"], "imported")
+
+    def test_import_nested_json_flattened_then_build(self):
+        """正面回归：嵌套包裹 JSON 经导入任务落冷层（2 行）并链式 BUILD 成功。
+
+        与硬闸测试成对——证明展平链路在 worker 侧真实生效，不只是 upload 列画像。
+        """
+        payload = json.dumps({"data": {"records": [
+            {"号码": "张卫国", "对端号码": "李志强", "日期": "2026-03-28", "次数": "12"},
+            {"号码": "张卫国", "对端号码": "王五", "日期": "2026-03-29", "次数": "3"},
+        ]}}, ensure_ascii=False)
+        up = self._upload("通话记录.json", payload.encode("utf-8"))
+        self.assertEqual(up["rows"], 2)
+        r = self._import(up["upload_id"], target="通话记录",
+                         column_map={"号码": "主体", "对端号码": "对端",
+                                     "次数": "次数"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._drain()
+        tasks = self.repo.list_tasks(case_id="c1")
+        by_type = {t.task_type: t for t in tasks}
+        self.assertEqual(by_type["IMPORT"].status, TASK_SUCCEEDED,
+                         f"{by_type['IMPORT'].error_code} "
+                         f"{by_type['IMPORT'].error_message}")
+        self.assertEqual(by_type["BUILD"].status, TASK_SUCCEEDED,
+                         f"{by_type['BUILD'].error_code} "
+                         f"{by_type['BUILD'].error_message}")
+        cold = self.factory.case_dir("c1") / "cold" / "通话记录.parquet"
+        self.assertTrue(cold.exists())
+        got = pd.read_parquet(cold)
+        self.assertEqual(len(got), 2)
+        self.assertIn("主体", got.columns)
+        self.assertIn("对端", got.columns)
+
+    def test_retry_failed_import_runs_full_chain(self):
+        """FAILED IMPORT 经 retry 端点重新入队（同 upload_id、源状态回 queued），
+        重试走完全部 worker 链路：导入成功 + 链式 BUILD 成功。旧任务留痕。"""
+        payload = json.dumps({"data": {"records": [
+            {"号码": "张卫国", "对端号码": "李志强", "日期": "2026-03-28", "次数": "12"},
+            {"号码": "张卫国", "对端号码": "王五", "日期": "2026-03-29", "次数": "3"},
+        ]}}, ensure_ascii=False)
+        up = self._upload("通话记录.json", payload.encode("utf-8"))
+        uid = up["upload_id"]
+        r = self._import(uid, target="通话记录",
+                         column_map={"号码": "主体", "对端号码": "对端",
+                                     "次数": "次数"})
+        self.assertEqual(r.status_code, 200, r.text)
+        old_id = r.json()["data"]["id"]
+        # 模拟 worker 执行前的瞬时失败（源已在 queued）
+        self.repo.fail_task(old_id, error_code="WORKER_DIED",
+                            error_message="worker 进程被杀死")
+        self.assertEqual(self.repo.get_source("c1", uid)["status"], "queued")
+
+        r = self.client.post(f"/api/v1/tasks/{old_id}/retry",
+                             headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        new_task = r.json()["data"]
+        self.assertNotEqual(new_task["id"], old_id)
+        self.assertEqual(new_task["task_type"], "IMPORT")
+        self.assertEqual(new_task["status"], "PENDING")
+        self.assertEqual(new_task["params"]["upload_id"], uid)
+
+        self._drain()
+        tasks = self.repo.list_tasks(case_id="c1")
+        by_type = {}
+        for t in tasks:
+            if t.status == TASK_SUCCEEDED:
+                by_type[t.task_type] = t
+        self.assertEqual(by_type["IMPORT"].id, new_task["id"])
+        self.assertEqual(by_type["BUILD"].status, TASK_SUCCEEDED,
+                         f"{by_type.get('BUILD') and by_type['BUILD'].error_message}")
+        # 旧任务保留 FAILED 留痕；源最终 imported；重试已成功任务 → 409
+        self.assertEqual(self.repo.get_task(old_id).status, TASK_FAILED)
+        self.assertEqual(self.repo.get_source("c1", uid)["status"], "imported")
+        r = self.client.post(f"/api/v1/tasks/{new_task['id']}/retry",
+                             headers=self.auth_h)
+        self.assertEqual(r.status_code, 409, r.text)
+
+    def test_retry_failed_import_missing_staging_conflict(self):
+        """IMPORT 重试时 uploads 暂存原件已丢失 → 409，且不产生新任务。"""
+        payload = json.dumps({"data": {"records": [
+            {"号码": "张卫国", "对端号码": "李志强", "次数": "12"},
+        ]}}, ensure_ascii=False)
+        up = self._upload("通话记录.json", payload.encode("utf-8"))
+        uid = up["upload_id"]
+        r = self._import(uid, target="通话记录",
+                         column_map={"号码": "主体", "对端号码": "对端",
+                                     "次数": "次数"})
+        self.assertEqual(r.status_code, 200, r.text)
+        old_id = r.json()["data"]["id"]
+        self.repo.fail_task(old_id, error_code="X", error_message="boom")
+        # 暂存件被清理
+        staged = self.factory.case_dir("c1") / "uploads" / f"{uid}.json"
+        staged.unlink()
+
+        r = self.client.post(f"/api/v1/tasks/{old_id}/retry",
+                             headers=self.auth_h)
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("重新上传", r.json()["error"]["message"])
+        # 没有新任务入队，源状态未被改动
+        tasks = self.repo.list_tasks(case_id="c1")
+        self.assertEqual(len([t for t in tasks if t.task_type == "IMPORT"]), 1)
+
+    # ------------------------------------------------------------------
+    # 方案 C：SQLite 多表枚举与按表读取；方案 A：org 可选列降级
+    # ------------------------------------------------------------------
+    def _sqlite_bytes(self, tables: dict) -> bytes:
+        """造含多张表的 sqlite 文件字节（{表名: DataFrame}）。"""
+        tmpdb = Path(tempfile.mkdtemp()) / "s.db"
+        con = sqlite3.connect(str(tmpdb))
+        for name, df in tables.items():
+            df.to_sql(name, con, index=False)
+        con.commit()
+        con.close()
+        return tmpdb.read_bytes()
+
+    def test_upload_sqlite_lists_tables_and_analyze_named(self):
+        """upload 枚举库内全部表；analyze 按 sqlite_table 取表；
+        非法表名 / 非 sqlite 带 sqlite_table → 400。"""
+        companies = pd.DataFrame({
+            "name": ["宏业建设有限公司", "宏图贸易有限公司"],
+            "rep": ["李志强", "王秀兰"]})
+        contacts = pd.DataFrame({"phone": ["13800000000"],
+                                 "owner": ["李志强"]})
+        up = self._upload("工商注册.sqlite",
+                          self._sqlite_bytes({"companies": companies,
+                                              "contacts": contacts}))
+        self.assertEqual(up["format"], "sqlite")
+        tables = {t["name"]: t for t in up["sqlite_tables"]}
+        self.assertEqual(set(tables), {"companies", "contacts"})
+        self.assertEqual(tables["companies"]["rows"], 2)
+        self.assertEqual(tables["companies"]["columns"], ["name", "rep"])
+        self.assertEqual(tables["contacts"]["columns"], ["phone", "owner"])
+
+        def _analyze(body):
+            return self.client.post(
+                f"/api/v1/cases/c1/sources/{up['upload_id']}/analyze",
+                headers=self.auth_h, json=body)
+
+        # 默认（首表 companies）
+        r = _analyze({})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual({c["name"] for c in r.json()["data"]["columns"]},
+                         {"name", "rep"})
+        # 指定 contacts
+        r = _analyze({"sqlite_table": "contacts"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual({c["name"] for c in r.json()["data"]["columns"]},
+                         {"phone", "owner"})
+        # 不存在的表 → 400
+        r = _analyze({"sqlite_table": "nope"})
+        self.assertEqual(r.status_code, 400)
+        # 非 sqlite 带 sqlite_table → 400
+        up_csv = self._upload("流水.csv",
+                              flow_df(2).to_csv(index=False).encode("utf-8"))
+        r = self.client.post(
+            f"/api/v1/cases/c1/sources/{up_csv['upload_id']}/analyze",
+            headers=self.auth_h, json={"sqlite_table": "x"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_import_sqlite_org_optional_columns_e2e(self):
+        """精简工商 sqlite（仅 name/rep）→ 工商信息表：org 绑定
+        法人/状态/关联 optional_columns，缺列降级类型化 NULL，BUILD 不硬失败；
+        sqlite_table 透传 worker 按表读取。"""
+        companies = pd.DataFrame({
+            "name": ["宏业建设有限公司", "宏图贸易有限公司"],
+            "rep": ["李志强", "王秀兰"]})
+        up = self._upload("工商注册.sqlite",
+                          self._sqlite_bytes({"companies": companies}))
+        self.assertEqual([t["name"] for t in up["sqlite_tables"]],
+                         ["companies"])
+        r = self.client.post(
+            f"/api/v1/cases/c1/sources/{up['upload_id']}/import",
+            headers=self.auth_h,
+            json={"target_table": "工商信息",
+                  "column_map": {"name": "主体", "rep": "法人"},
+                  "sqlite_table": "companies"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self._drain()
+        by_type = {t.task_type: t for t in self.repo.list_tasks(case_id="c1")}
+        self.assertEqual(by_type["IMPORT"].status, TASK_SUCCEEDED,
+                         f"{by_type['IMPORT'].error_code} "
+                         f"{by_type['IMPORT'].error_message}")
+        self.assertEqual(by_type["BUILD"].status, TASK_SUCCEEDED,
+                         f"{by_type['BUILD'].error_code} "
+                         f"{by_type['BUILD'].error_message}")
+        # 冷层按中文目标表名落盘
+        cold = self.factory.case_dir("c1") / "cold" / "工商信息.parquet"
+        self.assertTrue(cold.exists())
+        df = pd.read_parquet(cold)
+        self.assertEqual(set(df["主体"]),
+                         {"宏业建设有限公司", "宏图贸易有限公司"})
+        self.assertIn("李志强", set(df["法人"]))
+        # 语义层 obj_org：法人有值，状态/关联类型化 NULL
+        store = self.factory.for_case("c1", mode="read")
+        try:
+            rows = store.read_conn.execute(
+                "SELECT legal_rep, status, relation FROM obj_org "
+                "ORDER BY raw_name").fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0][0], "李志强")
+            self.assertIsNone(rows[0][1])
+            self.assertIsNone(rows[0][2])
         finally:
             store.close()
 

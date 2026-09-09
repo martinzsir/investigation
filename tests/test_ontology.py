@@ -479,6 +479,66 @@ class TestOptionalSource(unittest.TestCase):
         self.assertNotIn("clue", stats["objects"])
 
 
+class TestPruneUnionSql(unittest.TestCase):
+    """手写多源 source_sql：UNION 分支按已挂载源表裁剪（部分源未导入不拖垮 BUILD）。"""
+
+    @staticmethod
+    def _conn(tables):
+        import duckdb
+        conn = duckdb.connect(":memory:")
+        for t in tables:
+            cols = "主体 VARCHAR, 对端 VARCHAR" if t == "通话记录" else "主体 VARCHAR"
+            conn.execute(f'CREATE TABLE "{t}" ({cols})')
+        return conn
+
+    SQL = ("SELECT 主体 AS raw_name FROM 通话记录 "
+           "UNION SELECT 对端 FROM 通话记录 "
+           "UNION SELECT 主体 FROM 轨迹出行 "
+           "UNION SELECT 主体 FROM 银行流水")
+
+    def test_部分源表缺失_裁剪分支并返回缺失表(self):
+        from core.ontology import _prune_union_sql
+        conn = self._conn(["通话记录"])
+        sql, dropped = _prune_union_sql(conn, self.SQL)
+        self.assertIn("FROM 通话记录", sql)
+        self.assertNotIn("轨迹出行", sql)
+        self.assertNotIn("银行流水", sql)
+        self.assertEqual(dropped, ["轨迹出行", "银行流水"])
+        # 同表两个分支（主体/对端）均保留，裁剪后 SQL 可直接执行
+        self.assertEqual(conn.execute(sql).fetchall(), [])
+
+    def test_全部源表缺失_返回None(self):
+        from core.ontology import _prune_union_sql
+        conn = self._conn(["无关表"])
+        sql, dropped = _prune_union_sql(conn, self.SQL)
+        self.assertIsNone(sql)
+        self.assertEqual(set(dropped), {"通话记录", "轨迹出行", "银行流水"})
+
+    def test_全部存在_原样返回(self):
+        from core.ontology import _prune_union_sql
+        conn = self._conn(["通话记录", "轨迹出行", "银行流水"])
+        sql, dropped = _prune_union_sql(conn, self.SQL)
+        self.assertEqual(sql, self.SQL)
+        self.assertEqual(dropped, [])
+
+    def test_含括号保守不裁(self):
+        from core.ontology import _prune_union_sql
+        conn = self._conn(["通话记录"])
+        with_paren = ("SELECT 主体 FROM (SELECT 主体 FROM 通话记录) t "
+                      "UNION SELECT 主体 FROM 轨迹出行")
+        sql, dropped = _prune_union_sql(conn, with_paren)
+        self.assertEqual(sql, with_paren)
+        self.assertEqual(dropped, [])
+
+    def test_union_all分隔可切分(self):
+        from core.ontology import _prune_union_sql
+        conn = self._conn(["通话记录"])
+        sql_ua = "SELECT 主体 FROM 通话记录 UNION ALL SELECT 主体 FROM 轨迹出行"
+        sql, dropped = _prune_union_sql(conn, sql_ua)
+        self.assertEqual(sql.strip(), "SELECT 主体 FROM 通话记录")
+        self.assertEqual(dropped, ["轨迹出行"])
+
+
 class TestV2Layering(unittest.TestCase):
     """v2 分层校验：类型层（objects/links）与管道层（bindings）交叉引用硬失败。"""
 

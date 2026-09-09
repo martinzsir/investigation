@@ -21,7 +21,8 @@
           "status": "状态",
           "relation": "关联"
         }
-      }
+      },
+      "optional_columns": ["法人", "状态", "关联"]
     },
     {
       "object": "account",
@@ -50,7 +51,8 @@
           "date": "日期",
           "times": "次数"
         }
-      }
+      },
+      "optional_columns": ["日期"]
     },
     {
       "object": "trackpoint",
@@ -73,7 +75,8 @@
           "pub_date": "中标公示日",
           "leader": "分管领导"
         }
-      }
+      },
+      "optional_columns": ["分管领导"]
     },
     {
       "object": "clue",
@@ -116,7 +119,8 @@
           "crawled_at": "采集时间",
           "retention_days": "保留天数"
         }
-      }
+      },
+      "optional_columns": ["采集时间", "保留天数"]
     }
   ],
   "link_bindings": [

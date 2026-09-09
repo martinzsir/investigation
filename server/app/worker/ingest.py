@@ -129,6 +129,7 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
     target_table = (params.get("target_table") or "").strip()
     column_map = params.get("column_map") or {}
     clean = params.get("clean") or []
+    sqlite_table = params.get("sqlite_table")
 
     src = repo.get_source(task.case_id, upload_id)
     if src is None:
@@ -137,7 +138,7 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
 
     # W-P-003：请求未显式带目标表/映射时，回落向导草稿（PUT /sources/{uid}
     # 保存的 mapping_json）；显式参数优先（不改既有导入契约）。
-    if not target_table or not column_map:
+    if not target_table or not column_map or not sqlite_table:
         try:
             saved = json.loads(src.get("mapping_json") or "{}")
         except (ValueError, TypeError):
@@ -148,6 +149,8 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
             column_map = saved["column_map"]
         if not clean and isinstance(saved.get("clean"), list):
             clean = saved["clean"]
+        if not sqlite_table and isinstance(saved.get("sqlite_table"), str):
+            sqlite_table = saved["sqlite_table"]
 
     stage_dir = factory.case_dir(task.case_id) / "uploads"
     staged = stage_dir / f"{upload_id}.{src['fmt']}"
@@ -163,9 +166,17 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
     repo.update_progress(task.id, pct=20.0, stage="parse",
                          stage_label="解析数据", detail=src["filename"])
     try:
-        df = ingest_io.read_table(staged, src["fmt"])
+        df = ingest_io.read_table(staged, src["fmt"], table=sqlite_table)
     except Exception as e:
         raise TaskExecError("PARSE_FAILED", f"解析失败：{e}")
+
+    # 塌缩硬闸：1 行 1 列且单元格疑似结构化串（[ / { 开头）→ 几乎必然是嵌套
+    # JSON 未展平（worker 未随代码更新/双重编码串）或分隔符不匹配。直接快速
+    # 失败并给可操作诊断，不把垃圾 parquet 落冷层、不入队 BUILD——否则用户
+    # 只能在 BUILD 任务里看到晦涩的 BinderException（缺列 Candidate bindings）。
+    warn = ingest_io.collapse_warning(df)
+    if warn:
+        raise TaskExecError("SUSPECT_COLLAPSE", warn)
 
     repo.update_progress(task.id, pct=60.0, stage="cold",
                          stage_label="写冷层 parquet", detail=target_table)

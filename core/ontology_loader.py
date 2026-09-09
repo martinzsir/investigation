@@ -772,6 +772,15 @@ def _compile_structured_source(src: dict, otype: ObjectType,
     table, columns = src["table"], src["columns"]
     if not isinstance(columns, dict) or not columns:
         raise ValueError(f"{ctx}.source.columns 必须是非空映射 {{别名: 源列}}")
+    # 未知键硬失败：optional_columns/clean/transform/on_cast_error 等都是
+    # binding 顶层字段（与 source 平级）；错放进 source 内会被静默忽略
+    # （曾致 default 包 call 的 "日期" 可选声明失效，向导仍显示必选）。
+    _unknown_src = set(src) - {"table", "columns"}
+    if _unknown_src:
+        raise ValueError(
+            f"{ctx}.source 含未知键 {sorted(_unknown_src)}：source 仅允许 "
+            f"table/columns；optional_columns/clean/transform/on_cast_error "
+            f"等属于 binding 顶层字段（与 source 平级，错放会被静默忽略）")
     # REQ-D-012 1:1 约束守护：同一 binding 内一源列只允许映射一个别名（可追溯性底线）。
     # 出路：从同一列派生多属性请改用 source_sql 在上游处理（派生属性豁免，不在此列）。
     seen_cols: dict[str, str] = {}

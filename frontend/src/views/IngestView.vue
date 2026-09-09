@@ -34,6 +34,8 @@ const analysis = ref<AnalyzeResult | null>(null)
 const targetTable = ref('')
 /** 向导视角映射 {声明列: 上传源列} */
 const mapping = ref<Record<string, string>>({})
+/** SQLite 选中的库内表（空串=后端默认首表） */
+const sqliteTable = ref('')
 const importTask = ref<TaskRow | null>(null)
 const duplicated = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -76,6 +78,18 @@ const tableOptions = computed(() =>
   })),
 )
 
+/** SQLite 库内表选项（多表时才需选择；单表默认首表） */
+const sqliteTables = computed(() => upload.value?.sqlite_tables ?? [])
+const showSqlitePicker = computed(
+  () => upload.value?.format === 'sqlite' && sqliteTables.value.length > 1,
+)
+const sqliteTableOptions = computed(() =>
+  sqliteTables.value.map((t) => ({
+    label: `${t.name}（${t.rows} 行 / ${t.columns.length} 列）`,
+    value: t.name,
+  })),
+)
+
 const missingRequired = computed(() =>
   analysis.value ? missingRequiredColumns(analysis.value.suggestion) : [],
 )
@@ -99,7 +113,15 @@ async function onFileChange(e: Event): Promise<void> {
   busy.value = true
   try {
     upload.value = await sourcesApi.upload(cs.currentCaseId, f)
-    message.success(`上传成功：${f.name}（${upload.value.rows} 行），正在分析列…`)
+    // SQLite：默认读首表（与后端缺省一致）；多表时用户可在向导切换
+    const tbls = upload.value.sqlite_tables ?? []
+    sqliteTable.value = tbls.length ? tbls[0].name : ''
+    if (upload.value.warning) {
+      // 塌缩预警（嵌套 JSON 未展平/分隔符不匹配）：仍进入向导，但显著提示
+      message.warning(`解析预警：${upload.value.warning}`)
+    } else {
+      message.success(`上传成功：${f.name}（${upload.value.rows} 行），正在分析列…`)
+    }
     await runAnalyze(upload.value.upload_id)
     step.value = 1
   } catch (err) {
@@ -121,7 +143,9 @@ async function runAnalyze(uploadId: string, table?: string): Promise<void> {
   if (!cs.currentCaseId) return
   busy.value = true
   try {
-    analysis.value = await sourcesApi.analyze(cs.currentCaseId, uploadId, table)
+    analysis.value = await sourcesApi.analyze(
+      cs.currentCaseId, uploadId, table, sqliteTable.value || undefined,
+    )
     const sug = analysis.value.suggestion
     if (!targetTable.value && sug.target_table) targetTable.value = sug.target_table
     mapping.value = buildWizardMapping(sug)
@@ -136,6 +160,14 @@ async function onTableChange(name: string): Promise<void> {
   targetTable.value = name
   mapping.value = {}
   if (upload.value) await runAnalyze(upload.value.upload_id, name)
+}
+
+/** 切换 SQLite 库内表：重置目标表/映射，按新表重新分析 */
+async function onSqliteTableChange(name: string): Promise<void> {
+  sqliteTable.value = name
+  targetTable.value = ''
+  mapping.value = {}
+  if (upload.value) await runAnalyze(upload.value.upload_id)
 }
 
 function matchOf(prop: string): ColumnMatch | undefined {
@@ -159,6 +191,7 @@ async function doImport(): Promise<void> {
     importTask.value = await sourcesApi.import(cs.currentCaseId, upload.value.upload_id, {
       target_table: targetTable.value,
       column_map: columnMap,
+      sqlite_table: sqliteTable.value || undefined,
     })
     message.success('导入任务已提交，正在后台运行（可到任务中心查看实时进度）')
     step.value = 3
@@ -196,6 +229,7 @@ function reset(): void {
   analysis.value = null
   targetTable.value = ''
   mapping.value = {}
+  sqliteTable.value = ''
   importTask.value = null
   duplicated.value = false
 }
@@ -237,15 +271,27 @@ function reset(): void {
           <!-- 步骤 1：分析与映射 -->
           <div v-else-if="step === 1" class="step-body">
             <div class="row-between">
-              <div class="field">
-                <label>目标表</label>
-                <NSelect
-                  :value="targetTable"
-                  :options="tableOptions"
-                  placeholder="选择数据落地的目标源表"
-                  style="width: 320px"
-                  @update:value="onTableChange"
-                />
+              <div class="field-row">
+                <div v-if="showSqlitePicker" class="field">
+                  <label>库内表（SQLite）</label>
+                  <NSelect
+                    :value="sqliteTable"
+                    :options="sqliteTableOptions"
+                    placeholder="选择 SQLite 库内要导入的表"
+                    style="width: 280px"
+                    @update:value="onSqliteTableChange"
+                  />
+                </div>
+                <div class="field">
+                  <label>目标表</label>
+                  <NSelect
+                    :value="targetTable"
+                    :options="tableOptions"
+                    placeholder="选择数据落地的目标源表"
+                    style="width: 320px"
+                    @update:value="onTableChange"
+                  />
+                </div>
               </div>
               <NButton size="small" :disabled="!upload" @click="upload && runAnalyze(upload.upload_id, targetTable)">重新分析</NButton>
             </div>
@@ -312,6 +358,7 @@ function reset(): void {
             <div class="confirm-grid">
               <div class="cf-item"><span class="dim">文件</span><b>{{ upload?.filename }}</b></div>
               <div class="cf-item"><span class="dim">格式</span><b>{{ upload?.format }}</b></div>
+              <div v-if="upload?.format === 'sqlite'" class="cf-item"><span class="dim">库内表</span><b class="mono">{{ sqliteTable || '（首表）' }}</b></div>
               <div class="cf-item"><span class="dim">行数</span><b class="mono">{{ upload?.rows }}</b></div>
               <div class="cf-item"><span class="dim">目标表</span><b class="mono">{{ targetTable }}</b></div>
               <div class="cf-item"><span class="dim">已映射列</span><b class="mono">{{ mappedCount(mapping) }}</b></div>
@@ -365,6 +412,7 @@ function reset(): void {
 .upload-hint { font-size: 12px; }
 .upload-file { font-size: 12px; color: var(--sun-ok-text); font-family: var(--sun-font-mono); }
 .row-between { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 12px; }
+.field-row { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field label { font-size: 12px; color: var(--sun-text-secondary); }
 .warn-bar {

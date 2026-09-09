@@ -15,12 +15,19 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# 嵌套包裹 JSON 的常见记录键（API 响应式结构，按优先级排序）
+_WRAPPER_KEYS = ("records", "data", "rows", "items", "results",
+                 "result", "list", "content")
+# DFS 下钻深度上限（防异常深嵌套/循环引用拖垮上传）
+_MAX_DRILL_DEPTH = 8
 
 SUPPORTED_FORMATS = {
     ".csv": "csv", ".tsv": "csv", ".txt": "csv",
@@ -85,8 +92,79 @@ def _stringify(df: pd.DataFrame) -> pd.DataFrame:
     return df.astype("string").fillna("").astype(str)
 
 
-def read_table(path: Path, fmt: str) -> pd.DataFrame:
-    """五格式 → DataFrame（统一 str 友好：SQLite 取第一张表）。"""
+def _find_record_list(node: Any, depth: int = 0) -> list[dict] | None:
+    """DFS 找第一个"元素全为 dict 的列表"（记录数组）。
+
+    dict 节点先按常见包裹键（records/data/rows/items…）优先下钻，未中再
+    遍历其余值；list 节点整体是 dict 数组即命中，否则逐元素继续下钻。
+    用于展平 {"data": {"records": [...]}} 这类 API 响应式包裹——
+    pd.read_json 会把它塌成 1 行 1 列（外层 key 当列名、内层 dict 当
+    单元格字符串），记录全丢且不报错。
+    """
+    if depth > _MAX_DRILL_DEPTH:
+        return None
+    if isinstance(node, list):
+        if node and all(isinstance(x, dict) for x in node):
+            return node
+        for item in node:
+            found = _find_record_list(item, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(node, dict):
+        for key in _WRAPPER_KEYS:
+            if key in node:
+                found = _find_record_list(node[key], depth + 1)
+                if found is not None:
+                    return found
+        for value in node.values():
+            found = _find_record_list(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _flatten_nested_json(path: Path) -> pd.DataFrame | None:
+    """嵌套包裹 JSON 展平为 DataFrame；非该形态返回 None（回落 pandas 双试）。
+
+    顶层为 records 数组（[{...},{...}]）时同样命中（与 pandas records
+    形态等价，空值口径统一走 _stringify）；JSONL（json.load 报额外数据）、
+    单记录对象（无 list[dict]）、坏文件均返回 None 交回 pandas 路径。
+    """
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            payload = json.load(f)
+    except (ValueError, OSError):
+        return None
+    records = _find_record_list(payload)
+    if not records:
+        return None
+    return pd.DataFrame(records)
+
+
+def collapse_warning(df: pd.DataFrame) -> str | None:
+    """塌缩预警：解析结果 1 行 1 列且唯一单元格疑似 JSON/结构化串。
+
+    嵌套包裹未展平的兜底场景（如 records 是双重编码的 JSON 字符串）、
+    或文本分隔符完全不在嗅探集内时，整行会塌成一列；若该单元格以
+    [ 或 { 开头，几乎可断定结构化数据被当成纯文本——在向导映射前
+    直接提示，避免用户对着一个源列硬配、直到 BUILD 才报缺列。
+    """
+    if len(df.columns) == 1 and len(df) == 1:
+        head = str(df.iloc[0, 0]).strip()[:1]
+        if head in ("[", "{"):
+            return ("文件被解析为 1 行 1 列，且单元格内容疑似 JSON 结构"
+                    f"（以 {head} 开头）：可能是嵌套 JSON 包裹未展平"
+                    "或分隔符不匹配，请检查文件格式后重新上传")
+    return None
+
+
+def read_table(path: Path, fmt: str, table: str | None = None) -> pd.DataFrame:
+    """五格式 → DataFrame（统一 str 友好）。
+
+    table：仅 SQLite 有效，指定读取库内哪张表；缺省取第一张用户表。
+    """
+    if table is not None and fmt != "sqlite":
+        raise ValueError(f"仅 SQLite 支持选择库内表，当前格式 {fmt} 不支持")
     if fmt == "csv":
         if path.suffix.lower() == ".tsv":
             sep = "\t"
@@ -100,8 +178,14 @@ def read_table(path: Path, fmt: str) -> pd.DataFrame:
     if fmt == "parquet":
         return _stringify(pd.read_parquet(path))
     if fmt == "json":
-        # 暂存文件统一改名 .json，无法靠后缀区分 JSONL；按内容双试：
-        # 整文件 JSON（records 数组/columns 对象）先行，行分隔 JSONL 回落
+        # 1) 嵌套包裹展平：stdlib json.load 后 DFS 找记录数组
+        # （{"data":{"records":[...]}} 等 API 响应式结构；pd.read_json 会把
+        # 它塌成 1 行 1 列且不报错）。非该形态返回 None。
+        flat = _flatten_nested_json(path)
+        if flat is not None:
+            return _stringify(flat)
+        # 2) 暂存文件统一改名 .json，无法靠后缀区分 JSONL；按内容双试：
+        # 整文件 JSON（columns 对象等）先行，行分隔 JSONL 回落
         # （lines=False 对 JSONL 报 "Trailing data"）。
         try:
             return _stringify(pd.read_json(path, dtype=str, lines=False))
@@ -111,11 +195,43 @@ def read_table(path: Path, fmt: str) -> pd.DataFrame:
         # 走 pandas+sqlalchemy 的 sqlite URI（不在本文件出现直连字面量，
         # 符合"store/ 外不得直连数据库"的静态门禁）。
         uri = f"sqlite:///{path.resolve().as_posix()}"
-        name = pd.read_sql_query(
-            "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1",
-            uri).iloc[0, 0]
-        return _stringify(pd.read_sql_query(f'SELECT * FROM "{name}"', uri))
+        if table is not None:
+            # 显式指定库内表：白名单校验（表名必须真实存在，防注入/防误读）
+            avail = [t["name"] for t in list_sqlite_tables(path)]
+            if table not in avail:
+                raise ValueError(
+                    f"SQLite 库内不存在表 {table!r}（可用表 {avail}）")
+            name = table
+        else:
+            name = pd.read_sql_query(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY rowid LIMIT 1",
+                uri).iloc[0, 0]
+        qname = str(name).replace('"', '""')
+        return _stringify(pd.read_sql_query(f'SELECT * FROM "{qname}"', uri))
     raise ValueError(f"不支持的格式：{fmt}")
+
+
+def list_sqlite_tables(path: Path) -> list[dict]:
+    """枚举 SQLite 库内全部用户表（rowid 顺序=创建顺序）。
+
+    返回 [{name, rows, columns:[列名...]}]，供向导"库内表选择"——
+    read_table 默认只读第一张表，多表库需让用户显式选择目标表。
+    """
+    uri = f"sqlite:///{path.resolve().as_posix()}"
+    names = pd.read_sql_query(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY rowid", uri)["name"].tolist()
+    out: list[dict] = []
+    for name in names:
+        qname = str(name).replace('"', '""')
+        cols = pd.read_sql_query(
+            f'PRAGMA table_info("{qname}")', uri)["name"].tolist()
+        n = int(pd.read_sql_query(
+            f'SELECT COUNT(*) AS n FROM "{qname}"', uri).iloc[0, 0])
+        out.append({"name": str(name), "rows": n,
+                    "columns": [str(c) for c in cols]})
+    return out
 
 
 def profile_columns(df: pd.DataFrame, sample: int = 3) -> dict[str, dict]:
