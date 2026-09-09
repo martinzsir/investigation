@@ -26,6 +26,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    record_config_audit,
     require_analyst,
     snapshot_paths,
 )
@@ -35,6 +36,7 @@ router = APIRouter(tags=["views"])
 
 class ViewsIn(BaseModel):
     views: list[dict]
+    reason: str | None = None  # 变更理由（FE-T-012，落审计链 note）
 
 
 @router.get("/cases/{case_id}/views")
@@ -93,5 +95,8 @@ def save_views(case_id: str, body: ViewsIn,
     atomic_write_json(path, data)
     ctx.repo.record_ops("views_save", case_id,
                         {"by": p.operator, "count": len(body.views)})
+    record_config_audit(ctx, case_id, p, "views_save",
+                        filename="views.json", reason=body.reason,
+                        summary={"count": len(body.views)})
     return ok({"saved": len(body.views)},
               data_version=ctx.repo.current_version(case_id))

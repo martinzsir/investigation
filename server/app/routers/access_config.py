@@ -26,6 +26,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    record_config_audit,
     require_analyst,
     snapshot_paths,
 )
@@ -39,6 +40,7 @@ class PoliciesIn(BaseModel):
     object_policies: list[dict]
     link_policies: list[dict]
     property_policies: list[dict]
+    reason: str | None = None  # 变更理由（FE-T-012，落审计链 note）
 
 
 def _check_property_policy(pp: dict) -> None:
@@ -99,5 +101,10 @@ def save_policies(case_id: str, body: PoliciesIn,
                          "objects": len(body.object_policies),
                          "links": len(body.link_policies),
                          "properties": len(body.property_policies)})
+    record_config_audit(ctx, case_id, p, "policies_save",
+                        filename="policies.json", reason=body.reason,
+                        summary={"objects": len(body.object_policies),
+                                 "links": len(body.link_policies),
+                                 "properties": len(body.property_policies)})
     return ok({"saved": True},
               data_version=ctx.repo.current_version(case_id))

@@ -29,6 +29,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    record_config_audit,
     require_analyst,
     snapshot_paths,
 )
@@ -41,10 +42,12 @@ ALLOWED_VALUE_TYPES = set(TYPE_NAMES)
 
 class ObjectsIn(BaseModel):
     objects: list[dict]
+    reason: str | None = None  # 变更理由（FE-T-012，落审计链 note）
 
 
 class LinksIn(BaseModel):
     links: list[dict]
+    reason: str | None = None
 
 
 def _check_object_fields(obj: dict) -> None:
@@ -131,6 +134,9 @@ def save_objects(case_id: str, body: ObjectsIn,
     atomic_write_json(path, data)
     ctx.repo.record_ops("model_objects_save", case_id,
                         {"count": len(body.objects), "by": p.operator})
+    record_config_audit(ctx, case_id, p, "model_objects_save",
+                        filename="objects.json", reason=body.reason,
+                        summary={"count": len(body.objects)})
     return ok({"saved": len(body.objects)},
               data_version=ctx.repo.current_version(case_id))
 
@@ -171,6 +177,9 @@ def save_links(case_id: str, body: LinksIn,
     atomic_write_json(path, data)
     ctx.repo.record_ops("model_links_save", case_id,
                         {"count": len(body.links), "by": p.operator})
+    record_config_audit(ctx, case_id, p, "model_links_save",
+                        filename="links.json", reason=body.reason,
+                        summary={"count": len(body.links)})
     return ok({"saved": len(body.links)},
               data_version=ctx.repo.current_version(case_id))
 

@@ -27,6 +27,7 @@ from server.app.envelope import ERR_VALIDATION, APIError, ok
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
+    record_config_audit,
     require_analyst,
     snapshot_paths,
 )
@@ -46,8 +47,9 @@ def _snapshot_file(ctx: WebContext, case_id: str, filename: str) -> Path:
 
 
 def _write_validated(*, ctx: WebContext, case_id: str, filename: str,
-                     data, op: str, p: Principal, detail: dict | None = None):
-    """临时副本写新内容 → load_pack 全量校验 → 原子写 → ops 审计。"""
+                     data, op: str, p: Principal, detail: dict | None = None,
+                     reason: str | None = None):
+    """临时副本写新内容 → load_pack 全量校验 → 原子写 → ops + 审计链留痕。"""
     pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
@@ -65,6 +67,9 @@ def _write_validated(*, ctx: WebContext, case_id: str, filename: str,
     os.replace(tmp, target)
     ctx.repo.record_ops(op, case_id,
                         {"file": filename, "by": p.operator, **(detail or {})})
+    record_config_audit(ctx, case_id, p, op, filename=filename,
+                        reason=reason, summary={"file": filename,
+                                                **(detail or {})})
 
 
 # ----------------------------------------------------------------------
@@ -88,8 +93,11 @@ def put_data_elements(case_id: str, body: dict,
     """全量更新数据元（clearance≥2；loader 校验失败 400 不落盘）。"""
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
+    # reason 为审计链留痕字段，不落 data_elements.json（写盘前剥离）
+    data = dict(body) if isinstance(body, dict) else {}
+    reason = data.pop("reason", None)
     _write_validated(ctx=ctx, case_id=case_id, filename="data_elements.json",
-                     data=body, op="data_elements_edit", p=p)
+                     data=data, op="data_elements_edit", p=p, reason=reason)
     return ok({"updated": True},
               data_version=ctx.repo.current_version(case_id))
 
@@ -177,7 +185,9 @@ def put_etl_pipeline(case_id: str, body: dict,
         changed.append(b.get("object"))
     _write_validated(ctx=ctx, case_id=case_id, filename="bindings.json",
                      data=bindings, op="etl_pipeline_edit", p=p,
-                     detail={"objects": changed})
+                     detail={"objects": changed},
+                     reason=body.get("reason") if isinstance(body, dict)
+                     else None)
     return ok({"sources": _pipeline_from_bindings(bindings)},
               data_version=ctx.repo.current_version(case_id))
 

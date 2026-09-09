@@ -13,6 +13,8 @@ export const useAuthStore = defineStore('auth', {
     role: (s) => s.me?.role ?? '',
     clearance: (s) => s.me?.clearance ?? 0,
     tenantId: (s) => s.me?.tenant_id ?? '',
+    /** 平台管理员（设置页管理面闸门；W-024，后端 /auth/me 透出） */
+    isAdmin: (s) => s.me?.is_admin === true,
   },
   actions: {
     /** FE-I-008：登录成功 token 存内存 + sessionStorage（D9）；失败收敛统一文案（红线八） */

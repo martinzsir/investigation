@@ -816,6 +816,36 @@ class SqliteMetaRepo(MetaRepo):
         finally:
             conn.close()
 
+    def query_ops_page(self, *, kind: str | None = None,
+                       operator: str | None = None,
+                       limit: int = 50, offset: int = 0
+                       ) -> tuple[list[dict], int]:
+        """运维事件分页（W-026 history；协议同 tasks：items + total）。
+
+        operator 过滤走 json_extract(payload,'$.operator')——跨案件查询等
+        事件的操作人记录在 payload JSON 内。
+        """
+        where = " WHERE 1=1"
+        args: list = []
+        if kind is not None:
+            where += " AND kind=?"
+            args.append(kind)
+        if operator is not None:
+            where += " AND json_extract(payload, '$.operator')=?"
+            args.append(operator)
+        conn = self._connect()
+        try:
+            total = int(conn.execute(
+                f"SELECT COUNT(*) FROM ops_events{where}", args
+            ).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM ops_events{where} ORDER BY id DESC "
+                "LIMIT ? OFFSET ?",
+                [*args, max(1, limit), max(0, offset)]).fetchall()
+            return [dict(r) for r in rows], total
+        finally:
+            conn.close()
+
     # ---- 数据源注册（W-010/012：上传暂存/导入幂等）----
     def register_source(self, *, case_id: str, upload_id: str,
                         filename: str, fmt: str, fingerprint: str,

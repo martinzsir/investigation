@@ -204,6 +204,47 @@ class CrossCaseApiTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["data"]["total"], 1)
 
+    # ---- C1：history 服务端分页（协议同 tasks）----
+    def test_history_pagination(self):
+        for i in range(3):
+            r = self.client.post(
+                "/api/v1/cross-case/query", headers=self.h1,
+                json={"case_ids": ["c1", "c2"], "sql": f"SELECT {i} AS v",
+                      "reason": f"p{i}"})
+            self.assertEqual(r.status_code, 200, r.text)
+        # 第 1 页：page_size=2 → 2 条，total=3
+        r = self.client.get(
+            "/api/v1/cross-case/history?page=1&page_size=2", headers=self.h1)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertEqual(d["total"], 3)
+        self.assertEqual(d["page"], 1)
+        self.assertEqual(d["page_size"], 2)
+        self.assertEqual(len(d["items"]), 2)
+        # 第 2 页：1 条
+        r = self.client.get(
+            "/api/v1/cross-case/history?page=2&page_size=2", headers=self.h1)
+        d = r.json()["data"]
+        self.assertEqual(len(d["items"]), 1)
+        self.assertEqual(d["total"], 3)
+        # 旧 limit 参数兼容（映射 page_size）
+        r = self.client.get(
+            "/api/v1/cross-case/history?limit=1", headers=self.h1)
+        d = r.json()["data"]
+        self.assertEqual(len(d["items"]), 1)
+        self.assertEqual(d["total"], 3)
+
+    def test_history_only_own_operator(self):
+        """total/items 仅本 operator：u2 看不到 u1 的记录。"""
+        self.client.post(
+            "/api/v1/cross-case/query", headers=self.h1,
+            json={"case_ids": ["c1", "c2"], "sql": "SELECT 1", "reason": "h"})
+        r = self.client.get("/api/v1/cross-case/history", headers=self.h2)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertEqual(d["total"], 0)
+        self.assertEqual(d["items"], [])
+
     def test_duplicate_case_ids_rejected(self):
         r = self.client.post(
             "/api/v1/cross-case/query", headers=self.h1,

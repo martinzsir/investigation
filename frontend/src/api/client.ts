@@ -94,6 +94,41 @@ export class ApiClient {
     return this.request<T>({ method: 'GET', path, ...opts })
   }
 
+  /**
+   * 二进制下载（案件包 zip 等 FileResponse）：成功返 Blob；
+   * 非 2xx 回退 JSON 信封，按统一 ApiError 抛出（含 401 钩子）。
+   */
+  async getBlob(path: string, opts: RequestOptions = {}): Promise<Blob> {
+    const headers: Record<string, string> = {}
+    const token = getToken()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    let raw: RawResponse
+    try {
+      raw = await getTransport().request({
+        method: 'GET',
+        path,
+        headers,
+        timeoutKind: opts.timeoutKind ?? 'upload',
+        signal: opts.signal,
+        responseType: 'blob',
+      })
+    } catch {
+      throw new ApiError('NETWORK', '网络异常或下载超时', 0)
+    }
+    if (raw.status === 401) {
+      const body = raw.data as Envelope<unknown> | null
+      const err = new ApiError('UNAUTHORIZED', body?.error?.message ?? '未认证', 401)
+      if (!opts.skipAuthHook) onUnauthorized?.(err)
+      throw err
+    }
+    if (raw.status >= 200 && raw.status < 300 && raw.data instanceof Blob) {
+      return raw.data
+    }
+    const body = raw.data as Envelope<unknown> | null
+    const e = body?.error
+    throw new ApiError(codeOf(e?.code ?? ''), e?.message ?? '下载失败', raw.status)
+  }
+
   post<T>(path: string, body?: unknown, opts: RequestOptions = {}): Promise<Result<T>> {
     return this.request<T>({ method: 'POST', path, body, ...opts })
   }

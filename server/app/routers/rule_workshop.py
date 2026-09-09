@@ -40,6 +40,7 @@ from server.app.envelope import (
 )
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
+from server.app.snapshot_config import record_config_audit
 from server.app.worker.tasks import TASK_RESCAN, enqueue_task
 
 router = APIRouter(tags=["rule-workshop"])
@@ -69,6 +70,7 @@ class RuleEditIn(BaseModel):
     rule_text: str | None = None
     params: dict | None = None
     enabled: bool | None = None
+    reason: str | None = None  # 变更理由（FE-T-012：危险项必填，落审计链 note）
 
 
 class RuleDraftIn(BaseModel):
@@ -172,6 +174,9 @@ def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
     ctx.repo.record_ops("rule_edit", case_id,
                         {"rule_id": rule_id, "changed": changes,
                          "by": p.operator})
+    record_config_audit(ctx, case_id, p, "rule_edit",
+                        filename="rules.json", reason=body.reason,
+                        summary={"rule_id": rule_id, "changed": changes})
 
     # params/enabled 变更影响机器结果 → 入队 RESCAN；纯 rule_text 文本修订
     # 不改变确定性执行结果，不触发重跑

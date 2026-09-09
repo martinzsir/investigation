@@ -123,6 +123,30 @@ class ApiBaseTest(unittest.TestCase):
                             headers=self.auth(self.token_w))
         self.assertEqual(r.status_code, 401)
 
+    # ---- A2：login/me 透出 is_admin（前端管理面据此渲染，不靠 403 探测）----
+    def test_is_admin_flag_in_login_and_me(self):
+        # 普通用户：is_admin=false
+        r = self.client.post("/api/v1/auth/login",
+                             json={"operator": "王检", "password": "pw-wang"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["data"]["is_admin"])
+        r = self.client.get("/api/v1/auth/me",
+                            headers=self.auth(self.token_w))
+        self.assertFalse(r.json()["data"]["is_admin"])
+        # 平台管理员：is_admin=true（login 与 me 同口径）
+        salt, h = hash_password("pw-adm")
+        self.repo.create_user(User(operator="赵管理", password_hash=h,
+                                   salt=salt, role="human", clearance=4,
+                                   tenant_id="t1", is_admin=1))
+        r = self.client.post("/api/v1/auth/login",
+                             json={"operator": "赵管理", "password": "pw-adm"})
+        self.assertEqual(r.status_code, 200, r.text)
+        token_adm = r.json()["data"]["token"]
+        self.assertTrue(r.json()["data"]["is_admin"])
+        r = self.client.get("/api/v1/auth/me",
+                            headers=self.auth(token_adm))
+        self.assertTrue(r.json()["data"]["is_admin"])
+
     # ---- S6 信封 + 案件流程 ----
     def test_case_lifecycle_envelope(self):
         r = self.client.post("/api/v1/cases",

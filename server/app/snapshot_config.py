@@ -68,3 +68,39 @@ def save_config_json(snap_dir: Path, pack_id: str, base_dir: Path,
     ctx.repo.record_ops(op, case_id,
                         {"file": filename, "by": p.operator,
                          **(detail or {})})
+
+
+def record_config_audit(ctx: WebContext, case_id: str, p: Principal, op: str,
+                        *, filename: str, reason: str | None = None,
+                        summary: dict | None = None) -> None:
+    """配置写追加进案件审计链（state.sqlite audit_chain 哈希链；FE-T-012）。
+
+    在配置文件原子落盘后调用：after_state 带 config_action 标记，
+    timeline 的 action 派生为 "config"（core.audit._event_action），
+    note 列落变更理由；配置整包不进链（体量大、快照文件本身可溯），
+    链上只留 谁/何时/哪个文件/改了什么摘要/理由。
+
+    审计追加失败不回滚配置（数据已生效），降级为 ops 错误事件留痕，
+    避免留痕故障阻断已成功的配置写。
+
+    state.sqlite 写入在 store 层（state_sink，state_store 唯一合法消费面
+    之一）；本助手只做版本解析与失败降级编排。
+    """
+    from server.app.store.state_sink import append_config_event
+
+    try:
+        version = ctx.repo.current_version(case_id)
+        append_config_event(
+            state_path=ctx.factory.case_dir(case_id) / "state.sqlite",
+            case_id=case_id,
+            operator=p.operator,
+            op=op,
+            filename=filename,
+            ontology_version=f"v{version}",
+            reason=reason or "",
+            summary=summary,
+        )
+    except Exception as e:  # 留痕失败不阻断主流程
+        ctx.repo.record_ops("config_audit_failed", case_id,
+                            {"op": op, "file": filename, "by": p.operator,
+                             "error": str(e)[:120]})

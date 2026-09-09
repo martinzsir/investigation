@@ -18,9 +18,43 @@ core ActionExecutor._validate()，Web 与 CLI 单点维护。
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from core.audit import AuditChain
+
 from server.app.store.state_store import StateStore
+
+
+def append_config_event(*, state_path: str | Path, case_id: str,
+                        operator: str, op: str, filename: str,
+                        ontology_version: str, reason: str = "",
+                        summary: dict[str, Any] | None = None) -> None:
+    """配置写追加进案件审计链（FE-T-012）：打开 per-case state.sqlite，
+    向 audit_chain 哈希链追加 after_state.config_action 事件后关闭。
+
+    after_state 带 config_action/config_file/note/by（+可选 summary）；
+    timeline 的 action 派生为 "config"（core.audit._event_action），
+    note 列落变更理由。配置整包不进链（快照文件本身可溯）。
+
+    失败向上抛（调用方负责降级 ops 留痕，不阻断已生效的配置写）。
+    """
+    store = StateStore(case_id, state_path)
+    try:
+        chain = AuditChain(store.conn, case_id, backend="sqlite",
+                           ontology_version=ontology_version)
+        after: dict[str, Any] = {
+            "config_action": op,
+            "config_file": filename,
+            "note": (reason or "").strip(),
+            "by": operator,
+        }
+        if summary:
+            after["summary"] = summary
+        chain.append(operator=operator, before=None, after=after,
+                     source_row_ids=[], ontology_version=ontology_version)
+    finally:
+        store.close()
 
 
 class StateSink:

@@ -12,6 +12,11 @@ export interface TransportRequest {
   headers?: Record<string, string>
   timeoutKind?: TimeoutKind
   signal?: AbortSignal
+  /**
+   * 响应形态：'json'（默认，信封解析）| 'blob'（二进制流，如案件包 zip 下载）。
+   * blob 模式下 RawResponse.data 为 Blob；非 2xx 仍回退 JSON 信封取错误文案。
+   */
+  responseType?: 'json' | 'blob'
 }
 
 export interface RawResponse {

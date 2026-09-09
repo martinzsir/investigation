@@ -225,6 +225,68 @@ class PackageApiTest(unittest.TestCase):
         res = verify_package(extract)
         self.assertFalse(res["ok"])
 
+    # ---- A1：verify 七步清单 + 敏感文件名单 ----
+    def _export_extract(self, cid: str, task_id: str):
+        self._make_case_with_data(cid)
+        from server.app.worker.package import handle_export
+        from server.app.worker.tasks import TaskRow
+        task = TaskRow(id=task_id, case_id=cid, task_type="EXPORT",
+                       params={}, created_by="u1")
+        result = handle_export(task, repo=self.repo, factory=self.factory,
+                               cases_root=self.tmp / "cases")
+        extract = self.tmp / f"ext_{task_id}"
+        with zipfile.ZipFile(result["zip_path"]) as zf:
+            zf.extractall(extract)
+        return extract, cid
+
+    def test_verify_steps_seven_and_sensitive_files(self):
+        """合法包：7 步齐全（chain/duckdb 允许 warn），敏感文件列出。"""
+        extract, cid = self._export_extract("c1", "t_ok")
+        res = verify_package(extract)
+        self.assertTrue(res["ok"], res["errors"])
+        steps = res["steps"]
+        self.assertEqual([s["key"] for s in steps],
+                         ["format", "manifest", "hash", "declarations",
+                          "schema", "chain", "duckdb"])
+        for s in steps:
+            self.assertIn(s["status"], ("pass", "warn"),
+                          f"{s['key']} 不应 fail：{s['detail']}")
+        # 敏感文件名单含 case_knowledge.json
+        self.assertTrue(
+            any("case_knowledge.json" in f for f in res["sensitive_files"]),
+            res["sensitive_files"])
+
+    def test_verify_steps_fail_mapped(self):
+        """篡改包：hash 步 fail；缺声明文件：declarations 步 fail。"""
+        extract, cid = self._export_extract("c1", "t_bad")
+        p = extract / "ontology" / cid / "objects.json"
+        data = bytearray(p.read_bytes())
+        data[0] ^= 0xFF
+        p.write_bytes(bytes(data))
+        res = verify_package(extract)
+        self.assertFalse(res["ok"])
+        by_key = {s["key"]: s for s in res["steps"]}
+        self.assertEqual(by_key["hash"]["status"], "fail")
+        self.assertEqual(by_key["format"]["status"], "pass")
+
+        extract2, cid2 = self._export_extract("c2", "t_miss")
+        (extract2 / "ontology" / cid2 / "rules.json").unlink()
+        res2 = verify_package(extract2)
+        self.assertFalse(res2["ok"])
+        by_key2 = {s["key"]: s for s in res2["steps"]}
+        self.assertEqual(by_key2["declarations"]["status"], "fail")
+
+    def test_verify_steps_fatal_no_manifest(self):
+        """无 manifest：format fail，其余步标 fail（未执行），不抛异常。"""
+        d = self.tmp / "no_manifest"
+        d.mkdir(parents=True)
+        res = verify_package(d)
+        self.assertFalse(res["ok"])
+        self.assertEqual(len(res["steps"]), 7)
+        self.assertEqual(res["steps"][0]["key"], "format")
+        self.assertEqual(res["steps"][0]["status"], "fail")
+        self.assertTrue(all(s["status"] == "fail" for s in res["steps"]))
+
     # ---- W-029：导入 ----
     def test_import_creates_queryable_case(self):
         """AC-1/6/7：校验通过可导入，复用 init_pack，导入后可查询。"""

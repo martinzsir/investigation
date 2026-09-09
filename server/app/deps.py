@@ -89,7 +89,7 @@ def get_principal(request: Request,
         raise APIError(ERR_UNAUTHORIZED, "用户不存在或已停用", 401)
     return Principal(operator=user.operator, role=user.role,
                      clearance=user.clearance, tenant_id=user.tenant_id,
-                     token=token)
+                     token=token, is_admin=user.is_admin)
 
 
 def access_for(p: Principal, *, case_id: str = "default",

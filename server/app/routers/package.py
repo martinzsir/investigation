@@ -85,6 +85,9 @@ async def verify_uploaded_package(file: UploadFile = File(...),
             "errors": result["errors"],
             "chain_ok": result["chain_ok"],
             "file_count": len(result["manifest"].get("files", {})),
+            # W-029 七步清单 + 敏感文件名单（前端 StepChecklist/红框）
+            "steps": result["steps"],
+            "sensitive_files": result["sensitive_files"],
         })
     finally:
         shutil.rmtree(work, ignore_errors=True)

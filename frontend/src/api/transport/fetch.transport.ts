@@ -61,10 +61,23 @@ export class FetchTransport implements HttpTransport {
         signal: req.signal ?? ctrl.signal,
       })
       let data: unknown = null
-      try {
-        data = await res.json()
-      } catch {
-        data = null
+      if (req.responseType === 'blob') {
+        // 二进制下载（案件包 zip）：成功取 Blob；非 2xx 回退 JSON 信封取错误文案
+        if (res.ok) {
+          data = await res.blob()
+        } else {
+          try {
+            data = await res.json()
+          } catch {
+            data = null
+          }
+        }
+      } else {
+        try {
+          data = await res.json()
+        } catch {
+          data = null
+        }
       }
       return { status: res.status, data }
     } finally {

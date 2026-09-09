@@ -76,53 +76,138 @@ def _collect_files(case_dir: Path, pack_id: str, cur_version: int) -> list[Path]
     return files
 
 
+# 7 步校验清单（W-029；前端 StepChecklist 逐态渲染）
+VERIFY_STEPS: tuple[tuple[str, str], ...] = (
+    ("format", "包结构与清单"),
+    ("manifest", "清单一致性"),
+    ("hash", "SHA-256 完整性"),
+    ("declarations", "声明文件齐全"),
+    ("schema", "schema 版本一致"),
+    ("chain", "审计链完整性"),
+    ("duckdb", "DuckDB 只读打开"),
+)
+
+STEP_PASS = "pass"
+STEP_WARN = "warn"
+STEP_FAIL = "fail"
+
+
+def _step(key: str, status: str, detail: str = "") -> dict[str, Any]:
+    label = dict(VERIFY_STEPS).get(key, key)
+    return {"key": key, "label": label, "status": status, "detail": detail}
+
+
 def verify_package(pkg_dir: Path) -> dict[str, Any]:
     """W-029：案件包校验（7 步）。
 
-    返回 {ok: bool, errors: list[str], manifest: dict, chain_ok: bool}。
+    返回 {ok, errors, manifest, chain_ok, steps: [{key,label,status,detail}],
+    sensitive_files: [str]}。
+    - steps 状态：pass/warn/fail；warn（chain 不完整等）不阻断 ok；
+    - ok = 无 fail 步（与历史语义一致：chain_ok=false 橙色告警可继续）；
+    - sensitive_files：manifest 声明 sensitive=true 与磁盘敏感文件名并集。
     """
     errors: list[str] = []
+    steps: list[dict[str, Any]] = []
     pkg_dir = Path(pkg_dir)
+    manifest: dict[str, Any] = {}
+    chain_ok = False
+    sensitive_files: list[str] = []
 
-    # 1. format：目录结构存在
+    def fatal(msg: str) -> dict[str, Any]:
+        """format 前置失败：后续步标 fail（未执行），整体不可导入。"""
+        errors.append(msg)
+        steps.append(_step("format", STEP_FAIL, msg))
+        for key, _ in VERIFY_STEPS[1:]:
+            steps.append(_step(key, STEP_FAIL, "前置步骤未通过，未执行"))
+        return {"ok": False, "errors": errors, "manifest": {},
+                "chain_ok": False, "steps": steps,
+                "sensitive_files": []}
+
+    # 1. format：目录结构 + manifest.json 存在且可解析
     if not pkg_dir.is_dir():
-        return {"ok": False, "errors": [f"包目录不存在：{pkg_dir}"],
-                "manifest": {}, "chain_ok": False}
+        return fatal(f"包目录不存在：{pkg_dir}")
     manifest_path = pkg_dir / "manifest.json"
     if not manifest_path.exists():
-        return {"ok": False, "errors": ["缺少 manifest.json"],
-                "manifest": {}, "chain_ok": False}
+        return fatal("缺少 manifest.json")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        steps.append(_step("format", STEP_PASS, "manifest.json 可解析"))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        return {"ok": False, "errors": [f"manifest.json 格式错误：{e}"],
-                "manifest": {}, "chain_ok": False}
+        return fatal(f"manifest.json 格式错误：{e}")
 
-    files_info = manifest.get("files", {})
+    files_info = manifest.get("files", {}) or {}
+    disk_files = {p.relative_to(pkg_dir).as_posix()
+                  for p in pkg_dir.rglob("*") if p.is_file()}
 
-    # 2. 逐文件 SHA-256 比对
+    # 敏感文件：manifest 声明 ∪ 磁盘上的敏感文件名（红框名单宁全勿缺）
+    sensitive_set = {
+        rel for rel, info in files_info.items()
+        if isinstance(info, dict) and info.get("sensitive")
+    }
+    sensitive_set |= {rel for rel in disk_files
+                      if Path(rel).name in SENSITIVE_FILES}
+    sensitive_files = sorted(sensitive_set)
+
+    # 2. manifest 一致性：声明文件缺失（fail）/ 包内未声明文件（warn）
+    declared = set(files_info.keys())
+    missing = sorted(declared - disk_files)
+    extra = sorted(disk_files - declared - {"manifest.json"})
+    if missing:
+        for rel in missing:
+            errors.append(f"manifest 声明但文件缺失：{rel}")
+        steps.append(_step(
+            "manifest", STEP_FAIL,
+            f"缺失 {len(missing)} 个声明文件：{', '.join(missing[:3])}"
+            + (" …" if len(missing) > 3 else "")))
+    elif extra:
+        steps.append(_step(
+            "manifest", STEP_WARN,
+            f"包内 {len(extra)} 个文件未在 manifest 声明（不阻断）"))
+    else:
+        steps.append(_step("manifest", STEP_PASS,
+                           f"{len(files_info)} 个文件清单一致"))
+
+    # 3. 逐文件 SHA-256 比对
+    hash_bad: list[str] = []
     for rel_path, info in files_info.items():
         p = pkg_dir / rel_path
         if not p.exists():
-            errors.append(f"manifest 声明但文件缺失：{rel_path}")
-            continue
-        actual = _sha256(p)
-        if actual != info.get("sha256"):
+            continue  # 缺失已在 manifest 步记录
+        if _sha256(p) != info.get("sha256"):
+            hash_bad.append(rel_path)
             errors.append(f"SHA-256 不匹配：{rel_path}")
+    if hash_bad:
+        steps.append(_step(
+            "hash", STEP_FAIL,
+            f"{len(hash_bad)} 个文件哈希不匹配（可能被篡改）"))
+    else:
+        steps.append(_step("hash", STEP_PASS,
+                           f"{len(files_info)} 个文件 SHA-256 全部匹配"))
 
-    # 3. 13 声明文件齐全
+    # 4/5. 13 声明文件齐全 + schema_version 一致
     snap = pkg_dir / "ontology"
-    # 找到 pack 子目录
     pack_dirs = [d for d in snap.iterdir() if d.is_dir()] if snap.is_dir() else []
+    pack_dir = pack_dirs[0] if pack_dirs else None
     if not pack_dirs:
         errors.append("缺少 ontology/<pack>/ 目录")
+        steps.append(_step("declarations", STEP_FAIL,
+                           "缺少 ontology/<pack>/ 目录"))
+        steps.append(_step("schema", STEP_FAIL, "前置步骤未通过，未执行"))
     else:
-        pack_dir = pack_dirs[0]
-        for name in DECLARATION_FILES:
-            if not (pack_dir / name).exists():
-                errors.append(f"缺少声明文件：{name}")
+        missing_decl = [n for n in DECLARATION_FILES
+                        if not (pack_dir / n).exists()]
+        if missing_decl:
+            for n in missing_decl:
+                errors.append(f"缺少声明文件：{n}")
+            steps.append(_step(
+                "declarations", STEP_FAIL,
+                f"缺少 {len(missing_decl)} 个声明文件："
+                f"{', '.join(missing_decl[:3])}"))
+        else:
+            steps.append(_step("declarations", STEP_PASS,
+                               f"{len(DECLARATION_FILES)} 个声明文件齐全"))
 
-        # 4. schema_version 一致
+        schema_bad: list[str] = []
         for name in DECLARATION_FILES:
             p = pack_dir / name
             if not p.exists():
@@ -130,15 +215,21 @@ def verify_package(pkg_dir: Path) -> dict[str, Any]:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
-                errors.append(f"{name} JSON 格式错误（可能被篡改）")
+                schema_bad.append(f"{name} JSON 格式错误（可能被篡改）")
                 continue
             sv = data.get("schema_version")
             if sv != SCHEMA_VERSION:
-                errors.append(
+                schema_bad.append(
                     f"{name} schema_version={sv}，要求 {SCHEMA_VERSION}")
+        if schema_bad:
+            errors.extend(schema_bad)
+            steps.append(_step("schema", STEP_FAIL,
+                               f"{len(schema_bad)} 个声明文件 schema 异常"))
+        else:
+            steps.append(_step("schema", STEP_PASS,
+                               f"schema_version={SCHEMA_VERSION} 一致"))
 
-    # 5. 审计链 root_hash 校验
-    chain_ok = False
+    # 6. 审计链 root_hash 校验（chain_ok=false → warn 橙警，不阻断）
     state_path = pkg_dir / "state.sqlite"
     if state_path.exists():
         try:
@@ -146,31 +237,53 @@ def verify_package(pkg_dir: Path) -> dict[str, Any]:
             chain = AuditChain.readonly(st.conn, "pkg", backend="sqlite")
             integ = chain.chain_integrity()
             chain_ok = bool(integ.get("chain_ok"))
-            # root_hash：末条 signature 与 manifest 记录比对
             manifest_root = manifest.get("audit_root_hash")
+            root_mismatch = False
             if manifest_root is not None:
-                actual_root = chain.root_hash()
-                if actual_root != manifest_root:
-                    errors.append("审计链 root_hash 不匹配")
+                root_mismatch = chain.root_hash() != manifest_root
             st.close()
+            if root_mismatch:
+                errors.append("审计链 root_hash 不匹配")
+                steps.append(_step("chain", STEP_FAIL,
+                                   "审计链 root_hash 与 manifest 不匹配"))
+            elif chain_ok:
+                steps.append(_step("chain", STEP_PASS, "审计链完整"))
+            else:
+                steps.append(_step(
+                    "chain", STEP_WARN,
+                    "审计链不完整（橙色告警，不阻断导入）"))
         except Exception as e:
             errors.append(f"审计链校验异常：{e}")
+            steps.append(_step("chain", STEP_FAIL, f"审计链校验异常：{e}"))
     else:
-        # 无 state 链不视为错误（旧案件），但 chain_ok=false
+        # 无 state 链不视为错误（旧案件），chain_ok=false 橙警
         chain_ok = False
+        steps.append(_step(
+            "chain", STEP_WARN,
+            "包内无 state.sqlite（旧案件，审计链不可校验）"))
 
-    # 6. DuckDB 只读打开
-    db_files = [p for p in pkg_dir.glob("v*.duckdb")]
-    if db_files:
-        for db in db_files:
-            try:
-                conn = open_readonly_conn(db)
-                conn.close()
-            except Exception as e:
-                errors.append(f"DuckDB 只读打开失败：{db.name}：{e}")
+    # 7. DuckDB 只读打开
+    db_files = list(pkg_dir.glob("v*.duckdb"))
+    db_bad: list[str] = []
+    for db in db_files:
+        try:
+            conn = open_readonly_conn(db)
+            conn.close()
+        except Exception as e:
+            db_bad.append(db.name)
+            errors.append(f"DuckDB 只读打开失败：{db.name}：{e}")
+    if db_bad:
+        steps.append(_step("duckdb", STEP_FAIL,
+                           f"{len(db_bad)} 个 DuckDB 文件打开失败"))
+    elif db_files:
+        steps.append(_step("duckdb", STEP_PASS,
+                           f"{len(db_files)} 个 DuckDB 文件只读打开正常"))
+    else:
+        steps.append(_step("duckdb", STEP_WARN, "包内无 DuckDB 数据文件"))
 
     return {"ok": len(errors) == 0, "errors": errors,
-            "manifest": manifest, "chain_ok": chain_ok}
+            "manifest": manifest, "chain_ok": chain_ok,
+            "steps": steps, "sensitive_files": sensitive_files}
 
 
 def handle_export(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,

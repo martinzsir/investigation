@@ -123,20 +123,30 @@ def cross_case_query(
 
 @router.get("/history")
 def cross_case_history(
-        limit: int = 50,
+        page: int = 1,
+        page_size: int = 50,
+        limit: int | None = None,
         p: Principal = Depends(get_principal),
         ctx: WebContext = Depends(get_ctx)):
-    """W-026：本用户跨案件查询记录。"""
-    events = ctx.repo.list_ops(kind="cross_case_query", limit=limit)
+    """W-026：本用户跨案件查询记录（服务端分页，协议同 tasks）。
+
+    分页协议与 /tasks 同构：{items,total,page,page_size}；
+    旧 limit 参数保留兼容（显式传入时映射为 page_size）。
+    """
+    page = max(1, page)
+    if limit is not None:
+        page_size = limit
+    page_size = min(max(1, page_size), 200)
+    # operator 过滤下推到 SQL（json_extract），total 为本用户全量记录数
+    events, total = ctx.repo.query_ops_page(
+        kind="cross_case_query", operator=p.operator,
+        limit=page_size, offset=(page - 1) * page_size)
     items: list[dict] = []
     for ev in events:
         try:
             payload = json.loads(ev.get("payload") or "{}")
         except (json.JSONDecodeError, TypeError):
             payload = {}
-        # 仅返回本用户的记录
-        if payload.get("operator") != p.operator:
-            continue
         items.append({
             "id": ev.get("id"),
             "ts": ev.get("ts"),
@@ -145,4 +155,5 @@ def cross_case_history(
             "reason": payload.get("reason", ""),
             "result_rows": payload.get("result_rows", 0),
         })
-    return ok({"items": items, "total": len(items)})
+    return ok({"items": items, "total": total,
+               "page": page, "page_size": page_size})

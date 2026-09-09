@@ -303,7 +303,7 @@ interface MockAuditEvent {
   case_id: string
   occurred_at: string
   operator: string
-  action: 'disposal' | 'proposal' | 'parameter_set' | 'generic'
+  action: 'disposal' | 'proposal' | 'parameter_set' | 'generic' | 'config'
   status_from: string | null
   status_to: string | null
   legal_basis?: string | null
@@ -378,13 +378,14 @@ export const handlers = [
       role: 'human',
       clearance: 4,
       tenant_id: 't1',
+      is_admin: isMockAdmin(),
     })
   }),
 
   http.post('*/api/v1/auth/logout', () => ok({ revoked: true })),
 
   http.get('*/api/v1/auth/me', () =>
-    ok({ operator: '王检察官', role: 'human', clearance: 4, tenant_id: 't1' }),
+    ok({ operator: '王检察官', role: 'human', clearance: 4, tenant_id: 't1', is_admin: isMockAdmin() }),
   ),
 
   // 降级演示开关（仅 mock 管道）：sessionStorage 'sunzi.mock.degraded'='1' 时返回 degraded。
@@ -400,30 +401,61 @@ export const handlers = [
     })
   }),
 
-  http.get('*/api/v1/cases', () =>
-    ok([
-      {
-        id: 'c1',
-        tenant_id: 't1',
-        name: '演示案件·蓝海贸易',
-        status: '侦查中',
-        pack_id: 'default',
-        pack_snapshot_at: '2026-09-08T10:00:00',
-        created_at: '2026-09-01T09:00:00',
-        created_by: '王检察官',
-      },
-      {
-        id: 'c2',
-        tenant_id: 't1',
-        name: '演示案件·临港仓储（待建案）',
-        status: '待建案',
-        pack_id: 'default',
-        pack_snapshot_at: '',
-        created_at: '2026-09-07T09:00:00',
-        created_by: '王检察官',
-      },
-    ]),
-  ),
+  http.get('*/api/v1/cases', () => ok([...mvp5Cases])),
+
+  // MVP-5 建案：重复 409（幂等键由前端访问层携带）
+  http.post('*/api/v1/cases', async ({ request }) => {
+    const body = (await request.json()) as { case_id?: string; name?: string; pack_id?: string }
+    const id = String(body.case_id ?? '').trim()
+    if (!id || !/^[A-Za-z0-9_-]+$/.test(id) || id.length > 64) {
+      return fail('VALIDATION', '案件编号非法（1–64，字母/数字/下划线/中划线）', 400)
+    }
+    if (!body.name?.trim()) return fail('VALIDATION', '案件名称不能为空', 400)
+    if (mvp5Cases.some((c) => c.id === id)) {
+      return fail('CONFLICT', `案件编号已存在：${id}`, 409)
+    }
+    const c = {
+      id,
+      tenant_id: 't1',
+      name: body.name.trim(),
+      status: '待建案',
+      pack_id: body.pack_id ?? 'default',
+      pack_snapshot_at: '',
+      created_at: '2026-09-09T12:00:00',
+      created_by: '王检察官',
+    }
+    mvp5Cases.push(c)
+    return ok(c)
+  }),
+
+  // 案件门户汇总（A3 并发调用；c2 审计链未建立 → chain_ok=false 演示链告警）
+  http.get('*/api/v1/cases/:cid/summary', ({ params }) => {
+    const cid = String(params.cid)
+    if (!mvp5Cases.some((c) => c.id === cid)) return fail('NOT_FOUND', '案件不存在', 404)
+    const chainOk = cid !== 'c2'
+    return ok({
+      case: mvp5Cases.find((c) => c.id === cid),
+      data_version: 1,
+      todos:
+        cid === 'c1'
+          ? { clues_pending: 2, review_pending: 1, anomalies_pending: 1 }
+          : { clues_pending: 0, review_pending: 0, anomalies_pending: 0 },
+      health: { chain_ok: chainOk, degraded: false, diagnostics_warn: chainOk ? 0 : 1 },
+      recent_tasks: [],
+    })
+  }),
+
+  // 归档：clearance≥2（mock 会话 clearance=4）→ 返 ARCHIVE 任务走 SSE
+  http.post('*/api/v1/cases/:cid/archive', async ({ params, request }) => {
+    const cid = String(params.cid)
+    const c = mvp5Cases.find((x) => x.id === cid)
+    if (!c) return fail('NOT_FOUND', '案件不存在', 404)
+    const body = (await request.json().catch(() => ({}))) as { reason?: string }
+    if (!body.reason?.trim()) return fail('VALIDATION', '归档必须填写原因（审计留痕）', 400)
+    if (c.status === '已封存') return fail('CONFLICT', '案件已封存，不可重复归档', 409)
+    const t = makeTask(cid, 'ARCHIVE', { reason: body.reason })
+    return ok(t)
+  }),
 
   // 仪表盘：c1 有诊断（含 1 warning 降级演示）；c2 零记录（warn 语义，非「一切正常」）
   http.get('*/api/v1/cases/:cid/dashboard', ({ params }) => {
@@ -972,6 +1004,475 @@ export const handlers = [
     reco.decided_at = '2026-09-09 11:10:00'
     const t = makeTask(String(params.cid), 'DE_RECO_DECIDE', { rid, decision: body.decision })
     return HttpResponse.json({ ok: true, data: t, data_version: 1 }, { status: 202 })
+  }),
+
+  // ---------- MVP-4 配置面（规则工坊/模型/权限/知识/ETL/质量/隔离区）----------
+  // 只 mock 数据塑形；权限门禁/红线判定全部在 src/domain 纯函数与后端，不在此实现。
+
+  // 规则工坊：列表 + 函数目录
+  http.get('*/api/v1/cases/:cid/rules', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ rules: mockRules, function_catalog: mockFunctionCatalog, pack: 'default' })
+  }),
+
+  // 规则编辑：仅 rule_text/params/enabled；结构字段 400；危险项理由缺失 400
+  http.put('*/api/v1/cases/:cid/rules/:rid', async ({ params, request }) => {
+    const cid = String(params.cid)
+    const rid = String(params.rid)
+    const rule = mockRules.find((r) => r.id === rid)
+    if (!rule) return fail('NOT_FOUND', `规则不存在：${rid}`, 404)
+    const body = (await request.json()) as {
+      rule_text?: string
+      params?: Record<string, unknown>
+      enabled?: boolean
+      reason?: string
+    }
+    const structural = Object.keys(body).filter((k) => !['rule_text', 'params', 'enabled', 'reason'].includes(k))
+    if (structural.length) return fail('VALIDATION', `结构字段只读不可改：${structural.join(',')}`, 400)
+    if (body.rule_text !== undefined && body.rule_text.trim().length < 20) {
+      return fail('VALIDATION', '判据须写明模式/反常理由/边界排除（至少 20 字）', 400)
+    }
+    const changed: string[] = []
+    if (body.rule_text !== undefined && body.rule_text.trim() !== rule.rule_text.trim()) changed.push('rule_text')
+    if (body.params !== undefined) changed.push('params')
+    if (body.enabled !== undefined && Boolean(body.enabled) !== Boolean(rule.enabled)) changed.push('enabled')
+    const dangerous = changed.includes('params') || changed.includes('enabled')
+    if (dangerous && !body.reason?.trim()) {
+      return fail('VALIDATION', '机器行为变更（阈值/启停）必须填写变更理由', 400)
+    }
+    if (body.rule_text !== undefined) rule.rule_text = body.rule_text
+    if (body.params !== undefined) rule.params = { ...rule.params, ...body.params }
+    if (body.enabled !== undefined) rule.enabled = body.enabled
+    appendConfigAudit(cid, 'rule_edit', 'rules.json', body.reason, { rule_id: rid, changed })
+    const rescan = dangerous ? makeTask(cid, 'RESCAN', { reason: `rule_edit:${rid}` }) : null
+    return ok({ rule_id: rid, changed, rescan_task: rescan })
+  }),
+
+  // LLM 起草：默认通道关闭 → 503（产物永不落盘）
+  http.post('*/api/v1/cases/:cid/rules/draft', () =>
+    fail('LLM_DISABLED', '当前环境未启用 LLM 通道（离线内核）；判据草稿请人工撰写', 503),
+  ),
+
+  // 对象模型
+  http.get('*/api/v1/cases/:cid/objects', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ objects: mockObjects, pack: 'default' })
+  }),
+  http.put('*/api/v1/cases/:cid/objects', async ({ params, request }) => {
+    const body = (await request.json()) as { objects?: unknown[]; reason?: string }
+    if (!Array.isArray(body.objects)) return fail('VALIDATION', 'objects 必须是数组', 400)
+    appendConfigAudit(String(params.cid), 'model_objects_save', 'objects.json', body.reason, { count: body.objects.length })
+    return ok({ saved: body.objects.length })
+  }),
+  http.get('*/api/v1/cases/:cid/links', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ links: mockLinks, pack: 'default' })
+  }),
+  http.put('*/api/v1/cases/:cid/links', async ({ params, request }) => {
+    const body = (await request.json()) as { links?: unknown[]; reason?: string }
+    if (!Array.isArray(body.links)) return fail('VALIDATION', 'links 必须是数组', 400)
+    appendConfigAudit(String(params.cid), 'model_links_save', 'links.json', body.reason, { count: body.links.length })
+    return ok({ saved: body.links.length })
+  }),
+  http.post('*/api/v1/cases/:cid/validate', () => ok({ valid: true, pack: 'default' })),
+
+  // 权限与遮蔽
+  http.get('*/api/v1/cases/:cid/policies', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ ...mockPolicies, pack: 'default' })
+  }),
+  http.put('*/api/v1/cases/:cid/policies', async ({ params, request }) => {
+    const body = (await request.json()) as Record<string, unknown>
+    appendConfigAudit(String(params.cid), 'policies_save', 'policies.json', body.reason as string | undefined, {
+      objects: (body.object_policies as unknown[])?.length ?? 0,
+      links: (body.link_policies as unknown[])?.length ?? 0,
+      properties: (body.property_policies as unknown[])?.length ?? 0,
+    })
+    return ok({ saved: true })
+  }),
+  http.get('*/api/v1/cases/:cid/views', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ views: mockViews, pack: 'default' })
+  }),
+  http.put('*/api/v1/cases/:cid/views', async ({ params, request }) => {
+    const body = (await request.json()) as { views?: unknown[]; reason?: string }
+    appendConfigAudit(String(params.cid), 'views_save', 'views.json', body.reason, { count: body.views?.length ?? 0 })
+    return ok({ saved: body.views?.length ?? 0 })
+  }),
+
+  // 知识包
+  http.get('*/api/v1/cases/:cid/knowledge', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ ...mockKnowledge, pack: 'default' })
+  }),
+  http.post('*/api/v1/cases/:cid/knowledge', async ({ params, request }) => {
+    const body = (await request.json()) as { relation_assertions?: unknown[]; reason?: string }
+    const n = body.relation_assertions?.length ?? 0
+    mockKnowledge.relation_assertions.push(...(body.relation_assertions as typeof mockKnowledge.relation_assertions))
+    appendConfigAudit(String(params.cid), 'knowledge_add', 'case_knowledge.json', body.reason, { added: n })
+    return ok({ added: n, total: mockKnowledge.relation_assertions.length })
+  }),
+  http.put('*/api/v1/cases/:cid/knowledge', async ({ params, request }) => {
+    const body = (await request.json()) as { relation_assertions?: unknown[]; subject_aliases?: Record<string, string[]>; reason?: string }
+    if (body.relation_assertions) mockKnowledge.relation_assertions = body.relation_assertions as typeof mockKnowledge.relation_assertions
+    if (body.subject_aliases) mockKnowledge.subject_aliases = body.subject_aliases
+    appendConfigAudit(String(params.cid), 'knowledge_save', 'case_knowledge.json', body.reason, {
+      assertions: mockKnowledge.relation_assertions.length,
+    })
+    return ok({ saved: true, assertions: mockKnowledge.relation_assertions.length })
+  }),
+
+  // 数据元
+  http.get('*/api/v1/cases/:cid/data-elements', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok(mockDataElements)
+  }),
+  http.put('*/api/v1/cases/:cid/data-elements', async ({ params, request }) => {
+    const body = (await request.json()) as { elements?: Record<string, unknown>; reason?: string }
+    appendConfigAudit(String(params.cid), 'data_elements_edit', 'data_elements.json', body.reason, {
+      elements: Object.keys(body.elements ?? {}).length,
+    })
+    return ok({ updated: true })
+  }),
+
+  // ETL 管道 + 映射预检 + 缺列降级
+  http.get('*/api/v1/cases/:cid/etl-pipeline', ({ params }) => {
+    if (String(params.cid) !== 'c1') return fail('NOT_FOUND', '案件快照不存在', 404)
+    return ok({ sources: mockEtlSources })
+  }),
+  http.put('*/api/v1/cases/:cid/etl-pipeline', async ({ params, request }) => {
+    const body = (await request.json()) as { sources?: unknown[]; reason?: string }
+    appendConfigAudit(String(params.cid), 'etl_pipeline_edit', 'bindings.json', body.reason, {
+      sources: body.sources?.length ?? 0,
+    })
+    return ok({ sources: mockEtlSources })
+  }),
+  http.post('*/api/v1/cases/:cid/etl-pipeline/validate', async ({ request }) => {
+    const body = (await request.json()) as { target_table?: string; mapping?: Record<string, string> }
+    const conflicts: Array<Record<string, unknown>> = []
+    const knownProps = new Set<string>([
+      'raw_name', 'amount', 'date', 'from_raw', 'to_raw', 'caller_raw', 'callee_raw',
+      'person_raw', 'location', 'title', 'status', 'txn_id',
+    ])
+    const byTarget = new Map<string, string>()
+    for (const [col, prop] of Object.entries(body.mapping ?? {})) {
+      if (!knownProps.has(prop)) {
+        conflicts.push({ type: 'unknown_prop', message: `目标属性 ${prop} 未在对象上声明`, source_col: col, target_prop: prop })
+      }
+      if (byTarget.has(prop)) {
+        conflicts.push({ type: 'one_to_one', message: `源列 ${byTarget.get(prop)} 与 ${col} 同时映射到 ${prop}`, source_col: col, target_a: byTarget.get(prop), target_b: col })
+      }
+      byTarget.set(prop, col)
+    }
+    return ok({
+      valid: conflicts.length === 0,
+      conflicts,
+      paths: [
+        { key: 'A_split_source_sql', label: '在 source_sql 中把复合表达式拆成多个独立源列' },
+        { key: 'B_degrade_column', label: '该列整列降级 NULL 并持续诊断' },
+      ],
+    })
+  }),
+  http.get('*/api/v1/cases/:cid/governance/missing-columns', ({ params }) => {
+    if (String(params.cid) !== 'c1') return ok({ items: [], total_warnings: 0 })
+    return ok({
+      items: [
+        { object: 'call', property: 'base_station', count: 47, kinds: ['source_column_missing'], samples: ['通话记录*批次 2026-08'] },
+        { object: 'transaction', property: 'amount', count: 12, kinds: ['source_value_cast_failed'], samples: ['¥ 肆拾捌万元整', '480,000.00 元（手工录入）'] },
+      ],
+      total_warnings: 2,
+    })
+  }),
+
+  // 质量检查：触发 202 + 最近报告（c2 无报告）
+  http.post('*/api/v1/cases/:cid/quality-checks', ({ params }) =>
+    HttpResponse.json({ ok: true, data: makeTask(String(params.cid), 'QUALITY_CHECK', {}), data_version: 1 }, { status: 202 }),
+  ),
+  http.get('*/api/v1/cases/:cid/quality-checks/latest', ({ params }) => {
+    if (String(params.cid) !== 'c1') return ok({ available: false })
+    return ok(mockQualityReport)
+  }),
+
+  // 隔离区 + 清洗留痕（c2 零隔离显式文案，红线五）
+  http.get('*/api/v1/cases/:cid/quarantine', ({ params, request }) => {
+    const cid = String(params.cid)
+    if (cid !== 'c1') {
+      return ok({ items: [], total: 0, stats: { cast_error: 0, null_value: 0, dedup: 0, other: 0 }, page: 1, page_size: 50, empty_message: '本次装载无数据被丢弃' })
+    }
+    const url = new URL(request.url)
+    const reason = url.searchParams.get('reason')
+    const items = reason ? mockQuarantine.filter((q) => q.reason === reason) : mockQuarantine
+    return ok({
+      items,
+      total: items.length,
+      stats: { cast_error: 2, null_value: 1, dedup: 0, other: 0 },
+      page: Number(url.searchParams.get('page') ?? '1'),
+      page_size: Number(url.searchParams.get('page_size') ?? '50'),
+    })
+  }),
+  http.get('*/api/v1/cases/:cid/clean-trace', ({ params, request }) => {
+    const cid = String(params.cid)
+    const url = new URL(request.url)
+    const items = cid === 'c1' ? mockCleanTrace : []
+    return ok({ items, total: items.length, page: Number(url.searchParams.get('page') ?? '1'), page_size: Number(url.searchParams.get('page_size') ?? '50') })
+  }),
+
+  // ---------- MVP-5 庙算工作台（derived:true 派生口径；候补无升格字段，红线二）----------
+  http.get('*/api/v1/cases/:cid/hypotheses', ({ params }) => {
+    if (String(params.cid) !== 'c1') return ok({ available: false })
+    return ok({
+      available: true,
+      derived: true,
+      coverage: {
+        declared: [
+          { dimension: null, covered: 4, total: 5, missing: ['死间'], reason: '死间尚无分析师声明覆盖', severity: 'warning', created_at: '2026-09-08T10:00:00' },
+        ],
+        empirical: [
+          { dimension: null, covered: 3, total: 5, missing: ['死间', '生间'], reason: '数据推导未见死间/生间模式', severity: 'warning', created_at: '2026-09-08T10:00:00' },
+        ],
+      },
+      heatmap: {
+        jians: ['因间', '内间', '反间', '死间', '生间'],
+        levels: ['观察', '线索', '确认'],
+        counts: [
+          [4, 2, 3, 0, 1],
+          [2, 1, 1, 0, 0],
+          [1, 0, 1, 0, 0],
+        ],
+      },
+      // 候补池：结构上不含 cross_level/new_level 等任何升格字段（FE-T-014）
+      candidates: [
+        { clue_id: 'CLUE-007', title: '蓝海贸易与宁波关联公司资金同日对冲', jian_types: ['因间', '反间'], level: '观察', priority_score: 81, reason: '两公司间 3 笔同日反向转账，金额近似，建议核查关联关系' },
+        { clue_id: 'CLUE-008', title: '张某通话对象与仓储股东重合', jian_types: ['内间'], level: null, priority_score: 66, reason: '高频通话号码 2 个与临港仓储股东预留号一致，待实名交叉' },
+      ],
+      restricted: [
+        { clue_id: 'CLUE-009', reason: '内间线索：需更高秩级（主办及以上）' },
+      ],
+    })
+  }),
+
+  // ---------- MVP-5 知识图谱（按度数采样；截断态真实给出 dropped_edges）----------
+  http.get('*/api/v1/cases/:cid/graph', ({ params }) => {
+    if (String(params.cid) !== 'c1') {
+      return ok({ available: false, truncated: { nodes: false, edges: false, dropped_edges: 0 }, nodes: [], edges: [] })
+    }
+    return ok({
+      available: true,
+      truncated: { nodes: false, edges: true, dropped_edges: 7 },
+      nodes: [
+        { id: 'person:1', label: '张某', type: 'person', type_title: '人员', jian: ['因间'] },
+        { id: 'org:1', label: '蓝海贸易有限公司', type: 'organization', type_title: '单位', jian: ['反间'] },
+        { id: 'person:2', label: '李某', type: 'person', type_title: '人员', jian: ['内间'] },
+        { id: 'org:2', label: '临港仓储服务有限公司', type: 'organization', type_title: '单位', jian: [] },
+        { id: 'person:3', label: '王某', type: 'person', type_title: '人员', jian: ['生间'] },
+        { id: 'person:4', label: '陈某', type: 'person', type_title: '人员', jian: [] },
+      ],
+      edges: [
+        { source: 'person:1', target: 'org:1', label: '法定代表人', type: 'legal_rep' },
+        { source: 'person:1', target: 'person:3', label: '转账', type: 'transfer' },
+        { source: 'person:1', target: 'person:2', label: '通话', type: 'call' },
+        { source: 'person:2', target: 'org:2', label: '股东', type: 'shareholder' },
+        { source: 'org:1', target: 'org:2', label: '资金往来', type: 'transfer' },
+      ],
+    })
+  }),
+
+  // ---------- MVP-5 跨案件查询（全有或全无：无权案件整体 403；SQL 白名单）----------
+  http.post('*/api/v1/cross-case/query', async ({ request }) => {
+    const body = (await request.json()) as { case_ids?: string[]; sql?: string; reason?: string }
+    const ids = body.case_ids ?? []
+    const owned = new Set(mvp5Cases.map((c) => c.id))
+    const denied = ids.filter((id) => !owned.has(id))
+    if (denied.length) {
+      return fail('FORBIDDEN', `全有或全无鉴权失败：案件 ${denied.join('、')} 无权访问，本次查询整体拒绝`, 403)
+    }
+    const head = (body.sql ?? '').trim().split(/\s+/)[0]?.toUpperCase() ?? ''
+    if (!['SELECT', 'WITH', 'PRAGMA'].includes(head)) {
+      return fail('VALIDATION', '跨案 SQL 仅允许 SELECT/WITH/PRAGMA 开头（只读）', 400)
+    }
+    if (!body.reason?.trim()) return fail('VALIDATION', '查询事由必填（审计留痕）', 400)
+    const hasSourceCol = /source_case/i.test(body.sql ?? '')
+    const rows = ids.flatMap((cid) =>
+      [1, 2].map((n) => ({
+        ...(hasSourceCol ? { source_case: cid } : {}),
+        id: `${cid}-p${n}`,
+        name: cid === 'c1' ? ['张某', '蓝海贸易有限公司'][n - 1] : ['李某', '临港仓储服务有限公司'][n - 1],
+        type: n === 1 ? 'person' : 'organization',
+      })),
+    )
+    crossHistory.unshift({
+      id: ++crossHistorySeq,
+      ts: '2026-09-09 13:20:00',
+      case_ids: ids,
+      sql: body.sql ?? '',
+      reason: body.reason,
+      result_rows: rows.length,
+    })
+    return ok({ rows, total: rows.length, case_ids: ids })
+  }),
+
+  http.get('*/api/v1/cross-case/history', ({ request }) => {
+    const url = new URL(request.url)
+    const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1)
+    const pageSize = Math.min(200, Math.max(1, parseInt(url.searchParams.get('page_size') ?? '50', 10) || 50))
+    const start = (page - 1) * pageSize
+    return ok({ items: crossHistory.slice(start, start + pageSize), total: crossHistory.length, page, page_size: pageSize })
+  }),
+
+  // ---------- MVP-5 案件包（导出任务/SSE/下载 Blob/七步校验/导入）----------
+  http.post('*/api/v1/cases/:cid/package/export', ({ params }) => {
+    const cid = String(params.cid)
+    if (!mvp5Cases.some((c) => c.id === cid)) return fail('NOT_FOUND', '案件不存在', 404)
+    const t = makeTask(cid, 'EXPORT_PACKAGE', {})
+    return ok({ task_id: t.id })
+  }),
+
+  http.get('*/api/v1/packages/:tid/download', ({ params }) => {
+    const t = findTask(String(params.tid))
+    if (!t || t.task_type !== 'EXPORT_PACKAGE') return fail('NOT_FOUND', '导出包不存在或任务未完成', 404)
+    const blob = new Blob([`PK mock package for ${t.case_id}\n(演示环境占位 zip 字节流)`], {
+      type: 'application/zip',
+    })
+    return new HttpResponse(blob, {
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${t.case_id}_package.zip"`,
+      },
+    })
+  }),
+
+  http.post('*/api/v1/packages/verify', async ({ request }) => {
+    let filename = 'package.zip'
+    try {
+      const fd = await request.formData()
+      const f = fd.get('file')
+      if (f instanceof File) filename = f.name
+    } catch { /* noop */ }
+    const bad = /bad|损坏|篡改/i.test(filename)
+    const noChain = /nochain|无链|broken/i.test(filename)
+    const steps = [
+      { key: 'format', label: '压缩包格式', status: 'pass' as const, detail: 'zip 结构完整' },
+      { key: 'manifest', label: 'manifest 清单', status: 'pass' as const, detail: 'manifest.json 齐备' },
+      {
+        key: 'hash', label: '哈希校验',
+        status: bad ? ('fail' as const) : ('pass' as const),
+        detail: bad ? 'root_hash 与内容不符（包可能被篡改）' : 'root_hash 一致',
+      },
+      { key: 'declarations', label: '声明文件', status: 'pass' as const, detail: 'objects/links/rules/functions 齐备' },
+      { key: 'schema', label: 'schema 版本', status: 'pass' as const, detail: 'schema_version=2 兼容' },
+      {
+        key: 'chain', label: '审计链',
+        status: noChain || bad ? ('warn' as const) : ('pass' as const),
+        detail: noChain || bad ? 'state.sqlite 缺失/链不完整：橙色告警，不阻断导入' : '审计链完整',
+      },
+      { key: 'duckdb', label: 'DuckDB 库', status: 'pass' as const, detail: 'investigation.duckdb 可读' },
+    ]
+    const errors = bad ? ['哈希校验失败：root_hash 不匹配', '声明 objects.json 哈希条目缺失'] : []
+    return ok({
+      ok: !bad,
+      errors,
+      chain_ok: !(noChain || bad),
+      file_count: 18,
+      steps,
+      sensitive_files: ['ontology/default/case_knowledge.json'],
+    })
+  }),
+
+  http.post('*/api/v1/packages/import', async ({ request }) => {
+    let caseId = ''
+    let name = ''
+    try {
+      const fd = await request.formData()
+      caseId = String(fd.get('case_id') ?? '')
+      name = String(fd.get('name') ?? '')
+    } catch { /* noop */ }
+    if (!caseId.trim() || !name.trim()) return fail('VALIDATION', '新案件编号与名称必填', 400)
+    if (mvp5Cases.some((c) => c.id === caseId)) {
+      return fail('CONFLICT', `案件编号已存在：${caseId}（导入将创建新案件，请换编号）`, 409)
+    }
+    const t = makeTask(caseId, 'IMPORT_PACKAGE', { case_id: caseId, name })
+    return ok({ task_id: t.id })
+  }),
+
+  // ---------- MVP-5 代码逃生舱（只生成文本，不写盘/不注册/不执行）----------
+  http.post('*/api/v1/escape-hatch/generate', async ({ request }) => {
+    const body = (await request.json()) as { ext_type?: string; name?: string; description?: string }
+    const name = String(body.name ?? '').trim()
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      return fail('VALIDATION', '名称须为标识符（字母/下划线开头）', 400)
+    }
+    const tpl = HATCH_TEMPLATES[body.ext_type ?? 'function'] ?? HATCH_TEMPLATES.function
+    hatchStats[body.ext_type ?? 'function'] = (hatchStats[body.ext_type ?? 'function'] ?? 0) + 1
+    return ok({
+      files: [
+        { path: tpl.path.replace('{name}', name), content: tpl.content.replace(/\{name\}/g, name).replace('{desc}', body.description ?? '') },
+      ],
+      registration_points: tpl.points,
+    })
+  }),
+
+  http.get('*/api/v1/escape-hatch/stats', () =>
+    ok({
+      items: [
+        { ext_type: 'function', count: hatchStats.function },
+        { ext_type: 'value_type', count: hatchStats.value_type },
+        { ext_type: 'clean_rule', count: hatchStats.clean_rule },
+        { ext_type: 'side_effect', count: hatchStats.side_effect },
+      ],
+      total: Object.values(hatchStats).reduce((a, b) => a + b, 0),
+    }),
+  ),
+
+  // ---------- MVP-5 系统设置（非 admin 全 403；health 登录可读）----------
+  http.get('*/api/v1/settings/health', () =>
+    ok({
+      meta_ok: true,
+      queue: { pending: 1, running: 0 },
+      worker: {
+        pool_alive: false,
+        max_workers: mockSettings.queue.max_workers,
+        poll_interval_ms: mockSettings.queue.poll_interval_ms,
+        note: 'API 进程不内嵌 Worker；池存活由部署侧监控',
+      },
+      versions: { backend: 'M6', ontology_default: 'default' },
+    }),
+  ),
+  http.get('*/api/v1/settings/queue', () =>
+    isMockAdmin() ? ok({ ...mockSettings.queue }) : fail('FORBIDDEN', '平台设置仅管理员可操作', 403),
+  ),
+  http.put('*/api/v1/settings/queue', async ({ request }) =>
+    putSettings(request, 'queue', ['max_workers', 'poll_interval_ms'], mockSettings.queue),
+  ),
+  http.get('*/api/v1/settings/resources', () =>
+    isMockAdmin()
+      ? ok({ ...mockSettings.resources, storage_root: '/data/sunzi/cases' })
+      : fail('FORBIDDEN', '平台设置仅管理员可操作', 403),
+  ),
+  http.put('*/api/v1/settings/resources', async ({ request }) =>
+    putSettings(request, 'resources', ['max_rows_default', 'query_timeout_ms'], mockSettings.resources),
+  ),
+  http.get('*/api/v1/settings/policies-thresholds', () =>
+    isMockAdmin()
+      ? ok({ thresholds: { ...mockSettings.thresholds }, note: '平台值仅用于新建案件默认；案件生效阈值以案件快照 thresholds.json 为准' })
+      : fail('FORBIDDEN', '平台设置仅管理员可操作', 403),
+  ),
+  http.put('*/api/v1/settings/policies-thresholds', async ({ request }) =>
+    putSettings(request, 'policies_thresholds', ['cross_level_min_sources', 'cross_level_min_clues', 'stale_days'], mockSettings.thresholds),
+  ),
+  http.get('*/api/v1/settings/features', () =>
+    isMockAdmin() ? ok({ ...mockSettings.features }) : fail('FORBIDDEN', '平台设置仅管理员可操作', 403),
+  ),
+  http.put('*/api/v1/settings/features', async ({ request }) =>
+    putSettings(request, 'features', ['ui_density'], mockSettings.features),
+  ),
+  http.get('*/api/v1/settings/snapshots', () => {
+    if (!isMockAdmin()) return fail('FORBIDDEN', '平台设置仅管理员可操作', 403)
+    return ok({
+      items: [
+        { case_id: 'c1', pack_id: 'default', version: '2.1.0', snapshot_path: 'cases/c1/ontology/default', locked_at: '2026-09-08T10:00:00' },
+      ],
+      total: 1,
+    })
   }),
 ]
 
@@ -1524,3 +2025,343 @@ const mockDeRecos = [
     ],
   },
 ]
+
+// ---------- MVP-4 配置面 mock 数据（结构仿 ontology/default/*.json）----------
+
+/** 配置写追加 config 审计事件（审计页「配置」tab 可见；红线判定不在 mock） */
+function appendConfigAudit(cid: string, op: string, filename: string, reason: string | undefined, summary?: Record<string, unknown>): void {
+  auditSeq += 1
+  auditEvents.push({
+    seq: auditSeq,
+    event_id: `evt-${auditSeq}`,
+    case_id: cid,
+    occurred_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    operator: '王检察官',
+    action: 'config',
+    status_from: null,
+    status_to: null,
+    note: reason?.trim() ? `${op}（${filename}）：${reason.trim()}` : `${op}（${filename}）`,
+    ontology_version: '2.1.0',
+    rule_version: '1.4.2',
+    function_version: '1.8.0',
+    source_row_ids: [],
+    chain_source: 'state',
+    ...(summary ? { config_summary: summary } : {}),
+  } as MockAuditEvent)
+}
+
+const mockFunctionCatalog = [
+  'large_amount', 'integer_transfer_chain', 'night_call_cluster', 'track_overlap',
+  'address_mismatch', 'time_window_collision', 'invoice_loop', 'relation_asserted',
+]
+
+interface MockRule {
+  id: string
+  stage?: string
+  title?: string
+  dimension?: string | string[]
+  jian_types?: string[]
+  enabled: boolean
+  function: string
+  rule_text: string
+  params: Record<string, unknown>
+}
+
+const mockRules: MockRule[] = [
+  {
+    id: 'R1', stage: 'xu_shi', title: '季度末整数现金存入', dimension: '资金',
+    jian_types: ['反间'], enabled: true, function: 'large_amount',
+    rule_text: '季度末（3/6/9/12 月最后 5 个工作日）个人账户现金存入为 5 万元整数倍且单笔≥20 万元，与账户持有人申报收入水平显著不符；正常经营性现金存款多有零头、连续多笔与营业额匹配，整数大额季末突增符合现金归集、虚增流水特征，列为候选反常。',
+    params: { amount_min: 200000, multiple_of: 50000, quarter_end_days: 5 },
+  },
+  {
+    id: 'R2', stage: 'xu_shi', title: '整数转账聚合（第三方过桥结构）', dimension: '资金',
+    jian_types: ['反间'], enabled: true, function: 'integer_transfer_chain',
+    rule_text: '从一方到另一方的转账金额为 1 万元整数倍且金额显著大于日常收支（如百万元级），按转出方→转入方聚合后呈现单向链条（上游单位→中间方→利益关系人账户）。正常贸易往来多有非整数尾款、双向对冲与发票背景；整数大额单向流转符合第三方过桥、资金洗白的结构特征，列为候选反常。',
+    params: { amount_min: 1000000, multiple_of: 10000, chain_min_hops: 2 },
+  },
+  {
+    id: 'R3', stage: 'xu_shi', title: '深夜通话聚集', dimension: '通讯',
+    jian_types: ['因间'], enabled: true, function: 'night_call_cluster',
+    rule_text: '主体在 23:00-次日 5:00 的通话次数按日聚合，显著高于其近 90 日同时段基线（如日均 3 倍以上）且连续 3 日以上；正常夜间通话稀疏且对象稳定，密度突增符合作案前联络协调、对串供的行为特征，列为候选反常。应急职业（医护/物流）基线单列排除。',
+    params: { night_start: 23, night_end: 5, baseline_days: 90, ratio_min: 3.0, streak_days: 3 },
+  },
+  {
+    id: 'R6', stage: 'gu_shi', title: '时间窗碰撞（资金+通讯+轨迹）', dimension: ['资金', '通讯', '时间'],
+    jian_types: ['生间', '因间'], enabled: true, function: 'time_window_collision',
+    rule_text: '资金转出后短时间窗（默认 60 分钟）内，付款方与收款方之间存在通话记录或双方在同一基站 500 米范围同现；三类事件在时间轴上两两碰撞且独立来源，符合资金操作即时联络/见面确认的行为结构，列为候选反常。时间窗排除公司公开办公地址同现。',
+    params: { window_minutes: 60, co_location_radius_m: 500, require_two_channels: true },
+  },
+  {
+    id: 'R9', stage: 'xu_shi', title: '知识包关系断言落地核查（示例停用）', dimension: '关系',
+    jian_types: ['内间'], enabled: false, function: 'relation_asserted',
+    rule_text: '知识包中声明的利益/亲属关系断言（如法定代表人、股东、配偶），在资金/通讯/轨迹数据中无任何支撑事件（无往来转账、无通话、无轨迹重合）超过 180 天；已声明的密切关系长期零接触可能意味着关系人刻意规避或声明失实，列为待核实提示。本规则为示例，默认停用。',
+    params: { silent_days: 180 },
+  },
+]
+
+const mockObjects = [
+  { name: 'person', title: '自然人', pk: 'person_id', kind: 'entity', name_property: 'raw_name', jian: '生间', properties: { person_id: 'string', raw_name: 'string', id_type: 'string', id_masked: 'string' } },
+  { name: 'org', title: '组织/企业', pk: 'org_id', kind: 'entity', name_property: 'raw_name', jian: '生间', properties: { org_id: 'string', raw_name: 'string', credit_code: 'string', legal_rep: 'string', status: 'string' } },
+  { name: 'account', title: '资金账户', pk: 'account_id', kind: 'entity', name_property: 'account_no_masked', jian: '反间', properties: { account_id: 'string', account_no_masked: 'string', bank: 'string', holder_raw: 'string' } },
+  { name: 'transaction', title: '交易流水', pk: 'txn_id', kind: 'event', name_property: 'from_raw', jian: '反间', jian_source: '银行流水', properties: { txn_id: 'string', from_raw: 'string', to_raw: 'string', amount: 'decimal', date: 'date', channel: 'string' } },
+  { name: 'call', title: '通话记录', pk: 'call_id', kind: 'event', name_property: 'caller_raw', jian: '生间', jian_source: '通话记录', properties: { call_id: 'string', caller_raw: 'string', callee_raw: 'string', start_at: 'date', duration_sec: 'integer', base_station: 'string' } },
+  { name: 'trackpoint', title: '轨迹点', pk: 'track_id', kind: 'event', name_property: 'person_raw', jian: '因间', jian_source: '轨迹出行', properties: { track_id: 'string', person_raw: 'string', date: 'date', location: 'string', lng: 'decimal', lat: 'decimal' } },
+  { name: 'clue', title: '线索', pk: 'clue_id', kind: 'entity', name_property: 'title', jian: '生间', properties: { clue_id: 'string', title: 'string', status: 'string', level: 'string', last_operator: 'string', updated_at: 'date' } },
+]
+
+const mockLinks = [
+  { name: 'transfers', title: '转账关系', from_obj: 'account', to_obj: 'account', jian: '反间' },
+  { name: 'owns', title: '持有账户', from_obj: 'person', to_obj: 'account', jian: '反间' },
+  { name: 'calls_to', title: '通话联系', from_obj: 'person', to_obj: 'person', jian: '生间' },
+  { name: 'co_located', title: '同现关系', from_obj: 'person', to_obj: 'person', jian: '因间' },
+  { name: 'time_window', title: '时间窗碰撞', from_obj: 'transaction', to_obj: 'call', jian: '生间' },
+  { name: 'involved_in', title: '涉案关系', from_obj: 'person', to_obj: 'clue', jian: '生间' },
+]
+
+const mockPolicies = {
+  object_policies: [
+    { object: 'person', roles: ['见习', '正兵', '偏将', '主办', 'human'], min_clearance: 0 },
+    { object: 'org', roles: ['见习', '正兵', '偏将', '主办', 'human'], min_clearance: 0 },
+    { object: 'account', roles: ['见习', '正兵', '偏将', '主办', 'human'], min_clearance: 0 },
+    { object: 'transaction', roles: ['正兵', '偏将', '主办', 'human'], min_clearance: 1 },
+    { object: 'call', roles: ['正兵', '偏将', '主办', 'human'], min_clearance: 1 },
+    { object: 'trackpoint', roles: ['偏将', '主办', 'human'], min_clearance: 2 },
+    { object: 'clue', roles: ['见习', '正兵', '偏将', '主办', 'human'], min_clearance: 0 },
+  ],
+  link_policies: [
+    { link: 'transfers', roles: ['正兵', '偏将', '主办', 'human'], min_clearance: 1 },
+    { link: 'calls_to', roles: ['正兵', '偏将', '主办', 'human'], min_clearance: 1 },
+    { link: 'co_located', roles: ['偏将', '主办', 'human'], min_clearance: 2 },
+  ],
+  property_policies: [
+    { object: 'person', property: 'id_masked', default: 'allow', mask: 'partial' },
+    { object: 'account', property: 'account_no_masked', default: 'allow', mask: 'partial' },
+    { object: 'org', property: 'legal_rep', default: 'allow', mask: 'none' },
+    { object: 'call', property: 'base_station', default: 'deny', allow_roles: ['偏将', '主办', 'human'], mask: 'none' },
+  ],
+}
+
+const mockViews = [
+  { name: 'person_directory', base_object: 'person', properties: ['person_id', 'raw_name'], roles: ['见习', '正兵', '偏将', '主办', 'human', 'system'], description: '人员花名册视图：仅暴露代理键与姓名' },
+  { name: 'org_overview', base_object: 'org', properties: ['org_id', 'raw_name', 'status'], roles: ['见习', '正兵', '偏将', '主办', 'human', 'system'], description: '组织概览视图：去掉法人等需进一步核实的字段' },
+  { name: 'transaction_audit', base_object: 'transaction', properties: ['txn_id', 'from_raw', 'to_raw', 'amount', 'date'], roles: ['正兵', '偏将', '主办', 'human', 'system'], description: '资金流水审计视图：跨案件对账与溯源' },
+  { name: 'trackpoint_minimal', base_object: 'trackpoint', properties: ['track_id', 'person_raw', 'date'], roles: ['偏将', '主办', 'human', 'system'], description: '轨迹最小视图：行踪信息严格授权' },
+]
+
+const mockKnowledge: {
+  subject_aliases: Record<string, string[]>
+  relation_assertions: Array<{ from: string; to: string; type: string; source?: string; valid_until: string | null }>
+} = {
+  subject_aliases: {
+    蓝海贸易有限公司: ['蓝海贸易', '蓝海贸易（上海）', '上海蓝海贸易有限公司'],
+    张某: ['张某', '张卫国', '老张'],
+    李某: ['李某', '李志强'],
+  },
+  relation_assertions: [
+    { from: '蓝海贸易有限公司', to: '张某', type: 'interest', source: '招投标档案', valid_until: null },
+    { from: '临港仓储服务有限公司', to: '李某', type: 'legal_rep', source: '工商内档', valid_until: null },
+    { from: '宁波蓝海商贸', to: '陈某', type: 'legal_rep', source: '工商注册样本', valid_until: null },
+    { from: '旧关联公司', to: '旧关联人', type: 'interest', source: '已过期登记', valid_until: '2019-12-31' },
+  ],
+}
+
+const mockDataElements = {
+  schema_version: 2,
+  pack: 'default',
+  elements: {
+    DE_ID_TYPE: { name: '证件类型', type: 'string', sensitive: false, enum: ['居民身份证', '护照', '军官证', '港澳居民来往内地通行证'], enum_space_dim: '证件类型' },
+    DE_ID_NO: { name: '证件号码', type: 'string', length: 18, sensitive: true, mask: 'partial', format: '^[0-9X]{15,18}$' },
+    DE_AMOUNT_YUAN: { name: '金额（元）', type: 'decimal', sensitive: false },
+    DE_PERSON_NAME: { name: '自然人姓名', type: 'string', length: 50, sensitive: false },
+    DE_ORG_NAME: { name: '机构名称', type: 'string', length: 120, sensitive: false },
+    DE_PHONE: { name: '手机号码', type: 'string', length: 11, sensitive: true, mask: 'partial', format: '^1[3-9][0-9]{9}$' },
+    DE_BANK_ACCOUNT: { name: '银行账号', type: 'string', length: 32, sensitive: true, mask: 'partial' },
+    DE_TXN_DATE: { name: '交易日期', type: 'date', sensitive: false, format: 'YYYY-MM-DD' },
+  },
+}
+
+const mockEtlSources = [
+  {
+    object: 'transaction', source_table: '银行流水',
+    clean: ['trim_whitespace', 'normalize_amount'],
+    on_cast_error: { amount: 'quarantine' },
+    null_policy: { from_raw: 'reject', to_raw: 'reject', amount: 'quarantine' },
+    dedup_key: ['txn_id'], dedup_on_conflict: 'keep_latest',
+    composite_props: [
+      { prop: 'amount', source_sql: 'COALESCE(转账金额, 现存金额, 手工录入金额)', reason: '三列合一的复合表达式，无法逐列 CAST 与映射' },
+    ],
+  },
+  {
+    object: 'call', source_table: '通话记录',
+    clean: ['trim_whitespace'],
+    on_cast_error: { duration_sec: 'fail' },
+    null_policy: { caller_raw: 'quarantine', callee_raw: 'quarantine' },
+    dedup_key: ['call_id'], dedup_on_conflict: 'keep_latest',
+    composite_props: [],
+  },
+]
+
+const mockQualityReport = {
+  available: true,
+  check_id: 'QC-20260908-1000',
+  created_at: '2026-09-08 10:00:00',
+  created_by: '王检察官',
+  data_version: 3,
+  summary: { total: 8, passed: 4, warnings: 2, violations: 2 },
+  checks: [
+    { category: 'compliance', mode: 'deterministic', rule_id: 'R6', obj: 'transaction', prop: 'amount', severity: 'block', count: 12, message: '12 行金额声明 decimal 但源值无法转换（中文大写/手工录入），按 fail 策略应阻断装载', samples_masked: ['¥ 肆拾捌万元整', '480,000.00 元'] },
+    { category: 'sensitive', mode: 'deterministic', rule_id: undefined, obj: 'person', prop: 'id_masked', severity: 'block', count: 1, message: '证件号码列未在 property_policies 声明遮蔽策略，敏感面裸奔', samples_masked: [] },
+    { category: 'freshness', mode: 'deterministic', rule_id: undefined, obj: 'call', prop: 'start_at', severity: 'warn', count: 47, message: '通话记录最新数据停留在 2026-08-01，距今 38 天未更新（阈值 30 天）', samples_masked: [] },
+    { category: 'unit', mode: 'heuristic', rule_id: undefined, obj: 'transaction', prop: 'amount', severity: 'suggest', count: 6, message: '金额疑似混入「万元」单位记录（数值分布出现两个量级），建议人工核对单位口径', samples_masked: ['48.00（万元？）', '50.00（万元？）'] },
+    { category: 'compliance', mode: 'deterministic', rule_id: undefined, obj: 'trackpoint', prop: 'lng', severity: 'ok', count: 0, message: '经纬度取值范围合法', samples_masked: [] },
+  ],
+}
+
+const mockQuarantine = [
+  { object: 'transaction', property: 'amount', rule: 'cast:decimal', src_column: '转账金额', reason: 'cast_error', source_table: '银行流水', samples_masked: ['¥ 肆拾捌万元整', '480,000.00 元（手工录入）'], name_value: '张某', quarantined_at: '2026-09-08 09:58:11' },
+  { object: 'transaction', property: 'amount', rule: 'cast:decimal', src_column: '现存金额', reason: 'cast_error', source_table: '银行流水', samples_masked: ['约伍拾万元', '现金 50 万'], name_value: '李某', quarantined_at: '2026-09-08 09:58:12' },
+  { object: 'call', property: 'caller_raw', rule: 'not_null', src_column: '主叫号码', reason: 'null_value', source_table: '通话记录', samples_masked: ['（空）'], name_value: '', quarantined_at: '2026-09-08 09:59:03' },
+]
+
+const mockCleanTrace = [
+  { object: 'transaction', property: 'amount', rules: ['cast:decimal', 'dedup:txn_id'], rows_before: 1203, rows_after: 1189, dropped_rows: 14, rate: 0.0116, samples_masked: ['¥ 肆拾捌万元整'], source: 'build', created_at: '2026-09-08 10:00:00' },
+  { object: 'call', property: 'caller_raw', rules: ['not_null'], rows_before: 3420, rows_after: 3417, dropped_rows: 3, rate: 0.0009, samples_masked: ['（空）'], source: 'build', created_at: '2026-09-08 10:00:00' },
+]
+
+// ---------- MVP-5 mock 状态（门户/跨案/案件包/逃生舱/设置）----------
+
+/**
+ * 演示开关（仅 mock 管道）：
+ * - sessionStorage 'sunzi.mock.admin'='1' → 管理员（可编辑平台设置）；
+ *   默认非管理员，进设置页看到 fail-closed 锁定面板（B2）。
+ * - 建案/归档/跨案等写入操作的审计留痕（reason 必填）与后端同构。
+ */
+function isMockAdmin(): boolean {
+  try {
+    return sessionStorage.getItem('sunzi.mock.admin') === '1'
+  } catch {
+    return false
+  }
+}
+
+const mvp5Cases = [
+  {
+    id: 'c1',
+    tenant_id: 't1',
+    name: '演示案件·蓝海贸易',
+    status: '侦查中',
+    pack_id: 'default',
+    pack_snapshot_at: '2026-09-08T10:00:00',
+    created_at: '2026-09-01T09:00:00',
+    created_by: '王检察官',
+  },
+  {
+    id: 'c2',
+    tenant_id: 't1',
+    name: '演示案件·临港仓储（待建案）',
+    status: '待建案',
+    pack_id: 'default',
+    pack_snapshot_at: '',
+    created_at: '2026-09-07T09:00:00',
+    created_by: '王检察官',
+  },
+]
+
+const crossHistory: Array<{
+  id: number
+  ts: string
+  case_ids: string[]
+  sql: string
+  reason: string
+  result_rows: number
+}> = [
+  {
+    id: 1,
+    ts: '2026-09-08T15:02:00',
+    case_ids: ['c1', 'c2'],
+    sql: "SELECT 'c1' AS source_case, t.* FROM case_c1.obj_person t UNION ALL SELECT 'c2' AS source_case, t.* FROM case_c2.obj_person t",
+    reason: '并案排查：两案人员是否存在重合主体',
+    result_rows: 4,
+  },
+]
+let crossHistorySeq = crossHistory.length
+
+const HATCH_TEMPLATES: Record<string, { path: string; content: string; points: string[] }> = {
+  function: {
+    path: 'ontology/default/functions.json (+core/functions.py)',
+    content:
+      '// functions.json 声明片段：\n' +
+      '{\n  "name": "{name}",\n  "kind": "sql",\n  "description": "{desc}",\n  "parameters": [],\n  "sql": "SELECT * FROM obj_person LIMIT 100"\n}\n' +
+      '# core/functions.py：在 FUNCTION_IMPLS 注册同名实现（只读）。',
+    points: ['ontology/default/functions.json 加声明', 'core/functions.py FUNCTION_IMPLS 注册', 'rules.json 以 function 名挂钩'],
+  },
+  value_type: {
+    path: 'ontology/default/objects.json (+TYPE_SQL)',
+    content:
+      '// objects.json properties 增加类型：\n' +
+      '"properties": { "{name}": "{desc}" }\n' +
+      '# 值类型经 core/ontology_loader.py TYPE_SQL 驱动物化列类型；脏值 TRY_CAST 降级 NULL + 诊断。',
+    points: ['ontology/default/objects.json properties 声明', 'bindings.json source 列别名对齐', '重建语义层生效'],
+  },
+  clean_rule: {
+    path: 'ontology/default/bindings.json (+core/clean_rules.py)',
+    content:
+      '// bindings.json clean 引用清洗规则：\n' +
+      '"clean": ["{name}"]\n' +
+      '# core/clean_rules.py 注册同名纯函数（输入行 dict，输出行 dict）。\n// 规则说明：{desc}',
+    points: ['core/clean_rules.py 注册规则函数', 'ontology/default/bindings.json clean 引用', '重建语义层生效'],
+  },
+  side_effect: {
+    path: 'ontology/default/actions.json (+core/action_executor.py)',
+    content:
+      '// actions.json 声明写动作：\n' +
+      '{\n  "name": "{name}",\n  "description": "{desc}",\n  "roles": ["human"],\n  "required_params": ["reason"],\n  "transitions": []\n}\n' +
+      '# core/action_executor.py 注册副作用实现（唯一写路径）。',
+    points: ['ontology/default/actions.json 加声明', 'core/action_executor.py 注册副作用', 'policies.json 同步声明策略（漏了 fail-closed）'],
+  },
+}
+
+const hatchStats: Record<string, number> = { function: 12, value_type: 3, clean_rule: 5, side_effect: 2 }
+
+const mockSettings = {
+  queue: { max_workers: 2, poll_interval_ms: 2000 },
+  resources: { max_rows_default: 10000, query_timeout_ms: 30000 },
+  thresholds: { cross_level_min_sources: 3, cross_level_min_clues: 2, stale_days: 30 },
+  features: { ui_density: 'comfortable' as 'comfortable' | 'compact' },
+}
+
+const SETTINGS_SCOPE_KEY: Record<string, string> = {
+  queue: 'queue',
+  resources: 'resources',
+  policies_thresholds: 'policies_thresholds',
+  features: 'features',
+}
+
+async function putSettings(
+  request: Request,
+  scope: 'queue' | 'resources' | 'policies_thresholds' | 'features',
+  allowedKeys: string[],
+  target: Record<string, unknown>,
+): Promise<Response> {
+  if (!isMockAdmin()) return fail('FORBIDDEN', '平台设置仅管理员可操作', 403)
+  const body = (await request.json().catch(() => ({}))) as { reason?: string; values?: Record<string, unknown> }
+  if (!body.reason?.trim()) return fail('VALIDATION', '修改平台设置必须填写原因（审计留痕）', 400)
+  const values = body.values ?? {}
+  const unknown = Object.keys(values).filter((k) => !allowedKeys.includes(k))
+  if (unknown.length) return fail('VALIDATION', `不允许修改的键：${unknown.join('、')}（红线键平台硬拒）`, 400)
+  for (const [k, v] of Object.entries(values)) {
+    if (v === null || v === undefined) continue
+    if (scope === 'features' && k === 'ui_density' && !['comfortable', 'compact'].includes(String(v))) {
+      return fail('VALIDATION', 'ui_density 仅允许 comfortable/compact', 400)
+    }
+    target[k] = v
+  }
+  const key = SETTINGS_SCOPE_KEY[scope]
+  const payload: Record<string, unknown> = { [key]: { ...target } }
+  if (scope === 'resources') payload.resources = { ...target, storage_root: '/data/sunzi/cases' }
+  if (scope === 'policies_thresholds') {
+    payload.note = '平台值仅用于新建案件默认；案件生效阈值以案件快照 thresholds.json 为准'
+  }
+  return ok(payload)
+}

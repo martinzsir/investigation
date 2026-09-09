@@ -1,4 +1,4 @@
-<script setup lang="true">
+<script setup lang="ts">
 // ★ FE-C-015 PolicyGate（承重墙，薄）：对象/操作级权限闸门。
 // 未声明/不通过 → fail-closed：默认插槽不渲染（或渲染 fallback）。
 // 组件本身不做策略判定（判定在 domain 层 + 后端 403/404 双保险），

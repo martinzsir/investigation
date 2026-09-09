@@ -42,6 +42,16 @@ class Principal:
     clearance: int
     tenant_id: str
     token: str
+    is_admin: int = 0  # 0/1：平台管理员标志（W-024；role=system 视同管理员）
+
+
+def platform_admin_flag(is_admin: int, role: str) -> bool:
+    """平台管理员判定：is_admin=1 或 system 角色（settings/audit 管理面门槛）。
+
+    /auth/login 与 /auth/me 统一经此输出 is_admin 布尔，前端据此渲染
+    管理面（不靠 403 探测）。
+    """
+    return bool(is_admin) or role == "system"
 
 
 def bearer_token(authorization: str | None) -> str | None:

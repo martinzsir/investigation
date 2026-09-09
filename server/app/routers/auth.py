@@ -15,7 +15,12 @@ from server.app.deps import (
 )
 from server.app.envelope import ERR_UNAUTHORIZED, APIError, ok
 from server.app.meta.models import USER_ACTIVE
-from server.app.security import Principal, new_token, verify_password
+from server.app.security import (
+    Principal,
+    new_token,
+    platform_admin_flag,
+    verify_password,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -53,6 +58,8 @@ def login(body: LoginIn, request: Request,
         "role": user.role,
         "clearance": user.clearance,
         "tenant_id": user.tenant_id,
+        # 平台管理员标志（W-024；前端管理面据此渲染，不靠 403 探测）
+        "is_admin": platform_admin_flag(user.is_admin, user.role),
     })
 
 
@@ -73,4 +80,6 @@ def me(p: Principal = Depends(get_principal)):
         "role": p.role,
         "clearance": p.clearance,
         "tenant_id": p.tenant_id,
+        # 平台管理员标志（W-024；与 login 同口径）
+        "is_admin": platform_admin_flag(p.is_admin, p.role),
     })

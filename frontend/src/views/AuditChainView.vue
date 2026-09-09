@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// FE-P-006 审计链（MVP-1 简化版）：完整性校验常驻条 + 时间线 + 筛选。
+// FE-P-006 审计链：完整性校验常驻条 + 时间线 + 筛选 + 维度切换（案件级/线索级）。
 // 红线 FE-T-015：空链 warn 语义（auditBanner 强制），不显示「校验通过」。
-// 06 设计图的节点详情中列/维度切换器属 MVP-2（技术债台账记账）。
+// 维度切换（p7 技术债清偿）：线索级经 ?clue_id= query 参数进入（图谱/工作台跳转同参），
+// 切换回案件级即清空线索维度并重新加载；verify 完整性校验始终为案件级。
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { NSpin, NButton, NInput, NSelect, NAlert, NIcon } from 'naive-ui'
+import { useRoute, useRouter } from 'vue-router'
+import { NSpin, NButton, NInput, NSelect, NAlert, NIcon, NRadioGroup, NRadioButton } from 'naive-ui'
 import { ShieldCheckmarkOutline, WarningOutline } from '@vicons/ionicons5'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -16,6 +17,7 @@ import AuditTimeline from '../components/audit/AuditTimeline.vue'
 const cs = useCaseStore()
 const auth = useAuthStore()
 const route = useRoute()
+const router = useRouter()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -25,6 +27,8 @@ const verify = ref<AuditVerifyDto | null>(null)
 const actionFilter = ref<string | null>(null)
 const operatorFilter = ref('')
 const clueIdFilter = ref(typeof route.query.clue_id === 'string' ? route.query.clue_id : '')
+// 维度：带 ?clue_id= 进入即落线索级（外页跳转直达）
+const dimension = ref<'case' | 'clue'>(clueIdFilter.value ? 'clue' : 'case')
 
 const actionOptions = [
   { label: '全部动作', value: '' },
@@ -37,6 +41,8 @@ const actionOptions = [
 const banner = computed(() => auditBanner(verify.value))
 const items = computed(() => page.value?.items ?? [])
 
+const clueQuery = computed(() => (dimension.value === 'clue' ? clueIdFilter.value.trim() : ''))
+
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
     page.value = null
@@ -45,6 +51,8 @@ async function load(): Promise<void> {
   }
   loading.value = true
   errorMsg.value = ''
+  // URL 同步：线索级保留 ?clue_id=，案件级移除（可分享/可回跳）
+  void router.replace({ query: { ...route.query, clue_id: clueQuery.value || undefined } })
   try {
     const [p, v] = await Promise.all([
       auditApi.timeline(cs.currentCaseId, {
@@ -52,7 +60,7 @@ async function load(): Promise<void> {
         page_size: 100,
         action: actionFilter.value ?? undefined,
         operator: operatorFilter.value.trim() || undefined,
-        clue_id: clueIdFilter.value.trim() || undefined,
+        clue_id: clueQuery.value || undefined,
       }),
       auditApi.verify(cs.currentCaseId),
     ])
@@ -67,10 +75,32 @@ async function load(): Promise<void> {
 
 watch(() => cs.currentCaseId, load, { immediate: true })
 
+// 外页带 ?clue_id= 跳转（图谱/庙算）→ 同步到线索级
+watch(
+  () => route.query.clue_id,
+  (q) => {
+    if (typeof q === 'string' && q && q !== clueIdFilter.value) {
+      clueIdFilter.value = q
+      dimension.value = 'clue'
+      void load()
+    }
+  },
+)
+
+function switchDimension(d: 'case' | 'clue'): void {
+  if (dimension.value === d) return
+  dimension.value = d
+  if (d === 'case') {
+    clueIdFilter.value = ''
+    void load()
+  }
+}
+
 function reset(): void {
   actionFilter.value = null
   operatorFilter.value = ''
   clueIdFilter.value = ''
+  dimension.value = 'case'
   void load()
 }
 </script>
@@ -108,12 +138,29 @@ function reset(): void {
             </span>
           </div>
 
-          <!-- 筛选（简化版：动作 + 操作人 + 线索维度） -->
+          <!-- 维度切换：案件级（全案时间线）/ 线索级（?clue_id= 直达） -->
+          <div class="dim-bar">
+            <NRadioGroup :value="dimension" size="small" @update:value="switchDimension">
+              <NRadioButton value="case">案件级</NRadioButton>
+              <NRadioButton value="clue">线索级</NRadioButton>
+            </NRadioGroup>
+            <span class="dim-hint">
+              {{ dimension === 'case' ? '全案审计时间线（完整性校验为案件级）' : '仅展示该线索相关审计记录（可从图谱/工作台带 ?clue_id= 直达）' }}
+            </span>
+          </div>
+
+          <!-- 筛选（动作 + 操作人；线索级额外按线索 ID 过滤） -->
           <div class="filters">
             <NSelect v-model:value="actionFilter" :options="actionOptions" placeholder="全部动作" class="filter-select" />
             <NInput v-model:value="operatorFilter" placeholder="操作人姓名" class="filter-input" />
-            <NInput v-model:value="clueIdFilter" placeholder="线索 ID（维度切换：案件级/线索级）" class="filter-clue" />
-            <NButton size="small" type="primary" @click="load">查询</NButton>
+            <NInput
+              v-if="dimension === 'clue'"
+              v-model:value="clueIdFilter"
+              placeholder="线索 ID，如 CLUE-007"
+              class="filter-clue"
+              @keyup.enter="load"
+            />
+            <NButton size="small" type="primary" :disabled="dimension === 'clue' && !clueIdFilter.trim()" @click="load">查询</NButton>
             <NButton size="small" @click="reset">重置</NButton>
           </div>
 
@@ -188,6 +235,16 @@ function reset(): void {
 }
 .chain-src {
   font-style: normal;
+  color: var(--sun-text-tertiary);
+}
+.dim-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.dim-hint {
+  font-size: 12px;
   color: var(--sun-text-tertiary);
 }
 .filters {

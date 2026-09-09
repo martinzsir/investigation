@@ -2,9 +2,10 @@
 server/app/routers/knowledge.py
 W-016 知识包维护（M4 阶段 A）。
 
-读：GET /cases/{cid}/knowledge —— 断言列表 + valid_until + 敏感地点白名单。
+读：GET /cases/{cid}/knowledge —— 关系断言列表 + valid_until + 主体别名。
 写：POST/PUT /cases/{cid}/knowledge 🔒 —— 增改/停用断言；
     过期断言扫描自动排除（core r5 既有）；变更进审计链。
+    （敏感地点白名单后端暂无字段，MVP-4 不做。）
 权限：GET 登录即可；写需偏将及以上。
 """
 from __future__ import annotations
@@ -25,6 +26,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    record_config_audit,
     require_analyst,
     snapshot_paths,
 )
@@ -35,6 +37,7 @@ router = APIRouter(tags=["knowledge"])
 class KnowledgeIn(BaseModel):
     relation_assertions: list[dict]
     subject_aliases: dict | None = None
+    reason: str | None = None  # 变更理由（FE-T-012，落审计链 note）
 
 
 @router.get("/cases/{case_id}/knowledge")
@@ -84,6 +87,9 @@ def save_knowledge(case_id: str, body: KnowledgeIn,
     ctx.repo.record_ops("knowledge_save", case_id,
                         {"by": p.operator,
                          "assertions": len(body.relation_assertions)})
+    record_config_audit(ctx, case_id, p, "knowledge_save",
+                        filename="case_knowledge.json", reason=body.reason,
+                        summary={"assertions": len(body.relation_assertions)})
     return ok({"saved": True,
                "assertions": len(body.relation_assertions)},
               data_version=ctx.repo.current_version(case_id))
@@ -124,6 +130,10 @@ def add_knowledge(case_id: str, body: KnowledgeIn,
     atomic_write_json(path, data)
     ctx.repo.record_ops("knowledge_add", case_id,
                         {"by": p.operator, "added": len(body.relation_assertions)})
+    record_config_audit(ctx, case_id, p, "knowledge_add",
+                        filename="case_knowledge.json", reason=body.reason,
+                        summary={"added": len(body.relation_assertions),
+                                 "total": len(existing)})
     return ok({"added": len(body.relation_assertions),
                "total": len(existing)},
               data_version=ctx.repo.current_version(case_id))

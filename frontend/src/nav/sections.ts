@@ -50,7 +50,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: 'designer', label: '模型设计器', mvp: 4 },
       { key: 'rules', label: '规则工坊', mvp: 4 },
-      { key: 'functions', label: '函数目录', mvp: 4 },
+      { key: 'knowledge', label: '知识包', mvp: 4 },
       { key: 'masking', label: '权限与遮蔽', mvp: 4 },
     ],
   },

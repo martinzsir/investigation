@@ -403,6 +403,8 @@ class AuditChain:
         if _is_disposal_event(after):
             return "disposal"
         if isinstance(after, dict):
+            if after.get("config_action"):
+                return "config"
             if "proposal_id" in after:
                 return "proposal"
             if "set_id" in after:

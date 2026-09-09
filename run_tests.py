@@ -196,6 +196,7 @@ GROUPS = {
     "m6board":      ("M6 W-P-001~004 处置看板+列分析+映射草稿+关系图谱", [sys.executable, "-m", "unittest", "tests.test_m6_board"]),
     "m6insight":    ("M6 W-P-005~010 庙算+画像+推荐+质检+隔离+留痕", [sys.executable, "-m", "unittest", "tests.test_m6_insight"]),
     "m6govern":     ("M6 W-P-011~015/017 数据元+ETL管道+系统设置+任务取消+门户归档+配置中心", [sys.executable, "-m", "unittest", "tests.test_m6_govern"]),
+    "configaudit":  ("MVP-4 FE-T-012 配置写追加案件审计链（9 端点+reason+链校验）", [sys.executable, "-m", "unittest", "tests.test_config_audit_api"]),
 }
 
 
