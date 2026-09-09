@@ -30,6 +30,7 @@ const deltaText = computed(() => {
     <div v-if="deltaText" class="metric-delta" :class="{ up: (delta ?? 0) > 0, down: (delta ?? 0) < 0 }">
       {{ deltaText }}
     </div>
+    <slot />
   </div>
 </template>
 

@@ -1,12 +1,15 @@
 <script setup lang="ts">
-// FE-P-007 数据画像（MVP-2）：列级空值率/ distinct / 画像分、书写变体、扣分明细。
-// 后端 GET /cases/{cid}/profiles 已实现（六层报告），前端 adaptProfile 适配。
-// 案件未 BUILD → available:false → 「尚未接入数据源」空态。
+// FE-P-007 数据画像（MVP-2）：六层报告（L1/L2 列层值层、L3 关注命中、L4 五间分布、L5 质量分）。
+// 后端 GET /cases/{cid}/profiles（profiles_view.assemble_profiles → OntologyProfiler.profile_all）。
+// 案件未 BUILD/无物化对象 → available:false → 「尚未接入数据源」空态。
 import { ref, watch } from 'vue'
-import { NSpin, NButton } from 'naive-ui'
+import { NSpin, NButton, NTooltip } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { profileApi } from '../api/endpoints/profile'
-import { nullRateBand, scoreBand, severityBand, type ProfileData } from '../domain/profile'
+import {
+  nullRateBand, scoreBand, severityBand, metricLabel,
+  type ProfileData, type ProfileColumn,
+} from '../domain/profile'
 import MetricCard from '../components/common/MetricCard.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 
@@ -40,6 +43,27 @@ watch(() => cs.currentCaseId, load, { immediate: true })
 const sevLabel: Record<string, string> = {
   block: '阻断', warn: '告警', high: '高', medium: '中', low: '低',
 }
+
+const statusLabel: Record<string, string> = {
+  ok: '正常', unmaterialized_object: '对象未物化', missing_column: '缺列',
+}
+
+/** 未物化/缺列行不参与数值展示 */
+function isDead(c: ProfileColumn): boolean {
+  return c.status !== 'ok'
+}
+
+function pct(v: number | null): string {
+  return v === null ? '—' : (v * 100).toFixed(1) + '%'
+}
+
+function fmtMetric(v: number | null, metric: string): string {
+  if (v === null) return '—'
+  if (metric.includes('rate') || metric === 'focus_hit_rate' || metric === 'window_coverage' || metric === 'wan_integer_rate') {
+    return (v * 100).toFixed(1) + '%'
+  }
+  return String(v)
+}
 </script>
 
 <template>
@@ -62,65 +86,162 @@ const sevLabel: Record<string, string> = {
           v-if="!loading && (notAvailable || !data || !data.available)"
           type="empty"
           title="尚未接入数据源"
-          desc="案件尚未导入数据或未完成 BUILD；接入数据源并完成 BUILD 后，将展示列级空值率、书写变体与扣分明细"
+          desc="案件尚未导入数据或未完成 BUILD；接入数据源并完成 BUILD 后，将展示六层画像（L1/L2 列层值层、L3 关注命中、L4 五间分布、L5 质量分）"
         />
         <template v-else-if="data && data.available">
+          <!-- 指标卡 -->
           <div class="metrics">
-            <MetricCard label="整库画像分" :value="data.overall_score.toFixed(1)" tone="ok" />
+            <MetricCard
+              label="整库画像分"
+              :value="data.overall_score.toFixed(0)"
+              :tone="scoreBand(data.overall_score) === 'ok' ? 'ok' : scoreBand(data.overall_score) === 'warn' ? 'warn' : 'error'"
+            >
+              <div class="score-range">可推翻至 {{ data.score_range[1] }}</div>
+            </MetricCard>
             <MetricCard label="已物化对象" :value="data.source_count" unit="个" tone="cyan" />
             <MetricCard label="问题项" :value="data.issue_count" unit="项" tone="warn" />
             <MetricCard label="关注实体" :value="data.aligned_entities" unit="个" tone="info" />
           </div>
 
+          <!-- 画像声明 + 锚点 -->
+          <div class="declare-bar">
+            <span class="declare-note">⚠ {{ data.note ?? '结论均为待核实候选；画像只观察不写回' }}</span>
+            <span class="declare-anchor">
+              锚点日期 {{ data.anchor_date ?? '—' }}<template v-if="data.window_days"> · 窗口 {{ data.window_days }} 天</template>
+            </span>
+          </div>
+
+          <!-- L4 五间分布 -->
           <section class="panel">
-            <h3>属性画像（L1/L2）</h3>
-            <table class="p-table">
-              <thead>
-                <tr>
-                  <th>对象</th><th>属性</th><th>值类型</th><th>空值率</th><th>distinct</th>
-                  <th>混装</th><th style="width:160px">列评分</th><th>问题标签</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="c in data.columns" :key="`${c.object}.${c.attribute}`">
-                  <td class="mono">{{ c.object }}</td>
-                  <td>{{ c.attribute }}</td>
-                  <td class="mono dim">{{ c.value_type }}</td>
-                  <td class="mono" :class="`band--${nullRateBand(c.null_rate)}`">
-                    {{ (c.null_rate * 100).toFixed(1) }}%
-                  </td>
-                  <td class="mono dim">{{ c.distinct_count }}</td>
-                  <td>
-                    <span v-if="c.mixed_type" class="mix-warn" title="同列混装多种值类型">⚠ 混装</span>
-                    <span v-else class="dim">—</span>
-                  </td>
-                  <td>
-                    <div class="score-bar">
-                      <div
-                        class="score-fill"
-                        :class="`band--${scoreBand(c.score)}`"
-                        :style="{ width: `${c.score}%` }"
-                      />
-                      <span class="score-num">{{ c.score }}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span v-for="t in c.issues" :key="t" class="issue-tag">{{ t }}</span>
-                    <span v-if="!c.issues.length" class="dim">{{ c.status === 'ok' ? '—' : c.status }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <h3>五间分布（L4）</h3>
+            <div class="jian-grid">
+              <div
+                v-for="j in data.jians"
+                :key="j.jian"
+                class="jian-card"
+                :class="{ 'jian--dead': !j.declared, 'jian--live': j.has_materialized }"
+              >
+                <div class="jian-name">{{ j.jian }}</div>
+                <div class="jian-counts">
+                  <span>对象 <b>{{ j.objects.length }}</b></span>
+                  <span>链接 <b>{{ j.links.length }}</b></span>
+                </div>
+                <div class="jian-status">
+                  <span v-if="j.has_materialized" class="jstat jstat--live">已物化</span>
+                  <span v-else-if="j.declared" class="jstat jstat--declared">仅声明</span>
+                  <span v-else class="jstat jstat--none">未声明</span>
+                </div>
+                <div class="jian-members dim">{{ j.objects.join('、') || '—' }}</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- L1/L2 属性画像 -->
+          <section class="panel">
+            <h3>属性画像（L1/L2 列层 / 值层）</h3>
+            <div class="table-scroll">
+              <table class="p-table">
+                <thead>
+                  <tr>
+                    <th>对象</th><th>属性</th><th>类型</th><th>可连接</th><th>状态</th>
+                    <th>行数</th><th>空值率</th><th>distinct</th><th>样本</th>
+                    <th>清洗丢弃</th><th>合规率</th><th>类型落点</th>
+                    <th style="width:140px">列评分</th><th>问题</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in data.columns" :key="`${c.object}.${c.attribute}`" :class="{ 'row--dead': isDead(c) }">
+                    <td class="mono">{{ c.object }}</td>
+                    <td>{{ c.attribute }}</td>
+                    <td class="mono dim">{{ c.value_type }}</td>
+                    <td>
+                      <span v-if="c.connectable" class="tag tag--conn">可连接</span>
+                      <span v-else class="dim">—</span>
+                    </td>
+                    <td>
+                      <span v-if="isDead(c)" class="tag tag--dead">{{ statusLabel[c.status] ?? c.status }}</span>
+                      <span v-else class="tag tag--ok">正常</span>
+                    </td>
+                    <td class="mono dim">{{ isDead(c) ? '—' : c.row_count }}</td>
+                    <td class="mono" :class="isDead(c) ? 'dim' : `band--${nullRateBand(c.null_rate)}`">
+                      {{ isDead(c) ? '—' : (c.null_rate * 100).toFixed(1) + '%' }}
+                    </td>
+                    <td class="mono dim">{{ isDead(c) ? '—' : c.distinct_count }}</td>
+                    <td class="sample-cell">
+                      <NTooltip v-if="c.samples.length" trigger="hover">
+                        <template #trigger>
+                          <span class="samples">{{ c.samples.slice(0, 2).join('、') }}<span v-if="c.samples.length > 2"> …</span></span>
+                        </template>
+                        {{ c.samples.join('、') }}
+                      </NTooltip>
+                      <span v-else class="dim">—</span>
+                    </td>
+                    <td class="mono">
+                      <span v-if="c.dropped_rows !== null && c.dropped_rows > 0" class="band--warn" :title="c.clean_rule ?? ''">
+                        −{{ c.dropped_rows }}
+                      </span>
+                      <span v-else class="dim">—</span>
+                    </td>
+                    <td class="mono" :class="c.compliance_rate !== null && c.compliance_rate > 0 ? 'band--error' : ''">
+                      {{ pct(c.compliance_rate) }}
+                    </td>
+                    <td>
+                      <span v-if="c.landing.length" class="landing">
+                        <span v-for="l in c.landing" :key="l" class="tag tag--land">{{ l }}</span>
+                      </span>
+                      <span v-else class="dim">—</span>
+                    </td>
+                    <td>
+                      <div v-if="!isDead(c)" class="score-bar">
+                        <div class="score-fill" :class="`band--${scoreBand(c.score)}`" :style="{ width: `${c.score}%` }" />
+                        <span class="score-num">{{ c.score }}</span>
+                      </div>
+                      <span v-else class="dim">—</span>
+                    </td>
+                    <td class="issue-cell">
+                      <span v-if="c.mixed_type" class="issue-tag issue--block">混装</span>
+                      <span v-if="c.composite_suspect > 0" class="issue-tag issue--block" :title="`疑似复合值 ${c.composite_suspect} 个`">复合×{{ c.composite_suspect }}</span>
+                      <span v-if="c.needs_confirmation" class="issue-tag">待确认</span>
+                      <span v-if="c.variants_rule + c.variants_alias > 0" class="issue-tag">变体{{ c.variants_rule + c.variants_alias }}</span>
+                      <span v-for="t in c.issues" :key="t" class="issue-tag">{{ t }}</span>
+                      <span v-if="!c.mixed_type && !c.composite_suspect && !c.needs_confirmation && !c.variants_rule && !c.variants_alias && !c.issues.length && !isDead(c)" class="dim">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </section>
 
           <div class="two-col">
+            <!-- L3 关注命中 -->
+            <section class="panel">
+              <h3>关注命中与指标（L3）</h3>
+              <p v-if="!data.metrics.length" class="dim hint">无 L3 指标（未提供关注实体或锚点日期）</p>
+              <table v-else class="p-table">
+                <thead>
+                  <tr><th>对象.属性</th><th>指标</th><th>值</th><th>状态</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(m, i) in data.metrics" :key="i">
+                    <td class="mono">{{ m.object }}.{{ m.prop }}</td>
+                    <td>{{ metricLabel(m.metric) }}</td>
+                    <td class="mono">
+                      <span :class="m.status === 'ok' ? 'band--ok' : m.status === 'not_evaluated' ? 'dim' : 'band--warn'">
+                        {{ fmtMetric(m.value, m.metric) }}
+                      </span>
+                    </td>
+                    <td class="dim" :title="m.reason">{{ m.status === 'ok' ? '正常' : m.reason || m.status }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </section>
+
+            <!-- 书写变体 -->
             <section class="panel">
               <h3>书写变体候选</h3>
               <p v-if="!data.variants.length" class="dim hint">无可连接属性的变体候选</p>
               <div v-for="v in data.variants" :key="`${v.object}.${v.prop}`" class="variant-group">
-                <p class="variant-title">
-                  <span class="mono">{{ v.object }}.{{ v.prop }}</span>
-                </p>
+                <p class="variant-title"><span class="mono">{{ v.object }}.{{ v.prop }}</span></p>
                 <div class="variant-stats">
                   <span class="vstat" title="规则轨：同语言异写（拼音/编辑距离相似）">规则 {{ v.rule_count }}</span>
                   <span class="vstat" title="别名轨：case_knowledge 命中">别名 {{ v.alias_count }}</span>
@@ -128,29 +249,31 @@ const sevLabel: Record<string, string> = {
                 </div>
               </div>
             </section>
-
-            <section class="panel">
-              <h3>扣分明细（L5）</h3>
-              <table class="p-table">
-                <thead>
-                  <tr><th>范围</th><th>代码</th><th>原因</th><th>严重度</th><th>扣分</th></tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(d, i) in data.deductions" :key="`${d.code}-${i}`">
-                    <td class="dim">{{ d.scope }}</td>
-                    <td class="mono">{{ d.ref }}<br /><b>{{ d.code }}</b></td>
-                    <td>{{ d.reason }}</td>
-                    <td>
-                      <span class="sev-badge" :class="`band--${severityBand(d.severity)}`">
-                        {{ sevLabel[d.severity] ?? d.severity }}
-                      </span>
-                    </td>
-                    <td class="mono" :class="d.points < 0 ? 'neg' : 'dim'">{{ d.points }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </section>
           </div>
+
+          <!-- L5 扣分明细 -->
+          <section class="panel">
+            <h3>扣分明细（L5 质量分）<span class="dim" style="font-weight:400;font-size:12px"> — 画像分 = 100 + Σ(扣分)，启发式扣分可人工推翻</span></h3>
+            <table class="p-table">
+              <thead>
+                <tr><th>范围</th><th>对象/属性</th><th>代码</th><th>原因</th><th>严重度</th><th>扣分</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(d, i) in data.deductions" :key="`${d.code}-${i}`">
+                  <td class="dim">{{ d.scope === 'prop' ? '属性' : d.scope === 'object' ? '对象' : d.scope }}</td>
+                  <td class="mono">{{ d.ref }}</td>
+                  <td class="mono"><b>{{ d.code }}</b></td>
+                  <td>{{ d.reason }}</td>
+                  <td>
+                    <span class="sev-badge" :class="`band--${severityBand(d.severity)}`">
+                      {{ sevLabel[d.severity] ?? d.severity }}
+                    </span>
+                  </td>
+                  <td class="mono neg">{{ d.points }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
         </template>
       </NSpin>
     </template>
@@ -158,149 +281,90 @@ const sevLabel: Record<string, string> = {
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.page { display: flex; flex-direction: column; gap: 12px; }
+.page-head { display: flex; align-items: baseline; gap: 12px; }
+.page-head h2 { margin: 0; font-size: 18px; }
+.case-name { font-size: 13px; color: var(--sun-text-tertiary); }
+.refresh { margin-left: auto; }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.score-range { font-size: 11px; font-weight: 400; color: var(--sun-text-tertiary); }
+.declare-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--sun-warn-bg); border: 1px solid var(--sun-warn-border);
+  border-radius: 6px; padding: 8px 12px; font-size: 12px;
 }
-.page-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-.page-head h2 {
-  margin: 0;
-  font-size: 18px;
-}
-.case-name {
-  font-size: 13px;
-  color: var(--sun-text-tertiary);
-}
-.refresh {
-  margin-left: auto;
-}
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-}
+.declare-note { color: var(--sun-warn-text); }
+.declare-anchor { color: var(--sun-text-tertiary); }
 .panel {
-  background: var(--sun-bg-card);
-  border: 1px solid var(--sun-border);
-  border-radius: 6px;
-  padding: 12px 14px;
+  background: var(--sun-bg-card); border: 1px solid var(--sun-border);
+  border-radius: 6px; padding: 12px 14px;
 }
-.panel h3 {
-  margin: 0 0 10px;
-  font-size: 14px;
-  color: var(--sun-text-primary);
-}
-.p-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
+.panel h3 { margin: 0 0 10px; font-size: 14px; color: var(--sun-text-primary); }
+.table-scroll { overflow-x: auto; }
+.p-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .p-table th {
-  text-align: left;
-  font-weight: 400;
-  color: var(--sun-text-tertiary);
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--sun-border);
-  white-space: nowrap;
+  text-align: left; font-weight: 400; color: var(--sun-text-tertiary);
+  padding: 6px 8px; border-bottom: 1px solid var(--sun-border); white-space: nowrap;
 }
-.p-table td {
-  padding: 7px 8px;
-  border-bottom: 1px dashed rgba(16, 49, 74, 0.6);
-  vertical-align: middle;
-}
-.mono {
-  font-family: var(--sun-font-mono);
-}
-.dim {
-  color: var(--sun-text-tertiary);
-}
-.hint {
-  font-size: 12px;
-  padding: 8px 0;
-}
+.p-table td { padding: 7px 8px; border-bottom: 1px dashed rgba(16, 49, 74, 0.6); vertical-align: middle; }
+.row--dead { opacity: 0.55; }
+.mono { font-family: var(--sun-font-mono); }
+.dim { color: var(--sun-text-tertiary); }
+.hint { font-size: 12px; padding: 8px 0; }
 .band--ok { color: var(--sun-ok-text); }
 .band--warn { color: var(--sun-warn-text); }
 .band--error { color: var(--sun-error-text); }
-.mix-warn {
-  color: var(--sun-warn-text);
-  font-size: 12px;
+.neg { color: var(--sun-error-text); }
+/* 标签 */
+.tag {
+  display: inline-block; font-size: 11px; padding: 0 8px; border-radius: 10px;
+  border: 1px solid; white-space: nowrap;
 }
-.score-bar {
-  position: relative;
-  height: 10px;
-  background: var(--sun-input-bg);
-  border-radius: 5px;
-  overflow: hidden;
+.tag--conn { color: var(--sun-info-text); border-color: var(--sun-info-border); background: var(--sun-info-bg); }
+.tag--ok { color: var(--sun-ok-text); border-color: var(--sun-ok-border); background: var(--sun-ok-bg); }
+.tag--dead { color: var(--sun-text-tertiary); border-color: var(--sun-border); background: var(--sun-input-bg); }
+.tag--land { color: var(--sun-info-text); border-color: var(--sun-info-border); background: var(--sun-info-bg); margin: 1px 2px 1px 0; }
+.samples {
+  font-family: var(--sun-font-mono); font-size: 11px; color: var(--sun-text-secondary);
+  cursor: help; border-bottom: 1px dotted var(--sun-border);
 }
-.score-fill {
-  height: 100%;
-  border-radius: 5px;
-}
+.score-bar { position: relative; height: 10px; background: var(--sun-input-bg); border-radius: 5px; overflow: hidden; }
+.score-fill { height: 100%; border-radius: 5px; }
 .score-fill.band--ok { background: var(--sun-ok-border); }
 .score-fill.band--warn { background: var(--sun-warn-border); }
 .score-fill.band--error { background: var(--sun-error-border); }
-.score-num {
-  position: absolute;
-  right: 6px;
-  top: -3px;
-  font-size: 11px;
-  font-family: var(--sun-font-mono);
-  color: var(--sun-text-secondary);
-}
+.score-num { position: absolute; right: 6px; top: -3px; font-size: 11px; font-family: var(--sun-font-mono); color: var(--sun-text-secondary); }
 .issue-tag {
-  display: inline-block;
-  font-size: 11px;
-  padding: 0 8px;
-  margin: 1px 4px 1px 0;
-  border-radius: 10px;
-  border: 1px solid var(--sun-warn-border);
-  color: var(--sun-warn-text);
-  background: var(--sun-warn-bg);
+  display: inline-block; font-size: 11px; padding: 0 8px; margin: 1px 4px 1px 0;
+  border-radius: 10px; border: 1px solid var(--sun-warn-border);
+  color: var(--sun-warn-text); background: var(--sun-warn-bg); white-space: nowrap;
 }
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  align-items: start;
+.issue--block { border-color: var(--sun-error-border); color: var(--sun-error-text); background: var(--sun-error-bg); }
+/* 五间 */
+.jian-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.jian-card {
+  border: 1px solid var(--sun-border); border-radius: 6px; padding: 10px;
+  background: var(--sun-input-bg);
 }
-.variant-group {
-  margin-bottom: 14px;
-}
-.variant-title {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--sun-text-secondary);
-}
-.variant-stats {
-  display: flex;
-  gap: 8px;
-}
+.jian-card.jian--live { border-color: var(--sun-ok-border); }
+.jian-card.jian--dead { opacity: 0.55; }
+.jian-name { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.jian-counts { display: flex; gap: 10px; font-size: 12px; color: var(--sun-text-secondary); }
+.jian-counts b { font-family: var(--sun-font-mono); }
+.jian-status { margin: 6px 0; }
+.jstat { display: inline-block; font-size: 11px; padding: 0 8px; border-radius: 10px; border: 1px solid; }
+.jstat--live { color: var(--sun-ok-text); border-color: var(--sun-ok-border); background: var(--sun-ok-bg); }
+.jstat--declared { color: var(--sun-warn-text); border-color: var(--sun-warn-border); background: var(--sun-warn-bg); }
+.jstat--none { color: var(--sun-text-tertiary); border-color: var(--sun-border); }
+.jian-members { font-size: 11px; margin-top: 4px; line-height: 1.5; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+.variant-group { margin-bottom: 14px; }
+.variant-title { margin: 0 0 6px; font-size: 12px; color: var(--sun-text-secondary); }
+.variant-stats { display: flex; gap: 8px; }
 .vstat {
-  font-size: 11px;
-  color: var(--sun-info-text);
-  background: var(--sun-info-bg);
-  border: 1px solid var(--sun-info-border);
-  border-radius: 4px;
-  padding: 1px 8px;
+  font-size: 11px; color: var(--sun-info-text); background: var(--sun-info-bg);
+  border: 1px solid var(--sun-info-border); border-radius: 4px; padding: 1px 8px;
 }
-.vstat.total {
-  color: var(--sun-warn-text);
-  background: var(--sun-warn-bg);
-  border-color: var(--sun-warn-border);
-}
-.sev-badge {
-  display: inline-block;
-  font-size: 11px;
-  padding: 1px 10px;
-  border-radius: 10px;
-  border: 1px solid;
-}
-.neg {
-  color: var(--sun-error-text);
-}
+.vstat.total { color: var(--sun-warn-text); background: var(--sun-warn-bg); border-color: var(--sun-warn-border); }
+.sev-badge { display: inline-block; font-size: 11px; padding: 1px 10px; border-radius: 10px; border: 1px solid; }
 </style>

@@ -80,7 +80,25 @@ export interface ProfileL3Item {
   obj: string
   prop: string
   metric?: string
+  status?: string
+  value?: number
+  reason?: string
   [key: string]: unknown
+}
+
+/** 后端 l4 五间分布（reverse 元素） */
+export interface ProfileJian {
+  jian: string
+  objects: string[]
+  links: string[]
+  declared: boolean
+  has_materialized: boolean
+}
+
+/** 后端 l4 完整结构 */
+export interface ProfileL4 {
+  forward?: Record<string, { objects: string[]; links: string[] }>
+  reverse?: ProfileJian[]
 }
 
 /** 后端完整画像响应 */
@@ -95,7 +113,7 @@ export interface ProfileResponse {
   l0?: string
   l1_l2?: ProfileL1L2Item[]
   l3?: ProfileL3Item[]
-  l4?: Record<string, unknown>
+  l4?: ProfileL4
   l5?: ProfileL5
   compliance?: Record<string, unknown> | null
   params?: {
@@ -118,15 +136,33 @@ export interface ProfileDeduction {
 
 // ---------- 前端适配层（从后端结构派生 UI 数据） ----------
 
-/** 属性画像行（适配后） */
+/** 属性画像行（适配后；含 L1/L2 列层/值层全字段） */
 export interface ProfileColumn {
   object: string
   attribute: string
   value_type: string
+  connectable: boolean
+  status: string
+  // 值层（value_profile）
+  row_count: number
+  non_null: number
   null_rate: number
   distinct_count: number
+  samples: string[]
+  // 清洗（clean）
+  dropped_rows: number | null
+  clean_rule: string | null
+  // 合规（compliance）
+  compliance_rate: number | null
+  compliance_element: string | null
+  // string 类型分析
   mixed_type: boolean
-  status: string
+  landing: string[]
+  needs_confirmation: boolean
+  composite_suspect: number
+  variants_rule: number
+  variants_alias: number
+  // 评分
   score: number
   issues: string[]
 }
@@ -140,17 +176,44 @@ export interface ProfileVariantSummary {
   total: number
 }
 
+/** L3 指标（适配后） */
+export interface ProfileMetric {
+  object: string
+  prop: string
+  metric: string
+  status: string
+  value: number | null
+  reason: string
+}
+
 /** 适配后的画像数据（供 UI 直接消费） */
 export interface ProfileData {
+  available: boolean
+  note?: string
   overall_score: number
+  score_range: [number, number]
+  reviewable: boolean
   source_count: number
   issue_count: number
   aligned_entities: number
+  anchor_date: string | null
+  window_days: number
   columns: ProfileColumn[]
   variants: ProfileVariantSummary[]
+  metrics: ProfileMetric[]
+  jians: ProfileJian[]
   deductions: ProfileDeduction[]
-  available: boolean
-  note?: string
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  focus_hit_rate: '关注实体命中率',
+  known_overlap_count: '与已知实体重合数',
+  window_coverage: '时间窗口覆盖率',
+  wan_integer_rate: '万元整数交易率',
+}
+
+export function metricLabel(metric: string): string {
+  return METRIC_LABELS[metric] ?? metric
 }
 
 /** 适配函数：后端 ProfileResponse → 前端 ProfileData */
@@ -160,11 +223,17 @@ export function adaptProfile(res: ProfileResponse): ProfileData {
       available: false,
       note: res.note ?? '尚未接入数据源',
       overall_score: 0,
+      score_range: [0, 0],
+      reviewable: false,
       source_count: 0,
       issue_count: 0,
       aligned_entities: 0,
+      anchor_date: null,
+      window_days: 0,
       columns: [],
       variants: [],
+      metrics: [],
+      jians: [],
       deductions: [],
     }
   }
@@ -186,15 +255,29 @@ export function adaptProfile(res: ProfileResponse): ProfileData {
   const columns: ProfileColumn[] = l1l2.map((item) => {
     const key = `${item.obj}.${item.prop}`
     const propDeductions = deductionsByRef.get(key) ?? []
-    const pointsLost = propDeductions.reduce((sum, d) => sum + Math.abs(d.points), 0)
+    const pointsLost = propDeductions.reduce((sum, d) => sum + Math.abs(d.points || 0), 0)
+    const vp = item.value_profile
     return {
       object: item.obj,
       attribute: item.prop,
       value_type: item.declared_type,
-      null_rate: item.value_profile?.null_rate ?? 0,
-      distinct_count: item.value_profile?.distinct ?? 0,
-      mixed_type: item.mixed ?? false,
+      connectable: item.connectable,
       status: item.status,
+      row_count: vp?.row_count ?? 0,
+      non_null: vp?.non_null ?? 0,
+      null_rate: vp?.null_rate ?? 0,
+      distinct_count: vp?.distinct ?? 0,
+      samples: vp?.samples ?? [],
+      dropped_rows: item.clean?.dropped_rows ?? null,
+      clean_rule: item.clean?.rule ?? null,
+      compliance_rate: item.compliance?.rate ?? null,
+      compliance_element: item.compliance?.element ?? null,
+      mixed_type: item.mixed ?? false,
+      landing: item.landing_suggestions ?? [],
+      needs_confirmation: item.needs_confirmation ?? false,
+      composite_suspect: item.composite_suspect?.count ?? 0,
+      variants_rule: item.variants?.rule ?? 0,
+      variants_alias: item.variants?.alias ?? 0,
       score: Math.max(0, 100 - pointsLost),
       issues: propDeductions.map((d) => d.code),
     }
@@ -210,15 +293,32 @@ export function adaptProfile(res: ProfileResponse): ProfileData {
       total: item.variants!.rule + item.variants!.alias,
     }))
 
+  const metrics: ProfileMetric[] = (res.l3 ?? []).map((m) => ({
+    object: m.obj,
+    prop: m.prop,
+    metric: m.metric ?? '',
+    status: m.status ?? 'ok',
+    value: typeof m.value === 'number' ? m.value : null,
+    reason: (m.reason as string) ?? '',
+  }))
+
+  const jians: ProfileJian[] = res.l4?.reverse ?? []
+
   return {
     available: true,
+    note: res.note ?? l5?.note,
     overall_score: l5?.score ?? 0,
+    score_range: l5?.score_range ?? [l5?.score ?? 0, l5?.score ?? 0],
+    reviewable: l5?.reviewable ?? false,
     source_count: new Set(l1l2.filter((i) => i.materialized_object).map((i) => i.obj)).size,
     issue_count: deductions.length,
     aligned_entities: res.focus?.length ?? 0,
+    anchor_date: res.anchor_date ?? res.params?.anchor_date ?? null,
+    window_days: res.params?.window_days ?? 0,
     columns,
     variants,
+    metrics,
+    jians,
     deductions,
-    note: res.note,
   }
 }
