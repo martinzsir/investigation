@@ -76,6 +76,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   EXPORT: '案件包导出',
   IMPORT_PACKAGE: '案件包导入',
   QUALITY_CHECK: '数据质量检查',
+  DIAGNOSE: '运行诊断',
   DE_RECOMMEND: '数据元推荐',
   DE_RECO_DECIDE: '建议裁决',
 }

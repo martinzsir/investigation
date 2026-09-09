@@ -41,6 +41,7 @@ TASK_REVIEW = "REVIEW"   # W-021：实体人审裁决（合并/驳回，落 stat
 TASK_EXPORT = "EXPORT"   # W-028：案件包导出（压实 + 审计链冻结 + SHA-256 + zip）
 TASK_IMPORT_PACKAGE = "IMPORT_PACKAGE"  # W-029：案件包导入（校验 + init_pack + 登记）
 TASK_QUALITY = "QUALITY_CHECK"        # W-P-008：数据质量检查（四扫描汇总落 state，不产版本）
+TASK_DIAGNOSE = "DIAGNOSE"            # 手动运行诊断：对当前版本落 run_diagnostic（不随 BUILD 自动）
 TASK_DE_RECO = "DE_RECOMMEND"         # W-P-007：数据元智能推荐生成（读暂存件采样，落 state）
 TASK_DE_DECIDE = "DE_RECO_DECIDE"     # W-P-007：推荐采纳/驳回裁决（只记 state+审计，不改 bindings）
 
@@ -67,7 +68,11 @@ def default_builder(conn, *, pack: str, base_dir: Path,
     n_lnk = len(stats.get("links", {}))
     progress(90.0, "compile", "语义层编译完成",
              f"对象 {n_obj} 类 / 链接 {n_lnk} 类")
-    return {k: stats.get(k) for k in ("objects", "links", "skipped")}
+    # build_stats：BUILD 诊断原料完整快照（只落 artifacts，不写 run_diagnostic——
+    # 诊断由用户手动发起 DIAGNOSE 任务，不自动留痕）
+    out = {k: stats.get(k) for k in ("objects", "links", "skipped")}
+    out["build_stats"] = stats
+    return out
 
 
 def enqueue_task(repo: MetaRepo, *, case_id: str, task_type: str,
@@ -146,8 +151,24 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
 
     # H3：构建成功才切指针（builder/检测抛异常则指针不动、版本不前进）
     repo.set_version(case.id, nxt, by="worker")
+
+    # 持久化 BUILD 诊断原料（artifacts/build_stats_vN.json），供用户手动发起
+    # DIAGNOSE 时补落 run_diagnostic；附属产物失败不回滚已生效版本
+    try:
+        from server.app.build_stats_artifact import save_build_stats
+        saved = save_build_stats(factory.case_dir(case.id), nxt,
+                                 result.get("build_stats") if isinstance(result, dict) else None)
+        if saved is not None:
+            progress(99.0, "diagnose", "诊断原料已留存",
+                     "BUILD 未自动诊断；可在仪表盘手动「运行诊断」")
+    except Exception as e:  # noqa: BLE001
+        repo.record_ops("build_stats_persist_failed", case.id,
+                        {"version": nxt, "error": f"{type(e).__name__}: {e}"})
+
     progress(100.0, "done", "构建完成", f"v{nxt} 已生效")
-    return {"version": nxt, "stats": result}
+    summary = {k: result.get(k) for k in ("objects", "links", "skipped")} \
+        if isinstance(result, dict) else {}
+    return {"version": nxt, "stats": summary}
 
 
 def handle_ping(task: TaskRow, *, repo: MetaRepo, **_: Any) -> dict[str, Any]:
@@ -228,6 +249,11 @@ def _quality_handler(task, **kw):
     return handle_quality(task, **kw)
 
 
+def _diagnose_handler(task, **kw):
+    from server.app.worker.diagnose import handle_diagnose
+    return handle_diagnose(task, **kw)
+
+
 def _de_reco_handler(task, **kw):
     from server.app.worker.recommend import handle_de_reco
     return handle_de_reco(task, **kw)
@@ -249,6 +275,7 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_EXPORT: _export_handler,    # W-028 案件包导出
     TASK_IMPORT_PACKAGE: _import_package_handler,  # W-029 案件包导入
     TASK_QUALITY: _quality_handler,         # W-P-008 数据质量检查
+    TASK_DIAGNOSE: _diagnose_handler,       # 手动运行诊断（run_diagnostic 留痕）
     TASK_DE_RECO: _de_reco_handler,         # W-P-007 数据元推荐生成
     TASK_DE_DECIDE: _de_decide_handler,     # W-P-007 推荐裁决
 }

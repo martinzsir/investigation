@@ -859,17 +859,24 @@ export const handlers = [
         }
         // 进行中：脚本推进
         const isImport = t.task_type === 'IMPORT'
+        const isDiagnose = t.task_type === 'DIAGNOSE'
         const stages: Array<[number, string, string, string]> = isImport
           ? [
               [20, 'parse', '解析数据', t.params.filename ? String(t.params.filename) : '读取上传件'],
               [60, 'cold', '写冷层 parquet', String(t.params.target_table ?? '银行流水')],
               [100, 'done', '导入完成', `${t.params.target_table ?? '银行流水'} 1203 行 → BUILD 已入队`],
             ]
-          : [
-              [30, 'prepare', '准备构建', '目标 v3（基线 v2）'],
-              [70, 'align', '实体对齐', '已对齐 243 / 待确认 6'],
-              [100, 'done', '构建完成', '语义层 v3 已生成'],
-            ]
+          : isDiagnose
+            ? [
+                [20, 'build_stats', '补落构建期留痕', '脏值/缺列/隔离/清洗剔除/去重冲突'],
+                [50, 'quality_gate', '质量门扫描', '合规/敏感/新鲜度/单位'],
+                [100, 'done', '诊断完成', '诊断 8 条（healthy）'],
+              ]
+            : [
+                [30, 'prepare', '准备构建', '目标 v3（基线 v2）'],
+                [70, 'align', '实体对齐', '已对齐 243 / 待确认 6'],
+                [100, 'done', '构建完成', '语义层 v3 已生成'],
+              ]
         stages.forEach(([pct, stage, label, detail], i) => {
           setTimeout(() => {
             t.status = 'RUNNING'

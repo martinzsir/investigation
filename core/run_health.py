@@ -53,6 +53,7 @@ KINDS = (
     "dedup_key_conflict",         # REQ-D-015：业务键去重冲突计数（按业务键非全行比对，冲突组数可下钻）
     "data_freshness_stale",       # REQ-D-019：对象数据时间超期（最新数据时间 vs 当前日期，与本体版本新鲜度分开）
     "unit_mismatch",              # REQ-D-020：单位/口径疑似混用（元/万元、金额量级突增、单位缺失提示，只告警不阻断）
+    "diagnostic_run",             # 手动运行诊断印记（DIAGNOSE 任务每次发起落一条 info：零问题也有留痕）
 )
 
 SEVERITIES = ("info", "warning", "critical")

@@ -1,12 +1,17 @@
 <script setup lang="ts">
 // FE-P-001 治理仪表盘（MVP-1）：健康度第一块（零记录 warn，禁止「一切正常」）
 // + 待办/诊断指标 + 五间雷达 + 高优先级线索列表。无选中案件时不发案件请求。
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { NSpin, NAlert, NButton } from 'naive-ui'
+import { NSpin, NAlert, NButton, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { dashboardApi, type DashboardDto } from '../api/endpoints/dashboard'
 import { cluesApi, type ClueListItem } from '../api/endpoints/clues'
+import { tasksApi } from '../api/endpoints/tasks'
+import { taskEvents } from '../api/sse'
+import type { StreamHandle } from '../api/transport/types'
+import { presentError } from '../api/errors'
+import { isTerminal, mergeProgress, type TaskRow } from '../domain/task'
 import { healthBanner, JIAN_ROOMS, type JianRoom } from '../domain/clue'
 import MetricCard from '../components/common/MetricCard.vue'
 import StatusBadge from '../components/common/StatusBadge.vue'
@@ -15,11 +20,53 @@ import JianRadar from '../components/research/JianRadar.vue'
 
 const cs = useCaseStore()
 const router = useRouter()
+const message = useMessage()
 
 const loading = ref(false)
 const errorMsg = ref('')
 const dashboard = ref<DashboardDto | null>(null)
 const clues = ref<ClueListItem[]>([])
+
+// 手动运行诊断（DIAGNOSE 任务；BUILD 不自动留痕，由用户发起）
+const diagnoseTask = ref<TaskRow | null>(null)
+let diagnoseStream: StreamHandle | null = null
+const diagnosing = computed(() =>
+  !!diagnoseTask.value && !isTerminal(diagnoseTask.value.status))
+const diagnoseLabel = computed(() => {
+  const t = diagnoseTask.value
+  if (!t || isTerminal(t.status)) return '运行诊断'
+  return `诊断中 ${Math.round(t.progress_pct ?? 0)}%`
+})
+
+onBeforeUnmount(() => diagnoseStream?.close())
+
+async function runDiagnose(): Promise<void> {
+  if (!cs.currentCaseId || diagnosing.value) return
+  try {
+    const t = await tasksApi.create(cs.currentCaseId, { task_type: 'DIAGNOSE' })
+    diagnoseTask.value = t
+    message.info(`已入队「运行诊断」任务 ${t.id}`)
+    if (isTerminal(t.status)) return
+    diagnoseStream?.close()
+    diagnoseStream = taskEvents(t.id, {
+      onTask: (next) => {
+        diagnoseTask.value = mergeProgress(diagnoseTask.value ?? t, next)
+        if (!isTerminal(next.status)) return
+        diagnoseStream?.close()
+        diagnoseStream = null
+        if (next.status === 'SUCCEEDED') {
+          message.success('运行诊断完成，健康度已刷新', { duration: 5000 })
+          void load()
+        } else if (next.status === 'FAILED') {
+          message.error(`运行诊断失败：${next.error_code} ${next.error_message}`)
+        }
+      },
+      onErrorEvent: (msg) => message.error(`诊断任务错误：${msg}`),
+    })
+  } catch (e) {
+    message.error(presentError(e).title)
+  }
+}
 
 const banner = computed(() => healthBanner(dashboard.value?.health ?? null))
 
@@ -101,14 +148,28 @@ function openClue(id: string): void {
 
         <template v-else>
           <!-- 健康度：第一块；零记录/降级均为 warn 语义，不显示「一切正常」 -->
-          <NAlert
-            :type="banner.tone === 'ok' ? 'success' : 'warning'"
-            :title="banner.title"
-            class="health-alert"
-            :bordered="true"
-          >
-            {{ banner.detail }}
-          </NAlert>
+          <div class="health-bar">
+            <NAlert
+              :type="banner.tone === 'ok' ? 'success' : 'warning'"
+              :title="banner.title"
+              class="health-alert"
+              :bordered="true"
+            >
+              {{ banner.detail }}
+            </NAlert>
+            <!-- 诊断不随 BUILD 自动发起：用户手动运行（DIAGNOSE 任务） -->
+            <NButton
+              class="diagnose-btn"
+              size="small"
+              type="primary"
+              secondary
+              :loading="diagnosing"
+              :disabled="diagnosing"
+              @click="runDiagnose"
+            >
+              {{ diagnoseLabel }}
+            </NButton>
+          </div>
 
           <!-- 指标行 -->
           <div class="metric-row">
@@ -192,13 +253,26 @@ function openClue(id: string): void {
   font-size: 13px;
   color: var(--sun-text-tertiary);
 }
+.health-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .health-alert {
+  flex: 1;
+  min-width: 0;
   border-radius: 6px;
+}
+.diagnose-btn {
+  flex: none;
+  white-space: nowrap;
 }
 .metric-row {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
   gap: 10px;
+  padding-top:10px;
+  padding-bottom:10px;
 }
 @media (max-width: 1200px) {
   .metric-row {
