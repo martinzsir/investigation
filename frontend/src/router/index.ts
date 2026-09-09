@@ -34,6 +34,10 @@ export const router = createRouter({
         { path: 'c/clues', component: () => import('../views/ClueListView.vue'), meta: { title: '线索列表', mvp: 1 } },
         { path: 'c/clue/:clueId', component: () => import('../views/ClueDetailView.vue'), meta: { title: '线索详情', mvp: 1 } },
         { path: 'c/audit-chain', component: () => import('../views/AuditChainView.vue'), meta: { title: '审计链', mvp: 1 } },
+        // MVP-2 业务页
+        { path: 'c/board', component: () => import('../views/BoardView.vue'), meta: { title: '处置看板', mvp: 2 } },
+        { path: 'c/verdict', component: () => import('../views/VerdictView.vue'), meta: { title: '实体裁决', mvp: 2 } },
+        { path: 'c/profile', component: () => import('../views/ProfileView.vue'), meta: { title: '数据画像', mvp: 2 } },
         // 六分组业务占位（FE-C-026）
         { path: 'c/:section', component: () => import('../views/PlaceholderView.vue') },
       ],

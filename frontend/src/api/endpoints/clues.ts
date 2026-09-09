@@ -93,6 +93,15 @@ export const cluesApi = {
     return res.data
   },
 
+  /** GET /cases/{cid}/clues/suppressed —— 被抑制记录（聚合 detail.suppressed_log，W-019） */
+  async suppressed(caseId: string): Promise<{ items: Array<Record<string, unknown>>; total: number }> {
+    const res = await api.get<{ items: Array<Record<string, unknown>>; total: number }>(
+      `/cases/${encodeURIComponent(caseId)}/clues/suppressed`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
   /** GET /cases/{cid}/clues/{clueId} */
   async detail(caseId: string, clueId: string): Promise<ClueDetail> {
     const res = await api.get<ClueDetail>(

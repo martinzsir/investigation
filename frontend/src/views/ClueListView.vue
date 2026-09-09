@@ -1,15 +1,19 @@
 <script setup lang="ts">
-// FE-P-004 线索列表（MVP-1 简版）：状态/级别筛选 + 表格，点击进详情。
+// FE-P-004/FE-C-003 线索列表（MVP-2 分页化）：DataTable 分页（page_size=50）、
+// ?page= 可分享（URL query 同步）、跳页输入框；默认服务端时间倒序。
 import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NSpin, NSelect, NButton } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
-import { cluesApi, type ClueListPage } from '../api/endpoints/clues'
+import { cluesApi, type ClueListPage, type ClueListItem } from '../api/endpoints/clues'
 import { CLUE_STATUS } from '../domain/clue'
+import { PAGE_SIZE_DEFAULT, clampPage, parsePageQuery } from '../domain/pagination'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
+import DataTable, { type DataTableColumn } from '../components/common/DataTable.vue'
 
 const cs = useCaseStore()
+const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
@@ -30,7 +34,18 @@ const levelOptions = [
   { label: '待核实（异常通道）', value: '待核实' },
 ]
 
-const items = computed(() => page.value?.items ?? [])
+const columns: DataTableColumn[] = [
+  { key: 'priority_rank', title: '#', width: '48px', mono: true },
+  { key: 'title', title: '线索' },
+  { key: 'level', title: '级别', width: '130px' },
+  { key: 'dimension', title: '通道', width: '200px' },
+  { key: 'status', title: '状态', width: '110px' },
+  { key: 'source_row_count', title: '溯源行数', width: '90px', mono: true },
+  { key: 'updated_at', title: '更新时间', width: '160px', mono: true },
+]
+
+const curPage = computed(() => parsePageQuery(route.query.page))
+const items = computed<ClueListItem[]>(() => page.value?.items ?? [])
 
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
@@ -40,12 +55,19 @@ async function load(): Promise<void> {
   loading.value = true
   errorMsg.value = ''
   try {
-    page.value = await cluesApi.list(cs.currentCaseId, {
-      page: 1,
-      page_size: 100,
+    const res = await cluesApi.list(cs.currentCaseId, {
+      page: curPage.value,
+      page_size: PAGE_SIZE_DEFAULT,
       status: statusFilter.value ?? undefined,
       level: levelFilter.value ?? undefined,
     })
+    // URL ?page= 超出范围（可分享链接场景）：钳制回合法页并同步 URL
+    if (res.items.length === 0 && res.total > 0 && curPage.value > 1) {
+      const clamped = clampPage(curPage.value, res.total, PAGE_SIZE_DEFAULT)
+      void router.replace({ query: { ...route.query, page: clamped > 1 ? String(clamped) : undefined } })
+      return // route.query.page watcher 会重新 load
+    }
+    page.value = res
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : '线索加载失败'
   } finally {
@@ -54,13 +76,36 @@ async function load(): Promise<void> {
 }
 
 watch(() => cs.currentCaseId, load, { immediate: true })
+watch(
+  () => route.query.page,
+  () => {
+    if (cs.currentCaseId) void load()
+  },
+)
 
-function openClue(id: string): void {
-  void router.push(`/c/clue/${encodeURIComponent(id)}`)
+/** 翻页：同步 URL（?page= 可分享），不刷筛选 */
+function onPageChange(p: number): void {
+  const target = clampPage(p, page.value?.total ?? 0, PAGE_SIZE_DEFAULT)
+  void router.replace({
+    query: { ...route.query, page: target > 1 ? String(target) : undefined },
+  })
+}
+
+/** 筛选变化：回第 1 页并清 URL page */
+function query(): void {
+  if (curPage.value !== 1) {
+    void router.replace({ query: { ...route.query, page: undefined } })
+  }
+  void load()
+}
+
+function openClue(item: ClueListItem): void {
+  void router.push(`/c/clue/${encodeURIComponent(item.clue_id)}`)
 }
 function reset(): void {
   statusFilter.value = null
   levelFilter.value = null
+  void router.replace({ query: {} })
   void load()
 }
 </script>
@@ -82,9 +127,8 @@ function reset(): void {
       <div class="filters">
         <NSelect v-model:value="statusFilter" :options="statusOptions" placeholder="全部状态" class="filter-select" />
         <NSelect v-model:value="levelFilter" :options="levelOptions" placeholder="全部级别" class="filter-select" />
-        <NButton size="small" type="primary" @click="load">查询</NButton>
+        <NButton size="small" type="primary" @click="query">查询</NButton>
         <NButton size="small" @click="reset">重置</NButton>
-        <span v-if="page" class="total">共 {{ page.total }} 条</span>
       </div>
 
       <NSpin :show="loading">
@@ -97,35 +141,43 @@ function reset(): void {
           title="当前筛选下无线索"
           desc="可能原因：案件尚未运行分析（BUILD/RESCAN），或规则零命中——零命中诊断请回仪表盘查看"
         />
-        <table v-else class="clue-table">
-          <thead>
-            <tr>
-              <th style="width:44px">#</th>
-              <th>线索</th>
-              <th>级别</th>
-              <th>通道</th>
-              <th>状态</th>
-              <th>溯源行数</th>
-              <th>更新时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in items" :key="c.clue_id" class="clue-row" @click="openClue(c.clue_id)">
-              <td class="rank">{{ c.priority_rank ?? '—' }}</td>
-              <td class="title-cell">
-                <span class="title">{{ c.title }}</span>
-                <code class="cid">{{ c.clue_id }}</code>
-              </td>
-              <td><StatusBadge variant="level" :value="c.level ?? '观察'" /></td>
-              <td>
-                <StatusBadge v-for="d in (c.dimension ?? []).slice(0, 5)" :key="d" variant="room" :value="d" class="room-cell" />
-              </td>
-              <td><StatusBadge variant="status" :value="c.status" /></td>
-              <td class="num-cell">{{ c.source_row_count ?? 0 }}</td>
-              <td class="time-cell">{{ c.updated_at ?? '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          v-else
+          :columns="columns"
+          :items="(items as unknown as Record<string, unknown>[])"
+          :total="page?.total ?? 0"
+          :page="curPage"
+          :page-size="PAGE_SIZE_DEFAULT"
+          :loading="loading"
+          :row-key="(item: Record<string, unknown>) => String(item.clue_id)"
+          @update:page="onPageChange"
+          @row-click="(item: Record<string, unknown>) => openClue(item as unknown as ClueListItem)"
+        >
+          <template #cell-priority_rank="{ item }">
+            <span class="rank">{{ (item as unknown as ClueListItem).priority_rank ?? '—' }}</span>
+          </template>
+          <template #cell-title="{ item }">
+            <span class="title-cell">
+              <span class="title">{{ (item as unknown as ClueListItem).title }}</span>
+              <code class="cid">{{ (item as unknown as ClueListItem).clue_id }}</code>
+            </span>
+          </template>
+          <template #cell-level="{ item }">
+            <StatusBadge variant="level" :value="(item as unknown as ClueListItem).level ?? '观察'" />
+          </template>
+          <template #cell-dimension="{ item }">
+            <StatusBadge
+              v-for="d in ((item as unknown as ClueListItem).dimension ?? []).slice(0, 5)"
+              :key="d"
+              variant="room"
+              :value="d"
+              class="room-cell"
+            />
+          </template>
+          <template #cell-status="{ item }">
+            <StatusBadge variant="status" :value="(item as unknown as ClueListItem).status" />
+          </template>
+        </DataTable>
       </NSpin>
     </template>
   </div>
@@ -158,40 +210,6 @@ function reset(): void {
 .filter-select {
   width: 200px;
 }
-.total {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--sun-text-tertiary);
-  font-family: var(--sun-font-mono);
-}
-.clue-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  background: var(--sun-bg-card);
-  border: 1px solid var(--sun-border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.clue-table th {
-  text-align: left;
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--sun-text-tertiary);
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--sun-border);
-}
-.clue-table td {
-  padding: 9px 10px;
-  border-bottom: 1px dashed rgba(16, 49, 74, 0.6);
-  vertical-align: middle;
-}
-.clue-row {
-  cursor: pointer;
-}
-.clue-row:hover td {
-  background: rgba(110, 222, 233, 0.05);
-}
 .rank {
   font-family: var(--sun-font-mono);
   color: var(--sun-warn-text);
@@ -212,12 +230,5 @@ function reset(): void {
 }
 .room-cell {
   margin-right: 4px;
-}
-.num-cell,
-.time-cell {
-  font-family: var(--sun-font-mono);
-  color: var(--sun-text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
 }
 </style>

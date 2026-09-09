@@ -154,7 +154,7 @@ const clues: Record<string, MockClue[]> = {
       status: '查证中',
       note: '双通道命中：通讯记录 + 行为轨迹',
       operator: '王检察官',
-      updated_at: '2026-09-08 11:05:33',
+      updated_at: '2026-08-28 11:05:33',
       status_source: 'state',
       suppressed_log: [],
       source_rows: [
@@ -262,12 +262,34 @@ const clues: Record<string, MockClue[]> = {
       status: '待查',
       note: '三通道命中但尚未人工查证',
       operator: '',
-      updated_at: '2026-09-08 08:15:00',
+      updated_at: '2026-08-25 08:15:00',
       status_source: 'artifact',
       suppressed_log: [],
       source_rows: [],
       evidence: [
         { id: 'p1', kind: 'pending', text: '张/李/王三人 8 月内 4 个周末轨迹在临港仓储点 500 米范围内重合，待实地核验。' },
+      ],
+    },
+    {
+      clue_id: 'CLUE-006',
+      title: '蓝海贸易虚开增值税发票闭环（已立案）',
+      skill_id: 'R7_invoice_loop',
+      jian_types: ['资金', '关系', '时间'],
+      level: '可立案依据候选',
+      dimension: ['资金', '关系', '时间'],
+      priority_rank: 6,
+      priority_score: 95,
+      source_row_count: 6,
+      merged_from: ['CLUE-006A'],
+      status: '已立案',
+      note: '资金回流 + 发票闭环 + 人员关联三通道互证，已立案侦办',
+      operator: '王检察官',
+      updated_at: '2026-09-07 17:20:00',
+      status_source: 'state',
+      suppressed_log: [],
+      source_rows: [],
+      evidence: [
+        { id: 'f1', kind: 'fact', text: '立案决定书已于 2026-09-07 出具，案号 沪浦检刑立〔2026〕118 号。' },
       ],
     },
   ],
@@ -437,8 +459,8 @@ export const handlers = [
       todo: {
         disposal: {
           available: true,
-          total: 5,
-          by_status: { 待查: 2, 查证中: 1, 已排除: 1, 已固证: 1, 已立案: 0 },
+          total: 6,
+          by_status: { 待查: 2, 查证中: 1, 已排除: 1, 已固证: 1, 已立案: 1 },
           source: 'state',
         },
         review: { available: true, pending: 1, note: '张助理 1 条固证建议待审' },
@@ -610,4 +632,433 @@ export const handlers = [
       chain_source: 'state',
     })
   }),
+
+  // 被抑制记录（聚合各线索 detail.suppressed_log）
+  http.get('*/api/v1/cases/:cid/clues/suppressed', ({ params }) => {
+    const cid = String(params.cid)
+    const items = (clues[cid] ?? [])
+      .filter((c) => c.suppressed_log.length > 0)
+      .flatMap((c) => c.suppressed_log.map((log) => ({ clue_id: c.clue_id, ...(log as object) })))
+    return ok({ items, total: items.length })
+  }),
+
+  // ---------- 实体裁决（W-021 review 三端点 mock） ----------
+
+  http.get('*/api/v1/cases/:cid/review/queue', ({ params, request }) => {
+    const cid = String(params.cid)
+    const url = new URL(request.url)
+    const page = Number(url.searchParams.get('page') ?? '1')
+    const pageSize = Number(url.searchParams.get('page_size') ?? '20')
+    const list = reviewCandidates[cid] ?? []
+    const start = (page - 1) * pageSize
+    const items = list.slice(start, start + pageSize).map((c) => ({
+      entity_id: c.entity_id,
+      canonical_name: c.canonical_name,
+      variants: c.variants,
+      evidence: c.evidence,
+      confidence: c.confidence,
+      needs_review: c.needs_review,
+      merge_reason: c.merge_reason,
+    }))
+    return ok({ items, total: list.length, history: reviewHistory[cid] ?? [] })
+  }),
+
+  http.get('*/api/v1/cases/:cid/review/:rid/evidence', ({ params }) => {
+    const cid = String(params.cid)
+    const rid = String(params.rid)
+    const c = (reviewCandidates[cid] ?? []).find((x) => x.entity_id === rid)
+    if (!c) return fail('NOT_FOUND', '候选不存在或案件尚未 BUILD', 404)
+    return ok({
+      candidate_id: c.entity_id,
+      canonical_name: c.canonical_name,
+      variants: c.variants,
+      confidence: c.confidence,
+      merge_reason: c.merge_reason,
+      evidence: c.evidence,
+      attributes: c.attributes,
+      llm_inferences: c.llm_inferences ?? [],
+    })
+  }),
+
+  http.post('*/api/v1/cases/:cid/review/:rid/decision', async ({ params, request }) => {
+    const cid = String(params.cid)
+    const rid = String(params.rid)
+    const body = (await request.json()) as { action: string; reason?: string }
+    const c = (reviewCandidates[cid] ?? []).find((x) => x.entity_id === rid)
+    if (!c) return fail('NOT_FOUND', '候选不存在或案件尚未 BUILD', 404)
+    if (body.action !== 'review_merge' && body.action !== 'review_reject') {
+      return fail('VALIDATION', `未知裁决动作：${body.action}`, 400)
+    }
+    // 驳回理由必填（后端 400 双保险；前端 reasonError 先拦）
+    if (body.action === 'review_reject' && !body.reason?.trim()) {
+      return fail('VALIDATION', '驳回（确认为不同人）必须填写裁决理由', 400)
+    }
+    const verdict = body.action === 'review_merge' ? 'merge' : 'reject'
+    reviewCandidates[cid] = (reviewCandidates[cid] ?? []).filter((x) => x.entity_id !== rid)
+    const record = {
+      candidate_id: c.entity_id,
+      canonical_name: c.canonical_name,
+      action: verdict as 'merge' | 'reject',
+      confidence: c.confidence,
+      operator: '王检察官',
+      reason: body.reason?.trim() || undefined,
+      occurred_at: nowIso(),
+    }
+    reviewHistory[cid] = [record, ...(reviewHistory[cid] ?? [])]
+
+    auditSeq += 1
+    auditEvents.push({
+      seq: auditSeq,
+      event_id: `evt-${auditSeq}`,
+      case_id: cid,
+      occurred_at: new Date().toISOString().replace('T', ' ').slice(0, 19),
+      operator: '王检察官',
+      action: 'generic',
+      status_from: null,
+      status_to: null,
+      note: `实体裁决：${c.canonical_name} → ${verdict === 'merge' ? '确认为同一人' : '确认为不同人'}${body.reason ? `（${body.reason}）` : ''}`,
+      ontology_version: '2.1.0',
+      rule_version: '1.4.2',
+      function_version: '1.8.0',
+      source_row_ids: c.evidence.common_source_rows ?? [],
+      chain_source: 'state',
+    })
+
+    return ok({ task_id: `task-${Date.now()}`, action: body.action, candidate_id: rid }, 200)
+  }),
+
+  // ---------- 数据画像（FE-P-007；后端 /profiles 待补，mock 演示；c2 未接入 → 404 空态） ----------
+
+  http.get('*/api/v1/cases/:cid/profiles', ({ params }) => {
+    if (String(params.cid) !== 'c1') {
+      return fail('NOT_FOUND', '数据画像未接入：案件尚未 BUILD 或端点待补齐', 404)
+    }
+    return ok(profileMock)
+  }),
 ]
+
+// ---------- 实体裁决 mock 数据 ----------
+
+interface MockReviewAttribute {
+  label: string
+  left: string
+  right: string
+  basis?: boolean
+  mask?: 'phone' | 'idcard' | 'text'
+  policy?: 'visible' | 'masked' | 'denied'
+}
+
+interface MockReviewCandidate {
+  entity_id: string
+  canonical_name: string
+  variants: string[]
+  confidence: number
+  needs_review: boolean
+  merge_reason: string
+  evidence: {
+    common_credit_codes: string[]
+    common_legal_reps: string[]
+    common_addresses: string[]
+    common_accounts: string[]
+    common_source_rows: string[]
+  }
+  attributes: MockReviewAttribute[]
+  llm_inferences?: Array<Record<string, unknown>>
+}
+
+function evRows(code: string, rep: string, addr: string, acct: string, rows: string[]) {
+  return {
+    common_credit_codes: [code],
+    common_legal_reps: [rep],
+    common_addresses: [addr],
+    common_accounts: [acct],
+    common_source_rows: rows,
+  }
+}
+
+const handwrittenCandidates: MockReviewCandidate[] = [
+  {
+    entity_id: 'ENT-1001',
+    canonical_name: '蓝海贸易有限公司',
+    variants: ['蓝海贸易', '蓝海贸易（上海）', '上海蓝海贸易有限公司'],
+    confidence: 0.92,
+    needs_review: true,
+    merge_reason: '统一社会信用代码一致 + 法定代表人同名 + 银行账号重合 1 个',
+    evidence: evRows(
+      '91310115MA1K4X7T2B',
+      '张某',
+      '上海市浦东新区富特北路 211 号',
+      '6222-****-8843',
+      ['obj_company:reg:default:row:101', 'obj_account:bank:default:row:8843'],
+    ),
+    attributes: [
+      { label: '统一社会信用代码', left: '91310115MA1K4X7T2B', right: '91310115MA1K4X7T2B', basis: true },
+      { label: '法定代表人', left: '张某', right: '张某', basis: true },
+      { label: '注册地址', left: '中国（上海）自由贸易试验区富特北路 211 号 302 室', right: '上海市浦东新区富特北路 211 号 302 室' },
+      { label: '联系电话', left: '13812345678', right: '13812345678', basis: true, mask: 'phone', policy: 'masked' },
+      { label: '银行账号', left: '6222-****-8843', right: '6222-****-8843', basis: true },
+      { label: '成立日期', left: '2019-03-12', right: '2019-03-12' },
+    ],
+    llm_inferences: [
+      // FE-T-007 演示：同一模型两条判读（资金/通讯）——同源不双计
+      {
+        text: '转账备注语义（货款/走账）与群聊暗语风格一致，判读为同一资金调度主体。',
+        llm_model: 'sunzi-llm-shadow-v1',
+        confidence: 0.78,
+        room: '资金',
+        source_rows: [{ row_uri: 'obj_transaction:bank_flow:default:row:8f3a21', source: '银行流水' }],
+      },
+      {
+        text: '两个实体预留联系号码通话对象重合度 86%，判读为同一经办人。',
+        llm_model: 'sunzi-llm-shadow-v1',
+        confidence: 0.74,
+        room: '通讯',
+        source_rows: [{ row_uri: 'obj_call:call_record:default:row:c77d10', source: '通话记录' }],
+      },
+      // 三件套缺一（无溯源）：前端不得渲染
+      {
+        text: '（缺溯源行，FE-C-023 应拒绝渲染）',
+        llm_model: 'sunzi-llm-shadow-v1',
+        confidence: 0.66,
+        room: '关系',
+      },
+    ],
+  },
+  {
+    entity_id: 'ENT-1002',
+    canonical_name: '张伟',
+    variants: ['张伟', '張偉', '张伟（浦东）'],
+    confidence: 0.62,
+    needs_review: true,
+    merge_reason: '同名 + 手机号前 3 后 4 一致；身份证号与住址不一致，疑似同名不同人',
+    evidence: evRows('', '', '上海市浦东新区', '', [
+      'obj_person:pop:default:row:2001',
+      'obj_person:pop:default:row:2044',
+    ]),
+    attributes: [
+      { label: '姓名', left: '张伟', right: '张伟', basis: true },
+      { label: '身份证号', left: '310115199003124512', right: '310115198711053218', mask: 'idcard', policy: 'masked' },
+      { label: '手机号码', left: '13912340001', right: '13912340002', mask: 'phone', policy: 'masked' },
+      { label: '住址', left: '上海市浦东新区惠南镇文友街 18 号', right: '上海市闵行区莘庄镇都市路 520 号' },
+      { label: '出生年月', left: '1990-03', right: '1987-11' },
+    ],
+  },
+  {
+    entity_id: 'ENT-1003',
+    canonical_name: '临港仓储服务有限公司',
+    variants: ['临港仓储', '临港仓储服务社', '临港仓储服务有限公司'],
+    confidence: 0.88,
+    needs_review: true,
+    merge_reason: '统一社会信用代码一致 + 注册地址同址',
+    evidence: evRows('91310115MA1H9L2K8M', '李某', '上海市浦东新区临港大道 1800 号', '', [
+      'obj_company:reg:default:row:330',
+    ]),
+    attributes: [
+      { label: '统一社会信用代码', left: '91310115MA1H9L2K8M', right: '91310115MA1H9L2K8M', basis: true },
+      { label: '企业名称', left: '临港仓储服务社', right: '临港仓储服务有限公司' },
+      { label: '法定代表人', left: '李某', right: '李某', basis: true },
+      { label: '注册地址', left: '浦东新区临港大道 1800 号', right: '上海市浦东新区临港大道 1800 号 2 幢' },
+    ],
+  },
+  {
+    entity_id: 'ENT-1004',
+    canonical_name: '李某某',
+    variants: ['李某', '李某某'],
+    confidence: 0.55,
+    needs_review: true,
+    merge_reason: '仅姓名近似，无其他共同标识——低置信度，需人工研判是否同名不同人',
+    evidence: evRows('', '', '', '', ['obj_person:pop:default:row:410']),
+    attributes: [
+      { label: '姓名', left: '李某', right: '李某某' },
+      { label: '身份证号', left: '310109198507126633', right: '310226199201087745', mask: 'idcard', policy: 'masked' },
+      { label: '关联企业', left: '临港仓储服务有限公司', right: '无' },
+      { label: '手机号', left: '13900001122', right: '13700008899', mask: 'phone', policy: 'masked' },
+    ],
+  },
+  {
+    entity_id: 'ENT-1005',
+    canonical_name: '王某',
+    variants: ['王某', '王某某', '王某（收款方）'],
+    confidence: 0.71,
+    needs_review: true,
+    merge_reason: '银行预留手机号一致；姓名为简写变体，待人工确认',
+    evidence: evRows('', '', '', '6217-****-2210', [
+      'obj_account:bank:default:row:2210',
+    ]),
+    attributes: [
+      { label: '姓名', left: '王某', right: '王某某' },
+      { label: '银行预留手机', left: '13655552210', right: '13655552210', basis: true, mask: 'phone', policy: 'masked' },
+      { label: '开户银行', left: '工商银行浦东支行', right: '工商银行自贸区支行' },
+      { label: '账号', left: '6217-****-2210', right: '6217-****-2210', basis: true },
+    ],
+  },
+  {
+    entity_id: 'ENT-1006',
+    canonical_name: '蓝海贸易（宁波）有限公司',
+    variants: ['蓝海贸易', '蓝海贸易（宁波）'],
+    confidence: 0.43,
+    needs_review: true,
+    merge_reason: '企业字号相同但信用代码不同、法定代表人不同——疑似名称撞车，低置信度',
+    evidence: evRows('91330201MA2K8T9X3P', '陈某', '宁波市北仑区', '', [
+      'obj_company:reg:default:row:602',
+    ]),
+    attributes: [
+      { label: '企业名称', left: '蓝海贸易有限公司', right: '蓝海贸易（宁波）有限公司' },
+      { label: '统一社会信用代码', left: '91310115MA1K4X7T2B', right: '91330201MA2K8T9X3P' },
+      { label: '法定代表人', left: '张某', right: '陈某' },
+      { label: '注册地', left: '上海市浦东新区', right: '宁波市北仑区' },
+    ],
+  },
+]
+
+const personNames: Array<[string, string[]]> = [
+  ['刘强', ['刘强', '刘強']],
+  ['陈静', ['陈静', '陳靜']],
+  ['杨丽', ['杨丽', '楊麗', '杨丽（财务）']],
+  ['赵磊', ['赵磊', '趙磊']],
+  ['孙敏', ['孙敏', '孫敏']],
+  ['周涛', ['周涛', '周濤']],
+  ['吴倩', ['吴倩', '吳倩']],
+  ['郑浩', ['郑浩', '鄭浩']],
+  ['冯雪', ['冯雪', '馮雪']],
+  ['何军', ['何军', '何軍']],
+  ['马丽', ['马丽', '馬麗']],
+  ['黄勇', ['黄勇', '黃勇']],
+  ['徐婷', ['徐婷']],
+  ['高鹏', ['高鹏', '高鵬']],
+  ['林芳', ['林芳']],
+  ['罗杰', ['罗杰', '羅傑']],
+  ['梁燕', ['梁燕', '樑燕']],
+  ['宋凯', ['宋凯', '宋凱']],
+  ['谢楠', ['谢楠', '謝楠']],
+]
+
+const generatedCandidates: MockReviewCandidate[] = personNames.map(([name, variants], i) => {
+  const id = 1007 + i
+  const conf = 0.6 + ((i * 7) % 30) / 100
+  return {
+    entity_id: `ENT-${id}`,
+    canonical_name: name,
+    variants: [`${name}`, ...variants.filter((v) => v !== name)],
+    confidence: Number(conf.toFixed(2)),
+    needs_review: true,
+    merge_reason: `姓名书写变体 ${variants.length} 个 + 标识项部分重合（相似度 ${Math.round(conf * 100)}%）`,
+    evidence: evRows(
+      i % 3 === 0 ? `91310115MA1${String(1000 + id)}` : '',
+      name,
+      i % 2 === 0 ? '上海市浦东新区' : '',
+      '',
+      [`obj_person:pop:default:row:${2000 + id}`],
+    ),
+    attributes: [
+      { label: '姓名', left: variants[0], right: name, basis: true },
+      { label: '身份证号', left: `31011519${80 + (i % 15)}0101${1000 + i}`, right: `31011519${80 + (i % 15)}0101${1000 + i}`, basis: true, mask: 'idcard', policy: 'masked' },
+      { label: '手机号', left: `13${6 + (i % 4)}${String(10000000 + i * 137).padStart(8, '0')}`, right: `13${6 + (i % 4)}${String(10000000 + i * 137).padStart(8, '0')}`, basis: true, mask: 'phone', policy: 'masked' },
+      { label: '住址', left: `上海市浦东新区${['惠南镇', '周浦镇', '川沙新镇'][i % 3]}`, right: `上海市浦东新区${['惠南镇', '周浦镇', '川沙新镇'][i % 3]}路名记录不一`, basis: false },
+    ],
+  }
+})
+
+const reviewCandidates: Record<string, MockReviewCandidate[]> = {
+  c1: [...handwrittenCandidates, ...generatedCandidates],
+  c2: [],
+}
+
+const reviewHistory: Record<string, Array<{
+  candidate_id: string
+  canonical_name: string
+  action: 'merge' | 'reject'
+  confidence: number
+  operator: string
+  reason?: string
+  occurred_at: string
+}>> = {
+  c1: [
+    {
+      candidate_id: 'ENT-0998',
+      canonical_name: '蓝海贸易商行',
+      action: 'merge',
+      confidence: 0.91,
+      operator: '王检察官',
+      reason: '信用代码与账号均一致，确认为同一主体',
+      occurred_at: '2026-09-07 15:42',
+    },
+    {
+      candidate_id: 'ENT-0997',
+      canonical_name: '张威',
+      action: 'reject',
+      confidence: 0.58,
+      operator: '张助理',
+      reason: '仅姓名同音，身份证号/住址/手机均不同，为同名不同人',
+      occurred_at: '2026-09-06 10:18',
+    },
+  ],
+}
+
+// ---------- 数据画像 mock 数据（FE-P-007） ----------
+
+const profileMock = {
+  overall_score: 98.7,
+  source_count: 156,
+  issue_count: 243,
+  aligned_entities: 1208,
+  columns: [
+    { object: 'obj_person', attribute: '姓名', value_type: 'string', null_rate: 0.002, distinct_count: 1180, mixed_type: false, score: 99, issues: [] },
+    { object: 'obj_person', attribute: '身份证号', value_type: 'string', null_rate: 0.061, distinct_count: 1175, mixed_type: false, score: 92, issues: ['空值偏高'] },
+    { object: 'obj_person', attribute: '手机号', value_type: 'string', null_rate: 0.183, distinct_count: 902, mixed_type: true, score: 68, issues: ['空值偏高', '混装值类型'] },
+    { object: 'obj_company', attribute: '统一社会信用代码', value_type: 'string', null_rate: 0.0, distinct_count: 320, mixed_type: false, score: 100, issues: [] },
+    { object: 'obj_company', attribute: '注册地址', value_type: 'string', null_rate: 0.044, distinct_count: 298, mixed_type: false, score: 94, issues: ['书写变体'] },
+    { object: 'obj_transaction', attribute: '交易金额', value_type: 'decimal', null_rate: 0.001, distinct_count: 8600, mixed_type: true, score: 72, issues: ['混装值类型', '单位不统一'] },
+    { object: 'obj_transaction', attribute: '交易时间', value_type: 'date', null_rate: 0.0, distinct_count: 9214, mixed_type: false, score: 97, issues: [] },
+    { object: 'obj_call', attribute: '通话时长', value_type: 'integer', null_rate: 0.214, distinct_count: 540, mixed_type: false, score: 61, issues: ['空值偏高'] },
+  ],
+  variants: [
+    {
+      canonical: '蓝海贸易有限公司',
+      group: '案件信息',
+      variants: ['蓝海贸易', '蓝海贸易（上海）', '上海蓝海贸易有限公司', '蓝海贸易商行'],
+      distribution: [
+        { value: '蓝海贸易有限公司', count: 86 },
+        { value: '蓝海贸易', count: 42 },
+        { value: '蓝海贸易（上海）', count: 17 },
+        { value: '上海蓝海贸易有限公司', count: 9 },
+      ],
+    },
+    {
+      canonical: '张伟',
+      group: '人员信息',
+      variants: ['張偉', '张伟（浦东）', '张伟（财务）'],
+      distribution: [
+        { value: '张伟', count: 120 },
+        { value: '張偉', count: 34 },
+        { value: '张伟（浦东）', count: 12 },
+      ],
+    },
+    {
+      canonical: '沪A·D88888',
+      group: '车辆信息',
+      variants: ['沪AD88888', '沪A-D88888', '沪A D88888'],
+      distribution: [
+        { value: '沪A·D88888', count: 28 },
+        { value: '沪AD88888', count: 11 },
+        { value: '沪A-D88888', count: 6 },
+      ],
+    },
+    {
+      canonical: '中国（上海）自由贸易试验区富特北路211号',
+      group: '地址',
+      variants: ['富特北路211号302室', '自贸区富特北路211号', '浦东新区富特北路211号'],
+      distribution: [
+        { value: '富特北路211号302室', count: 22 },
+        { value: '自贸区富特北路211号', count: 14 },
+        { value: '浦东新区富特北路211号', count: 8 },
+      ],
+    },
+  ],
+  deductions: [
+    { scope: 'obj_person.手机号', ref: 'obj_person#phone', code: 'DQ001', reason: '空值率 18.3% 超过阈值 5%，疑似源系统非必填字段', severity: 'high' as const },
+    { scope: 'obj_call.通话时长', ref: 'obj_call#duration', code: 'DQ002', reason: '空值率 21.4%，通话记录批量缺失时长字段', severity: 'high' as const },
+    { scope: 'obj_transaction.交易金额', ref: 'obj_transaction#amount', code: 'DQ003', reason: 'decimal 列混入字符串（"约5万"/"480000.00元"），TRY_CAST 降级 NULL', severity: 'medium' as const },
+    { scope: 'obj_company.注册地址', ref: 'obj_company#addr', code: 'DQ004', reason: '同一地址 4 种书写变体未对齐实体', severity: 'low' as const },
+  ],
+}
