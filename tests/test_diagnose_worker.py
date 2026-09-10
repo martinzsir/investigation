@@ -25,7 +25,7 @@ from server.app.build_stats_artifact import (
     load_build_stats,
     save_build_stats,
 )
-from server.app.meta.models import CASE_ACTIVE, CaseRecord
+from server.app.meta.models import CASE_ACTIVE, CASE_DRAFT, CaseRecord
 from server.app.meta.repo_sqlite import SqliteMetaRepo
 from server.app.store import StoreFactory
 from server.app.worker.diagnose import handle_diagnose
@@ -175,6 +175,26 @@ class DiagnoseWorkerTest(unittest.TestCase):
         self.assertEqual(len(load_build_stats(self.factory.case_dir("c1"), 1)["dirty"]), 1)
         # 原料落盘 ≠ 诊断留痕：BUILD 后 run_diagnostic 仍为空（表都不存在）
         self.assertEqual(self._diag_rows(), [])
+
+    def test_build_activates_draft_case(self):
+        """构建成功后「待建案」自动迁移为「侦查中」。"""
+        # c2 在 setUp 中已被 activate，新建一个 draft 案件
+        self.repo.create_case(CaseRecord(id="c3", tenant_id="t1", name="待建案"))
+        self.assertEqual(self.repo.get_case("c3").status, CASE_DRAFT)
+        t = enqueue_task(self.repo, case_id="c3", task_type=TASK_BUILD,
+                         created_by="u")
+        handle_build(t, repo=self.repo, factory=self.factory,
+                     snapshot_base_for=self.snap, builder=_builder)
+        self.assertEqual(self.repo.get_case("c3").status, CASE_ACTIVE)
+
+    def test_build_does_not_reactivate_active_case(self):
+        """已处于「侦查中」的案件不重复迁移。"""
+        # c1 在 setUp 中已是 ACTIVE
+        t = enqueue_task(self.repo, case_id="c1", task_type=TASK_BUILD,
+                         created_by="u")
+        handle_build(t, repo=self.repo, factory=self.factory,
+                     snapshot_base_for=self.snap, builder=_builder)
+        self.assertEqual(self.repo.get_case("c1").status, CASE_ACTIVE)
 
 
 if __name__ == "__main__":

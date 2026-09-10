@@ -24,6 +24,8 @@ export interface SourceRowDto {
 export interface ClueListItem {
   clue_id: string
   title: string
+  /** 依据摘要副标题（方案二·B：规则名 + 依据摘要，零后端改动） */
+  basis?: string
   skill_id?: string
   jian_types?: string[]
   assumption_chain?: unknown[]

@@ -39,6 +39,11 @@ const archiving = ref<CaseDto | null>(null)
 const archiveReason = ref('')
 const archiveBusy = ref(false)
 
+// 结案确认
+const closing = ref<CaseDto | null>(null)
+const closeReason = ref('')
+const closeBusy = ref(false)
+
 const STATUS_TABS = computed(() => [
   { value: 'all', label: '全部' },
   ...Object.values(CASE_STATUS).map((s) => ({ value: s, label: s })),
@@ -101,6 +106,31 @@ async function submitCreate(): Promise<void> {
 function enterCase(c: CaseDto): void {
   cs.selectCase(c.id)
   void router.push('/c/overview')
+}
+
+function closeable(c: CaseDto): boolean {
+  return canArchive(auth.clearance) && c.status === CASE_STATUS.active
+}
+
+function openClose(c: CaseDto): void {
+  closing.value = c
+  closeReason.value = ''
+}
+
+async function confirmClose(): Promise<void> {
+  if (!closing.value) return
+  closeBusy.value = true
+  try {
+    const updated = await casesApi.close(closing.value.id, closeReason.value.trim())
+    Object.assign(closing.value, updated)
+    message.success('案件已结案')
+    closing.value = null
+    void load()
+  } catch (e) {
+    message.error(isApiError(e) ? e.message : presentError(e).title)
+  } finally {
+    closeBusy.value = false
+  }
 }
 
 function archiveable(c: CaseDto): boolean {
@@ -231,6 +261,15 @@ function summaryOf(c: CaseDto): CaseSummaryDto | undefined {
           <div class="card-actions" @click.stop>
             <NButton size="tiny" type="primary" quaternary @click="enterCase(c)">进入案件</NButton>
             <NButton
+              v-if="closeable(c)"
+              size="tiny"
+              type="info"
+              quaternary
+              @click="openClose(c)"
+            >
+              结案
+            </NButton>
+            <NButton
               v-if="archiveable(c)"
               size="tiny"
               type="warning"
@@ -266,6 +305,32 @@ function summaryOf(c: CaseDto): CaseSummaryDto | undefined {
           <NButton type="primary" :loading="creating" :disabled="createDisabled" @click="submitCreate">
             创建并进入
           </NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <!-- 结案确认 -->
+    <NModal
+      :show="!!closing"
+      preset="card"
+      title="结案"
+      :mask-closable="false"
+      @update:show="(v: boolean) => { if (!v) closing = null }"
+    >
+      <div class="form">
+        <p class="form-line">
+          将案件 <b>{{ closing?.name }}</b>（<span class="mono">{{ closing?.id }}</span>）标记为已结案。
+          结案后可继续归档，但不可恢复为侦查中。
+        </p>
+        <label class="form-row">
+          <span class="form-label">结案说明</span>
+          <NInput v-model:value="closeReason" type="textarea" :rows="3" placeholder="结案依据与结论摘要（审计留痕）" />
+        </label>
+      </div>
+      <template #footer>
+        <div class="modal-footer">
+          <NButton :disabled="closeBusy" @click="closing = null">取消</NButton>
+          <NButton type="info" :loading="closeBusy" @click="confirmClose">确认结案</NButton>
         </div>
       </template>
     </NModal>

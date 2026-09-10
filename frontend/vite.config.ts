@@ -17,6 +17,11 @@ export default defineConfig({
       },
     },
   },
+  // @antv/g6 v5 依赖链深（@antv/g、@antv/g-canvas 等），
+  // pnpm 符号链接下 Vite 自动发现不稳，显式预构建确保动态 import 可解析。
+  optimizeDeps: {
+    include: ['@antv/g6'],
+  },
   build: {
     sourcemap: false,
     chunkSizeWarningLimit: 1600,

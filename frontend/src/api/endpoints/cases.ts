@@ -77,6 +77,17 @@ export const casesApi = {
   },
 
   /**
+   * POST /cases/{cid}/close 🔒 200（clearance≥2；侦查中→已结案）。
+   */
+  async close(caseId: string, reason = ''): Promise<CaseDto> {
+    const { data } = await api.post<CaseDto>(
+      `/cases/${encodeURIComponent(caseId)}/close`,
+      { reason },
+    )
+    return data
+  },
+
+  /**
    * POST /cases/{cid}/archive 🔒 202（clearance≥2；已封存/非法迁移 409）。
    * 返 task_dto（ARCHIVE 任务，走任务中心 SSE）。
    */

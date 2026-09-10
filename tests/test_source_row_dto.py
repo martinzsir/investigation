@@ -63,7 +63,7 @@ class TestSourceRowDto(unittest.TestCase):
 
     # ---- 遮蔽 ----
     def test_id_card_masked_for_low_role(self):
-        """正兵读 person.id_card → partial 遮蔽（310****1234）。"""
+        """正兵读 person.id_card → policy=masked, mask=idcard（前端 MaskedField 遮蔽）。"""
         sr = {"raw_name": "张三", "id_card": "310101199001011234"}
         access = AccessContext(operator="王正兵", role="正兵", clearance=1)
         result = resolve_source_row(
@@ -71,8 +71,9 @@ class TestSourceRowDto(unittest.TestCase):
             access=access, hit_fields=["id_card"])
         id_field = next(f for f in result["fields"] if f["raw"] == "id_card")
         self.assertEqual(id_field["policy"], "masked")
-        self.assertIn("****", id_field["value"])
-        self.assertNotEqual(id_field["value"], "310101199001011234")
+        self.assertEqual(id_field["mask"], "idcard")
+        # 遮蔽由前端执行，服务端送原值（非 denied 字段不截断）
+        self.assertEqual(id_field["value"], "310101199001011234")
         self.assertTrue(id_field["hit"])
 
     def test_id_card_visible_for_high_role(self):
@@ -114,6 +115,8 @@ class TestSourceRowDto(unittest.TestCase):
         # 只做属性级遮蔽
         content = next(f for f in result["fields"] if f["raw"] == "content_raw")
         self.assertEqual(content["policy"], "masked")
+        # masked 字段送原值，前端 MaskedField 按 mask type 遮蔽
+        self.assertEqual(content["value"], "举报人张三称...")
 
     # ---- 无 access 上下文 ----
     def test_no_access_no_masking(self):

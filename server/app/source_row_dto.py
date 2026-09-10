@@ -8,10 +8,13 @@ source_rows 实际有两种形态（兼容历史产物）：
   B. URI 字符串 / {row_uri: "通话记录@v3#p0/8f3a21"}
      —— 走 row_uri.py resolve_row_uri 取回归档行内容（未来 BUILD 产 URI 后生效）
 
-遮蔽在服务端做（红线 FE-T-021：明文不入缓存）——调 PolicyEngine.apply_row_masks。
+遮蔽策略由 PolicyEngine 决定（policy=visible/masked/denied），遮蔽渲染由前端
+MaskedField 唯一执行（避免服务端 mask_partial 与前端 maskPhone/maskIdCard 格式
+不一致导致双重遮蔽）。denied 字段不送明文（FE-T-021）。
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -40,8 +43,8 @@ def resolve_source_row(
       hit_fields  : 命中判据的字段名列表（前端高亮琥珀）
 
     返回：
-      {"dataset": str|None, "fields": [{name, raw, value, hit, policy}]}
-      URI 取回失败（跨版本/归档缺失）时 dataset=None、fields 从 source_row 本身取。
+      {"row_uri": str, "source": str|None, "fields": [{name, value, hit, mask, policy}]}
+      符合前端 SourceRowDto 契约（clues.ts）：row_uri 等宽展示+可复制、source 标签。
     """
     pe = PolicyEngine(pack_id) if access else None
 
@@ -49,6 +52,7 @@ def resolve_source_row(
     dataset = None
     row_data: dict[str, Any] = {}
     obj_type = None
+    existing_uri = None
 
     uri = source_row.get("row_uri") if isinstance(source_row, dict) else None
     if uri and conn:
@@ -57,6 +61,7 @@ def resolve_source_row(
             resolved = resolve_row_uri(conn, uri)
             row_data = resolved.get("data", {})
             dataset = resolved.get("dataset")
+            existing_uri = uri
             # 按 dataset 找 binding → obj_type（用于策略引擎）
             obj_type = _dataset_to_obj_type(dataset, pack_id, base_dir)
         except (RowNotFoundError, MalformedUriError):
@@ -69,15 +74,25 @@ def resolve_source_row(
     if not obj_type:
         obj_type = _infer_obj_type(row_data.keys(), pe, base_dir)
 
+    # ---- 推断 dataset（用于 row_uri 和 source 标签）----
+    if not dataset:
+        dataset = _dataset_of(row_data)
+
+    # ---- 生成 row_uri ----
+    if existing_uri:
+        row_uri = existing_uri
+    else:
+        content = json.dumps(row_data, sort_keys=True, ensure_ascii=False, default=str)
+        rowid = hashlib.md5(content.encode("utf-8")).hexdigest()[:16]
+        row_uri = f"{dataset}@local#row/{rowid}"
+
     # ---- 属性名 → 中文名映射 ----
     name_map = _build_name_map(obj_type, pack_id, base_dir)
 
-    # ---- 遮蔽 ----
-    masked_row = row_data
-    if pe and obj_type and access:
-        masked_row = pe.apply_row_masks(access, obj_type, [row_data])[0]
-
     # ---- 组装字段表 ----
+    # 遮蔽由前端 MaskedField 按 policy+mask 唯一执行（避免服务端 mask_partial
+    # 与前端 maskPhone/maskIdCard 格式不一致导致双重遮蔽丢信息）。
+    # denied 字段不送明文（FE-T-021：denied 态前端只渲染 ****，不接触真值）。
     hit_set = set(hit_fields or [])
     fields = []
     for raw_name, value in row_data.items():
@@ -86,15 +101,17 @@ def resolve_source_row(
             continue
         display_name = name_map.get(raw_name, raw_name)
         policy = _field_policy(pe, obj_type, raw_name, access)
+        field_value = "" if policy == "denied" else _stringify(value)
         fields.append({
             "name": display_name,
             "raw": raw_name,
-            "value": _stringify(masked_row.get(raw_name, value)),
+            "value": field_value,
             "hit": raw_name in hit_set,
+            "mask": _infer_mask_type(pe, obj_type, raw_name),
             "policy": policy,
         })
 
-    return {"dataset": dataset, "fields": fields}
+    return {"row_uri": row_uri, "source": dataset, "fields": fields}
 
 
 def resolve_source_rows(
@@ -121,6 +138,55 @@ _INTERNAL_FIELDS = frozenset({
     "row_uri", "knowledge_sources", "knowledge_version",
     "matched_person", "source_row_id",
 })
+
+# 敏感字段名模式 → mask type（前端 MaskedField 按 type 选择遮蔽格式）
+_PHONE_KEYS = ("phone", "tel", "mobile", "手机", "电话", "联系电话")
+_IDCARD_KEYS = ("id_card", "idcard", "身份证", "证件")
+
+
+def _infer_mask_type(pe: PolicyEngine | None, obj_type: str | None,
+                     prop_name: str) -> str:
+    """按 PolicyEngine 声明推断遮蔽类型（phone/idcard/text）。
+
+    只有 policies.json 中声明为敏感属性的才需要推断 mask type；
+    未声明的属性一律 text（前端按 text 渲染，不特殊遮蔽）。
+    与 _field_policy 同源——都查 pe.property_rule。
+    """
+    if pe is None or obj_type is None:
+        return "text"
+    rule = pe.property_rule(obj_type, prop_name)
+    if rule is None:
+        return "text"
+    # 声明的敏感属性：按属性名推断具体遮蔽格式
+    low = prop_name.lower()
+    if any(k in low for k in _PHONE_KEYS):
+        return "phone"
+    if any(k in low for k in _IDCARD_KEYS):
+        return "idcard"
+    return "text"
+
+
+def _dataset_of(sr: dict[str, Any]) -> str:
+    """推断行所属数据源（用于 source 标签和 row_uri 前缀）。"""
+    if not isinstance(sr, dict):
+        return "数据行"
+    ks = sr.get("knowledge_sources")
+    if isinstance(ks, list) and ks:
+        return ks[0]
+    fields = set(sr.keys())
+    if {"from_raw", "to_raw", "amount"} & fields:
+        return "银行流水"
+    if {"caller_raw", "callee_raw", "times"} & fields:
+        return "通话记录"
+    if {"person_raw", "location"} & fields:
+        return "轨迹出行"
+    if {"legal_rep", "relation"} & fields:
+        return "工商信息"
+    if {"content_raw", "reporter_raw"} & fields:
+        return "举报材料"
+    if {"项目", "资金主体", "金额", "中标公示日"} & fields:
+        return "招投标"
+    return "数据行"
 
 
 def _infer_obj_type(field_names, pe: PolicyEngine | None,

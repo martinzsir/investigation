@@ -26,14 +26,34 @@ from core.registry import (
 # 适配函数：把各技能 run() 的 dict 输出 → [LineageClue]
 # ----------------------------------------------------------------------
 
-def _chain_jian_for(text: str) -> tuple[list[str], list[str]]:
-    """按庙算模式库（单一事实来源）把 finding 文本映射为 (假设链, 间类)。"""
+# 间类 → 侦查维度映射（雷达五轴数据来源）
+_JIAN_TO_DIM: dict[str, str] = {
+    "生间": "资金",   # 银行流水异常
+    "反间": "资金",   # 过桥资金
+    "因间": "关系",   # 利益关联
+    "死间": "行为",   # 行为轨迹/OSINT
+    "内间": "通讯",   # 举报线索/通讯
+}
+
+
+def _dims_for_jian(jian_types: list[str]) -> list[str]:
+    """间类 → 去重维度列表（雷达五轴聚合用）。"""
+    seen: list[str] = []
+    for j in jian_types:
+        d = _JIAN_TO_DIM.get(j)
+        if d and d not in seen:
+            seen.append(d)
+    return seen
+
+
+def _chain_jian_dim_for(text: str) -> tuple[list[str], list[str], list[str]]:
+    """按庙算模式库把 finding 文本映射为 (假设链, 间类, 维度)。"""
     from core.hypotheses import MiaoSuan  # 延迟导入：core 不依赖 skills，无循环
     for p in MiaoSuan.FINDING_PATTERNS:
         if any(k in text for k in p["keywords"]):
             tpl = p["hypothesis"]
-            return [tpl.id], list(tpl.jian_types)
-    return [], []
+            return [tpl.id], list(tpl.jian_types), list(tpl.dimension)
+    return [], [], []
 
 
 def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
@@ -42,15 +62,18 @@ def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
     findings = result.get("虚实扫描", {}).get("findings", [])
     for i, f in enumerate(findings):
         text = f"{f.get('候选虚处', '')}{f.get('依据', '')}"
-        # 假设链/间类：规则手册声明（rules.json）优先；未声明时回落模式库映射/关键词兜底
-        chain, jian = _chain_jian_for(text)
+        # 假设链/间类/维度：规则手册声明（rules.json）优先；未声明时回落模式库映射/关键词兜底
+        chain, jian, dims = _chain_jian_dim_for(text)
         if f.get("assumption"):
             chain = [f["assumption"]]
         if f.get("jian_types"):
             jian = list(f["jian_types"])
         if not jian:
             jian = ["反间"] if "过桥" in text else ["生间"]
-        detail = {"依据": f.get("依据"), "级别": f.get("级别")}
+        # 维度：模式库优先；无映射时按间类推断
+        if not dims:
+            dims = _dims_for_jian(jian)
+        detail = {"依据": f.get("依据"), "级别": f.get("级别"), "维度": dims}
         if f.get("rule_id"):  # 规则溯源：线索携带规则 id 与判据原文（可回放）
             detail["rule_id"] = f["rule_id"]
             detail["rule_text"] = f.get("rule_text", "")
@@ -66,39 +89,99 @@ def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
 
 
 def _clue_from_qi_zheng(spec: SkillSpec, result: dict) -> list[LineageClue]:
-    """奇正分工：奇兵/正兵任务清单 → 一条线索（待固证）。"""
+    """奇正分工：奇兵/正兵任务清单 → 一条线索（待固证）。
+
+    方案 A+C：从 Q1_result 提取资金主体拼入标题，basis 补项目名摘要。
+    """
     qz = result.get("奇正分工", {})
+    q1_rows = qz.get("Q1_result") or []
+    # C：提取首个资金主体做标题前缀
+    subject = ""
+    if q1_rows and isinstance(q1_rows[0], dict):
+        subject = str(q1_rows[0].get("资金主体") or "")
+    title = "奇正分工方案" + (f" · {subject}" if subject else "")
+    # A：basis 副标题补 Q1 碰撞摘要
+    basis = ""
+    if q1_rows and isinstance(q1_rows[0], dict):
+        r0 = q1_rows[0]
+        proj = r0.get("项目") or ""
+        amt = r0.get("金额") or ""
+        if proj and amt:
+            basis = f"时间窗碰撞：{proj} · 金额 {amt}"
+        elif proj:
+            basis = f"时间窗碰撞：{proj}"
+    jian_types = list(spec.consumes_jian)
+    detail = {
+        "奇兵": qz.get("奇兵(AI)") or qz.get("奇兵") or [],
+        "正兵": qz.get("正兵(人)") or qz.get("正兵") or [],
+        "依据": basis,
+        "维度": _dims_for_jian(jian_types),
+    }
     return [LineageClue(
         skill_id=spec.skill_id,
-        title="奇正分工方案",
-        detail={"奇兵": qz.get("奇兵", []), "正兵": qz.get("正兵", [])},
+        title=title,
+        detail=detail,
         jian_types=list(spec.consumes_jian),
         needs_human_review=True,
     )]
 
 
 def _clue_from_yong_jian(spec: SkillSpec, result: dict) -> list[LineageClue]:
-    """用间交叉：每行命中 → 一条线索，jian_types 取该行命中的间类。"""
+    """用间交叉：每行命中 → 一条线索，jian_types 取该行命中的间类。
+
+    方案 A：标题补数据源摘要，basis 展开命中的数据源列表。
+    """
     clues: list[LineageClue] = []
     rows = result.get("用间交叉", {}).get("rows", [])
     for row in rows:
-        if row.get("命中"):
-            clues.append(LineageClue(
-                skill_id=spec.skill_id,
-                title=f"{row['间']}命中",
-                detail={"数据源": row.get("数据源", []), "等级": result["用间交叉"].get("交叉等级")},
-                jian_types=[row["间"]],
-            ))
+        if not row.get("命中"):
+            continue
+        jian_name = row["间"]
+        sources = row.get("数据源") or []
+        # A：标题补首个数据源简称
+        src_brief = ""
+        if sources:
+            first_src = str(sources[0]).split("→")[0] if sources else ""
+            src_brief = f"（{first_src}）" if first_src else ""
+        title = f"{jian_name}命中{src_brief}"
+        # A：basis 副标题展开全部命中数据源
+        basis = "；".join(str(s) for s in sources[:3]) if sources else ""
+        clues.append(LineageClue(
+            skill_id=spec.skill_id,
+            title=title,
+            detail={"数据源": sources, "等级": result["用间交叉"].get("交叉等级"),
+                    "依据": basis, "维度": _dims_for_jian([jian_name])},
+            jian_types=[jian_name],
+        ))
     return clues
 
 
 def _clue_default(spec: SkillSpec, result: dict) -> list[LineageClue]:
-    """默认：把输出 dict 的每个顶层键当作一条线索。"""
+    """默认：把输出 dict 的每个顶层键当作一条线索。
+
+    方案 A+C：尝试从 result 中提取被盘点对象名拼入标题，basis 补摘要。
+    """
+    # C：尝试从双向盘点结构提取对象名
+    title = spec.name
+    basis = ""
+    for key, val in result.items():
+        if isinstance(val, dict):
+            # zhi_ji_zhi_bi: "彼（张卫国）" → 提取人名
+            for sub_key in val:
+                if "彼" in sub_key and "（" in sub_key:
+                    name = sub_key[sub_key.index("（") + 1:sub_key.rindex("）") if "）" in sub_key else len(sub_key)]
+                    title = f"双向盘点：{name}"
+                    # A：basis 从子项摘要
+                    parts = [f"{k}：{v}" for k, v in list(val[sub_key].items())[:3]
+                             if isinstance(v, str)]
+                    basis = "；".join(parts)
+                    break
+    jian_types = list(spec.consumes_jian)
     return [LineageClue(
         skill_id=spec.skill_id,
-        title=spec.name,
-        detail=result,
-        jian_types=list(spec.consumes_jian),
+        title=title,
+        detail={**result, "依据": basis, "维度": _dims_for_jian(jian_types)},
+        jian_types=jian_types,
     )]
 
 

@@ -1353,6 +1353,7 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             excludes=tuple(r.get("excludes") or ()),
             zero_is_clean=bool(r.get("zero_is_clean", False)),
             enabled=bool(r.get("enabled", True)),
+            subject_column=r.get("subject_column", ""),
         )
         ol = out[rid].overlap_resolution
         if ol not in ALLOWED_OVERLAP_RESOLUTION:

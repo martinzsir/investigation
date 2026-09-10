@@ -182,6 +182,7 @@ def _call_frequency_spike(store, params: dict) -> dict:
                 "median_value": 0,
                 "threshold_used": f"绝对频次阈值 absolute_threshold = {threshold}"}
     return {"hit": hit, "basis": basis, "diagnostics": diag,
+            "subject": top["caller_raw"],
             "pairs": [{"主体": r["caller_raw"], "对端": r["callee_raw"], "次数": r["c"]}
                       for r in pairs[:5]]}
 
@@ -441,7 +442,9 @@ def _org_interest_links(store, params: dict) -> dict:
             "knowledge_sources": sources,
             "knowledge_version": kn.get("knowledge_version"),
         })
-    return {"rows": rows, "knowledge_version": kn.get("knowledge_version")}
+    subject = rows[0]["matched_person"][0] if rows and rows[0].get("matched_person") else ""
+    return {"rows": rows, "subject": subject,
+            "knowledge_version": kn.get("knowledge_version")}
 
 
 # ---- 资金链路：两跳过桥（SQL 轨，与图库 Cypher 轨互为校验）----
@@ -449,7 +452,8 @@ def _org_interest_links(store, params: dict) -> dict:
 def _overpass_two_hop(store, params: dict) -> dict:
     from core.graph import overpass_two_hop_sql
     paths = overpass_two_hop_sql(store)
-    return {"rows": [p.to_dict() for p in paths]}
+    subject = paths[0].source if paths else ""
+    return {"rows": [p.to_dict() for p in paths], "subject": subject}
 
 
 # ----------------------------------------------------------------------

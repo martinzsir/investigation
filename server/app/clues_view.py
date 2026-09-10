@@ -65,6 +65,7 @@ def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
     return {
         "clue_id": raw.get("clue_id"),
         "title": raw.get("title", ""),
+        "basis": det.get("依据") or raw.get("依据") or "",
         "skill_id": raw.get("skill_id", ""),
         "jian_types": raw.get("jian_types") or [],
         "assumption_chain": raw.get("assumption_chain") or [],

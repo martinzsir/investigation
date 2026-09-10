@@ -31,6 +31,7 @@
       "function": "integer_transfer_aggregates",
       "params": {"round_unit": 10000},
       "hit_when": "rows_nonempty",
+      "subject_column": "from_raw",
       "exclusive_group": "integer_amount",
       "primary_rule": false,
       "overlap_resolution": "drop_if_primary_hit",
@@ -60,7 +61,8 @@
       "basis_text": "不同主体在相同地点 ±1 天内先后出现",
       "function": "co_located_pairs",
       "params": {},
-      "hit_when": "rows_nonempty"
+      "hit_when": "rows_nonempty",
+      "subject_column": "person_1"
     },
     {
       "id": "R5",
@@ -86,7 +88,8 @@
       "basis_text": "中标公示 ±20 天邻接边上出现整数资金、且资金主体为个人（非对公单位）",
       "function": "time_window_collision",
       "params": {"round_unit": 10000, "exclude_org_suffix": "公司"},
-      "hit_when": "rows_nonempty"
+      "hit_when": "rows_nonempty",
+      "subject_column": "资金主体"
     }
   ]
 }

@@ -23,7 +23,9 @@ from typing import Any, Callable
 from core.ontology import build_ontology
 
 from server.app.meta.models import (
+    CASE_ACTIVE,
     CASE_ARCHIVED,
+    CASE_DRAFT,
     TaskRow,
     VER_RECLAIMED,
 )
@@ -151,6 +153,14 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
 
     # H3：构建成功才切指针（builder/检测抛异常则指针不动、版本不前进）
     repo.set_version(case.id, nxt, by="worker")
+
+    # 构建成功后自动将「待建案」迁移为「侦查中」（首次 BUILD 生效后立案）
+    if case.status == CASE_DRAFT:
+        try:
+            repo.transition_case(case.id, CASE_ACTIVE, "worker")
+        except Exception as e:  # noqa: BLE001
+            repo.record_ops("case_activate_failed", case.id,
+                            {"target": CASE_ACTIVE, "error": f"{type(e).__name__}: {e}"})
 
     # B5：构建成功后补录审计链生命周期事件（失败只 ops 留痕，不回滚版本）
     try:

@@ -21,7 +21,7 @@ from server.app.envelope import (
     APIError,
     ok,
 )
-from server.app.meta.models import CASE_ARCHIVED, IllegalTransition
+from server.app.meta.models import CASE_ARCHIVED, CASE_CLOSED, IllegalTransition
 from server.app.portal_view import assemble_summary
 from server.app.security import Principal
 from server.app.snapshot_config import require_analyst
@@ -128,6 +128,24 @@ def case_summary(case_id: str, p: Principal = Depends(get_principal),
     return ok({"case": case_dto(case), "data_version": version, **summary,
                "recent_tasks": [task_dto(t) for t in recent]},
               data_version=version)
+
+
+@router.post("/{case_id}/close", status_code=200)
+def close_case(case_id: str, body: ArchiveIn = ArchiveIn(),
+               p: Principal = Depends(get_principal),
+               ctx: WebContext = Depends(get_ctx)):
+    """结案：侦查中→已结案（状态机非法迁移 409）。"""
+    case = _get_owned_case(case_id, p, ctx.cases)
+    require_analyst(p)
+    if case.status == CASE_CLOSED:
+        raise APIError(ERR_CONFLICT, "案件已结案，不可重复结案", 409)
+    try:
+        ctx.repo.transition_case(case_id, CASE_CLOSED, by=p.operator)
+    except IllegalTransition as e:
+        raise APIError(ERR_CONFLICT, str(e), 409)
+    ctx.repo.record_ops("case_close", case_id,
+                        {"by": p.operator, "reason": body.reason})
+    return ok(case_dto(ctx.repo.get_case(case_id)))
 
 
 @router.post("/{case_id}/archive", status_code=202)

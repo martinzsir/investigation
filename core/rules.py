@@ -24,21 +24,29 @@ def catalog(pack: str = "default") -> list[dict]:
 
 
 def _evaluate_single(rule, fx, out):
-    """单规则评估 → (hit: bool, source_rows, basis)。"""
+    """单规则评估 → (hit: bool, source_rows, basis, subject)。"""
     if rule.hit_when == "result_hit":
         result = out.get("result") or {}
         return (bool(result.get("hit")),
                 result.get("pairs") or [],
-                result.get("basis") or rule.basis_text)
+                result.get("basis") or rule.basis_text,
+                result.get("subject") or "")
     # REQ-G-022：py 实现的 Function，invoke() 把结果包在 out["result"] 里，
     # 与 sql 实现的 out["rows"] 路径不同。原先只读 out["rows"]，导致所有
     # py impl + rows_nonempty 的规则（R5 org_interest_links）永不命中。
     res = out.get("result")
     if isinstance(res, dict) and "rows" in res:
         rows = res.get("rows") or []
+        subject = res.get("subject") or ""
     else:
         rows = out.get("rows") or []
-    return (len(rows) > 0, rows, rule.basis_text)
+        subject = ""
+    # SQL 函数：从 subject_column 声明提取首行主体名
+    if not subject and rows and rule.subject_column:
+        first = rows[0]
+        if isinstance(first, dict) and rule.subject_column in first:
+            subject = str(first[rule.subject_column] or "")
+    return (len(rows) > 0, rows, rule.basis_text, subject)
 
 
 def _suppress_overlaps(findings: list[dict], rules: dict) -> list[dict]:
@@ -169,7 +177,7 @@ def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
         else:
             method, value, degraded = "absolute_hardcoded", None, False
         out = fx.invoke(r.function, params)
-        hit, source_rows, basis = _evaluate_single(r, fx, out)
+        hit, source_rows, basis, subject = _evaluate_single(r, fx, out)
         if not hit:
             # REQ-G-002：零命中不再裸 continue——产诊断对象（不进 findings 主列表）
             fspec = fspecs.get(r.function)
@@ -182,9 +190,11 @@ def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
                 scan_rows=scan_rows, matched_rows=len(source_rows or []),
                 dimension=r.dimension)
             continue
+        # 方案二·C：主体前缀 + 规则名
+        title = f"{subject} · {r.title}" if subject else r.title
         findings.append({
             "rule_id": r.id,
-            "候选虚处": r.title,
+            "候选虚处": title,
             "依据": basis,
             "级别": "待核实",
             "source_rows": source_rows,

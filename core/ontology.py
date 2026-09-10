@@ -225,6 +225,9 @@ class RuleSpec:
     # 规则工坊启停（W-014 AC-5）：False=规则停用，检测期跳过（不产 finding、
     # 不记零命中诊断）；声明仍在 rules.json，绑定关系可审计，可随时重新启用。
     enabled: bool = True
+    # 主体列名（方案二·C）：SQL 函数返回行的哪一列作为线索标题的主体前缀；
+    # py 函数在返回值中自带 subject 字段，不依赖此声明。
+    subject_column: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

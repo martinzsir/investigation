@@ -213,6 +213,7 @@ function openClue(id: string): void {
                     <td class="rank">{{ c.priority_rank ?? '—' }}</td>
                     <td class="title-cell">
                       <span class="title">{{ c.title }}</span>
+                      <span v-if="c.basis" class="basis-sub">{{ c.basis }}</span>
                       <code class="cid">{{ c.clue_id }}</code>
                     </td>
                     <td><StatusBadge variant="level" :value="c.level ?? '观察'" /></td>
@@ -352,6 +353,12 @@ function openClue(id: string): void {
 }
 .title {
   color: var(--sun-text-primary);
+}
+.basis-sub {
+  font-size: 12px;
+  color: var(--sun-text-secondary);
+  line-height: 1.4;
+  word-break: break-all;
 }
 .cid {
   font-size: 11px;

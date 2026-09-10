@@ -46,8 +46,8 @@ function toData(): unknown {
       id: n.id,
       data: { label: n.label, color: nodeColor(n) },
     })),
-    edges: props.graph.edges.map((e) => ({
-      id: `${e.source}->${e.target}`,
+    edges: props.graph.edges.map((e, i) => ({
+      id: `e${i}`,
       source: e.source,
       target: e.target,
       data: { label: e.label },

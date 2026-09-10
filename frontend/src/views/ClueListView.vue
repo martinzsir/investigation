@@ -159,6 +159,7 @@ function reset(): void {
           <template #cell-title="{ item }">
             <span class="title-cell">
               <span class="title">{{ (item as unknown as ClueListItem).title }}</span>
+              <span v-if="(item as unknown as ClueListItem).basis" class="basis-sub">{{ (item as unknown as ClueListItem).basis }}</span>
               <code class="cid">{{ (item as unknown as ClueListItem).clue_id }}</code>
             </span>
           </template>
@@ -222,6 +223,12 @@ function reset(): void {
 }
 .title {
   color: var(--sun-text-primary);
+}
+.basis-sub {
+  font-size: 12px;
+  color: var(--sun-text-secondary);
+  line-height: 1.4;
+  word-break: break-all;
 }
 .cid {
   font-size: 11px;
