@@ -22,3 +22,6 @@ data/t3.sqlite
 /web/*.jpeg
 
 .env
+
+# 运行时日志
+/logs/
