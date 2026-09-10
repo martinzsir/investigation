@@ -152,6 +152,21 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
     # H3：构建成功才切指针（builder/检测抛异常则指针不动、版本不前进）
     repo.set_version(case.id, nxt, by="worker")
 
+    # B5：构建成功后补录审计链生命周期事件（失败只 ops 留痕，不回滚版本）
+    try:
+        from server.app.worker.lifecycle_audit import on_build_succeeded
+        stats = result if isinstance(result, dict) else {}
+        on_build_succeeded(
+            case_dir=factory.case_dir(case.id),
+            case_id=case.id, operator="system",
+            prev_version=cur, new_version=nxt,
+            objects=stats.get("objects", 0),
+            links=stats.get("links", 0))
+    except Exception as e:  # noqa: BLE001
+        repo.record_ops("lifecycle_audit_failed", case.id,
+                        {"event": "build_succeeded", "version": nxt,
+                         "error": f"{type(e).__name__}: {e}"})
+
     # 持久化 BUILD 诊断原料（artifacts/build_stats_vN.json），供用户手动发起
     # DIAGNOSE 时补落 run_diagnostic；附属产物失败不回滚已生效版本
     try:

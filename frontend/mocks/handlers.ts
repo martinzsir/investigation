@@ -556,7 +556,8 @@ export const handlers = [
     return ok({
       ...clue,
       audit_log: [],
-      detail: { evidence: clue.evidence },
+      evidence: clue.evidence,
+      source_row_details: clue.source_rows,
       decisions: [],
       artifact_version: 42,
     })

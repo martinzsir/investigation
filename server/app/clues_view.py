@@ -142,14 +142,21 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
 
 def assemble_detail(*, case_dir: str | Path, version: int | None,
                     clue_id: str, state_map: dict[str, dict],
-                    decisions: list[dict] | None = None) -> dict | None:
-    """线索详情：五间/溯源 source_rows/合并来源/状态/决策。无此线索返回 None。"""
+                    decisions: list[dict] | None = None,
+                    access=None, pack_id: str = "default",
+                    base_dir=None) -> dict | None:
+    """线索详情：五间/溯源 source_rows/合并来源/状态/决策/evidence/source_row_details。
+
+    access（AccessContext）非空时产出 evidence 三栏 + source_row_details 字段表。
+    无此线索返回 None。
+    """
     raws, art_ver = _load_raw(Path(case_dir), version)
     raw = next((r for r in raws if r.get("clue_id") == clue_id), None)
     if raw is None:
         return None
     item = _base_item(raw, state_map)
-    item["source_rows"] = raw.get("source_rows") or []
+    source_rows = raw.get("source_rows") or []
+    item["source_rows"] = source_rows
     item["audit_log"] = raw.get("audit_log") or []
     det = raw.get("detail") or {}
     item["detail"] = det
@@ -158,6 +165,18 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
     if decisions is not None:
         item["decisions"] = [d for d in decisions
                              if d.get("target_id") == clue_id]
+
+    # ---- B3：三栏证据 + 溯源面板字段表（遮蔽在服务端做，FE-T-021）----
+    if access is not None:
+        from server.app.evidence_builder import build_evidence
+        from server.app.source_row_dto import resolve_source_rows
+        item["evidence"] = build_evidence(
+            raw_clue=raw, conn=None, pack_id=pack_id,
+            base_dir=base_dir, access=access)
+        item["source_row_details"] = resolve_source_rows(
+            source_rows=source_rows, conn=None, pack_id=pack_id,
+            base_dir=base_dir, access=access)
+
     return item
 
 

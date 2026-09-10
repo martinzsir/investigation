@@ -9,7 +9,8 @@
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
-        "raw_name": "string"
+        "raw_name": "string",
+        "id_card": "string"
       }
     },
     {

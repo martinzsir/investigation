@@ -91,5 +91,23 @@ class StateSink:
                 "note": params.get("note", ""),
             })
 
+    def audit_append(self, detail: dict[str, Any]) -> str:
+        """追加审计链事件（Worker 裁决/处置后调用）。
+
+        detail 至少含 operator/ontology_version；整个 dict 作为 after_state 落链。
+        before/source_row_ids 缺省为 None/[]（裁决无前置状态变更）。
+        返回 event_id。
+        """
+        chain = AuditChain(
+            self._state.conn, case_id=self.case_id,
+            backend="sqlite",
+            ontology_version=detail.get("ontology_version", self.ontology_version))
+        return chain.append(
+            operator=detail.get("operator", ""),
+            before=detail.get("before"),
+            after=detail,
+            source_row_ids=detail.get("source_row_ids", []),
+            ontology_version=detail.get("ontology_version", self.ontology_version))
+
     def close(self) -> None:
         self._state.close()

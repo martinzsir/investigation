@@ -198,6 +198,9 @@ GROUPS = {
     "m6govern":     ("M6 W-P-011~015/017 数据元+ETL管道+系统设置+任务取消+门户归档+配置中心", [sys.executable, "-m", "unittest", "tests.test_m6_govern"]),
     "diagnose":     ("手动运行诊断 DIAGNOSE 任务（run_diagnostic 留痕，不随 BUILD 自动）", [sys.executable, "-m", "unittest", "tests.test_diagnose_worker"]),
     "configaudit":  ("MVP-4 FE-T-012 配置写追加案件审计链（9 端点+reason+链校验）", [sys.executable, "-m", "unittest", "tests.test_config_audit_api"]),
+    "sourcerow":   ("B1 溯源行适配器（source_row_dto 字段表+遮蔽+hit）", [sys.executable, "-m", "unittest", "tests.test_source_row_dto"]),
+    "evidence":    ("B2 证据三栏产出器（evidence_builder fact/inference/pending）", [sys.executable, "-m", "unittest", "tests.test_evidence_builder"]),
+    "lifecycle":  ("B5 生命周期事件补录（case_created/source_imported/build_succeeded）", [sys.executable, "-m", "unittest", "tests.test_lifecycle_audit"]),
 }
 
 

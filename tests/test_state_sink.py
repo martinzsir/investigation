@@ -220,6 +220,58 @@ class TestStateSink(unittest.TestCase):
                          f"core/ 不得 import server 状态层（依赖方向 server→core）："
                          f"{violations}")
 
+    # ---- audit_append：Worker 裁决/处置后审计链写入 ----
+    def test_audit_append_writes_chain(self):
+        """StateSink.audit_append 追加事件后 audit_chain 可验。
+
+        覆盖 review.py L91 调用路径（曾因方法不存在而 AttributeError）。
+        """
+        event_id = self.sink.audit_append({
+            "event": "entity_review_decision",
+            "candidate_id": "cand_1",
+            "action": "review_merge",
+            "operator": "李侦查员",
+            "ontology_version": "v3",
+        })
+        self.assertTrue(event_id)
+        self.assertEqual(self.state.event_count(), 1)
+        # 链签名可验
+        self.assertTrue(self.state.chain_verify())
+        # 只读链回查内容
+        chain = AuditChain.readonly(self.sink.conn, case_id="c1",
+                                    backend="sqlite")
+        self.assertTrue(chain.chain_verify())
+        tl = chain.timeline()
+        self.assertEqual(tl["total"], 1)
+        ev = tl["items"][0]
+        self.assertEqual(ev["operator"], "李侦查员")
+        self.assertEqual(ev["action"], "generic")
+        self.assertEqual(ev["ontology_version"], "v3")
+        # after_state 原文含裁决事件（直接查库验证完整内容）
+        import json as _json
+        row = self.sink.conn.execute(
+            "SELECT after_state FROM audit_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        after = _json.loads(row[0])
+        self.assertEqual(after["event"], "entity_review_decision")
+        self.assertEqual(after["candidate_id"], "cand_1")
+
+    def test_audit_append_multiple_chain_consistent(self):
+        """多次 append 的 prev_hash 衔接 + 链完整。"""
+        for i in range(3):
+            self.sink.audit_append({
+                "event": "entity_review_decision",
+                "candidate_id": f"cand_{i}",
+                "action": "review_merge",
+                "operator": "李侦查员",
+                "ontology_version": "v3",
+            })
+        self.assertEqual(self.state.event_count(), 3)
+        self.assertTrue(self.state.chain_verify())
+        # root_hash 非零（有 3 条链）
+        self.assertTrue(self.state.root_hash())
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -85,6 +85,14 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(undeclared_links, set(),
                          f"缺链接级策略声明：{sorted(undeclared_links)}")
 
+    def test_property_policies_reference_declared_properties(self):
+        """property_policies 的 (object, property) 必须在 objects.json 中声明。"""
+        pack = load_pack("default")
+        obj_props = {o.name: set(o.properties.keys()) for o in pack.objects}
+        missing = self.engine.property_coverage_missing(obj_props)
+        self.assertEqual(missing, [],
+                         f"property_policies 引用了未声明属性：{missing}")
+
     # ---- 附加 ----
     def test_link_policies(self):
         ctx_low = AccessContext(operator="见习丁", role="见习", clearance=0)

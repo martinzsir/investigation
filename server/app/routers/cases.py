@@ -68,6 +68,16 @@ def create_case(body: CreateCaseIn, p: Principal = Depends(get_principal),
         raise APIError(ERR_CONFLICT, str(e), 409)
     except PackNotFound as e:
         raise APIError(ERR_NOT_FOUND, str(e), 404)
+    # B5：建案后补录审计链生命周期事件（失败只 ops 留痕，不回滚建案）
+    try:
+        from server.app.worker.lifecycle_audit import on_case_created
+        on_case_created(
+            case_dir=ctx.factory.case_dir(case.id),
+            case_id=case.id, operator=p.operator,
+            pack_id=case.pack_id)
+    except Exception as e:  # noqa: BLE001
+        ctx.repo.record_ops("lifecycle_audit_failed", case.id,
+                            {"event": "case_created", "error": f"{type(e).__name__}: {e}"})
     return ok(case_dto(case), data_version=0)
 
 

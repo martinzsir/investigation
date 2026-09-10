@@ -203,6 +203,19 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
                     {"upload_id": upload_id, "table": target_table,
                      "rows": n_rows, "by": task.created_by})
 
+    # B5：导入后补录审计链生命周期事件（失败只 ops 留痕，不回滚导入）
+    try:
+        from server.app.worker.lifecycle_audit import on_source_imported
+        on_source_imported(
+            case_dir=factory.case_dir(task.case_id),
+            case_id=task.case_id, operator=task.created_by,
+            version=repo.current_version(task.case_id),
+            upload_id=upload_id, table=target_table, rows=n_rows)
+    except Exception as e:  # noqa: BLE001
+        repo.record_ops("lifecycle_audit_failed", task.case_id,
+                        {"event": "source_imported",
+                         "error": f"{type(e).__name__}: {e}"})
+
     # 链式入队 BUILD（新源表随下次编译生效）
     build = enqueue_task(repo, case_id=task.case_id, task_type=TASK_BUILD,
                          params={"triggered_by": "import", "upload_id": upload_id},

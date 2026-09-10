@@ -16,6 +16,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from core.access import AccessContext
 from server.app import clues_view
 from server.app.deps import (
     WebContext,
@@ -156,11 +157,15 @@ def clue_detail(case_id: str, clue_id: str,
     _get_owned_case(case_id, p, ctx.cases)
     version = ctx.repo.current_version(case_id)
     state, state_map = _read_state(ctx.factory, case_id)
+    access = AccessContext(
+        operator=p.operator, role=p.role, clearance=p.clearance,
+        case_id=case_id, purpose="线索详情", network="web")
     try:
         decisions = state.list_decisions() if state is not None else []
         data = clues_view.assemble_detail(
             case_dir=ctx.factory.case_dir(case_id), version=version,
-            clue_id=clue_id, state_map=state_map, decisions=decisions)
+            clue_id=clue_id, state_map=state_map, decisions=decisions,
+            access=access)
     finally:
         if state is not None:
             state.close()

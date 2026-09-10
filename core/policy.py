@@ -153,3 +153,17 @@ class PolicyEngine:
     def coverage_missing(self, object_names: set[str]) -> list[str]:
         """objects.json 里每个对象都必须有显式对象级策略声明。"""
         return sorted(object_names - set(self.object_policies))
+
+    def property_coverage_missing(self, object_properties: dict[str, set[str]]) -> list[str]:
+        """property_policies 引用的 (object, property) 必须在 objects.json 中声明。
+
+        返回不在 objects.json 属性集中的悬空引用列表（格式 "object.property"）。
+        """
+        missing = []
+        for (obj, prop) in self.property_policies:
+            declared = object_properties.get(obj)
+            if declared is None:
+                missing.append(f"{obj}.{prop}（对象未声明）")
+            elif prop not in declared:
+                missing.append(f"{obj}.{prop}")
+        return sorted(missing)

@@ -34,7 +34,7 @@ const detail = ref<ClueDetail | null>(null)
 const drawerOpen = ref(false)
 
 const evidence = computed<EvidenceItem[]>(() => {
-  const ev = (detail.value?.detail as { evidence?: EvidenceItem[] } | undefined)?.evidence
+  const ev = detail.value?.evidence
   return Array.isArray(ev) ? ev : []
 })
 
@@ -179,7 +179,7 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
       <!-- FE-C-004 溯源抽屉（z-index 900） -->
       <NDrawer v-model:show="drawerOpen" :z-index="900" :width="640">
         <NDrawerContent title="溯源行（行 URI 可复制 · 命中字段琥珀高亮）" closable>
-          <TraceabilityPanel :rows="detail?.source_rows ?? []" />
+          <TraceabilityPanel :rows="(detail as any)?.source_row_details ?? detail?.source_rows ?? []" />
         </NDrawerContent>
       </NDrawer>
     </template>

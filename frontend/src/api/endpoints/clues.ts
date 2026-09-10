@@ -55,8 +55,10 @@ export interface ClueListPage {
 
 export interface ClueDetail extends ClueListItem {
   source_rows: SourceRowDto[]
+  /** B3：三栏证据（后端 evidence_builder 产出） */
+  evidence?: EvidenceItem[]
   audit_log?: unknown[]
-  detail?: Record<string, unknown> & { evidence?: EvidenceItem[] }
+  detail?: Record<string, unknown>
   suppressed_log?: unknown[]
   decisions?: unknown[]
 }
