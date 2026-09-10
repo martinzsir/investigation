@@ -12,7 +12,8 @@ import { taskEvents } from '../api/sse'
 import type { StreamHandle } from '../api/transport/types'
 import { presentError } from '../api/errors'
 import { isTerminal, mergeProgress, type TaskRow } from '../domain/task'
-import { healthBanner, JIAN_ROOMS, type JianRoom } from '../domain/clue'
+import { healthBanner, dimensionRooms } from '../domain/clue'
+import { useCaseOntologyConfig } from '../composables/useCaseOntologyConfig'
 import MetricCard from '../components/common/MetricCard.vue'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
@@ -21,6 +22,7 @@ import JianRadar from '../components/research/JianRadar.vue'
 const cs = useCaseStore()
 const router = useRouter()
 const message = useMessage()
+const { config: ontologyCfg } = useCaseOntologyConfig()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -74,17 +76,36 @@ const disposal = computed(() => dashboard.value?.todo?.disposal ?? null)
 const byStatus = computed(() => disposal.value?.by_status ?? {})
 const diagSev = computed(() => dashboard.value?.diagnostics?.by_severity ?? {})
 
-/** 五间命中数：按线索 dimension 通道聚合（雷达只读已产出结果） */
-const rooms = computed<Partial<Record<JianRoom, number>>>(() => {
-  const acc: Partial<Record<JianRoom, number>> = {}
-  for (const r of JIAN_ROOMS) acc[r] = 0
+/** 侦查维度命中数：按线索 dimension 聚合（雷达只读已产出结果；维度集声明化） */
+const dimensionNames = computed(() => dimensionRooms(ontologyCfg.value))
+const rooms = computed<Record<string, number>>(() => {
+  const acc: Record<string, number> = {}
+  for (const r of dimensionNames.value) acc[r] = 0
   for (const c of clues.value) {
     for (const d of c.dimension ?? []) {
-      if (JIAN_ROOMS.includes(d as JianRoom)) acc[d as JianRoom] = (acc[d as JianRoom] ?? 0) + 1
+      if (dimensionNames.value.includes(d)) acc[d] = (acc[d] ?? 0) + 1
     }
   }
   return acc
 })
+
+/**
+ * 处置指标卡：states 声明驱动，旁路态（tone=muted，如已排除）不出卡；
+ * MetricCard 色调映射声明 tone（受控终态金橙 filed）。
+ */
+const METRIC_TONE: Record<string, 'info' | 'ok' | 'filed' | 'cyan'> = {
+  warning: 'info',
+  info: 'info',
+  success: 'ok',
+  danger: 'filed',
+  filed: 'filed',
+}
+const metricStates = computed(() =>
+  ontologyCfg.value.states.filter((s) => s.tone !== 'muted'),
+)
+function metricTone(tone: string): 'info' | 'ok' | 'filed' | 'cyan' {
+  return METRIC_TONE[tone] ?? 'info'
+}
 
 /** 高优先级线索：按 priority_rank 取前 8 */
 const topClues = computed(() =>
@@ -174,10 +195,14 @@ function openClue(id: string): void {
           <!-- 指标行 -->
           <div class="metric-row">
             <MetricCard label="待办处置线索" :value="disposal?.total ?? 0" unit="条" tone="cyan" />
-            <MetricCard label="待查" :value="byStatus['待查'] ?? 0" unit="条" tone="info" />
-            <MetricCard label="查证中" :value="byStatus['查证中'] ?? 0" unit="条" tone="info" />
-            <MetricCard label="已固证" :value="byStatus['已固证'] ?? 0" unit="条" tone="ok" />
-            <MetricCard label="已立案" :value="byStatus['已立案'] ?? 0" unit="条" tone="filed" />
+            <MetricCard
+              v-for="s in metricStates"
+              :key="s.name"
+              :label="s.name"
+              :value="byStatus[s.name] ?? 0"
+              unit="条"
+              :tone="metricTone(s.tone)"
+            />
             <MetricCard
               label="严重诊断"
               :value="diagSev.critical ?? 0"

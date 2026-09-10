@@ -21,3 +21,4 @@ data/t3.sqlite
 
 /web/*.jpeg
 
+.env

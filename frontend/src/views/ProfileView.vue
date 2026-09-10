@@ -3,9 +3,11 @@
 // 后端 GET /cases/{cid}/profiles（profiles_view.assemble_profiles → OntologyProfiler.profile_all）。
 // 案件未 BUILD/无物化对象 → available:false → 「尚未接入数据源」空态。
 import { computed, ref, watch } from 'vue'
-import { NSpin, NButton, NTooltip } from 'naive-ui'
+import { NSpin, NButton, NTooltip, NInput } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { profileApi } from '../api/endpoints/profile'
+import { derivedApi, type DerivedPropertyDto } from '../api/endpoints/derived'
+import { presentError } from '../api/errors'
 import {
   nullRateBand, scoreBand, severityBand, metricLabel, groupColumnsByObject,
   type ProfileData, type ProfileColumn,
@@ -88,6 +90,55 @@ function fmtMetric(v: number | null, metric: string): string {
   }
   return String(v)
 }
+
+// ---- R8：派生属性按需查询（查询时计算；不进线索详情，避免膨胀）----
+const dObjType = ref('person')
+const dObjId = ref('')
+const dProp = ref('transaction_count')
+const dLoading = ref(false)
+const dResult = ref<DerivedPropertyDto | null>(null)
+const dError = ref('')
+
+const dRows = computed<Array<Record<string, unknown>>>(() => {
+  const v = dResult.value?.value
+  return Array.isArray(v) ? (v as Array<Record<string, unknown>>) : []
+})
+const dRowCols = computed<string[]>(() => {
+  const cols = new Set<string>()
+  for (const r of dRows.value) for (const k of Object.keys(r)) cols.add(k)
+  return [...cols]
+})
+const dScalar = computed(() => {
+  const v = dResult.value?.value
+  return Array.isArray(v) ? null : (v ?? null)
+})
+
+async function queryDerived(): Promise<void> {
+  if (!cs.currentCaseId) return
+  const t = dObjType.value.trim()
+  const id = dObjId.value.trim()
+  const prop = dProp.value.trim()
+  if (!t || !id || !prop) {
+    dError.value = '对象类型、对象标识、属性名均必填'
+    return
+  }
+  dLoading.value = true
+  dError.value = ''
+  dResult.value = null
+  try {
+    dResult.value = await derivedApi.get(cs.currentCaseId, t, id, prop)
+  } catch (e) {
+    dError.value = presentError(e).title
+  } finally {
+    dLoading.value = false
+  }
+}
+
+function fmtCell(v: unknown): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
 </script>
 
 <template>
@@ -134,6 +185,52 @@ function fmtMetric(v: number | null, metric: string): string {
               锚点日期 {{ data.anchor_date ?? '—' }}<template v-if="data.window_days"> · 窗口 {{ data.window_days }} 天</template>
             </span>
           </div>
+
+          <!-- R8 派生属性：按对象/属性按需查询（查询时计算，不进线索详情） -->
+          <section class="panel">
+            <h3>
+              派生属性（查询时计算）
+              <span class="dim" style="font-weight:400;font-size:12px">
+                — 声明于 derived_properties.json，经白名单 Function 计算，结果可缓存可溯源
+              </span>
+            </h3>
+            <div class="derived-form">
+              <NInput v-model:value="dObjType" size="small" placeholder="对象类型，如 person" class="d-inp d-inp--type" />
+              <span class="d-dot">.</span>
+              <NInput v-model:value="dObjId" size="small" placeholder="对象标识（姓名等 name_property 值）" class="d-inp" @keyup.enter="queryDerived" />
+              <span class="d-dot">/</span>
+              <NInput v-model:value="dProp" size="small" placeholder="派生属性名，如 transaction_count" class="d-inp" @keyup.enter="queryDerived" />
+              <NButton size="small" type="primary" secondary :loading="dLoading" @click="queryDerived">查询</NButton>
+            </div>
+            <p v-if="dError" class="d-err">{{ dError }}</p>
+            <div v-if="dResult" class="d-result">
+              <template v-if="!dResult.available">
+                <p class="dim hint">{{ dResult.note ?? '派生属性不可用' }}</p>
+              </template>
+              <template v-else>
+                <div class="d-meta">
+                  <span class="tag tag--conn mono">{{ dResult.function }}</span>
+                  <span class="tag tag--dead">{{ dResult.cache_policy }}</span>
+                  <span
+                    class="tag"
+                    :class="dResult.cache === 'hit' ? 'tag--ok' : 'tag--dead'"
+                    :title="`params_hash=${dResult.params_hash} · source=${dResult.source_version_set}`"
+                  >cache: {{ dResult.cache }}</span>
+                </div>
+                <table v-if="dRows.length" class="p-table d-table">
+                  <thead>
+                    <tr><th v-for="c in dRowCols" :key="c">{{ c }}</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(r, i) in dRows" :key="i">
+                      <td v-for="c in dRowCols" :key="c" class="mono">{{ fmtCell(r[c]) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-else class="mono d-scalar">{{ fmtCell(dScalar) }}</p>
+              </template>
+            </div>
+          </section>
 
           <!-- L4 五间分布 -->
           <section class="panel">
@@ -383,6 +480,16 @@ function fmtMetric(v: number | null, metric: string): string {
 .mono { font-family: var(--sun-font-mono); }
 .dim { color: var(--sun-text-tertiary); }
 .hint { font-size: 12px; padding: 8px 0; }
+/* R8 派生属性查询 */
+.derived-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.d-inp { width: 200px; }
+.d-inp--type { width: 120px; }
+.d-dot { color: var(--sun-text-tertiary); font-family: var(--sun-font-mono); }
+.d-err { color: var(--sun-error-text); font-size: 12px; margin: 8px 0 0; }
+.d-result { margin-top: 10px; }
+.d-meta { display: flex; gap: 6px; margin-bottom: 8px; }
+.d-table { margin-top: 4px; }
+.d-scalar { font-size: 12px; color: var(--sun-text-secondary); margin: 4px 0; }
 .band--ok { color: var(--sun-ok-text); }
 .band--warn { color: var(--sun-warn-text); }
 .band--error { color: var(--sun-error-text); }

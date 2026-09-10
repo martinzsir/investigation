@@ -171,6 +171,10 @@ class ActionSpec:
     side_effects: tuple[str, ...] = ()
     terminal: bool = False
     description: str = ""
+    title: str = ""                # 展示文案（actions.json title；缺省回落 name）
+    # D1：显式收紧的可用来源（空 tuple=以 transitions 反推为准；非空必须是
+    # allowed_from 子集）。例：固证 only_from=["查证中"]——待查不可直接固证。
+    only_from: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -190,6 +194,9 @@ class FunctionSpec:
     impl_ref: str = ""             # py 实现名（core.functions.FUNCTION_IMPLS 键）
     sql: str = ""                  # sql 实现文本（只读白名单校验）
     description: str = ""
+    # R3：py 函数真实依赖声明（objects/links/props），装载期校验引用已声明，
+    # 防止 py 函数硬编码表名绕过 inputs 权限校验。
+    requires: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

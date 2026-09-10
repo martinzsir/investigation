@@ -47,6 +47,8 @@ from server.app.routers import research as research_router
 from server.app.routers import quality as quality_router
 from server.app.routers import etl as etl_router
 from server.app.routers import settings as settings_router
+from server.app.routers import ontology_config as ontology_config_router
+from server.app.routers import derived as derived_router
 from server.app.store import StoreFactory
 
 API_PREFIX = "/api/v1"
@@ -116,6 +118,8 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(quality_router.router, prefix=API_PREFIX)
     app.include_router(etl_router.router, prefix=API_PREFIX)
     app.include_router(settings_router.router, prefix=API_PREFIX)
+    app.include_router(ontology_config_router.router, prefix=API_PREFIX)
+    app.include_router(derived_router.router, prefix=API_PREFIX)
     return app
 
 

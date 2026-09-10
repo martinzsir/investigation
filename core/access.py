@@ -36,6 +36,40 @@ NETWORKS = ("local", "isolated", "web")
 # human 专属终态（can_transition 用；REQ-012 两阶段提交时细化）
 HUMAN_ONLY_STATUSES = frozenset({"已立案"})
 
+# R5/D3：角色秩级 → 可见间类密级对照。
+# 注意：ROLE_RANK（0-4 行政秩级）与 jians.json default_clearance（0/1/3 密级）
+# 是两把尺子，禁止直接互比（偏将 rank=2 但内间 clearance=3，直接比会误拒）。
+# 现状口径（REQ-011 延续）：见习仅见密级 0；正兵见 1 及以下（不见内间）；
+# 偏将及以上可见内间（3）。未知角色按正兵（1）fail-closed。
+ROLE_CLEARANCE: dict[str, int] = {
+    "见习": 0,
+    "正兵": 1,
+    "偏将": 3,
+    "主办": 3,
+    "human": 3,
+    "system": 99,
+}
+
+
+def jian_clearance_for_role(role: str) -> int:
+    """角色可见的最高间类密级（未知角色按正兵=1，fail-closed）。"""
+    return ROLE_CLEARANCE.get(role, 1)
+
+
+def can_see_jian_types(jian_types, *, role: str,
+                       jian_clearances: dict[str, int]) -> bool:
+    """线索的间类集是否对该角色全部可见。
+
+    jian_clearances: {间类名: default_clearance}（由 load_jians 派生）；
+    未声明的间类按最高密级 99 fail-closed（宁可藏，不可漏）。
+    """
+    ceiling = jian_clearance_for_role(role)
+    for jt in (jian_types or []):
+        need = jian_clearances.get(jt, 99)
+        if need > ceiling:
+            return False
+    return True
+
 
 class LLMBlockedError(PermissionError):
     """network="isolated" 环境下发起 LLM 调用（REQ-009 AC4）。"""

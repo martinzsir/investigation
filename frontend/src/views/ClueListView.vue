@@ -36,6 +36,7 @@ const levelOptions = [
 
 const columns: DataTableColumn[] = [
   { key: 'priority_rank', title: '#', width: '48px', mono: true },
+  { key: 'priority_score', title: '优先级分', width: '80px', mono: true },
   { key: 'title', title: '线索' },
   { key: 'level', title: '级别', width: '130px' },
   { key: 'dimension', title: '通道', width: '200px' },
@@ -156,6 +157,15 @@ function reset(): void {
           <template #cell-priority_rank="{ item }">
             <span class="rank">{{ (item as unknown as ClueListItem).priority_rank ?? '—' }}</span>
           </template>
+          <template #cell-priority_score="{ item }">
+            <span
+              class="score"
+              :class="{ 'score--link': (item as unknown as ClueListItem).score_basis }"
+              :title="(item as unknown as ClueListItem).score_source
+                ? `计分来源 ${(item as unknown as ClueListItem).score_source}`
+                : ''"
+            >{{ (item as unknown as ClueListItem).priority_score ?? '—' }}</span>
+          </template>
           <template #cell-title="{ item }">
             <span class="title-cell">
               <span class="title">{{ (item as unknown as ClueListItem).title }}</span>
@@ -214,6 +224,16 @@ function reset(): void {
 .rank {
   font-family: var(--sun-font-mono);
   color: var(--sun-warn-text);
+}
+.score {
+  font-family: var(--sun-font-mono);
+  color: var(--sun-text-secondary);
+}
+.score--link {
+  color: var(--sun-warn-text);
+  font-weight: 600;
+  cursor: help;
+  border-bottom: 1px dotted currentColor;
 }
 .title-cell {
   display: flex;

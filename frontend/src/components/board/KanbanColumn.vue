@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // FE-P-009 看板列：五态竖排卡片列。
 import { computed } from 'vue'
-import { STATUS_META, type ClueStatus, type ClueAction } from '../../domain/clue'
+import { statusMetaOf, type ClueAction } from '../../domain/clue'
 import type { BoardCard } from '../../domain/board'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 import KanbanCard from './KanbanCard.vue'
 
 const props = defineProps<{
-  status: ClueStatus
+  status: string
   cards: BoardCard[]
   role: string
   operator: string
@@ -19,7 +20,9 @@ const emit = defineEmits<{
   open: [clueId: string]
 }>()
 
-const meta = computed(() => STATUS_META[props.status])
+const { config: cfg } = useCaseOntologyConfig()
+
+const meta = computed(() => statusMetaOf(props.status, cfg.value))
 </script>
 
 <template>

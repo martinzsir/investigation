@@ -487,16 +487,21 @@ def tool_clue_list(args: dict) -> dict:
     board, store, rep = _build_board()
     try:
         # REQ-011 AC1：低权限会话只返回授权范围内线索——
-        # 内间线索源自举报材料（tipoff，偏将及以上门槛），正兵及以下不可见
-        from core.access import ROLE_RANK
-        restricted = (not ctx.is_system
-                      and ctx.rank < ROLE_RANK["偏将"])
+        # R5：间类可见门槛读 jians.json default_clearance（角色→密级经
+        # ROLE_CLEARANCE 对照表，不直接比 rank，不硬编码"内间"）
+        from core.access import can_see_jian_types
+        from core.ontology_loader import load_jians
+        pack = getattr(board, "pack", None) or "default"
+        jian_clearances = {j["name"]: j["default_clearance"]
+                          for j in load_jians(pack)}
         items = []
         filtered = 0
         for c in board.clues.values():
             if status != "all" and c.status != status:
                 continue
-            if restricted and "内间" in (c.jian_types or []):
+            jts = c.jian_types or []
+            if not can_see_jian_types(jts, role=ctx.role,
+                                      jian_clearances=jian_clearances):
                 filtered += 1
                 continue
             det = c.detail or {}
@@ -504,10 +509,14 @@ def tool_clue_list(args: dict) -> dict:
                 "clue_id": c.clue_id,
                 "title": c.title,
                 "skill_id": c.skill_id,
-                "jian_types": c.jian_types,
+                "jian_types": jts,
                 "assumption_chain": c.assumption_chain,
                 "priority_rank": det.get("priority_rank"),
                 "priority_score": det.get("priority_score"),
+                # R13：计分可解释三件套（可选字段，旧产物为 None）
+                "score_basis": det.get("score_basis"),
+                "score_formula": det.get("score_formula"),
+                "score_source": det.get("score_source"),
                 "status": c.status,
                 "source_row_count": len(c.source_rows or []),
             }
@@ -520,9 +529,9 @@ def tool_clue_list(args: dict) -> dict:
             "clues": items,
             "状态源": "DuckDB（真值源），非 JSON 快照",
         }
-        if restricted:
+        if filtered:
             out["access_note"] = (
-                f"operator={ctx.operator} role={ctx.role}：按对象策略过滤内间线索"
+                f"operator={ctx.operator} role={ctx.role}：按间类密级策略过滤线索"
                 f" {filtered} 条（REQ-011 AC1）")
         return _redline(out)
     finally:

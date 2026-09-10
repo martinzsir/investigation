@@ -42,17 +42,34 @@ class ClueStatus:
     CONFIRMED = "已固证"     # 经查证成立，形成稳定证据
     FILED = "已立案"        # 仅「已固证 + 法定程序完备」可由正兵显式置位
 
-    # 允许的目标状态集合
+    # 允许的目标状态集合（R6：默认值；正式包从 states.json 读取）
     ALLOWED = {PENDING, VERIFYING, EXCLUDED, CONFIRMED, FILED}
 
     # 可由 AI / 自动化设定的状态（不含 已立案，那是受控红线）
     MACHINE_SETTABLE = {PENDING, VERIFYING, EXCLUDED, CONFIRMED}
 
+    @classmethod
+    def from_pack(cls, pack: str = "default") -> list[dict]:
+        """R6：从 states.json 读取状态声明列表。"""
+        from core.ontology_loader import load_states
+        return load_states(pack)["states"]
+
+    @classmethod
+    def terminal_states(cls, pack: str = "default") -> set[str]:
+        """R6：受控终态集合（terminal=True）。"""
+        return {s["name"] for s in cls.from_pack(pack) if s.get("terminal")}
+
+    @classmethod
+    def human_only_states(cls, pack: str = "default") -> set[str]:
+        """R6：requires_role=human 的状态集合（AI/机器无权置位）。"""
+        return {s["name"] for s in cls.from_pack(pack)
+                if s.get("requires_role") == "human"}
+
 
 class ClueStatusMachine:
     """线索处置状态迁移校验。"""
 
-    # 合法迁移表：current -> {allowed next}
+    # 合法迁移表（R6：默认值；正式包从 states.json 读取）
     _TRANSITIONS = {
         ClueStatus.PENDING:   {ClueStatus.VERIFYING, ClueStatus.EXCLUDED, ClueStatus.CONFIRMED},
         ClueStatus.VERIFYING: {ClueStatus.PENDING, ClueStatus.EXCLUDED, ClueStatus.CONFIRMED},
@@ -62,14 +79,24 @@ class ClueStatusMachine:
     }
 
     @classmethod
-    def can_transition(cls, current: str, target: str) -> bool:
-        return target in cls._TRANSITIONS.get(current, set())
+    def transitions_for(cls, pack: str = "default") -> dict[str, set[str]]:
+        """R6：从 states.json 读取迁移表。"""
+        from core.ontology_loader import load_states
+        return load_states(pack)["transitions"]
 
     @classmethod
-    def validate(cls, current: str, target: str) -> None:
-        if target not in ClueStatus.ALLOWED:
-            raise ValueError(f"非法处置状态：{target}，允许 {sorted(ClueStatus.ALLOWED)}")
-        if not cls.can_transition(current, target):
+    def can_transition(cls, current: str, target: str,
+                       pack: str = "default") -> bool:
+        trans = cls.transitions_for(pack)
+        return target in trans.get(current, set())
+
+    @classmethod
+    def validate(cls, current: str, target: str,
+                 pack: str = "default") -> None:
+        states = {s["name"] for s in ClueStatus.from_pack(pack)}
+        if target not in states:
+            raise ValueError(f"非法处置状态：{target}，允许 {sorted(states)}")
+        if not cls.can_transition(current, target, pack):
             raise ValueError(f"非法状态迁移：{current} → {target}（见 ClueStatusMachine）")
 
 

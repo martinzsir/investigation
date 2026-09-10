@@ -12,6 +12,7 @@ Ontology Function 层：只读、类型化、可枚举的计算单元（Palantir
 """
 from __future__ import annotations
 
+import inspect
 import re
 from typing import Callable
 
@@ -144,11 +145,12 @@ def register_function(name: str):
 
 # ---- 通讯维度：通话频次突增 ----
 @register_function("call_frequency_spike")
-def _call_frequency_spike(store, params: dict) -> dict:
+def _call_frequency_spike(store, params: dict, ctx=None) -> dict:
     import statistics
     threshold = int(params.get("absolute_threshold", 30))
+    tbl = ctx.table("call") if ctx is not None else "obj_call"
     pairs = store.query(
-        "SELECT caller_raw, callee_raw, COUNT(*) AS c FROM obj_call "
+        f"SELECT caller_raw, callee_raw, COUNT(*) AS c FROM {tbl} "
         "GROUP BY caller_raw, callee_raw ORDER BY c DESC"
     )
     total_pairs = len(pairs)
@@ -189,11 +191,12 @@ def _call_frequency_spike(store, params: dict) -> dict:
 
 # ---- 通讯维度补充：通话对端覆盖诊断（全量对照前置检查）----
 @register_function("call_pair_coverage")
-def _call_pair_coverage(store, params: dict) -> dict:
+def _call_pair_coverage(store, params: dict, ctx=None) -> dict:
     import statistics
     min_peers = int(params.get("min_peer_count", 3))
+    tbl = ctx.table("call") if ctx is not None else "obj_call"
     rows = store.query(
-        "SELECT caller_raw, callee_raw, COUNT(*) AS c FROM obj_call "
+        f"SELECT caller_raw, callee_raw, COUNT(*) AS c FROM {tbl} "
         "GROUP BY caller_raw, callee_raw ORDER BY c DESC"
     )
     # 按 caller 分组 → 每个 caller 的对端集合
@@ -241,16 +244,70 @@ def _call_pair_coverage(store, params: dict) -> dict:
 
 
 # ---- 用间：五间交叉等级（语义代理表非空即命中）----
-# REQ-G-013：对象→间类映射不再硬编码于此处，改由 objects.json/links.json 的
-# `jian`/`jian_source` 字段声明（loader 校验五间枚举）。**红线**：交叉等级规则
-# （单源=观察/双源=线索/三源=可立案依据候选）与间类展示顺序 _JIAN_ORDER 保持硬编码，不进配置。
-_JIAN_ORDER = ["因间", "内间", "反间", "死间", "生间"]
+# REQ-G-013/R5：对象→间类映射与间类顺序不再硬编码，改由 jians.json 声明。
+# **红线**：交叉等级规则（单源=观察/双源=线索/三源=可立案依据候选）的映射关系
+# （min_independent_sources 1/2/3）保持硬编码，不进配置；名称可由 cross_levels 配置。
 # 在册但语义层未建模的数据源（诚实暴露缺口，不充数）——tipoff/osint 已建模则从缺口移除
 _UNMODELED: dict[str, list[str]] = {}
 
 
-def _jian_entries(pack: str) -> list[tuple[str, str, str]]:
-    """从案件包声明收集五间数据源 → [(语义表名, 间类, 数据源展示名), ...]。
+def _jian_order(pack: str) -> list[str]:
+    """R5：从 jians.json 读取间类展示顺序（缺省回落 DEFAULT_JIANS）。"""
+    try:
+        from core.ontology_loader import load_jians
+        return [j["name"] for j in load_jians(pack)]
+    except Exception:
+        from core.ontology_loader import DEFAULT_JIANS
+        return list(DEFAULT_JIANS)
+
+
+def _cross_level_name(n: int, pack: str) -> str:
+    """R5：从 jians.json cross_levels 读取等级名称；映射（1/2/3）硬编码。"""
+    try:
+        from core.ontology_loader import load_cross_levels
+        for lv in load_cross_levels(pack):
+            if lv["min_independent_sources"] == n:
+                return lv["name"]
+    except Exception:
+        pass
+    return {1: "观察", 2: "线索", 3: "可立案依据候选"}[n]
+
+
+def count_independent(sources: list[str],
+                      related_pairs: list[dict] | None = None) -> int:
+    """R9-3：计算独立源数量。
+
+    related_pairs 中声明的同源对（a/b）合并计为 1；
+    未在 related_pairs 中的源各自独立计数。
+    """
+    if not sources:
+        return 0
+    related_pairs = related_pairs or []
+    # 并查集：相关源合并
+    parent = {s: s for s in sources}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    src_set = set(sources)
+    for pair in related_pairs:
+        a, b = pair.get("a"), pair.get("b")
+        if a in src_set and b in src_set:
+            union(a, b)
+    return len({find(s) for s in sources})
+
+
+def _jian_entries(pack: str) -> list[tuple[str, str, str, str]]:
+    """从案件包声明收集五间数据源
+    → [(语义表名, 间类, 数据源展示名, 对象/链接类型名), ...]。
 
     obj_<name>/lnk_<name> 的 jian 非空才纳入；jian_source 缺省回落对象/链接 title。
     装载失败/精简测试包无声明 → 空列表（不硬编码业务表名，缺口如实呈现）。
@@ -260,64 +317,84 @@ def _jian_entries(pack: str) -> list[tuple[str, str, str]]:
         spec = load_pack(pack)
     except Exception:
         return []
-    entries: list[tuple[str, str, str]] = []
+    entries: list[tuple[str, str, str, str]] = []
     for o in spec.objects:
         if o.jian:
-            entries.append((f"obj_{o.name}", o.jian, o.jian_source or o.title))
+            entries.append((f"obj_{o.name}", o.jian,
+                            o.jian_source or o.title, o.name))
     for l in spec.links:
         if l.jian:
-            entries.append((f"lnk_{l.name}", l.jian, l.jian_source or l.title))
+            entries.append((f"lnk_{l.name}", l.jian,
+                            l.jian_source or l.title, l.name))
     return entries
 
 
 @register_function("jian_cross_level")
 def _jian_cross_level(store, params: dict) -> dict:
-    entries = _jian_entries(params.get("pack", "default"))
+    pack = params.get("pack", "default")
+    entries = _jian_entries(pack)
     hits: dict[str, list[str]] = {}
-    for table, jian, src in entries:
+    hit_sources: list[str] = []
+    for table, jian, src, obj_name in entries:
         try:
             n = store.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]
         except Exception:
             n = 0
         if n:
             hits.setdefault(jian, []).append(f"{src}→{table}({n}行)")
+            hit_sources.append(obj_name)
     # 计算总数据源集合（含未建模缺口提示）
     src_by_jian: dict[str, list[str]] = {}
-    for _t, jn, s in entries:
+    for _t, jn, s, _o in entries:
         src_by_jian.setdefault(jn, []).append(s)
     for jn, extras in _UNMODELED.items():
         src_by_jian.setdefault(jn, []).extend(extras)
-    n = len(hits)
-    # 红线：等级规则硬编码，不读配置
-    level = "可立案依据候选" if n >= 3 else ("线索" if n == 2 else "观察")
+    # R9：独立源数——按 jians.json source_independence.related_pairs
+    # 把声明同源的数据源合并；无声明时每个对象类型独立
+    try:
+        from core.ontology_loader import load_source_independence
+        related_pairs = load_source_independence(pack)["related_pairs"]
+    except Exception:
+        related_pairs = []
+    n = count_independent(sorted(set(hit_sources)), related_pairs)
+    # 红线：等级映射（1/2/3）硬编码；名称从 jians.json cross_levels 读取
+    level_n = 3 if n >= 3 else (2 if n == 2 else 1)
+    level = _cross_level_name(level_n, pack)
+    jian_order = _jian_order(pack)
     rows = [
         {"间": j, "数据源": src_by_jian.get(j, []),
          "依据": hits.get(j, []), "命中": j in hits,
          "缺口": _UNMODELED.get(j, [])}
-        for j in _JIAN_ORDER
+        for j in jian_order
     ]
-    return {"rows": rows, "命中间类": sorted(hits), "交叉等级": level,
+    return {"rows": rows, "命中间类": sorted(hits),
+            "独立源数": n, "独立数据源": sorted(set(hit_sources)),
+            "交叉等级": level,
             "规则": "单源=观察 → 双源=线索 → 三源=可立案依据候选"}
 
 
 # ---- 内间：举报线索与已知证据交叉 ----
 @register_function("tipoff_cross_reference")
-def _tipoff_cross_reference(store, params: dict) -> dict:
-    rows = store.query("SELECT * FROM obj_tipoff")
+def _tipoff_cross_reference(store, params: dict, ctx=None) -> dict:
+    tbl_tipoff = ctx.table("tipoff") if ctx is not None else "obj_tipoff"
+    lnk_owns = ctx.link("owns") if ctx is not None else "lnk_owns"
+    lnk_involved = ctx.link("involved_in") if ctx is not None else "lnk_involved_in"
+    tbl_org = ctx.table("org") if ctx is not None else "obj_org"
+    rows = store.query(f"SELECT * FROM {tbl_tipoff}")
     if not rows:
         return {"summary": {"total": 0, "by_person": {}, "high_priority": []},
-                "recommendation": "obj_tipoff 为空（举报材料未入库/仅有空 schema 占位）→ 内间仍为缺口。接入方式见项目记忆：init_duckdb L2 空表兜底已就绪，放入 data/举报材料.parquet 后重跑 python -m scripts.init_duckdb 即可。",
+                "recommendation": f"{tbl_tipoff} 为空（举报材料未入库/仅有空 schema 占位）→ 内间仍为缺口。接入方式见项目记忆：init_duckdb L2 空表兜底已就绪，放入 data/举报材料.parquet 后重跑 python -m scripts.init_duckdb 即可。",
                 "hits": []}
     # 已在案三类证据的人员集合
     has_account: set[str] = {r["raw_name"] for r in store.query(
-        "SELECT DISTINCT owner_raw AS raw_name FROM lnk_owns")}
+        f"SELECT DISTINCT owner_raw AS raw_name FROM {lnk_owns}")}
     has_bid_org: set[str] = set()
     for r in store.query(
-        "SELECT DISTINCT o.raw_name AS raw_name FROM lnk_involved_in i "
-        "JOIN obj_org o ON o.org_id = i.org_id"):
+        f"SELECT DISTINCT o.raw_name AS raw_name FROM {lnk_involved} i "
+        f"JOIN {tbl_org} o ON o.org_id = i.org_id"):
         has_bid_org.add(r["raw_name"])
     has_org_link: set[str] = {r["raw_name"] for r in store.query(
-        "SELECT raw_name FROM obj_org WHERE legal_rep IS NOT NULL OR relation IS NOT NULL")}
+        f"SELECT raw_name FROM {tbl_org} WHERE legal_rep IS NOT NULL OR relation IS NOT NULL")}
 
     by_person: dict[str, dict] = {}
     for r in rows:
@@ -398,7 +475,7 @@ def load_case_knowledge(pack: str = "default",
 
 
 @register_function("org_interest_links")
-def _org_interest_links(store, params: dict) -> dict:
+def _org_interest_links(store, params: dict, ctx=None) -> dict:
     """工商利益关联：法人/关联人命中案件知识包中的主体/关系人即候选。
 
     人名只来自 case_knowledge.json（subject_aliases + 未过期 relation_assertions），
@@ -417,8 +494,9 @@ def _org_interest_links(store, params: dict) -> dict:
     persons.discard("")
     rel_types = set(params.get("relation_types") or [])
 
+    tbl_org = ctx.table("org") if ctx is not None else "obj_org"
     try:
-        orgs = store.query("SELECT raw_name, legal_rep, relation FROM obj_org")
+        orgs = store.query(f"SELECT raw_name, legal_rep, relation FROM {tbl_org}")
     except Exception:
         return {"rows": [], "knowledge_version": kn.get("knowledge_version")}
 
@@ -465,6 +543,9 @@ class FunctionExecutor:
     def __init__(self, store, pack: str = "default", access=None, health=None,
                  base_dir=None):
         self.store = store
+        # REQ-R1：py 函数只读护栏——所有 py 实现通过此代理访问数据
+        from core.runtime_context import ReadOnlyStore
+        self._ro_store = ReadOnlyStore(store)
         self.pack = pack
         # 案件快照基目录（Web 案件包隔离）：None=共享 ontology/（CLI/MCP 现状）
         self.base_dir = base_dir
@@ -489,6 +570,35 @@ class FunctionExecutor:
              "readonly": True}
             for f in self._specs().values()
         ]
+
+    def _make_ctx(self):
+        """构造 RuntimeContext（py 函数运行时上下文 + 只读护栏）。"""
+        from core.runtime_context import RuntimeContext, ReadOnlyStore
+        return RuntimeContext(
+            store=ReadOnlyStore(self.store),
+            pack=self.pack,
+            access=self.access,
+            policy=self.policy,
+            health=self.health,
+            base_dir=self.base_dir,
+        )
+
+    def _call_py(self, impl_ref: str, params: dict):
+        """调用 py 函数实现：用 inspect.signature 兼容新旧签名。
+
+        新签名 fn(store, params, ctx) —— 接收 RuntimeContext，可 ctx.table()/ctx.link()
+        旧签名 fn(store, params) —— 仅 store+params，行为不变（向后兼容）
+        """
+        fn = FUNCTION_IMPLS[impl_ref]
+        try:
+            sig = inspect.signature(fn)
+            n_params = len([p for p in sig.parameters.values()
+                            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
+        except (TypeError, ValueError):
+            n_params = 2
+        if n_params >= 3:
+            return fn(self._ro_store, params, self._make_ctx())
+        return fn(self._ro_store, params)
 
     def invoke(self, name: str, params: dict | None = None) -> dict:
         specs = self._specs()
@@ -516,7 +626,7 @@ class FunctionExecutor:
                 rows = self.store.query(sql)
                 return {"function": name, "output_type": spec.output_type,
                         "rows": rows, "readonly": True, "params_used": params_used}
-            result = FUNCTION_IMPLS[spec.impl_ref](self.store, merged)
+            result = self._call_py(spec.impl_ref, merged)
             out = {"function": name, "output_type": spec.output_type,
                    "result": result, "readonly": True}
             # REQ-G-003：py 实现可自报降级（配置缺失/引用解析失败导致无法计算）

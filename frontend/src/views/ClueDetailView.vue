@@ -10,7 +10,9 @@ import { useAuthStore } from '../stores/auth'
 import { useHealthStore } from '../stores/health'
 import { cluesApi, type ClueDetail } from '../api/endpoints/clues'
 import { presentError } from '../api/errors'
-import { type EvidenceItem, type ClueAction } from '../domain/clue'
+import {
+  type EvidenceItem, type ClueAction, scoreBasisRows,
+} from '../domain/clue'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import ThreeColumnEvidence from '../components/research/ThreeColumnEvidence.vue'
@@ -39,6 +41,9 @@ const evidence = computed<EvidenceItem[]>(() => {
 })
 
 const suppressedCount = computed(() => (detail.value?.suppressed_log as unknown[] | undefined)?.length ?? 0)
+
+// R13：优先级分分解（旧产物无 score_basis → 面板不渲染）
+const basisRows = computed(() => scoreBasisRows(detail.value?.score_basis))
 
 async function load(): Promise<void> {
   if (!cs.currentCaseId || !clueId.value) return
@@ -149,6 +154,35 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
             />
           </section>
 
+          <!-- R13 计分依据：分数可复算、来源可审计（旧产物无分解则不渲染） -->
+          <section v-if="basisRows.length" class="panel">
+            <header class="panel-head">
+              <h3>计分依据</h3>
+              <span class="score-source dim">{{ detail.score_source ?? '' }}</span>
+            </header>
+            <p v-if="detail.basis" class="score-basis-text">{{ detail.basis }}</p>
+            <table class="basis-table">
+              <thead>
+                <tr><th>维度</th><th>原始值</th><th>权重</th><th>贡献分</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in basisRows" :key="r.key">
+                  <td>{{ r.label }}</td>
+                  <td class="mono">{{ r.raw.toFixed(3) }}</td>
+                  <td class="mono">{{ r.weight }}</td>
+                  <td class="mono contrib">{{ r.contrib.toFixed(3) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="formula-line">
+              <code v-if="detail.score_formula" class="mono dim">{{ detail.score_formula }}</code>
+              <span class="final-score">
+                优先级分 <b class="mono">{{ detail.priority_score ?? '—' }}</b>
+                <span v-if="detail.priority_rank" class="dim"> · 序号 {{ detail.priority_rank }}</span>
+              </span>
+            </div>
+          </section>
+
           <!-- 证据三栏 -->
           <section class="panel">
             <header class="panel-head">
@@ -253,5 +287,48 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
 .trace-link a {
   color: var(--sun-border-active);
   text-decoration: none;
+}
+/* R13 计分依据 */
+.score-source {
+  font-family: var(--sun-font-mono);
+  font-size: 11px;
+}
+.score-basis-text {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--sun-text-secondary);
+}
+.basis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.basis-table th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--sun-text-tertiary);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--sun-border);
+}
+.basis-table td {
+  padding: 5px 8px;
+  border-bottom: 1px dashed rgba(16, 49, 74, 0.5);
+}
+.basis-table .contrib {
+  color: var(--sun-warn-text);
+  font-weight: 600;
+}
+.formula-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.final-score b {
+  color: var(--sun-warn-text);
+  font-size: 14px;
 }
 </style>

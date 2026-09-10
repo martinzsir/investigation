@@ -152,10 +152,10 @@ describe('FE-C-033 看板 SLA 超期判定', () => {
     const mk = (clue_id: string, status: ClueStatus, updated_at: string): ClueListItem =>
       ({ ...base, clue_id, status, updated_at })
     const cards = [
-      toBoardCard(mk('C1', CLUE_STATUS.PENDING, daysAgo(5)), now), // 超期
-      toBoardCard(mk('C2', CLUE_STATUS.PENDING, daysAgo(1)), now), // 不超
-      toBoardCard(mk('C3', CLUE_STATUS.VERIFYING, daysAgo(7)), now), // 超期
-      toBoardCard(mk('C4', CLUE_STATUS.FILED, daysAgo(30)), now), // 终态不计
+      toBoardCard(mk('C1', CLUE_STATUS.PENDING, daysAgo(5)), undefined, now), // 超期
+      toBoardCard(mk('C2', CLUE_STATUS.PENDING, daysAgo(1)), undefined, now), // 不超
+      toBoardCard(mk('C3', CLUE_STATUS.VERIFYING, daysAgo(7)), undefined, now), // 超期
+      toBoardCard(mk('C4', CLUE_STATUS.FILED, daysAgo(30)), undefined, now), // 终态不计
     ]
     const s = boardStats(cards)
     expect(s.overdue).toBe(2)

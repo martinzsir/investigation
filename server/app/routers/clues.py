@@ -16,8 +16,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from core.access import AccessContext
-from server.app import clues_view
+from core.access import AccessContext, can_see_jian_types
+from server.app import clues_view, ontology_meta
 from server.app.deps import (
     WebContext,
     get_ctx,
@@ -37,8 +37,6 @@ from server.app.store.state_store import StateStore
 from server.app.worker.tasks import TASK_DISPOSE, enqueue_task
 
 router = APIRouter(tags=["clues"])
-
-LEGAL_ACTIONS = ("verify", "reset", "exclude", "confirm", "file")
 
 
 def _read_state(factory, case_id: str):
@@ -64,11 +62,15 @@ def clue_action(case_id: str, clue_id: str, body: ClueActionIn,
                 ctx: WebContext = Depends(get_ctx)):
     """W-020：处置动作入队（202 + task_id；进度走任务 SSE）。"""
     _get_owned_case(case_id, p, ctx.cases)  # 跨租户 404
+    case = ctx.repo.get_case(case_id)
+    # R6：合法动作来自案件包 actions 声明（set_clue_status 类），不硬编码
+    legal_actions = ontology_meta.dispose_action_names(
+        case.pack_id, ctx.cases.snapshot_ontology_root(case_id))
     action = (body.action or "").strip()
-    if action not in LEGAL_ACTIONS:
+    if action not in legal_actions:
         raise APIError(
             ERR_VALIDATION,
-            f"非法处置动作：{action!r}（合法：{', '.join(LEGAL_ACTIONS)}）",
+            f"非法处置动作：{action!r}（合法：{', '.join(sorted(legal_actions))}）",
             400)
     # 前置红线（core 在 Worker 兜底；API 侧快速失败省一次入队）
     if action == "file":
@@ -122,6 +124,7 @@ def list_clues(case_id: str,
                ctx: WebContext = Depends(get_ctx)):
     """线索列表：级别/维度/间类/主体/状态筛选 + 优先级排序 + 分页。"""
     _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
     version = ctx.repo.current_version(case_id)
     state, state_map = _read_state(ctx.factory, case_id)
     try:
@@ -130,7 +133,9 @@ def list_clues(case_id: str,
             state_map=state_map, role=p.role,
             level=level, dimension=dimension, jian=jian,
             subject=subject, status=status,
-            page=page, page_size=page_size)
+            page=page, page_size=page_size,
+            pack_id=case.pack_id,
+            ontology_base=ctx.cases.snapshot_ontology_root(case_id))
     finally:
         if state is not None:
             state.close()
@@ -155,6 +160,7 @@ def clue_detail(case_id: str, clue_id: str,
                 ctx: WebContext = Depends(get_ctx)):
     """线索详情：五间/source_rows 溯源/merged_from 合并来源/状态/决策。"""
     _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
     version = ctx.repo.current_version(case_id)
     state, state_map = _read_state(ctx.factory, case_id)
     access = AccessContext(
@@ -165,15 +171,17 @@ def clue_detail(case_id: str, clue_id: str,
         data = clues_view.assemble_detail(
             case_dir=ctx.factory.case_dir(case_id), version=version,
             clue_id=clue_id, state_map=state_map, decisions=decisions,
-            access=access)
+            access=access, pack_id=case.pack_id,
+            base_dir=ctx.cases.snapshot_ontology_root(case_id))
     finally:
         if state is not None:
             state.close()
     if data is None:
         raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
-    # 内间线索秩级过滤（详情同样 fail-closed 不可枚举）
-    if ("内间" in (data.get("jian_types") or [])
-            and p.role not in ("human", "system")
-            and p.clearance < 2):
+    # 间类密级过滤（详情 fail-closed 不可枚举；声明驱动，不硬编码内间）
+    if not can_see_jian_types(
+            data.get("jian_types") or [], role=p.role,
+            jian_clearances=ontology_meta.jian_clearances(
+                case.pack_id, ctx.cases.snapshot_ontology_root(case_id))):
         raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
     return ok(data, data_version=version)

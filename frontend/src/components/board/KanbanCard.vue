@@ -4,8 +4,15 @@
 // 超期（SLA）整卡红框 + 红字「超期 N 天」；卡内可直接迁移状态（走 ClueStatusMachine
 // 的确认弹窗与四重门禁，写操作唯一通道不变）。
 import { computed } from 'vue'
-import { STATUS_META, type ClueAction, type ClueStatus } from '../../domain/clue'
+import { NPopover } from 'naive-ui'
+import {
+  isControlledTerminal,
+  scoreBasisRows,
+  statusMetaOf,
+  type ClueAction,
+} from '../../domain/clue'
 import type { BoardCard } from '../../domain/board'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 import StatusBadge from '../common/StatusBadge.vue'
 import ClueStatusMachine from '../research/ClueStatusMachine.vue'
 
@@ -22,24 +29,52 @@ const emit = defineEmits<{
   open: [clueId: string]
 }>()
 
-const meta = computed(() => STATUS_META[props.card.status as ClueStatus])
+const { config: cfg } = useCaseOntologyConfig()
+
+const meta = computed(() => statusMetaOf(props.card.status, cfg.value))
 const barColor = computed(() => meta.value?.border ?? 'var(--sun-border)')
+const isFiled = computed(() => isControlledTerminal(props.card.status, cfg.value))
 const rooms = computed(() => (props.card.dimension ?? props.card.jian_types ?? []).slice(0, 4))
 const operatorName = computed(() => props.card.operator || '未分派')
 const initial = computed(() => operatorName.value.slice(0, 1))
+// R13：分数可解释（有 score_basis 才出现 popover）
+const basisRows = computed(() => scoreBasisRows(props.card.score_basis))
+const hasBasis = computed(() => basisRows.value.length > 0)
 </script>
 
 <template>
   <div
     class="kcard"
-    :class="{ 'kcard--overdue': card.overdue, 'kcard--filed': card.status === '已立案' }"
+    :class="{ 'kcard--overdue': card.overdue, 'kcard--filed': isFiled }"
     @click="emit('open', card.clue_id)"
   >
     <span class="kcard-bar" :style="{ background: barColor }" aria-hidden="true" />
     <div class="kcard-body">
       <div class="kcard-head">
         <code class="kcard-id">{{ card.clue_id }}</code>
-        <span class="kcard-score" :title="`优先级分 ${card.priority_score ?? 0}`">
+        <NPopover v-if="hasBasis" trigger="hover" placement="bottom-end" :show-arrow="false">
+          <template #trigger>
+            <span class="kcard-score kcard-score--link">{{ card.priority_score ?? '—' }}</span>
+          </template>
+          <div class="score-pop">
+            <div class="score-pop-head">
+              优先级分 <b>{{ card.priority_score ?? '—' }}</b>
+              <span class="score-src">{{ card.score_source ?? '' }}</span>
+            </div>
+            <table class="score-pop-table">
+              <tbody>
+                <tr v-for="r in basisRows" :key="r.key">
+                  <td class="sp-label">{{ r.label }}</td>
+                  <td class="sp-num">{{ r.raw.toFixed(2) }}</td>
+                  <td class="sp-op">×{{ r.weight }}</td>
+                  <td class="sp-num sp-contrib">{{ r.contrib.toFixed(3) }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <code v-if="card.score_formula" class="score-formula">{{ card.score_formula }}</code>
+          </div>
+        </NPopover>
+        <span v-else class="kcard-score">
           {{ card.priority_score ?? '—' }}
         </span>
       </div>
@@ -132,6 +167,35 @@ const initial = computed(() => operatorName.value.slice(0, 1))
   font-size: 13px;
   font-weight: 700;
   color: var(--sun-warn-text);
+}
+.kcard-score--link {
+  cursor: help;
+  border-bottom: 1px dotted currentColor;
+}
+/* R13 分数依据 popover */
+.score-pop { min-width: 220px; font-size: 12px; }
+.score-pop-head {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 6px; color: var(--sun-text-primary);
+}
+.score-src {
+  margin-left: auto; font-size: 11px;
+  color: var(--sun-text-tertiary); font-family: var(--sun-font-mono);
+}
+.score-pop-table { width: 100%; border-collapse: collapse; }
+.score-pop-table td { padding: 2px 4px; }
+.sp-label { color: var(--sun-text-secondary); }
+.sp-num {
+  font-family: var(--sun-font-mono); text-align: right;
+  color: var(--sun-text-secondary);
+}
+.sp-op { color: var(--sun-text-tertiary); text-align: center; }
+.sp-contrib { color: var(--sun-warn-text); font-weight: 600; }
+.score-formula {
+  display: block; margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--sun-border);
+  font-size: 11px; color: var(--sun-text-tertiary);
+  white-space: normal;
 }
 .kcard-title {
   margin: 0;

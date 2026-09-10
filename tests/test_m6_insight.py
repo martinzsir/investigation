@@ -187,8 +187,8 @@ class M6InsightTest(unittest.TestCase):
         d = r.json()["data"]
         self.assertFalse(d["available"])
         self.assertTrue(d["derived"])
-        self.assertEqual(d["heatmap"]["jians"], ["因", "内", "反", "死", "生"])
-        self.assertEqual(d["heatmap"]["levels"], ["观察", "线索", "确认"])
+        self.assertEqual(d["heatmap"]["jians"], ["因间", "内间", "反间", "死间", "生间"])
+        self.assertEqual(d["heatmap"]["levels"], ["观察", "线索", "可立案依据候选"])
         self.assertEqual(d["heatmap"]["counts"],
                          [[0] * 5 for _ in range(3)])
         self.assertEqual(d["candidates"], [])

@@ -233,7 +233,7 @@ class EntityLinkExplorerTests(unittest.TestCase):
     def test_ac20_connectable_props(self):
         """string − metadata_props − runtime 对象；全排除对象不出现。"""
         got = self.ex.connectable_props()
-        self.assertEqual(got["person"], ["raw_name"])
+        self.assertEqual(got["person"], ["raw_name", "id_card"])
         self.assertEqual(got["org"], ["raw_name", "legal_rep", "relation"])  # status 排除
         self.assertEqual(got["transaction"], ["from_raw", "to_raw"])
         self.assertNotIn("clue", got)        # 全列 metadata → 不出现

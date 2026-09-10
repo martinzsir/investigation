@@ -82,6 +82,24 @@ def register(prop: DerivedProperty, *, pack: str = "default") -> DerivedProperty
     return prop
 
 
+def register_from_decl(decls: list[dict], *, pack: str = "default") -> list[DerivedProperty]:
+    """R8：从声明列表批量注册派生属性。
+
+    decls 元素: {name, function, inputs, cache_policy}
+    每个声明经 register() 校验（AC3/AC5/cache_policy）。
+    """
+    registered: list[DerivedProperty] = []
+    for d in decls:
+        prop = DerivedProperty(
+            name=d["name"],
+            function=d["function"],
+            inputs=list(d.get("inputs", [])),
+            cache_policy=d.get("cache_policy", "never"),
+        )
+        registered.append(register(prop, pack=pack))
+    return registered
+
+
 def _params_hash(params: dict) -> str:
     s = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
@@ -139,7 +157,7 @@ def _source_version_set(store, obj_type: str, health=None, pack: str = "default"
 def compute(store, obj_type: str, property_name: str,
             obj_pks: list[Any] | None = None, params: dict | None = None,
             *, pack: str = "default", _now_fn: Callable[[], float] = time.time,
-            health=None
+            health=None, base_dir=None, access=None
             ) -> dict:
     """计算一个派生属性。返回 {value, computed_at, source_version_set, params_hash}。
 
@@ -186,9 +204,10 @@ def compute(store, obj_type: str, property_name: str,
         return {"value": cached_value, "computed_at": computed_at,
                 "source_version_set": src_ver, "params_hash": ph, "cache": "hit"}
 
-    # 白名单 Function 执行
+    # 白名单 Function 执行（R8 web 出口：access/base_dir 穿透五出口纪律与案件快照包）
     from core.functions import FunctionExecutor
-    fx = FunctionExecutor(store, pack, health=health)
+    fx = FunctionExecutor(store, pack, access=access, health=health,
+                          base_dir=base_dir)
     out = fx.invoke(prop.function, params)
     if out.get("rows") is not None:
         value = out["rows"]

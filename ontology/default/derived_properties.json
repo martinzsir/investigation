@@ -1,0 +1,7 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-R8 DerivedProperty 声明化。派生属性由本文件声明，装载期校验 name 格式 obj_type.property、function 已在 functions.json 声明（AC3）、AC5 禁令、cache_policy 合法、inputs 引用存在。查询时派生，带版本锚点可追溯。",
+  "properties": [
+    {"name": "person.transaction_count", "function": "integer_transfer_aggregates", "inputs": ["obj_transaction"], "cache_policy": "until_source_change"}
+  ]
+}

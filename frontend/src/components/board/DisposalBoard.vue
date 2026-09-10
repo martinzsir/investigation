@@ -2,8 +2,9 @@
 // ★ FE-P-009 处置看板：顶部统计条（五态计数 / 平均停留 / 超期 N 件）+ 五列卡片。
 // 数据获取在页面层（BoardView）；本组件纯编排，超期/停留判定走 domain/board.ts。
 import { computed } from 'vue'
-import { BOARD_COLUMNS, boardStats, type BoardCard } from '../../domain/board'
-import { STATUS_META, type ClueStatus, type ClueAction } from '../../domain/clue'
+import { boardColumns, boardStats, type BoardCard } from '../../domain/board'
+import { statusMetaOf, type ClueAction } from '../../domain/clue'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 import KanbanColumn from './KanbanColumn.vue'
 
 const props = defineProps<{
@@ -19,22 +20,29 @@ const emit = defineEmits<{
   open: [clueId: string]
 }>()
 
-const stats = computed(() => boardStats(props.cards))
+const { config: cfg } = useCaseOntologyConfig()
+
+// D5：列序按 states 声明，旁路态（muted）置末
+const columns = computed(() => boardColumns(cfg.value))
+const stats = computed(() => boardStats(props.cards, cfg.value))
 const cardsByStatus = computed(() => {
-  const m = new Map<ClueStatus, BoardCard[]>(BOARD_COLUMNS.map((s) => [s, []]))
+  const m = new Map<string, BoardCard[]>(columns.value.map((s) => [s, []]))
   for (const c of props.cards) {
     m.get(c.status)?.push(c)
   }
   return m
 })
+function dotColor(status: string): string {
+  return statusMetaOf(status, cfg.value).border
+}
 </script>
 
 <template>
   <div class="board">
     <div class="board-stats">
-      <template v-for="s in BOARD_COLUMNS" :key="s">
+      <template v-for="s in columns" :key="s">
         <div class="stat" :class="`stat--${s}`">
-          <span class="stat-dot" :style="{ background: STATUS_META[s].border }" aria-hidden="true" />
+          <span class="stat-dot" :style="{ background: dotColor(s) }" aria-hidden="true" />
           <span class="stat-label">{{ s }}</span>
           <span class="stat-num">{{ stats.byStatus[s] ?? 0 }}</span>
         </div>
@@ -51,7 +59,7 @@ const cardsByStatus = computed(() => {
 
     <div class="board-cols">
       <KanbanColumn
-        v-for="s in BOARD_COLUMNS"
+        v-for="s in columns"
         :key="s"
         :status="s"
         :cards="cardsByStatus.get(s) ?? []"

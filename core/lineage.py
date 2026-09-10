@@ -178,44 +178,92 @@ def lineage_report(clues: list[LineageClue]) -> dict:
 # ----------------------------------------------------------------------
 # 优先级排序（正兵工作台：先看最值得查的线索）
 # ----------------------------------------------------------------------
-# 间类覆盖权重：越"硬"的数据源权重越高（反间 > 因间 > 死间 > 生间 > 内间）
-_JIAN_WEIGHT = {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 1}
+# R7：间类权重与计分维度改由 jians.json/scoring.json 声明（不再硬编码）
+# 间类权重从 jians.json 读取；维度权重从 scoring.json 读取。
+# ----------------------------------------------------------------------
+
+def _jian_weights(pack: str = "default") -> dict[str, int]:
+    """R7：从 jians.json 读取间类权重 {间类名: weight}。"""
+    try:
+        from core.ontology_loader import load_jians
+        return {j["name"]: j.get("weight", 1) for j in load_jians(pack)}
+    except Exception:
+        return {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 1}
 
 
 def prioritize_clues(
     clues: list[LineageClue],
     assumption_confidence: Optional[dict[str, float]] = None,
+    pack: str = "default",
 ) -> list[LineageClue]:
     """
     对线索按 假设置信度 × 间类覆盖度 × 数据强度 三维打分，降序排列（原地返回新列表）。
 
-    公式：
-        score = confidence*0.4 + jian_coverage*0.35 + data_strength*0.25
+    R7：维度权重/间类权重从 scoring.json/jians.json 声明读取，不再硬编码。
+    公式（权重来自声明）：
+        score = confidence*w_conf + jian_coverage*w_jian + data_strength*w_data
         confidence     : 假设置信度（默认 H1=0.9, 其余=0.7）
         jian_coverage  : 命中间类的最大权重 / 5
         data_strength  : min(1.0, 溯源行数 / 10)
 
     每条线索被打上 priority_score 字段（detail 里），供操作台排序展示。
     """
-    assumption_confidence = assumption_confidence or {"H1": 0.9, "H4": 0.7}
+    from core.ontology_loader import load_scoring
+    scoring = load_scoring(pack)
+    dims = {d["name"]: d for d in scoring["dimensions"]}
+    w_conf = dims["confidence"]["weight"]
+    w_jian = dims["jian_coverage"]["weight"]
+    w_data = dims["data_strength"]["weight"]
+    jian_normalize = dims["jian_coverage"].get("normalize", 5.0)
+    data_normalize = dims["data_strength"].get("normalize", 10.0)
+    data_cap = dims["data_strength"].get("cap", 1.0)
+
+    if assumption_confidence is None:
+        assumption_confidence = scoring["assumption_confidence"]
+    jian_weight = _jian_weights(pack)
+
+    def _raw_values(c: LineageClue) -> dict:
+        """计算各维度原始值（0~1），用于 score_basis 可解释输出。"""
+        conf = max(
+            (assumption_confidence.get(h, assumption_confidence.get("_default", 0.7))
+             for h in c.assumption_chain),
+            default=assumption_confidence.get("_default", 0.7),
+        )
+        jian = sum(jian_weight.get(j, 1) for j in c.jian_types)
+        jian_cov = min(1.0, jian / jian_normalize)
+        data_str = min(data_cap, len(c.source_rows) / data_normalize)
+        return {"confidence": conf, "jian_coverage": jian_cov,
+                "data_strength": data_str}
 
     def score(c: LineageClue) -> float:
-        # 假设置信度：取该线索关联假设的最高置信度
-        conf = max(
-            (assumption_confidence.get(h, 0.7) for h in c.assumption_chain),
-            default=0.7,
-        )
-        # 间类覆盖度：命中间类权重之和归一（0~1）
-        jian = sum(_JIAN_WEIGHT.get(j, 1) for j in c.jian_types)
-        jian_cov = min(1.0, jian / 5.0)
-        # 数据强度：溯源行数（封顶 1.0，避免"行数多=一定对"）
-        data_str = min(1.0, len(c.source_rows) / 10.0)
-        return conf * 0.4 + jian_cov * 0.35 + data_str * 0.25
+        raw = _raw_values(c)
+        return (raw["confidence"] * w_conf
+                + raw["jian_coverage"] * w_jian
+                + raw["data_strength"] * w_data)
+
+    formula = (f"confidence*{w_conf} + jian_coverage*{w_jian} "
+               f"+ data_strength*{w_data}")
 
     scored = sorted(clues, key=score, reverse=True)
     for i, c in enumerate(scored):
+        raw = _raw_values(c)
+        score_val = score(c)
+        score_basis = {
+            "confidence": {"raw": round(raw["confidence"], 4),
+                           "weight": w_conf,
+                           "contrib": round(raw["confidence"] * w_conf, 4)},
+            "jian_coverage": {"raw": round(raw["jian_coverage"], 4),
+                              "weight": w_jian,
+                              "contrib": round(raw["jian_coverage"] * w_jian, 4)},
+            "data_strength": {"raw": round(raw["data_strength"], 4),
+                              "weight": w_data,
+                              "contrib": round(raw["data_strength"] * w_data, 4)},
+        }
         c.detail = {**c.detail, "priority_rank": i + 1,
-                    "priority_score": round(score(c), 3)}
+                    "priority_score": round(score_val, 3),
+                    "score_basis": score_basis,
+                    "score_formula": formula,
+                    "score_source": "scoring.json@v2"}
     return scored
 
 

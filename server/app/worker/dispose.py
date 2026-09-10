@@ -22,12 +22,11 @@ from core.access import AccessContext
 from core.disposal import DisposalBoard
 from core.registry import ClueStatus
 
+from server.app import ontology_meta
 from server.app.clues_artifact import load_case_clues
 from server.app.store.state_sink import StateSink
 from server.app.store.state_store import StateStore
 from server.app.worker.tasks import TaskExecError
-
-DISPOSE_ACTIONS = ("verify", "reset", "exclude", "confirm", "file")
 
 
 def handle_dispose(task, *, repo, factory, **_: Any) -> dict[str, Any]:
@@ -42,8 +41,13 @@ def handle_dispose(task, *, repo, factory, **_: Any) -> dict[str, Any]:
     clearance = int(p.get("clearance") or 1)
     action_params = dict(p.get("action_params") or {})
 
-    if action not in DISPOSE_ACTIONS:
-        raise TaskExecError("UNKNOWN_ACTION", f"未知处置动作：{action!r}")
+    # R6：合法动作来自案件包 actions 声明（set_clue_status 类），不硬编码
+    legal_actions = ontology_meta.dispose_action_names(
+        case.pack_id, factory.case_dir(case.id) / "ontology")
+    if action not in legal_actions:
+        raise TaskExecError(
+            "UNKNOWN_ACTION",
+            f"未知处置动作：{action!r}（合法：{', '.join(sorted(legal_actions))}）")
     if not clue_id:
         raise TaskExecError("CLUE_REQUIRED", "缺少 clue_id")
 

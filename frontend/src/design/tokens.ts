@@ -51,6 +51,58 @@ export const glow = {
   card: '0 0 32px rgba(0, 190, 220, 0.16), inset 0 0 24px rgba(0, 190, 220, 0.04)',
 } as const
 
+/**
+ * 状态色调（六项解耦 R6）：states.json tone → 样式令牌。
+ * 色值集中在本文件（tokens 是唯一允许硬编码色值处）；组件只按 tone 取令牌，
+ * 不再按状态名分支。受控终态（terminal && requires_role==='human'）的金橙
+ * 叠加样式由消费方在 tone 基础上改取 FILED_STATUS_META（不新增 gold tone）。
+ */
+export type StatusTone = 'warning' | 'info' | 'muted' | 'success' | 'danger'
+
+export interface ToneMeta {
+  bg: string
+  border: string
+  text: string
+  icon: string
+}
+
+export const STATUS_TONE_META: Record<StatusTone, ToneMeta> = {
+  // 待查：石板蓝（原 STATUS_META 实测值）
+  warning: { bg: 'rgba(107,131,153,.15)', border: '#6B8399', text: '#8FB3CC', icon: '○' },
+  // 查证中：青
+  info: { bg: 'rgba(0,212,255,.15)', border: '#00D4FF', text: '#00D4FF', icon: '◐' },
+  // 已排除：暗石板（旁路态）
+  muted: { bg: 'rgba(107,131,153,.08)', border: '#3D5668', text: '#5A7A94', icon: '✕' },
+  // 已固证：绿
+  success: { bg: 'rgba(46,212,122,.15)', border: '#2ED47A', text: '#2ED47A', icon: '●' },
+  // 危险基调（受控终态实际叠加 FILED_STATUS_META 金橙）
+  danger: { bg: 'rgba(196,30,58,.25)', border: '#C41E3A', text: '#FF6B7E', icon: '★' },
+}
+
+/** 受控终态（已立案）金橙令牌——tone=danger 之上的产品特例叠加（原 STATUS_META 实测值） */
+export const FILED_STATUS_META: ToneMeta = {
+  bg: 'rgba(196,30,58,.25)',
+  border: '#D4AF37',
+  text: '#FFD87A',
+  icon: '★',
+}
+
+/**
+ * 侦查五维（dimensions.json，非兵法五间）房间色板：名称 → CSS 变量。
+ * 维度集声明化后数量/名称可变，未知名回落三级文本色，不报错。
+ */
+const DIMENSION_ROOM_VARS: Record<string, string> = {
+  资金: 'var(--sun-jian-fund)',
+  通讯: 'var(--sun-jian-comms)',
+  行为: 'var(--sun-jian-behavior)',
+  关系: 'var(--sun-jian-relation)',
+  时间: 'var(--sun-jian-time)',
+}
+
+export function jianRoomVar(room: string): string {
+  return DIMENSION_ROOM_VARS[room] ?? 'var(--sun-text-tertiary)'
+}
+
 /** FE-D-005：卡片 6px / 按钮 4px / 徽章 12px */
 export const radius = { card: '6px', button: '4px', badge: '12px' } as const
 

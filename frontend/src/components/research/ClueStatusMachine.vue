@@ -10,18 +10,21 @@ import { computed, ref } from 'vue'
 import { NModal, NButton, NInput, NIcon } from 'naive-ui'
 import { WarningOutline, LockClosedOutline } from '@vicons/ionicons5'
 import {
-  ACTION_LABEL,
-  ACTION_TARGET,
+  actionTarget,
+  actionTitle,
   allowedActions,
   degradeReason,
   fileGate,
+  isControlledTerminal,
+  stateDecl,
   CLUE_STATUS,
   type ClueAction,
   type ClueStatus,
 } from '../../domain/clue'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 
 const props = defineProps<{
-  status: ClueStatus
+  status: ClueStatus | string
   role: string
   operator: string
   degraded: boolean
@@ -32,11 +35,23 @@ const emit = defineEmits<{
   submit: [payload: { action: ClueAction; note?: string; reason?: string; legal_basis?: string }]
 }>()
 
+const { config: cfg } = useCaseOntologyConfig()
+
+// 写动作集合由 actions 声明现算（D1：only_from 优先；file 按钮单独走四重门禁渲染）
 const actions = computed(() =>
-  allowedActions(props.status).filter((a) => a !== 'file'),
+  allowedActions(props.status, cfg.value).filter((a) => a !== 'file'),
 )
-const gate = computed(() => fileGate(props.role, props.status, legalBasis.value, props.degraded))
+const gate = computed(() =>
+  fileGate(props.role, props.status, legalBasis.value, props.degraded, cfg.value),
+)
 const degradeMsg = computed(() => degradeReason(props.degraded))
+// 受控终态名（默认「已立案」，名称随声明）
+const filedStatus = computed(
+  () => cfg.value.states.find((s) => s.terminal && s.requires_role === 'human')?.name
+    ?? CLUE_STATUS.FILED,
+)
+const isFiledNow = computed(() => isControlledTerminal(props.status, cfg.value))
+const fileLabel = computed(() => actionTitle('file', cfg.value))
 
 // 确认弹窗状态
 const modalOpen = ref(false)
@@ -46,10 +61,21 @@ const reason = ref('')
 const legalBasis = ref('')
 
 const isFile = computed(() => pending.value === 'file')
+// 排除类动作：参数声明 required 的非 legal_basis 文本参数（默认 exclude.reason）
+const requiredReasonParam = computed(() => {
+  if (!pending.value) return null
+  const decl = cfg.value.actions.find((a) => a.name === pending.value)
+  return decl?.parameters.find((p) => p.required && p.name !== 'legal_basis') ?? null
+})
 const isExclude = computed(() => pending.value === 'exclude')
-const targetStatus = computed(() => (pending.value ? ACTION_TARGET[pending.value] : ''))
+const targetStatus = computed(() => (pending.value ? actionTarget(pending.value, cfg.value) : ''))
+const pendingTitle = computed(() => (pending.value ? actionTitle(pending.value, cfg.value) : ''))
+const statusLabel = computed(() => stateDecl(props.status, cfg.value)?.label ?? props.status)
 
-const reasonRequired = computed(() => isExclude.value)
+// 必填理由类参数（默认仅 exclude.reason；声明驱动，泛化到任意同类动作）
+const reasonRequired = computed(() => requiredReasonParam.value !== null)
+const reasonFieldLabel = computed(() =>
+  isExclude.value ? '排除理由（必填）' : `${requiredReasonParam.value?.description ?? '理由'}（必填）`)
 const confirmDisabled = computed(() => {
   if (props.loading) return true
   if (reasonRequired.value && !reason.value.trim()) return true
@@ -99,7 +125,7 @@ function cancel(): void {
         :class="['csm-btn', `csm-btn--${a}`]"
         @click="open(a)"
       >
-        {{ ACTION_LABEL[a] }}
+        {{ actionTitle(a, cfg) }}
       </NButton>
 
       <!-- 门禁 1：不通过则按钮不渲染（DOM 中不存在，FE-T-003） -->
@@ -111,19 +137,22 @@ function cancel(): void {
           @click="open('file')"
         >
           <NIcon :component="WarningOutline" />
-          立案（已立案）
+          {{ fileLabel }}（{{ filedStatus }}）
         </NButton>
       </template>
 
-      <span v-if="status === CLUE_STATUS.FILED" class="csm-terminal">
-        <NIcon :component="LockClosedOutline" /> 终态：已立案，不可再迁移
+      <span v-if="isFiledNow" class="csm-terminal">
+        <NIcon :component="LockClosedOutline" /> 终态：{{ filedStatus }}，不可再迁移
       </span>
     </div>
 
     <p v-if="degradeMsg" class="csm-degrade" role="alert">
       <NIcon :component="WarningOutline" /> {{ degradeMsg }}
     </p>
-    <p v-else-if="gate.render && !gate.enabled && status === CLUE_STATUS.CONFIRMED" class="csm-hint">
+    <p
+      v-else-if="gate.render && !gate.enabled && !isFiledNow"
+      class="csm-hint"
+    >
       {{ gate.reason }}
     </p>
 
@@ -131,18 +160,18 @@ function cancel(): void {
     <NModal
       v-model:show="modalOpen"
       preset="card"
-      title="处置确认"
+      :title="`处置确认 · ${pendingTitle}`"
       class="csm-modal"
       :mask-closable="false"
     >
       <div class="confirm-body">
         <p class="confirm-transition">
-          状态迁移：<b>{{ status }}</b> → <b class="target">{{ targetStatus }}</b>
+          状态迁移：<b>{{ statusLabel }}</b> → <b class="target">{{ targetStatus }}</b>
         </p>
 
         <template v-if="isFile">
           <p class="confirm-warn">
-            ⚠ 立案为不可逆终态操作，将以 <b>{{ operator }}（{{ role }}）</b> 名义写入审计链。
+            ⚠ {{ filedStatus }}为不可逆终态操作，将以 <b>{{ operator }}（{{ role }}）</b> 名义写入审计链。
           </p>
           <label class="field-label">法定依据 / 案号（必填）</label>
           <NInput v-model:value="legalBasis" placeholder="如：《中华人民共和国刑事诉讼法》第一百零七条 / 案号" />
@@ -152,8 +181,8 @@ function cancel(): void {
           <p class="confirm-note">
             将以 <b>{{ operator }}（{{ role }}）</b> 名义提交，操作进入审计链留痕。
           </p>
-          <template v-if="isExclude">
-            <label class="field-label">排除理由（必填）</label>
+          <template v-if="reasonRequired">
+            <label class="field-label">{{ reasonFieldLabel }}</label>
             <NInput v-model:value="reason" type="textarea" :rows="2" placeholder="经查证不成立的具体理由" />
           </template>
           <template v-else>

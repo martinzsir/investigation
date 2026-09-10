@@ -22,6 +22,10 @@ export interface HypothesisCandidate {
   jian_types: string[]
   level: string | null
   priority_score: number | null
+  /** R13：计分可解释三件套（旧产物可能缺省） */
+  score_basis?: import('./clues').ScoreBasis | null
+  score_formula?: string | null
+  score_source?: string | null
   reason: string
 }
 

@@ -3,14 +3,17 @@
 // 节点：序号圆标 + 操作人真实姓名 + 状态迁移 + 时间戳 + 本体版本标签；
 // 已立案节点金橙光晕 + 法定依据。校验条与筛选在 AuditChainView。
 import { computed } from 'vue'
-import { CLUE_STATUS, STATUS_META, type ClueStatus } from '../../domain/clue'
+import { isControlledTerminal, statusMetaOf } from '../../domain/clue'
 import type { AuditItem } from '../../api/endpoints/audit'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 
 const props = defineProps<{
   items: AuditItem[]
   /** 当前会话操作者（其本人记录加「我」标记） */
   selfOperator?: string
 }>()
+
+const { config: cfg } = useCaseOntologyConfig()
 
 const ACTION_TEXT: Record<string, string> = {
   disposal: '线索处置',
@@ -32,10 +35,13 @@ const rows = computed(() =>
 )
 
 function isFiled(it: AuditItem): boolean {
-  return it.status_to === CLUE_STATUS.FILED
+  // 受控终态（terminal && requires_role=human，默认=已立案）由声明派生
+  return isControlledTerminal(it.status_to ?? '', cfg.value)
 }
-function statusColor(s?: ClueStatus | null): string {
-  return s ? STATUS_META[s]?.text ?? 'var(--sun-text-secondary)' : 'var(--sun-text-tertiary)'
+function statusColor(s?: string | null): string {
+  return s
+    ? statusMetaOf(s, cfg.value).text
+    : 'var(--sun-text-tertiary)'
 }
 </script>
 

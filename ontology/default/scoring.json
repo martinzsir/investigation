@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-R7 计分权重外置。维度权重/assumption_confidence 由本文件声明，不再硬编码于 core/lineage.py/prioritize_clues。间类权重从 jians.json 读取（不重复声明）。装载期校验：各 dimension weight 之和必须为 1.0；assumption_confidence 必须有 _default。红线：计分不得反向影响交叉等级——等级只由独立源数决定。",
+  "dimensions": [
+    {"name": "confidence", "weight": 0.4, "source": "assumption_confidence"},
+    {"name": "jian_coverage", "weight": 0.35, "source": "jian_weight_sum", "normalize": 5.0},
+    {"name": "data_strength", "weight": 0.25, "source": "source_rows_count", "normalize": 10.0, "cap": 1.0}
+  ],
+  "assumption_confidence": {"H1": 0.9, "H4": 0.7, "_default": 0.7}
+}

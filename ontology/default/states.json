@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-R6 线索状态机声明化。状态集/迁移表/受控终态由本文件声明，不再硬编码于 core/registry.py/ClueStatus、core/registry.py/ClueStatusMachine._TRANSITIONS、core/audit.py/_DISPOSAL_STATUS。新增状态不改 Python 即可被 actions.json 引用。红线：requires_role=human 的受控终态（如已立案）AI/机器会话无权置位——从硬编码 action=='file' 变为声明驱动的 requires_role 校验，红线不消失。",
+  "states": [
+    {"name": "待查", "label": "待查", "tone": "warning", "terminal": false, "requires_role": "any", "requires_basis": false, "sla_days": 3},
+    {"name": "查证中", "label": "查证中", "tone": "info", "terminal": false, "requires_role": "any", "requires_basis": false, "sla_days": 5},
+    {"name": "已排除", "label": "已排除", "tone": "muted", "terminal": false, "requires_role": "any", "requires_basis": true, "outcome": "excluded"},
+    {"name": "已固证", "label": "已固证", "tone": "success", "terminal": false, "requires_role": "any", "requires_basis": true, "sla_days": 7, "outcome": "verified"},
+    {"name": "已立案", "label": "已立案", "tone": "danger", "terminal": true, "requires_role": "human", "requires_basis": true}
+  ],
+  "transitions": [
+    {"from": "待查", "to": ["查证中", "已排除", "已固证"]},
+    {"from": "查证中", "to": ["待查", "已排除", "已固证"]},
+    {"from": "已排除", "to": ["待查"]},
+    {"from": "已固证", "to": ["已排除", "已立案"]},
+    {"from": "已立案", "to": []}
+  ]
+}

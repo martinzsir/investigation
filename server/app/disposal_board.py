@@ -19,20 +19,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from core.access import can_see_jian_types
 from core.registry import ClueStatus
 
+from server.app import ontology_meta
 from server.app.clues_view import (
-    _can_see_neijian,
     _load_raw,
     _status_of,
 )
 
-_NEIJIAN = "内间"
 DEFAULT_STALE_DAYS = 14
-
-# 五泳道顺序（待查 → 已立案）
-COLUMNS = [ClueStatus.PENDING, ClueStatus.VERIFYING, ClueStatus.EXCLUDED,
-           ClueStatus.CONFIRMED, ClueStatus.FILED]
 
 # detail 键 → 主体类型（主体摘要提取用；长文/规则键不取）
 _SUBJECT_TYPE_BY_KEY = {
@@ -114,22 +110,29 @@ def assemble_board(*, case_dir: str | Path, state_map: dict[str, dict],
                    pack: str, as_of: date | None = None) -> dict[str, Any]:
     """五泳道看板。未产出线索 → available:false（空泳道，不报错）。"""
     raws, art_ver = _load_raw(Path(case_dir), None)
-    see_neijian = _can_see_neijian(role)
+    # R5：间类可见性声明化；R6：泳道顺序取 states.json 声明序
+    jian_clearances = ontology_meta.jian_clearances(pack, snapshot_base)
+    decl = ontology_meta.states_decl(pack, snapshot_base)
+    columns_order = [s["name"] for s in decl["states"]]
+    sla_by_status = {s["name"]: s["sla_days"] for s in decl["states"]
+                     if isinstance(s.get("sla_days"), int)}
     threshold = stale_days_threshold(snapshot_base, pack)
     today = as_of or date.today()
 
-    columns: dict[str, list[dict]] = {s: [] for s in COLUMNS}
-    counts = {s: 0 for s in COLUMNS}
+    columns: dict[str, list[dict]] = {s: [] for s in columns_order}
+    counts = {s: 0 for s in columns_order}
     total = 0
     restricted = 0
 
     for raw in raws:
         jts = raw.get("jian_types") or []
-        if not see_neijian and _NEIJIAN in jts:
+        if not can_see_jian_types(jts, role=role,
+                                 jian_clearances=jian_clearances):
             restricted += 1
             continue
         st = _status_of(raw, state_map)
-        status = st["status"] if st["status"] in columns else ClueStatus.PENDING
+        status = (st["status"] if st["status"] in columns
+                  else ClueStatus.PENDING)
         det = raw.get("detail") or {}
         card = {
             "clue_id": raw.get("clue_id"),
@@ -137,13 +140,18 @@ def assemble_board(*, case_dir: str | Path, state_map: dict[str, dict],
             "jian_types": jts,
             "level": det.get("级别") or det.get("level"),
             "priority_score": det.get("priority_score"),
+            "score_basis": det.get("score_basis"),
+            "score_formula": det.get("score_formula"),
+            "score_source": det.get("score_source"),
             "subjects": _subjects(raw),
             "status": status,
             "note": st.get("note", ""),
             "operator": st.get("operator", ""),
             "updated_at": st.get("updated_at", ""),
         }
-        card.update(_stay(card["updated_at"], today, threshold))
+        # D2：分态 SLA（states.json sla_days）优先，未声明的状态回落全局阈值
+        card.update(_stay(card["updated_at"], today,
+                          sla_by_status.get(status, threshold)))
         columns[status].append(card)
         counts[status] += 1
         total += 1
@@ -158,6 +166,7 @@ def assemble_board(*, case_dir: str | Path, state_map: dict[str, dict],
     out: dict[str, Any] = {
         "available": art_ver is not None,
         "stale_days_threshold": threshold,
+        "sla_days": sla_by_status,
         "counts": {"total": total, "by_status": counts},
         "columns": columns,
     }
@@ -165,5 +174,5 @@ def assemble_board(*, case_dir: str | Path, state_map: dict[str, dict],
         out["note"] = "案件尚未产出线索（先运行 BUILD/RESCAN）"
     if restricted:
         out["access_note"] = (
-            f"role={role}：按对象策略过滤内间线索 {restricted} 条（REQ-011）")
+            f"role={role}：按间类密级策略过滤线索 {restricted} 条（REQ-011）")
     return out

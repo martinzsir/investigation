@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-R5 五间声明化。间类集合/default_clearance/cross_levels 由本文件声明，不再硬编码于 core/functions.py/_JIAN_ORDER、core/hypotheses.py/JIAN_ALL、core/ontology_loader.py/ALLOWED_JIAN。新增间类不改 Python 即可被规则引用。红线：cross_levels 的 min_independent_sources 映射（1/2/3）不可配置——名称可配，映射关系硬编码校验。",
+  "jians": [
+    {"name": "因间", "default_clearance": 1, "weight": 3, "source_object_types": ["org", "bid_project"]},
+    {"name": "内间", "default_clearance": 3, "weight": 5, "source_object_types": ["tipoff"]},
+    {"name": "反间", "default_clearance": 1, "weight": 2, "source_object_types": ["transaction"]},
+    {"name": "死间", "default_clearance": 0, "weight": 4, "source_object_types": ["osint_article", "org"]},
+    {"name": "生间", "default_clearance": 1, "weight": 1, "source_object_types": ["call", "trackpoint"]}
+  ],
+  "cross_levels": [
+    {"min_independent_sources": 1, "name": "观察"},
+    {"min_independent_sources": 2, "name": "线索"},
+    {"min_independent_sources": 3, "name": "可立案依据候选"}
+  ],
+  "source_independence": {
+    "related_pairs": []
+  }
+}

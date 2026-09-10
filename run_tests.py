@@ -32,7 +32,7 @@ run_tests.py —— 统一测试入口
   golden      REQ-020 Golden Finding 回归（tests.test_golden）
   overlap     REQ-025 规则互斥与重叠消解（tests.test_rule_overlap）
   threshold   REQ-027 阈值策略对象（tests.test_threshold_adaptive）
-  derived     REQ-028 DerivedProperty 查询时派生（tests.test_derived）
+  derived     REQ-028/R8 DerivedProperty 查询时派生+端点（tests.test_derived、tests.test_derived_api）
   object_set  REQ-029 ObjectSet 查询构造器（tests.test_object_set）
   metrics     REQ-030 规则运行时度量（tests.test_metrics）
   rule_dsl    REQ-026 规则 DSL 组合与时序（tests.test_rule_dsl）
@@ -93,7 +93,7 @@ GROUPS = {
     "golden":      ("REQ-020 Golden Finding 回归", [sys.executable, "-m", "unittest", "tests.test_golden"]),
     "overlap":     ("REQ-025 规则互斥与重叠消解", [sys.executable, "-m", "unittest", "tests.test_rule_overlap"]),
     "threshold":   ("REQ-027 阈值策略对象", [sys.executable, "-m", "unittest", "tests.test_threshold_adaptive"]),
-    "derived":     ("REQ-028 DerivedProperty 查询时派生", [sys.executable, "-m", "unittest", "tests.test_derived"]),
+    "derived":     ("REQ-028/R8 DerivedProperty 查询时派生+端点", [sys.executable, "-m", "unittest", "tests.test_derived", "tests.test_derived_api"]),
     "object_set":  ("REQ-029 ObjectSet 查询构造器", [sys.executable, "-m", "unittest", "tests.test_object_set"]),
     "metrics":     ("REQ-030 规则运行时度量", [sys.executable, "-m", "unittest", "tests.test_metrics"]),
     "rule_dsl":    ("REQ-026 规则 DSL 组合与时序", [sys.executable, "-m", "unittest", "tests.test_rule_dsl"]),
@@ -201,6 +201,12 @@ GROUPS = {
     "sourcerow":   ("B1 溯源行适配器（source_row_dto 字段表+遮蔽+hit）", [sys.executable, "-m", "unittest", "tests.test_source_row_dto"]),
     "evidence":    ("B2 证据三栏产出器（evidence_builder fact/inference/pending）", [sys.executable, "-m", "unittest", "tests.test_evidence_builder"]),
     "lifecycle":  ("B5 生命周期事件补录（case_created/source_imported/build_succeeded）", [sys.executable, "-m", "unittest", "tests.test_lifecycle_audit"]),
+    # ---- 六项解耦（运行时地基 + 声明化）----
+    "rtcontext":  ("R1/R2 RuntimeContext+ReadOnlyStore+load_pack 缓存", [sys.executable, "-m", "unittest", "tests.test_runtime_context"]),
+    "fnrequires": ("R3/R4 FunctionSpec.requires 声明+py 函数表名参数化", [sys.executable, "-m", "unittest", "tests.test_function_requires"]),
+    "jiansdecl":  ("R5/R9 五间声明化 jians.json", [sys.executable, "-m", "unittest", "tests.test_jians_decl"]),
+    "statesdecl": ("R6/R10 状态机声明化 states.json", [sys.executable, "-m", "unittest", "tests.test_states_decl"]),
+    "scoringdecl":("R7/R12/R13 计分声明化 scoring.json+score_basis", [sys.executable, "-m", "unittest", "tests.test_scoring_decl"]),
 }
 
 

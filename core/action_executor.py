@@ -142,9 +142,16 @@ class ActionExecutor:
                     f"动作 {spec.name} 缺少必填参数：{p.name}"
                     + (f"（{p.description}）" if p.description else ""))
 
-        # 3) 状态机校验（allowed_from 由 _TRANSITIONS 反向派生，单一事实来源）
+        # 3) 状态机校验（allowed_from 由 states.json 迁移表反向派生，单一事实来源）
         from core.registry import ClueStatusMachine
-        ClueStatusMachine.validate(clue.status, spec.target_status)
+        ClueStatusMachine.validate(clue.status, spec.target_status, pack=self.pack)
+
+        # 3.1) D1：only_from 显式收紧（如固证仅可从查证中发起，待查不可直接固证）
+        if spec.only_from and clue.status not in spec.only_from:
+            raise ValueError(
+                f"动作 {spec.name}（{spec.target_status}）仅允许从 "
+                f"{list(spec.only_from)} 发起，当前状态 {clue.status!r} "
+                f"被 only_from 约束拒绝")
 
         # 3.5) 权限上下文校验（REQ-009）：human 终态需 human 角色；
         #      非 system 会话不得以他人名义执行（operator 与 access 主体一致）

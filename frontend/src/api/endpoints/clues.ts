@@ -21,6 +21,15 @@ export interface SourceRowDto {
   }>
 }
 
+/** R13：单维度计分分解（原始值/权重/贡献分） */
+export interface ScoreBasisTerm {
+  raw: number
+  weight: number
+  contrib: number
+}
+/** R13：各维度 → 分解（confidence/jian_coverage/data_strength） */
+export type ScoreBasis = Record<string, ScoreBasisTerm>
+
 export interface ClueListItem {
   clue_id: string
   title: string
@@ -35,6 +44,10 @@ export interface ClueListItem {
   dimension?: string[]
   priority_rank?: number
   priority_score?: number
+  /** R13：计分可解释三件套（旧产物可能缺省） */
+  score_basis?: ScoreBasis | null
+  score_formula?: string | null
+  score_source?: string | null
   source_row_count?: number
   merged_from?: string[]
   status: ClueStatus

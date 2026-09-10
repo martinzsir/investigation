@@ -3,7 +3,7 @@
   "actions": [
     {
       "name": "verify",
-      "title": "标记查证中",
+      "title": "开始查证",
       "target_status": "查证中",
       "derive": "reverse_reach",
       "parameters": [],
@@ -14,7 +14,7 @@
     },
     {
       "name": "reset",
-      "title": "回退待查",
+      "title": "退回待查",
       "target_status": "待查",
       "derive": "reverse_reach",
       "parameters": [],
@@ -41,11 +41,12 @@
       "title": "固证",
       "target_status": "已固证",
       "derive": "reverse_reach",
+      "only_from": ["查证中"],
       "parameters": [],
       "requires_role": "any",
       "terminal": false,
       "side_effects": ["set_clue_status"],
-      "description": "经查证成立，形成稳定证据"
+      "description": "经查证成立，形成稳定证据（D1：待查态不可直接固证，须先查证中）"
     },
     {
       "name": "file",

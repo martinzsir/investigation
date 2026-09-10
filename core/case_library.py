@@ -23,6 +23,19 @@ from core.llm.redact import scan_pii
 TERMINAL_MAP = {"已固证": "verified", "已排除": "excluded"}
 OUTCOMES = ("verified", "excluded")
 
+
+def outcome_map(pack: str = "default") -> dict[str, str]:
+    """R6：结论态→outcome 映射取 states.json 声明的 outcome 字段；
+    装载失败回落默认包快照 TERMINAL_MAP（与 terminal 解耦：已排除可重开
+    但仍是一种核验结论）。"""
+    try:
+        from core.ontology_loader import load_states
+        m = {s["name"]: s["outcome"]
+             for s in load_states(pack)["states"] if s.get("outcome")}
+        return m or dict(TERMINAL_MAP)
+    except Exception:
+        return dict(TERMINAL_MAP)
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS case_fragment (
     fragment_id       VARCHAR PRIMARY KEY,
@@ -87,17 +100,19 @@ def settle_fragment(conn, *, clue_id: str, rule_id: str, outcome: str,
     ensure_case_fragment(conn)
     errors: list[str] = []
 
-    # ---- 门 1：终态门 ----
+    # ---- 门 1：终态门（R6：结论态映射取 states.json outcome 声明）----
+    terminal_map = outcome_map(pack)
     status = _clue_status(conn, clue_id)
-    if status not in TERMINAL_MAP:
+    if status not in terminal_map:
+        settled = "/".join(terminal_map)
         errors.append(
-            f"[终态门] 线索 {clue_id} 当前状态 {status!r}：仅 已固证/已排除 "
+            f"[终态门] 线索 {clue_id} 当前状态 {status!r}：仅 {settled} "
             f"可沉淀案例（待查/查证中未核验不得入库）")
     elif outcome not in OUTCOMES:
         errors.append(f"[终态门] outcome 仅允许 {OUTCOMES}，收到 {outcome!r}")
-    elif TERMINAL_MAP[status] != outcome:
+    elif terminal_map[status] != outcome:
         errors.append(
-            f"[终态门] 线索状态 {status!r} 对应 outcome={TERMINAL_MAP[status]}，"
+            f"[终态门] 线索状态 {status!r} 对应 outcome={terminal_map[status]}，"
             f"与申报 {outcome!r} 不一致")
 
     # ---- 门 3：适用条件门（先于脱敏，保证 pattern 是可检查文本）----

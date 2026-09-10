@@ -188,14 +188,15 @@ class JianDeclTests(unittest.TestCase):
 
     def test_level_rule_remains_hardcoded(self):
         # 红线：无论声明多少对象，等级阈值单源=观察/双源=线索/三源+=可立案依据候选
-        from core.functions import _jian_entries, _JIAN_ORDER
+        from core.functions import _jian_entries, _jian_order
         entries = _jian_entries("default")
         # 声明驱动出多条数据源
         self.assertTrue(len(entries) >= 7)
-        # 展示顺序固定
-        self.assertEqual(_JIAN_ORDER, ["因间", "内间", "反间", "死间", "生间"])
-        jians = {j for _t, j, _s in entries}
-        self.assertTrue(jians.issubset(set(_JIAN_ORDER)))
+        # 展示顺序从 jians.json 读取
+        jian_order = _jian_order("default")
+        self.assertEqual(jian_order, ["因间", "内间", "反间", "死间", "生间"])
+        jians = {j for _t, j, _s, _o in entries}
+        self.assertTrue(jians.issubset(set(jian_order)))
 
 
 if __name__ == "__main__":

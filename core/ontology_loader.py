@@ -37,6 +37,34 @@ from core import clean_ops as _clean_ops
 SCHEMA_VERSION = 2
 PACK_ROOT = Path(__file__).resolve().parent.parent / "ontology"
 
+# ----------------------------------------------------------------------
+# R2: load_pack 缓存（指纹失效）
+# ----------------------------------------------------------------------
+_PACK_CACHE: dict[tuple, "OntologyPack"] = {}
+
+
+def _pack_fingerprint(pack: str, base_dir: Path | None) -> float:
+    """计算案件包指纹：ontology/<pack>/*.json 的 mtime 最大值。
+
+    文件修改后指纹自动变化，缓存 miss 重算，无需手动 invalidate。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    if not root.is_dir():
+        return 0.0
+    mtimes = [p.stat().st_mtime for p in root.glob("*.json")]
+    return max(mtimes) if mtimes else 0.0
+
+
+def invalidate_pack_cache(pack: str | None = None) -> None:
+    """清理案件包缓存。pack=None 清理全部；指定 pack 只清该包。"""
+    if pack is None:
+        _PACK_CACHE.clear()
+        return
+    for key in list(_PACK_CACHE):
+        if key[0] == pack:
+            del _PACK_CACHE[key]
+
+
 ALLOWED_ROLES = {"any", "human"}
 ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision",
                         "merge_entity", "dismiss_review"}
@@ -44,7 +72,8 @@ ALLOWED_IMPL_KINDS = {"sql", "py"}
 ALLOWED_OUTPUT_TYPES = {"rows", "scalar", "report"}
 ALLOWED_RULE_STAGES = {"xu_shi", "qi_zheng", "yong_jian"}
 ALLOWED_DIMENSIONS = {"资金", "通讯", "行为", "关系", "时间"}
-ALLOWED_JIAN = {"因间", "内间", "反间", "死间", "生间"}
+# R5：五间不再硬编码，改由 jians.json 声明；DEFAULT_JIANS 仅作缺省回落
+DEFAULT_JIANS = ["因间", "内间", "反间", "死间", "生间"]
 ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
 RULE_TEXT_MIN = 30
 _DERIVE_RULES = {"reverse_reach"}
@@ -72,31 +101,50 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     if not root.is_dir():
         raise FileNotFoundError(f"ontology 案件包不存在：{root}")
 
+    # R2：指纹缓存——文件未变则直接返回缓存对象，避免重复解析全部 JSON
+    fp = _pack_fingerprint(pack, base_dir)
+    cache_key = (pack, str(base_dir) if base_dir else "", fp)
+    cached = _PACK_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     # REQ-D-001/016：数据元标准先于对象装载——属性 data_element 引用需校验 ID 已注册
     elements = load_data_elements(pack, base_dir)
     # REQ-D-002 AC-4/AD-5：sensitive 数据元属性必须已在 policies.json 声明遮蔽
     mask_set = _load_property_mask_set(root)
-    objects = _load_objects(root / "objects.json", elements, mask_set)
-    links = _load_links(root / "links.json", objects)
+    # R5：五间声明先于对象/链接装载——jian 字段必须在 jians.json 已声明
+    jian_decls = load_jians(pack, base_dir)
+    allowed_jian = {j["name"] for j in jian_decls}
+    objects = _load_objects(root / "objects.json", elements, mask_set,
+                            allowed_jian=allowed_jian)
+    links = _load_links(root / "links.json", objects, allowed_jian=allowed_jian)
     object_bindings, link_bindings = _load_bindings(
         root / "bindings.json", objects, links)
-    actions = _load_actions(root / "actions.json", objects)
+    # R6：状态机声明先于 actions 装载——target_status 必须在 states.json 已声明
+    state_decls = load_states(pack, base_dir)
+    allowed_states = {s["name"] for s in state_decls["states"]}
+    actions = _load_actions(root / "actions.json", objects,
+                            allowed_states=allowed_states,
+                            transitions=state_decls["transitions"])
     functions = _load_functions(root / "functions.json", objects, links,
                                 required=False)
     # REQ-G-011：维度声明先于规则装载——规则的 dimension 必须是 dimensions.json
     # 已声明的 name（缺省回落内置 5 维）；新增维度在声明文件加一项即被规则引用。
     dim_names = load_dimensions(pack, base_dir)
     rules = _load_rules(root / "rules.json", functions, required=False,
-                        allowed_dimensions=set(dim_names))
+                        allowed_dimensions=set(dim_names),
+                        allowed_jian=allowed_jian)
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
     # REQ-D-007：案件级清洗词表（clean_rules.json，缺失回落内置基线词表）。
     clean_rules = _load_clean_rules(root)
-    return OntologyPack(name=pack, objects=objects, links=links,
-                        object_bindings=object_bindings,
-                        link_bindings=link_bindings,
-                        actions=actions, functions=functions, rules=rules,
-                        clean_rules=clean_rules)
+    result = OntologyPack(name=pack, objects=objects, links=links,
+                          object_bindings=object_bindings,
+                          link_bindings=link_bindings,
+                          actions=actions, functions=functions, rules=rules,
+                          clean_rules=clean_rules)
+    _PACK_CACHE[cache_key] = result
+    return result
 
 
 # REQ-G-011：维度缺省内置集（dimensions.json 缺失时回落，保证旧案件包/精简测试包兼容）
@@ -112,15 +160,21 @@ def _as_dim_list(v) -> list[str]:
     return [x for x in v if x]
 
 
-def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list[str]:
-    """返回维度名有序列表。dimensions.json 缺失 → 内置默认 5 维；存在 → 校验版本/非空。"""
+def load_dimension_declarations(pack: str = "default",
+                                base_dir: Path | None = None) -> list[dict]:
+    """返回维度全量声明 [{name, note, source_object_types}, ...]。
+
+    dimensions.json 缺失 → 内置默认 5 维（仅 name）；存在 → 校验版本/非空/不重复。
+    与 load_jians 同构：名称列表用 load_dimensions，ontology-config 下发/UI 元数据用本函数。
+    """
     root = (base_dir or PACK_ROOT) / pack
     p = root / "dimensions.json"
     if not p.exists():
-        return list(DEFAULT_DIMENSIONS)
+        return [{"name": n, "note": "", "source_object_types": []}
+                for n in DEFAULT_DIMENSIONS]
     data = _read_json(p)
     dims = data.get("dimensions", [])
-    names: list[str] = []
+    out: list[dict] = []
     seen: set[str] = set()
     for i, d in enumerate(dims):
         name = d.get("name") if isinstance(d, dict) else None
@@ -129,10 +183,302 @@ def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list
         if name in seen:
             raise ValueError(f"dimensions.json 维度名重复：{name}")
         seen.add(name)
-        names.append(name)
-    if not names:
+        out.append({
+            "name": name,
+            "note": d.get("note", ""),
+            "source_object_types": d.get("source_object_types", []),
+        })
+    if not out:
         raise ValueError("dimensions.json 声明为空：至少需要一个维度（REQ-G-011）")
-    return names
+    return out
+
+
+def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list[str]:
+    """返回维度名有序列表。dimensions.json 缺失 → 内置默认 5 维；存在 → 校验版本/非空。"""
+    return [d["name"] for d in load_dimension_declarations(pack, base_dir)]
+
+
+# R5：五间声明化加载
+def load_jians(pack: str = "default", base_dir: Path | None = None) -> list[dict]:
+    """返回间类声明列表 [{name, default_clearance, source_object_types}, ...]。
+
+    jians.json 缺失 → 内置 DEFAULT_JIANS 回落；存在 → 校验 name 非空/不重复/非空。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "jians.json"
+    if not p.exists():
+        return [{"name": n, "default_clearance": 1, "source_object_types": []}
+                for n in DEFAULT_JIANS]
+    data = _read_json(p)
+    jians = data.get("jians", [])
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, j in enumerate(jians):
+        name = j.get("name") if isinstance(j, dict) else None
+        if not name:
+            raise ValueError(f"jians.json jians[{i}] 缺 name 字段")
+        if name in seen:
+            raise ValueError(f"jians.json 间类名重复：{name}")
+        seen.add(name)
+        out.append({
+            "name": name,
+            "default_clearance": j.get("default_clearance", 1),
+            "weight": j.get("weight", 1),
+            "source_object_types": j.get("source_object_types", []),
+        })
+    if not out:
+        raise ValueError("jians.json 声明为空：至少需要一个间类（REQ-R5）")
+    return out
+
+
+def load_cross_levels(pack: str = "default",
+                      base_dir: Path | None = None) -> list[dict]:
+    """返回交叉等级声明 [{min_independent_sources, name}, ...]。
+
+    红线：min_independent_sources 的映射（1/2/3）硬编码，只替换名称。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "jians.json"
+    if not p.exists():
+        return [
+            {"min_independent_sources": 1, "name": "观察"},
+            {"min_independent_sources": 2, "name": "线索"},
+            {"min_independent_sources": 3, "name": "可立案依据候选"},
+        ]
+    data = _read_json(p)
+    levels = data.get("cross_levels", [])
+    out: list[dict] = []
+    allowed_sources = {1, 2, 3}
+    for i, lv in enumerate(levels):
+        src = lv.get("min_independent_sources")
+        name = lv.get("name")
+        if src not in allowed_sources:
+            raise ValueError(
+                f"jians.json cross_levels[{i}] min_independent_sources={src} "
+                f"非法，仅允许 {sorted(allowed_sources)}（红线：映射不可配置）")
+        if not name:
+            raise ValueError(f"jians.json cross_levels[{i}] 缺 name 字段")
+        out.append({"min_independent_sources": src, "name": name})
+    return out
+
+
+def load_source_independence(pack: str = "default",
+                             base_dir: Path | None = None) -> dict:
+    """R9：返回 {"related_pairs": [{a, b}, ...]}——同源数据源对声明。
+
+    交叉等级计独立源数时，并查集按这些对合并；校验：
+    a/b 必须为非空字符串、成对、且引用 jians 声明的 source_object_types。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "jians.json"
+    if not p.exists():
+        return {"related_pairs": []}
+    data = _read_json(p)
+    jians = load_jians(pack, base_dir)
+    universe = {t for j in jians for t in (j.get("source_object_types") or [])}
+    sec = data.get("source_independence") or {}
+    if not isinstance(sec, dict):
+        raise ValueError("jians.json source_independence 必须是对象")
+    pairs_raw = sec.get("related_pairs", [])
+    if not isinstance(pairs_raw, list):
+        raise ValueError("jians.json source_independence.related_pairs 必须是数组")
+    pairs: list[dict] = []
+    for i, pr in enumerate(pairs_raw):
+        if not isinstance(pr, dict):
+            raise ValueError(f"jians.json related_pairs[{i}] 必须是对象")
+        a, b = pr.get("a"), pr.get("b")
+        if not isinstance(a, str) or not a.strip():
+            raise ValueError(f"jians.json related_pairs[{i}] 缺非空字符串 a")
+        if not isinstance(b, str) or not b.strip():
+            raise ValueError(f"jians.json related_pairs[{i}] 缺非空字符串 b")
+        a, b = a.strip(), b.strip()
+        if a == b:
+            raise ValueError(f"jians.json related_pairs[{i}] a/b 不得相同：{a}")
+        missing = [x for x in (a, b) if universe and x not in universe]
+        if missing:
+            raise ValueError(
+                f"jians.json related_pairs[{i}] 引用了未声明的 "
+                f"source_object_types：{missing}（全集：{sorted(universe)}）")
+        pairs.append({"a": a, "b": b})
+    return {"related_pairs": pairs}
+
+
+# R6：线索状态机声明化加载
+def load_states(pack: str = "default",
+                base_dir: Path | None = None) -> dict:
+    """返回状态机声明 {"states": [...], "transitions": {...}}。
+
+    states.json 缺失 → 内置默认回落；存在 → 校验 name/迁移目标已声明。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "states.json"
+    if not p.exists():
+        return _default_states()
+    data = _read_json(p)
+    states_raw = data.get("states", [])
+    states: list[dict] = []
+    state_names: set[str] = set()
+    for i, s in enumerate(states_raw):
+        name = s.get("name")
+        if not name:
+            raise ValueError(f"states.json states[{i}] 缺 name 字段")
+        if name in state_names:
+            raise ValueError(f"states.json 状态名重复：{name}")
+        state_names.add(name)
+        state = {
+            "name": name,
+            "label": s.get("label", name),
+            "tone": s.get("tone", "default"),
+            "terminal": s.get("terminal", False),
+            "requires_role": s.get("requires_role", "any"),
+            "requires_basis": s.get("requires_basis", False),
+        }
+        # D2：分态 SLA（天）可选；终态不考核。非负整数校验。
+        if "sla_days" in s and s["sla_days"] is not None:
+            sla = s["sla_days"]
+            if not isinstance(sla, int) or isinstance(sla, bool) or sla < 0:
+                raise ValueError(
+                    f"states.json states[{name}].sla_days 必须为非负整数，"
+                    f"实际：{sla!r}")
+            state["sla_days"] = sla
+        # case_library 结论态映射（可选，与 terminal 解耦：已排除可重开但仍是一种结论）
+        if s.get("outcome"):
+            state["outcome"] = str(s["outcome"])
+        states.append(state)
+    if not states:
+        raise ValueError("states.json 声明为空：至少需要一个状态（REQ-R6）")
+    transitions: dict[str, set[str]] = {}
+    for t in data.get("transitions", []):
+        frm = t.get("from")
+        tos = t.get("to", [])
+        if frm not in state_names:
+            raise ValueError(f"states.json transitions from='{frm}' 未声明")
+        for to in tos:
+            if to not in state_names:
+                raise ValueError(
+                    f"states.json transitions {frm}→'{to}' 目标未声明")
+        transitions.setdefault(frm, set()).update(tos)
+    # 未在 transitions 声明的状态默认为无出边
+    for s in state_names:
+        transitions.setdefault(s, set())
+    return {"states": states, "transitions": transitions}
+
+
+def _default_states() -> dict:
+    """states.json 缺失时的内置回落（与改造前行为一致）。"""
+    states = [
+        {"name": "待查", "label": "待查", "tone": "warning", "terminal": False,
+         "requires_role": "any", "requires_basis": False, "sla_days": 3},
+        {"name": "查证中", "label": "查证中", "tone": "info", "terminal": False,
+         "requires_role": "any", "requires_basis": False, "sla_days": 5},
+        {"name": "已排除", "label": "已排除", "tone": "muted", "terminal": False,
+         "requires_role": "any", "requires_basis": True, "outcome": "excluded"},
+        {"name": "已固证", "label": "已固证", "tone": "success", "terminal": False,
+         "requires_role": "any", "requires_basis": True, "sla_days": 7,
+         "outcome": "verified"},
+        {"name": "已立案", "label": "已立案", "tone": "danger", "terminal": True,
+         "requires_role": "human", "requires_basis": True},
+    ]
+    transitions = {
+        "待查": {"查证中", "已排除", "已固证"},
+        "查证中": {"待查", "已排除", "已固证"},
+        "已排除": {"待查"},
+        "已固证": {"已排除", "已立案"},
+        "已立案": set(),
+    }
+    return {"states": states, "transitions": transitions}
+
+
+# R7：计分声明化加载
+def load_scoring(pack: str = "default",
+                 base_dir: Path | None = None) -> dict:
+    """返回计分声明 {"dimensions": [...], "assumption_confidence": {...}}。
+
+    装载期校验：各 dimension weight 之和 = 1.0（±1e-6）；assumption_confidence 必须有 _default。
+    scoring.json 缺失 → 内置默认回落。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "scoring.json"
+    if not p.exists():
+        return _default_scoring()
+    data = _read_json(p)
+    dims = data.get("dimensions", [])
+    total_weight = sum(d.get("weight", 0) for d in dims)
+    if abs(total_weight - 1.0) > 1e-6:
+        raise ValueError(
+            f"scoring.json 各 dimension weight 之和={total_weight}，"
+            f"必须为 1.0（±1e-6）")
+    ac = data.get("assumption_confidence", {})
+    if "_default" not in ac:
+        raise ValueError("scoring.json assumption_confidence 必须声明 _default")
+    return {"dimensions": dims, "assumption_confidence": ac}
+
+
+def _default_scoring() -> dict:
+    """scoring.json 缺失时的内置回落（与改造前行为一致）。"""
+    return {
+        "dimensions": [
+            {"name": "confidence", "weight": 0.4, "source": "assumption_confidence"},
+            {"name": "jian_coverage", "weight": 0.35, "source": "jian_weight_sum",
+             "normalize": 5.0},
+            {"name": "data_strength", "weight": 0.25, "source": "source_rows_count",
+             "normalize": 10.0, "cap": 1.0},
+        ],
+        "assumption_confidence": {"H1": 0.9, "H4": 0.7, "_default": 0.7},
+    }
+
+
+# R8：派生属性声明化加载
+def load_derived_properties(pack: str = "default",
+                            base_dir: Path | None = None) -> list[dict]:
+    """返回派生属性声明列表 [{name, function, inputs, cache_policy}, ...]。
+
+    装载期校验：name 格式 obj_type.property、function 已声明、AC5 禁令、
+    cache_policy 合法、inputs 引用存在。
+    derived_properties.json 缺失 → 空列表。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "derived_properties.json"
+    if not p.exists():
+        return []
+    data = _read_json(p)
+    pack_obj = load_pack(pack, base_dir)
+    obj_names = {o.name for o in pack_obj.objects}
+    valid_fns = set(pack_obj.functions.keys())
+    valid_policies = {"never", "ttl", "until_source_change", "materialized"}
+    from core.derived import _FORBIDDEN_REGISTRY_NAMES
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, d in enumerate(data.get("properties", [])):
+        ctx = f"derived_properties[{i}]"
+        name = d.get("name")
+        if not name or "." not in name:
+            raise ValueError(f"{ctx} name='{name}' 非法，须为 obj_type.property 格式")
+        obj_type = name.split(".", 1)[0]
+        if obj_type not in obj_names:
+            raise ValueError(
+                f"{ctx} name='{name}' 引用未声明对象 '{obj_type}'，可用 {sorted(obj_names)}")
+        if name in _FORBIDDEN_REGISTRY_NAMES:
+            raise ValueError(
+                f"{ctx} name='{name}' 被禁止注册（AC5：启发式打分留在展示层）")
+        if name in seen:
+            raise ValueError(f"{ctx} 派生属性名重复：{name}")
+        seen.add(name)
+        fn = d.get("function")
+        if fn not in valid_fns:
+            raise ValueError(
+                f"{ctx} function='{fn}' 未在 functions.json 声明（AC3），可用 {sorted(valid_fns)}")
+        policy = d.get("cache_policy", "never")
+        if policy not in valid_policies:
+            raise ValueError(
+                f"{ctx} cache_policy='{policy}' 非法，允许 {sorted(valid_policies)}")
+        out.append({
+            "name": name, "function": fn,
+            "inputs": d.get("inputs", []),
+            "cache_policy": policy,
+        })
+    return out
 
 
 def load_enum_space(pack: str = "default", base_dir: Path | None = None) -> dict | None:
@@ -380,11 +726,11 @@ def _require(d: dict, keys: tuple, ctx: str) -> None:
             raise ValueError(f"ontology 声明 {ctx} 缺必填字段：{k}")
 
 
-def _parse_jian(d: dict, ctx: str) -> tuple[str, str]:
-    """REQ-G-013：读取可选 jian/jian_source；jian 非空时必须在五间枚举内（非法硬失败）。"""
+def _parse_jian(d: dict, ctx: str, allowed_jian: set[str]) -> tuple[str, str]:
+    """REQ-G-013/R5：读取可选 jian/jian_source；jian 非空时必须在已声明间类内（非法硬失败）。"""
     jian = (d.get("jian") or "").strip()
-    if jian and jian not in ALLOWED_JIAN:
-        raise ValueError(f"{ctx} jian='{jian}' 非法，允许 {sorted(ALLOWED_JIAN)}（REQ-G-013）")
+    if jian and jian not in allowed_jian:
+        raise ValueError(f"{ctx} jian='{jian}' 非法，允许 {sorted(allowed_jian)}（REQ-G-013/R5）")
     return jian, (d.get("jian_source") or "").strip()
 
 
@@ -411,10 +757,12 @@ def _load_property_mask_set(root: Path) -> set[tuple[str, str]]:
 
 def _load_objects(path: Path,
                   elements: dict | None = None,
-                  mask_set: set | None = None) -> list[ObjectType]:
+                  mask_set: set | None = None,
+                  allowed_jian: set[str] | None = None) -> list[ObjectType]:
     data = _read_json(path)
     out: list[ObjectType] = []
     seen: set[str] = set()
+    allowed_jian = allowed_jian or set(DEFAULT_JIANS)
     for i, o in enumerate(data.get("objects", [])):
         ctx = f"objects[{i}]"
         _require(o, ("name", "pk", "name_property"), ctx)
@@ -532,7 +880,7 @@ def _load_objects(path: Path,
                     f"{ctx}（{name}）属性 '{p}' 声明为 enum 但未声明 enum_values"
                     f"（REQ-041 AC2：enum 属性必须有白名单）")
 
-        jian, jian_source = _parse_jian(o, f"{ctx}（{name}）")
+        jian, jian_source = _parse_jian(o, f"{ctx}（{name}）", allowed_jian)
         # REQ-P-034：元数据/内容属性排除声明（不参与实体连接与画像）
         md = o.get("metadata_props", [])
         if not isinstance(md, list) or any(
@@ -563,9 +911,11 @@ def _load_objects(path: Path,
 # ----------------------------------------------------------------------
 # links（类型层）
 # ----------------------------------------------------------------------
-def _load_links(path: Path, objects: list[ObjectType]) -> list[LinkType]:
+def _load_links(path: Path, objects: list[ObjectType],
+                allowed_jian: set[str] | None = None) -> list[LinkType]:
     data = _read_json(path)
     obj_names = {o.name for o in objects}
+    allowed_jian = allowed_jian or set(DEFAULT_JIANS)
     out: list[LinkType] = []
     seen: set[str] = set()
     for i, l in enumerate(data.get("links", [])):
@@ -587,7 +937,7 @@ def _load_links(path: Path, objects: list[ObjectType]) -> list[LinkType]:
         bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
         if bad:
             raise ValueError(f"{ctx}（{name}）边属性类型非法：{bad}，允许 {TYPE_NAMES}")
-        jian, jian_source = _parse_jian(l, f"{ctx}（{name}）")
+        jian, jian_source = _parse_jian(l, f"{ctx}（{name}）", allowed_jian)
         endpoints = _parse_endpoints(l, f"{ctx}（{name}）", obj_names)
         out.append(LinkType(
             name=name, title=l.get("title", name),
@@ -1124,9 +1474,19 @@ def _load_bindings(path: Path, objects: list[ObjectType],
 # ----------------------------------------------------------------------
 # actions
 # ----------------------------------------------------------------------
-def _load_actions(path: Path, objects: list[ObjectType]) -> dict[str, ActionSpec]:
+def _reverse_reach_from(transitions: dict[str, set[str]],
+                        target: str) -> tuple[str, ...]:
+    """按包迁移表反推：能一步迁移到 target 的源状态。"""
+    return tuple(src for src, tgts in transitions.items() if target in tgts)
+
+
+def _load_actions(path: Path, objects: list[ObjectType],
+                  allowed_states: set[str] | None = None,
+                  transitions: dict[str, set[str]] | None = None
+                  ) -> dict[str, ActionSpec]:
     data = _read_json(path)
     obj_names = {o.name for o in objects}
+    allowed_states = allowed_states or set(ClueStatus.ALLOWED)
     out: dict[str, ActionSpec] = {}
     for i, a in enumerate(data.get("actions", [])):
         ctx = f"actions[{i}]"
@@ -1135,9 +1495,9 @@ def _load_actions(path: Path, objects: list[ObjectType]) -> dict[str, ActionSpec
         if name in out:
             raise ValueError(f"{ctx} 动作名重复：{name}")
         target = a["target_status"]
-        if target not in ClueStatus.ALLOWED:
+        if target not in allowed_states:
             raise ValueError(f"{ctx}（{name}）target_status='{target}' 非法，"
-                             f"允许 {sorted(ClueStatus.ALLOWED)}")
+                             f"允许 {sorted(allowed_states)}")
         derive = a.get("derive", "reverse_reach")
         if derive not in _DERIVE_RULES:
             raise ValueError(f"{ctx}（{name}）未知 derive 规则：{derive}")
@@ -1161,14 +1521,38 @@ def _load_actions(path: Path, objects: list[ObjectType]) -> dict[str, ActionSpec
                 required=bool(p.get("required", False)),
                 description=p.get("description", ""),
             ))
+        # R6：allowed_from 按【包迁移表】反推（传入 transitions 时），
+        # 否则回落默认表（独立调用/旧测试路径）。
+        allowed_from = (_reverse_reach_from(transitions, target)
+                        if transitions is not None else reverse_reach(target))
+        # D1：only_from 显式收紧可用来源——必须是 allowed_from 子集且引用已声明状态
+        only_from_raw = a.get("only_from")
+        only_from: tuple[str, ...] = ()
+        if only_from_raw is not None:
+            if not isinstance(only_from_raw, list) or not only_from_raw:
+                raise ValueError(
+                    f"{ctx}（{name}）only_from 必须为非空数组，实际：{only_from_raw!r}")
+            bad_states = [s for s in only_from_raw if s not in allowed_states]
+            if bad_states:
+                raise ValueError(
+                    f"{ctx}（{name}）only_from 引用未声明状态：{bad_states}，"
+                    f"允许 {sorted(allowed_states)}")
+            not_reachable = [s for s in only_from_raw if s not in allowed_from]
+            if not_reachable:
+                raise ValueError(
+                    f"{ctx}（{name}）only_from 含无法迁移到 '{target}' 的状态："
+                    f"{not_reachable}，可达来源 {list(allowed_from)}")
+            only_from = tuple(only_from_raw)
         out[name] = ActionSpec(
             name=name, target_status=target,
-            allowed_from=reverse_reach(target),
+            allowed_from=allowed_from,
             parameters=tuple(params),
             requires_role=role,
             side_effects=effects,
             terminal=bool(a.get("terminal", False)),
             description=a.get("description", ""),
+            title=a.get("title") or name,
+            only_from=only_from,
         )
     return out
 
@@ -1220,6 +1604,8 @@ def _load_functions(path: Path, objects: list[ObjectType], links: list[LinkType]
                                  f"可用 {sorted(valid_tables)}")
         params = dict(f.get("parameters", {}))
         _validate_function_params(params, sql if kind == "sql" else None, ctx, name)
+        # R3：requires 依赖声明校验（py 函数真实依赖，装载期硬失败）
+        requires = _validate_requires(f.get("requires", {}), objects, links, ctx, name)
         out[name] = FunctionSpec(
             name=name, title=f.get("title", name),
             inputs=tuple(f.get("inputs", [])),
@@ -1227,8 +1613,51 @@ def _load_functions(path: Path, objects: list[ObjectType], links: list[LinkType]
             parameters=params,
             impl_ref=impl_ref, sql=sql,
             description=f.get("description", ""),
+            requires=requires,
         )
     return out
+
+
+def _validate_requires(requires: dict, objects: list, links: list,
+                       ctx: str, name: str) -> dict:
+    """R3：校验 FunctionSpec.requires 声明。
+
+    schema: {"objects": [...], "links": [...], "props": {obj_name: [prop, ...]}}
+    - objects/links 必须已在 ontology 声明
+    - props 的属性必须存在于对应对象
+    未声明硬失败（fail-closed）。
+    """
+    if not requires:
+        return {}
+    obj_names = {o.name for o in objects}
+    link_names = {l.name for l in links}
+    obj_props = {o.name: set(o.properties.keys()) for o in objects}
+
+    req_objects = requires.get("objects", [])
+    req_links = requires.get("links", [])
+    req_props = requires.get("props", {})
+
+    for o in req_objects:
+        if o not in obj_names:
+            raise ValueError(
+                f"{ctx}（{name}）requires.objects 引用未声明对象：'{o}'，"
+                f"可用 {sorted(obj_names)}")
+    for l in req_links:
+        if l not in link_names:
+            raise ValueError(
+                f"{ctx}（{name}）requires.links 引用未声明链接：'{l}'，"
+                f"可用 {sorted(link_names)}")
+    for obj_name, props in req_props.items():
+        if obj_name not in obj_names:
+            raise ValueError(
+                f"{ctx}（{name}）requires.props 引用未声明对象：'{obj_name}'")
+        for p in props:
+            if p not in obj_props.get(obj_name, set()):
+                raise ValueError(
+                    f"{ctx}（{name}）requires.props.{obj_name} 引用未声明属性：'{p}'，"
+                    f"可用 {sorted(obj_props.get(obj_name, set()))}")
+    return {"objects": list(req_objects), "links": list(req_links),
+            "props": dict(req_props)}
 
 
 def _validate_function_params(params: dict, sql: str | None, ctx: str, name: str) -> None:
@@ -1291,7 +1720,8 @@ def _validate_assumption(assumption: str, ctx: str, rid: str) -> str:
 
 def _load_rules(path: Path, functions: dict[str, FunctionSpec],
                 required: bool,
-                allowed_dimensions: set | None = None) -> dict[str, RuleSpec]:
+                allowed_dimensions: set | None = None,
+                allowed_jian: set | None = None) -> dict[str, RuleSpec]:
     if not path.exists():
         if required:
             raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
@@ -1300,6 +1730,8 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
     from core import functions as fn_mod
     # REQ-G-011：合法维度集来自 dimensions.json 声明（缺省回落内置 5 维）
     _dims = allowed_dimensions if allowed_dimensions is not None else set(DEFAULT_DIMENSIONS)
+    # R5：合法间类集来自 jians.json 声明（缺省回落 DEFAULT_JIANS）
+    _jians = allowed_jian if allowed_jian is not None else set(DEFAULT_JIANS)
 
     out: dict[str, RuleSpec] = {}
     for i, r in enumerate(data.get("rules", [])):
@@ -1316,9 +1748,9 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             raise ValueError(f"{ctx}（{rid}）dimension='{dimension}' 非法，"
                              f"须在 dimensions.json 声明，可用 {sorted(_dims)}（REQ-G-011）")
         jian = tuple(r.get("jian_types", []))
-        bad_jian = set(jian) - ALLOWED_JIAN
+        bad_jian = set(jian) - _jians
         if bad_jian:
-            raise ValueError(f"{ctx}（{rid}）jian_types 非法：{sorted(bad_jian)}，允许 {sorted(ALLOWED_JIAN)}")
+            raise ValueError(f"{ctx}（{rid}）jian_types 非法：{sorted(bad_jian)}，允许 {sorted(_jians)}")
         hit_when = r["hit_when"]
         if hit_when not in ALLOWED_HIT_WHEN:
             raise ValueError(f"{ctx}（{rid}）hit_when='{hit_when}' 非法，允许 {sorted(ALLOWED_HIT_WHEN)}")

@@ -12,6 +12,7 @@ import { cluesApi, type ClueListItem } from '../api/endpoints/clues'
 import { presentError } from '../api/errors'
 import { toBoardCard, type BoardCard } from '../domain/board'
 import type { ClueAction } from '../domain/clue'
+import { useCaseOntologyConfig } from '../composables/useCaseOntologyConfig'
 import DisposalBoard from '../components/board/DisposalBoard.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 
@@ -20,15 +21,21 @@ const auth = useAuthStore()
 const health = useHealthStore()
 const router = useRouter()
 const message = useMessage()
+const { config: ontologyCfg } = useCaseOntologyConfig()
 
 const loading = ref(false)
 const errorMsg = ref('')
-const cards = ref<BoardCard[]>([])
+const rawItems = ref<ClueListItem[]>([])
 const busyId = ref('')
+
+// 声明到达后（异步拉取）即时重算 SLA/超期，不重复请求列表
+const cards = computed<BoardCard[]>(() =>
+  rawItems.value.map((c) => toBoardCard(c, ontologyCfg.value)),
+)
 
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
-    cards.value = []
+    rawItems.value = []
     return
   }
   loading.value = true
@@ -36,7 +43,7 @@ async function load(): Promise<void> {
   try {
     // 看板按状态分列，取大批量（page_size=200）；默认服务端时间倒序
     const page = await cluesApi.list(cs.currentCaseId, { page: 1, page_size: 200 })
-    cards.value = (page.items as ClueListItem[]).map((c) => toBoardCard(c))
+    rawItems.value = page.items as ClueListItem[]
   } catch (e) {
     errorMsg.value = presentError(e).title
   } finally {

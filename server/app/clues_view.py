@@ -17,15 +17,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from core.access import ROLE_RANK
+from core.access import can_see_jian_types
 from core.registry import ClueStatus
 
+from server.app import ontology_meta
 from server.app.clues_artifact import (
     artifact_path,
     latest_artifact_version,
 )
-
-_NEIJIAN = "内间"
 
 
 def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | None]:
@@ -56,10 +55,6 @@ def _status_of(raw: dict, state_map: dict[str, dict]) -> dict:
             "updated_at": "", "status_source": "artifact"}
 
 
-def _can_see_neijian(role: str) -> bool:
-    return ROLE_RANK.get(role, 1) >= ROLE_RANK["偏将"]
-
-
 def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
     det = raw.get("detail") or {}
     return {
@@ -73,6 +68,9 @@ def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
         "dimension": det.get("维度") or det.get("dimension"),
         "priority_rank": det.get("priority_rank"),
         "priority_score": det.get("priority_score"),
+        "score_basis": det.get("score_basis"),
+        "score_formula": det.get("score_formula"),
+        "score_source": det.get("score_source"),
         "source_row_count": len(raw.get("source_rows") or []),
         "merged_from": det.get("merged_from") or [],
         **_status_of(raw, state_map),
@@ -102,15 +100,20 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
                   level: str | None = None, dimension: str | None = None,
                   jian: str | None = None, subject: str | None = None,
                   status: str | None = None,
-                  page: int = 1, page_size: int = 50) -> dict:
+                  page: int = 1, page_size: int = 50,
+                  pack_id: str = "default",
+                  ontology_base: str | Path | None = None) -> dict:
     """线索列表（筛选/排序/分页）。返回信封 data 结构。"""
     raws, art_ver = _load_raw(Path(case_dir), version)
-    see_neijian = _can_see_neijian(role)
+    # R5：间类可见性按 jians.json default_clearance × 角色密级对照判定，
+    # 不再硬编码内间（受护间随包声明变化，未知间类 fail-closed）。
+    jian_clearances = ontology_meta.jian_clearances(pack_id, ontology_base)
     filtered_hidden = 0
     items: list[dict] = []
     for raw in raws:
         jts = raw.get("jian_types") or []
-        if not see_neijian and _NEIJIAN in jts:
+        if not can_see_jian_types(jts, role=role,
+                                 jian_clearances=jian_clearances):
             filtered_hidden += 1
             continue
         item = _base_item(raw, state_map)
@@ -137,7 +140,7 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
         out["note"] = "案件尚未产出线索（先运行 BUILD/RESCAN）"
     if filtered_hidden:
         out["access_note"] = (
-            f"role={role}：按对象策略过滤内间线索 {filtered_hidden} 条（REQ-011）")
+            f"role={role}：按间类密级策略过滤线索 {filtered_hidden} 条（REQ-011）")
     return out
 
 

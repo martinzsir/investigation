@@ -20,17 +20,33 @@ from typing import Any
 
 _GENESIS_HASH = "0" * 64
 
-# REQ-G-025：线索处置事件识别——after 快照含线索状态机五态之一的 status，
+# REQ-G-025：线索处置事件识别——after 快照含线索状态机状态之一的 status，
 # 且不含提案/参数集/导出等其他审计事件的特征键（这些事件也可能带 status 键）。
-_DISPOSAL_STATUS = ("待查", "查证中", "已排除", "已固证", "已立案")
+# R6：状态集从默认包 states.json 派生（审计链写入处无案件包上下文，用默认包；
+# PACK_ROOT 为绝对路径），装载失败回落下方默认包快照常量。
+_DISPOSAL_STATUS_FALLBACK = ("待查", "查证中", "已排除", "已固证", "已立案")
 _DISPOSAL_EXCLUDE_KEYS = ("proposal_id", "proposal", "set_id", "action")
+_disposal_status_cache: tuple[str, ...] | None = None
+
+
+def disposal_statuses() -> tuple[str, ...]:
+    """默认包线索状态机状态集（懒加载、缓存；失败回落内置快照）。"""
+    global _disposal_status_cache
+    if _disposal_status_cache is None:
+        try:
+            from core.ontology_loader import load_states
+            _disposal_status_cache = tuple(
+                s["name"] for s in load_states("default")["states"])
+        except Exception:
+            _disposal_status_cache = _DISPOSAL_STATUS_FALLBACK
+    return _disposal_status_cache
 
 
 def _is_disposal_event(after: Any) -> bool:
     """after_state 是否为线索处置状态变更事件（verify/exclude/confirm/file）。"""
     if not isinstance(after, dict):
         return False
-    if after.get("status") not in _DISPOSAL_STATUS:
+    if after.get("status") not in disposal_statuses():
         return False
     return not any(k in after for k in _DISPOSAL_EXCLUDE_KEYS)
 

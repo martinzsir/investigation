@@ -303,6 +303,8 @@ class CluesReadTest(unittest.TestCase):
     def test_dashboard_disposal_counts_from_state(self):
         self.make_case("c1")
         self._dispose("clue-a", "verify")
+        # D1：confirm 声明 only_from=["查证中"]，待查态不可直接固证
+        self._dispose("clue-b", "verify")
         self._dispose("clue-b", "confirm")
         r = self.client.get("/api/v1/cases/c1/dashboard", headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)

@@ -1,37 +1,46 @@
 <script setup lang="ts">
 // FE-C-001 StatusBadge：5 态/间类/优先级，色+图标+文字三重编码。
+// R5/R6：状态样式取 states 声明 tone；交叉等级按 cross_levels 声明的
+// min_independent_sources 序号映射配色（名称可变，1/2/3 红线不变）；
+// 房间色板走 tokens.jianRoomVar（侦查维度名声明化）。
 import { computed } from 'vue'
-import { STATUS_META, type ClueStatus, type CrossLevel, ANOMALY_LEVEL } from '../../domain/clue'
+import { ANOMALY_LEVEL, statusMetaOf, type StatusMeta } from '../../domain/clue'
+import { jianRoomVar } from '../../design/tokens'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 
 const props = defineProps<{
   variant: 'status' | 'level' | 'room'
   value: string
 }>()
 
-const statusMeta = computed(() =>
-  props.variant === 'status' ? STATUS_META[props.value as ClueStatus] : null,
-)
+const { config: cfg } = useCaseOntologyConfig()
 
-/** 交叉等级配色：观察=灰、线索=青、可立案依据候选=金；异常待核实=琥珀 */
+// 未声明状态不出徽章（旧 STATUS_META[未知]=undefined 同语义）
+const statusMeta = computed<StatusMeta | null>(() => {
+  if (props.variant !== 'status') return null
+  if (!cfg.value.states.some((s) => s.name === props.value)) return null
+  return statusMetaOf(props.value, cfg.value)
+})
+
+/**
+ * 交叉等级配色：按声明序号（min_independent_sources）映射——
+ * 1=观察灰、2=线索青、3=候选金；异常待核实=琥珀。
+ * 名称可配（cross_levels[].name），映射不可配。
+ */
 const levelClass = computed(() => {
   if (props.variant !== 'level') return ''
   if (props.value === ANOMALY_LEVEL) return 'level--pending'
-  if (props.value === ('可立案依据候选' satisfies CrossLevel)) return 'level--candidate'
-  if (props.value === ('线索' satisfies CrossLevel)) return 'level--clue'
+  const decl = cfg.value.cross_levels.find((l) => l.name === props.value)
+  const n = decl?.min_independent_sources
+  if (n === 3) return 'level--candidate'
+  if (n === 2) return 'level--clue'
+  if (n === 1) return 'level--watch'
   return 'level--watch'
 })
 
-const roomVar = computed(() => {
-  if (props.variant !== 'room') return ''
-  const map: Record<string, string> = {
-    资金: 'var(--sun-jian-fund)',
-    通讯: 'var(--sun-jian-comms)',
-    行为: 'var(--sun-jian-behavior)',
-    关系: 'var(--sun-jian-relation)',
-    时间: 'var(--sun-jian-time)',
-  }
-  return map[props.value] ?? 'var(--sun-text-tertiary)'
-})
+const roomVar = computed(() =>
+  props.variant === 'room' ? jianRoomVar(props.value) : '',
+)
 </script>
 
 <template>
