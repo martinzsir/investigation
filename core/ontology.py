@@ -390,6 +390,33 @@ def _table_exists(conn, table: str) -> bool:
     ).fetchone()[0] > 0
 
 
+def _localize_spec(spec):
+    """DEFECT-FIX P0-1b：本次构建专用的 binding 副本（不污染进程级包缓存）。
+
+    load_pack() 返回的对象来自 core/ontology_loader._PACK_CACHE，同进程内多次 build
+    共享同一个 python 实例。历史上 _compute_object_rows 会把「本次源表缺失 → 裁剪
+    UNION 分支」的结果就地写回 binding.source_sql，等价于永久改写包声明：后续即使
+    补传了该源表，重建结果也纹丝不动，只有重启进程才恢复（demoD obj_person 少 8 人
+    即此因，见 docs/diag-demoD-rootcause-2026-09-11.md）。
+
+    本函数是第二道防线：即便将来有人再次写回 b.xxx，影响范围也只限于本次构建的副本。
+    任何异常都安静回落原 spec，不改变既有行为。
+    """
+    import dataclasses as _dc
+    try:
+        if not _dc.is_dataclass(spec) or isinstance(spec, type):
+            return spec
+        obj_b = getattr(spec, "object_bindings", None)
+        link_b = getattr(spec, "link_bindings", None)
+        if isinstance(obj_b, dict):
+            obj_b = {k: _dc.replace(v) for k, v in obj_b.items()}
+        if isinstance(link_b, dict):
+            link_b = {k: _dc.replace(v) for k, v in link_b.items()}
+        return _dc.replace(spec, object_bindings=obj_b, link_bindings=link_b)
+    except Exception:                                    # noqa: BLE001 防御性回落
+        return spec
+
+
 def build_ontology(conn, pack: str = "default", base_dir=None) -> dict:
     """
     从 ontology/<pack> 声明编译 obj_* / lnk_* 语义表（幂等，可重跑）。
@@ -402,7 +429,7 @@ def build_ontology(conn, pack: str = "default", base_dir=None) -> dict:
     案件构建只读取建案时锁定的包声明，平台包后续升级不影响在办案件。
     """
     from core.ontology_loader import load_pack
-    spec = load_pack(pack, base_dir=Path(base_dir) if base_dir else None)
+    spec = _localize_spec(load_pack(pack, base_dir=Path(base_dir) if base_dir else None))
 
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
                    "degraded": [], "clean_stats": [], "quarantine": [],
@@ -988,6 +1015,12 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     使合并后的实体共享同一代理键。
     """
     src_table = b.source_table or _guess_source_table(b.source_sql)
+    # DEFECT-FIX P0-1：本次 effective SQL 一律走局部变量 src_sql，禁止写回 b.source_sql。
+    # b 来自 load_pack() 的进程级缓存 _PACK_CACHE（core/ontology_loader），多次 build 复用
+    # 同一 python 对象；写回会把"当次源表缺失造成的裁剪"固化给后续所有构建——
+    # 症状：补传源表后重跑 BUILD，行数纹丝不动，只有重启进程才恢复。
+    # 降级（UNION 分支裁剪 / 可选列置 NULL）是**当次数据面**的决策，不得污染声明层。
+    src_sql = b.source_sql
     if not _table_exists(conn, src_table):
         if stats is not None:
             tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
@@ -997,14 +1030,14 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     # 引用缺失表的分支剔除后再编译，避免 CatalogException 拖垮整个 BUILD；
     # 全部分支缺失按源表缺失同口径跳过（如 obj_person 六源仅按需聚合）。
     if b.source_sql and re.search(r"\bUNION\b", b.source_sql, re.IGNORECASE):
-        pruned, dropped = _prune_union_sql(conn, b.source_sql)
+        pruned, dropped = _prune_union_sql(conn, src_sql)
         if pruned is None:
             if stats is not None:
                 tag = "(源表缺失,optional)" if b.optional else "(源表缺失)"
                 stats["skipped"].append(f"obj_{otype.name}{tag}")
             return None
         if dropped:
-            b.source_sql = pruned
+            src_sql = pruned
             if stats is not None:
                 stats.setdefault("degraded", []).append(
                     f"obj_{otype.name} 部分源表未导入，UNION 分支已裁剪: {dropped}")
@@ -1034,7 +1067,7 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                         f"obj_{otype.name} 必填源列缺失 {req_missing}（源表 {src_table} "
                         f"实际列 {sorted(avail)}）——补数据，或在 bindings.json 该 binding "
                         f"声明 optional_columns（仅限可空属性）")
-                b.source_sql = _rerender_source_sql(b, set(missing))
+                src_sql = _rerender_source_sql(b, set(missing))
                 if stats is not None:
                     stats["degraded"].append(
                         f"obj_{otype.name} 可选源列缺失 {missing}（已降级类型化 NULL）")
@@ -1065,7 +1098,7 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                     f"obj_{otype.name}.{alias}<-{raw}: {n} 行不可转 {t}（已置 NULL）")
     try:
         q = (f"SELECT {otype.name_property}, * EXCLUDE ({otype.name_property}) "
-             f"FROM ({b.source_sql})")
+             f"FROM ({src_sql})")
         rows = conn.execute(q).fetchall()
         cols = [d[0] for d in conn.execute(q + " LIMIT 0").description]
     except Exception as e:
@@ -1238,7 +1271,7 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     """
     from core.ontology_loader import load_pack
     from core.ontology_version import compute_version, record_version
-    spec = load_pack(pack)
+    spec = _localize_spec(load_pack(pack))   # DEFECT-FIX P0-1b：增量路径同样隔离包缓存
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": [],

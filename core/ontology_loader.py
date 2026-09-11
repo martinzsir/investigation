@@ -418,14 +418,14 @@ def load_scoring(pack: str = "default",
 
 
 def _default_scoring() -> dict:
-    """scoring.json 缺失时的内置回落（与改造前行为一致）。"""
+    """scoring.json 缺失时的内置回落（与内置包 scoring.json 同口径 v3）。"""
     return {
         "dimensions": [
             {"name": "confidence", "weight": 0.4, "source": "assumption_confidence"},
             {"name": "jian_coverage", "weight": 0.35, "source": "jian_weight_sum",
              "normalize": 5.0},
             {"name": "data_strength", "weight": 0.25, "source": "source_rows_count",
-             "normalize": 10.0, "cap": 1.0},
+             "normalize": 50.0, "cap": 1.0, "curve": "log"},
         ],
         "assumption_confidence": {"H1": 0.9, "H4": 0.7, "_default": 0.7},
     }

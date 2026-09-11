@@ -93,7 +93,8 @@ def _heatmap(raws: list[dict], jian_names: list[str],
     return {"jians": jian_names, "levels": level_names, "counts": counts}
 
 
-def _candidates(raws: list[dict], state_map: dict[str, dict]) -> list[dict]:
+def _candidates(raws: list[dict], state_map: dict[str, dict],
+                level_ranks: dict[str, int] | None = None) -> list[dict]:
     out: list[dict] = []
     for raw in raws:
         st = _status_of(raw, state_map)
@@ -113,7 +114,9 @@ def _candidates(raws: list[dict], state_map: dict[str, dict]) -> list[dict]:
             "score_source": det.get("score_source"),
             "reason": str(reason)[:80],
         })
+    # P0-1：等级主序 → 分数降序 → clue_id 稳定（与列表/看板三页同序）
     out.sort(key=lambda c: (
+        ontology_meta.level_sort_rank(c["level"], level_ranks),
         -(c["priority_score"] if isinstance(c["priority_score"],
                                             (int, float)) else -1),
         c["clue_id"] or ""))
@@ -151,6 +154,8 @@ def assemble_hypotheses(*, case_dir: str | Path, state_map: dict[str, dict],
         "derived": True,
         "coverage": _coverage(_diag_rows(conn), total_dims),
         "heatmap": _heatmap(visible, jian_names, level_names),
-        "candidates": _candidates(visible, state_map),
+        "candidates": _candidates(
+            visible, state_map,
+            ontology_meta.cross_level_rank(pack, base_dir)),
         "restricted": restricted,
     }

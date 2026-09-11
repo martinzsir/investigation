@@ -90,6 +90,28 @@ class TestDataFreshness(unittest.TestCase):
             s = rh.summary()
             self.assertGreaterEqual(s["by_kind"].get("data_freshness_stale", 0), 1)
 
+    def test_AC6_future_date_alerted(self):
+        """未来日期不再被判"数据新鲜"（demoD 四张表各 1 行 2099 的回归）。"""
+        with _pack([("张三", "2024-03-01"), ("李四", "2099-01-01")]) as conn:
+            rh = RunHealth(conn)
+            r = scan(_gw(conn), health=rh, as_of=_AS_OF, stale_days=180)
+            self.assertEqual(r["future"], 1)
+            self.assertEqual(r["stale"], 0,
+                             "未来日期不应同时计入超期")
+            self.assertEqual(r["objects"][0]["age_days"],
+                             (_AS_OF - dt.date(2099, 1, 1)).days,
+                             "负账龄保留在返回值里，便于前端判断方向")
+            s = rh.summary()
+            self.assertGreaterEqual(s["by_kind"].get("data_freshness_future", 0), 1)
+
+    def test_AC6_today_is_not_future(self):
+        """当日/次日数据不算未来（容差吸收时区与提前录入）。"""
+        with _pack([("张三", "2025-09-06"), ("李四", "2025-09-07")]) as conn:
+            rh = RunHealth(conn)
+            r = scan(_gw(conn), health=rh, as_of=_AS_OF, stale_days=180)
+            self.assertEqual(r["future"], 0)
+            self.assertEqual(r["stale"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

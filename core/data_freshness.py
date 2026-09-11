@@ -11,6 +11,10 @@ source=data_freshness，回答"数据本身多久没更新"。
 
 空时间属性不误报（AC-3）：对象的时间列全为 NULL / 无 date 属性 → 跳过，不判"很旧"。
 只告警不阻断；样本不落明细（时间非敏感，但仍只读）。
+
+未来日期（AC-6）：数据时间晚于参照日期超过容差（默认 1 天，吸收当日提前录入与时区差）
+→ kind=data_freshness_future 告警。修之前 age 为负天数，`age > stale_days` 恒假，
+2099-01-01 这类脏值/时区错误被判"数据新鲜"静默通过（demoD 四张表各 1 行）。
 """
 from __future__ import annotations
 
@@ -39,12 +43,14 @@ def _to_date(v):
 
 
 def scan(gateway, *, health=None, stale_days: int = 180, as_of=None,
-         base_dir: "Path | None" = None) -> dict:
-    """扫描各含时间属性对象的最新数据时间，超期告警。
+         base_dir: "Path | None" = None,
+         future_tolerance_days: int = 1) -> dict:
+    """扫描各含时间属性对象的最新数据时间，超期（或超前）告警。
 
     stale_days：超期阈值（天，默认 180≈半年，AC-2 可配）；as_of：参照日期
-    （测试注入，默认 date.today()）。返回 {objects, stale, stale_days, as_of}。
+    （测试注入，默认 date.today()）。返回 {objects, stale, future, stale_days, as_of}。
     base_dir：案件快照 ontology 根（缺省 None = 模板包，CLI/MCP 行为不变）。
+    future_tolerance_days：允许数据时间早于参照日期的容差（默认 1 天）。
     """
     rh = get_health(health)
     pack = gateway.explain()["pack"]
@@ -55,6 +61,7 @@ def scan(gateway, *, health=None, stale_days: int = 180, as_of=None,
 
     objects_fresh: list[dict] = []
     stale = 0
+    future = 0
     for o in spec.objects:
         if o.runtime or o.name not in mat:
             continue
@@ -72,12 +79,20 @@ def scan(gateway, *, health=None, stale_days: int = 180, as_of=None,
             entry = {"object": o.name, "property": prop,
                      "latest": str(latest_d), "age_days": age}
             objects_fresh.append(entry)
-            if age > stale_days:
+            if age < -max(0, future_tolerance_days):
+                future += 1          # AC-6：未来日期不再被判"数据新鲜"
+                rh.record(
+                    "data_freshness_future", "warning", source="data_freshness",
+                    reason=(f"{o.name}.{prop} 最新数据时间 {latest_d} 晚于参照日期 "
+                            f"{ref}（超前 {-age} 天 > 容差 {future_tolerance_days} 天）"
+                            f"——疑似日期格式/时区错误或脏值，请复核源数据"),
+                    **entry)
+            elif age > stale_days:
                 stale += 1
                 rh.record(
                     "data_freshness_stale", "warning", source="data_freshness",
                     reason=(f"{o.name}.{prop} 最新数据时间 {latest_d}，距今 {age} 天"
                             f" > 阈值 {stale_days} 天（数据时间旧；与本体版本 FRESH/STALE 无关）"),
                     **entry)
-    return {"objects": objects_fresh, "stale": stale,
+    return {"objects": objects_fresh, "stale": stale, "future": future,
             "stale_days": stale_days, "as_of": str(ref)}

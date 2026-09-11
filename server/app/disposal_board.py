@@ -156,9 +156,11 @@ def assemble_board(*, case_dir: str | Path, state_map: dict[str, dict],
         counts[status] += 1
         total += 1
 
-    # 泳道内按 priority_score 降序（None 垫底），clue_id 稳定
+    # 泳道内排序（P0-1，与线索列表同口径）：等级主序 → 分数降序 → clue_id 稳定
+    level_ranks = ontology_meta.cross_level_rank(pack, snapshot_base)
     for cards in columns.values():
         cards.sort(key=lambda c: (
+            ontology_meta.level_sort_rank(c["level"], level_ranks),
             -(c["priority_score"] if isinstance(c["priority_score"],
                                                 (int, float)) else -1),
             c["clue_id"] or ""))

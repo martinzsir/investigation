@@ -209,6 +209,8 @@ GROUPS = {
     "jiansdecl":  ("R5/R9 五间声明化 jians.json", [sys.executable, "-m", "unittest", "tests.test_jians_decl"]),
     "statesdecl": ("R6/R10 状态机声明化 states.json", [sys.executable, "-m", "unittest", "tests.test_states_decl"]),
     "scoringdecl":("R7/R12/R13 计分声明化 scoring.json+score_basis", [sys.executable, "-m", "unittest", "tests.test_scoring_decl"]),
+    "scoringv3":  ("P1-3/P0-1/P1-0c 计分 v3（对数曲线+等级主序+0 间类兜底）", [sys.executable, "-m", "unittest", "tests.test_scoring_v3"]),
+    "pollution":  ("包缓存污染防护（多源 UNION 裁剪/缺列降级不写回 binding）", [sys.executable, "-m", "unittest", "tests.test_spec_pollution"]),
     "etldraft":     ("v1.3 Phase 4 ETL 处置草稿三分类+预演+双表分离", [sys.executable, "-m", "unittest", "tests.test_etl_drafts"]),
 }
 

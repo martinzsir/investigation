@@ -121,8 +121,12 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
                         jian=jian, subject=subject, status=status):
             continue
         items.append(item)
-    # 排序：priority_score 降序（None 垫底），其次 priority_rank、clue_id 稳定
+    # 排序（P0-1）：等级主序（声明推导，候选级恒在前；未知/待核实垫底），
+    # 同级内 priority_score 降序（None 垫底），其次 priority_rank、clue_id 稳定。
+    # 红线：等级只由独立源数决定，分数仅在同级组内排序，不参与定性。
+    level_ranks = ontology_meta.cross_level_rank(pack_id, ontology_base)
     items.sort(key=lambda x: (
+        ontology_meta.level_sort_rank(x.get("level"), level_ranks),
         -(x.get("priority_score") if isinstance(x.get("priority_score"),
                                                  (int, float)) else -1),
         x.get("priority_rank") or 999,

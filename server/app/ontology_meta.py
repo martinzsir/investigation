@@ -9,6 +9,7 @@ Server 侧 ontology 声明读助手（六项解耦 R5/R6 共用）。
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from core.ontology_loader import (
     load_cross_levels,
@@ -48,6 +49,30 @@ def cross_level_names(pack: str = "default",
     levels = load_cross_levels(pack, base)
     return [lv["name"] for lv in
             sorted(levels, key=lambda x: x["min_independent_sources"])]
+
+
+#: 未声明/未知等级（旧产物无 cross_level、异常通道"待核实"）的排序位——垫底。
+UNKNOWN_LEVEL_RANK = 999
+
+
+def cross_level_rank(pack: str = "default",
+                     base_dir: str | Path | None = None) -> dict[str, int]:
+    """{等级名: 排序权重}，独立源数越多越靠前（0 最优）。
+
+    P0-1：等级作主序——「可立案依据候选」恒排在「观察」之前，分数仅在同级组内生效。
+    等级序从 jians.json cross_levels 声明推导（不硬编码名称/数量）。
+    未命中的等级（未知/待核实）由调用方用 UNKNOWN_LEVEL_RANK 垫底。
+    """
+    names = cross_level_names(pack, base_dir)  # 按 min_independent_sources 升序
+    return {name: len(names) - 1 - i for i, name in enumerate(names)}
+
+
+def level_sort_rank(level: Any, ranks: dict[str, int] | None = None) -> int:
+    """等级 → 排序位（未声明等级垫底）。ranks 为空时全部垫底。"""
+    s = str(level or "").strip()
+    if not s or not ranks:
+        return UNKNOWN_LEVEL_RANK
+    return ranks.get(s, UNKNOWN_LEVEL_RANK)
 
 
 def dimension_names(pack: str = "default",

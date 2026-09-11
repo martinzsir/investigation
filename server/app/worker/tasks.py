@@ -61,6 +61,32 @@ ProgressCb = Callable[[float, str, str, str], None]
 BuilderFn = Callable[..., dict[str, Any]]
 
 
+def _emit_build_warnings(conn, repo: MetaRepo, case_id: str, version: int,
+                         result: Any, progress: ProgressCb) -> Any:
+    """把 builder 返回的 build_stats 里的降级/跳提升为可见告警。
+
+    落两处：案件 run_diagnostic（随版本文件，健康度/仪表盘可读）+ 平台
+    ops_events(kind=build_degraded)（任务面板可读）；同时回写 result["warnings"]，
+    由 handle_build 汇总进返回体。诊断落盘失败只 ops 留痕，不回滚已生效构建。
+    """
+    if not isinstance(result, dict):
+        return result
+    stats = result.get("build_stats")
+    if not isinstance(stats, dict):
+        return result
+    warnings = (list(stats.get("degraded") or [])
+                + list(stats.get("skipped") or []))
+    if not warnings:
+        return result
+    result["warnings"] = warnings
+    repo.record_ops("build_degraded", case_id,
+                    {"version": version, "degraded": n_deg, "skipped": n_skip,
+                     "warnings": warnings[:20]})
+    progress(92.0, "degraded", "构建降级留痕",
+             f"{len(warnings)} 项降级/跳过已进诊断与运维事件")
+    return result
+
+
 def default_builder(conn, *, pack: str, base_dir: Path,
                     progress: ProgressCb) -> dict[str, Any]:
     """默认 BUILD 构建器：core build_ontology（案件快照包）。"""
@@ -133,6 +159,12 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
         result = builder(
             store.write_conn, pack=case.pack_id,
             base_dir=snapshot_base_for(case.id), progress=progress)
+        # W-030：构件降级/跳过不再静默——过去 build_stats 的 degraded/skipped
+        # 只落 artifacts 文件，server 侧无消费方，Web 端 BUILD 显示 SUCCEEDED 却
+        # 少数据（demoD：银行流水晚到 5 秒 → person 少 8 人，全程无告警）。
+        # 这里落案件 run_diagnostic（随版本）+ 平台 ops_events（UI 可见）。
+        result = _emit_build_warnings(store.write_conn, repo, case.id, nxt,
+                                      result, progress)
     finally:
         store.close()
 
@@ -213,7 +245,8 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
                              "error": f"{type(e).__name__}: {e}"})
 
     progress(100.0, "done", "构建完成", f"v{nxt} 已生效")
-    summary = {k: result.get(k) for k in ("objects", "links", "skipped")} \
+    summary = {k: result.get(k) for k in
+               ("objects", "links", "skipped", "warnings")} \
         if isinstance(result, dict) else {}
     return {"version": nxt, "stats": summary}
 

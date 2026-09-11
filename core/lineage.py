@@ -19,6 +19,7 @@ core/lineage.py
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from typing import Optional
 
@@ -138,12 +139,17 @@ def dedupe_and_merge(
 # 用间交叉升格（合并后的副产品）
 # ----------------------------------------------------------------------
 
-def _cross_level_name_single(n: int, pack: str = "default") -> str:
+def _cross_level_name_single(n: int, pack: str = "default") -> str | None:
     """单条线索的交叉等级名：按自身 jian_types 独立源数映射。
 
     与 core/functions._cross_level_name 同口径（1/2/3 硬编码，
     名称从 jians.json cross_levels 读取），但是线索级而非案件级。
+
+    P1-0c：n<=0（无间类/异常通道线索）返回 None——0 个独立源不是"观察"，
+    让读面回落到 detail.级别（异常通道恒"待核实"），避免异常线索被误标等级。
     """
+    if n <= 0:
+        return None
     try:
         from core.ontology_loader import load_cross_levels
         for lv in load_cross_levels(pack):
@@ -207,6 +213,11 @@ def _jian_weights(pack: str = "default") -> dict[str, int]:
         return {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 1}
 
 
+# 计分口径版本：随 scoring.json 消费方式变更而 bump，产物自带该标识可审计。
+# v1 硬编码权重 → v2 权重声明化（R7） → v3 data_strength 曲线声明化（P1-3）
+_SCORE_SOURCE = "scoring.json@v3"
+
+
 def prioritize_clues(
     clues: list[LineageClue],
     assumption_confidence: Optional[dict[str, float]] = None,
@@ -220,7 +231,9 @@ def prioritize_clues(
         score = confidence*w_conf + jian_coverage*w_jian + data_strength*w_data
         confidence     : 假设置信度（默认 H1=0.9, 其余=0.7）
         jian_coverage  : 命中间类的最大权重 / 5
-        data_strength  : min(1.0, 溯源行数 / 10)
+        data_strength  : 曲线由 scoring.json data_strength.curve 声明
+                         linear → min(cap, 行数/normalize)
+                         log    → min(cap, log1p(行数)/log1p(normalize))（默认口径）
 
     每条线索被打上 priority_score 字段（detail 里），供操作台排序展示。
     """
@@ -233,6 +246,10 @@ def prioritize_clues(
     jian_normalize = dims["jian_coverage"].get("normalize", 5.0)
     data_normalize = dims["data_strength"].get("normalize", 10.0)
     data_cap = dims["data_strength"].get("cap", 1.0)
+    # P1-3：数据强度曲线由 scoring.json 声明（linear 线性 / log 对数）。
+    # 线性下 10 行即满分（0 行线索可压过 21 行线索）；对数随行数缓慢饱和，
+    # normalize 表示"饱和行数"（log 模式下默认 50）。
+    data_curve = str(dims["data_strength"].get("curve", "linear")).lower()
 
     if assumption_confidence is None:
         assumption_confidence = scoring["assumption_confidence"]
@@ -247,7 +264,12 @@ def prioritize_clues(
         )
         jian = sum(jian_weight.get(j, 1) for j in c.jian_types)
         jian_cov = min(1.0, jian / jian_normalize)
-        data_str = min(data_cap, len(c.source_rows) / data_normalize)
+        n_rows = len(c.source_rows)
+        if data_curve == "log":
+            base = data_normalize if data_normalize > 1 else 50.0
+            data_str = min(data_cap, math.log1p(n_rows) / math.log1p(base))
+        else:
+            data_str = min(data_cap, n_rows / data_normalize)
         return {"confidence": conf, "jian_coverage": jian_cov,
                 "data_strength": data_str}
 
@@ -282,7 +304,7 @@ def prioritize_clues(
                     "priority_score": round(score_val, 3),
                     "score_basis": score_basis,
                     "score_formula": formula,
-                    "score_source": "scoring.json@v2",
+                    "score_source": _SCORE_SOURCE,
                     "cross_level": c_level}
     return scored
 

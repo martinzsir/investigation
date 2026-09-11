@@ -76,7 +76,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 ## 验证
 
-改完代码跑 `python run_tests.py`。73 组（mcp/graph/miaosuan/org/review/disposal/ontology/version/eventbus/ingest/spec/planner/gateway/guard/features/incremental/rowuri/audit/access/policy/export/action/writeback/reconcile/reviewloop/deferred/r5knowledge/golden/overlap/threshold/derived/object_set/metrics/rule_dsl/llmpolicy/llmfallback/proposal/reviewwrite/injection/caselib/params/search/types/pack/views/benchmarks/llm/runhealth/rulezerodiag/emptydegrade/eventtrace/wakecond/entitytrace/entityredline/dirtydate/misscol/versionanchor/policyversion/dimecoverage/overridealert/auditinteg/dispatchfailclosed/declconfig/anomalychannel/geo/initcold/exportendpoints/reqpm1/datamap/valuetype/profiler/drafts/e2e）全绿才算完成。组名以 `run_tests.py` 的 GROUPS 注册表为准（新增测试组须同步注册）。
+改完代码跑 `python run_tests.py`。**138 个测试组**全绿才算完成。组名清单以 `run_tests.py` 的 `GROUPS` 注册表为准（新增测试组须同步注册；最近新增 `pollution` = 包缓存污染防护）。
 改了 MCP 相关额外跑 `python -m scripts.mcp_client_test`。
 
 ## 已知坑
@@ -94,6 +94,10 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 - `prioritize_clues()` 返回新列表，必须接收返回值
 - 处置状态改完要**重新生成** report，否则 `by_status` 是旧快照
 - 图库 ATTACH DuckDB：**Windows 原生不可用**（官方 CI 不构建 Windows 版扩展，坏二进制），走 CSV 中转；**WSL/Linux 可用**，手工装配见 INSTALL.md 二.5（`libduckdb.so` 必须放 `~/.lbdb/extension/<版本>/<平台>/common/`，放 /usr/local/lib 无效）
+- **测试必须跑 WSL venv，不要在 Windows 原生 miniconda 上跑**：本机 Windows 的 duckdb 是 **1.5.5**，新版取消了 numeric→varchar 的隐式转换，`transform` 里 `regexp_replace("金额",...)` 对 DOUBLE 列直接抛
+  `Binder Error: No function matches ... regexp_replace(DOUBLE, STRING_LITERAL, ...)`，
+  `tests.test_ontology` 等 41 个用例一次性全红（**与环境有关，不是代码回归**）。
+  判断改动有没有引入回归的正确做法：改动前后各跑一次同一组，比对失败集合差异。
 - WSL 环境：pip 必须**用国内镜像**（直连 PyPI 极慢/卡死）；WSL mirrored 断网（DNS 正常、外网 TCP 全断）＝ Windows TUN 的 `0.0.0.0/1`+`128.0.0.0/1` 路由被镜像进来，删除即可（本机 `fix-wsl-routes` 服务已常驻）
 - 环境缺依赖时：`pip install duckdb pandas pyarrow`（图库 `pip install ladybug`）
 

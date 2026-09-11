@@ -45,6 +45,8 @@ KINDS = (
     "source_value_cast_failed",   # TRY_CAST 脏值降级（源列非空→NULL，构建/入库期计数，鲁棒性 B2-08）
     "entity_null_name_dropped",   # 实体型对象 name_property 为 NULL 的无身份行编译期剔除（不入语义层）
     "source_column_missing",      # 可选源列缺失降级类型化 NULL（鲁棒性 B5-01；必填列缺失为硬失败不产生诊断）
+    "source_branch_pruned",       # 多源 UNION 分支因源表未导入而被裁剪（对象少一路数据，补齐源表后须重建）
+    "object_skipped",             # 对象整类跳过（源表缺失/源列缺失/编译失败，optional 语义）
     "source_value_quarantined",   # REQ-D-010：on_cast_error=quarantine 隔离计数（整行剔出语义层落 build_quarantine）
     "composite_column_detected",  # REQ-D-013：画像期检出疑似复合值（分隔符分片，建议拆分或显式 composite 降级）
     "clean_drop_rate",            # REQ-D-008：清洗剔除率留痕（>30% 升 warning，样本脱敏可下钻）
@@ -53,6 +55,7 @@ KINDS = (
     "quality_gate_failed",        # REQ-D-016/018：构建后质量门自身执行异常（不阻断，但留痕可见）
     "dedup_key_conflict",         # REQ-D-015：业务键去重冲突计数（按业务键非全行比对，冲突组数可下钻）
     "data_freshness_stale",       # REQ-D-019：对象数据时间超期（最新数据时间 vs 当前日期，与本体版本新鲜度分开）
+    "data_freshness_future",      # REQ-D-019：对象数据时间超前于参照日期（未来日期/时区错误/脏值）
     "unit_mismatch",              # REQ-D-020：单位/口径疑似混用（元/万元、金额量级突增、单位缺失提示，只告警不阻断）
     "diagnostic_run",             # 手动运行诊断印记（DIAGNOSE 任务每次发起落一条 info：零问题也有留痕）
 )
@@ -286,17 +289,37 @@ def record_build_dirty(db: Any, stats: dict | None, run_id: str | None = None,
 
 def record_build_degraded(db: Any, stats: dict | None, run_id: str | None = None,
                           source: str = "build_ontology") -> int:
-    """把 build stats["degraded"]（可选源列缺失降级类型化 NULL）落 run_diagnostic。
+    """把 build stats["degraded"] 落 run_diagnostic。返回落账条数。
 
-    必填列缺失是硬失败（抛错不产生诊断）；仅声明为 optional_columns 的可选列缺失
-    走降级路径并在此留痕（鲁棒性 B5-01：不崩溃 + 降级标注）。返回落账条数。
+    degraded 现在承载两类降级，分开登记便于 ui/健康度分口径展示：
+      - UNION 分支被裁剪（源表未导入）→ kind=source_branch_pruned
+        这类最危险：对象少一路数据但 BUILD 报成功，demoD 的 obj_person 少 8 人即此因；
+      - 可选源列缺失降级类型化 NULL   → kind=source_column_missing（鲁棒性 B5-01）
     """
     entries = (stats or {}).get("degraded") or []
     if not entries:
         return 0
     rh = RunHealth(db, run_id=run_id)
     for e in entries:
-        rh.record("source_column_missing", severity="warning",
+        text = str(e)
+        kind = "source_branch_pruned" if "UNION" in text else "source_column_missing"
+        rh.record(kind, severity="warning", source=source, reason=text)
+    return len(entries)
+
+
+def record_build_skipped(db: Any, stats: dict | None, run_id: str | None = None,
+                         source: str = "build_ontology") -> int:
+    """把 build stats["skipped"]（对象整类跳过）落 run_diagnostic。返回落账条数。
+
+    过去的静默点：对象源表缺失/缺列/编译失败且声明 optional 时只写 build_stats，
+    服务端无消费方，Web 端 BUILD 显示 SUCCEEDED 而骨骼层整类对象缺失。
+    """
+    entries = (stats or {}).get("skipped") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("object_skipped", severity="warning",
                   source=source, reason=str(e))
     return len(entries)
 
