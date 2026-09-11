@@ -46,6 +46,7 @@ TASK_QUALITY = "QUALITY_CHECK"        # W-P-008：数据质量检查（四扫描
 TASK_DIAGNOSE = "DIAGNOSE"            # 手动运行诊断：对当前版本落 run_diagnostic（不随 BUILD 自动）
 TASK_DE_RECO = "DE_RECOMMEND"         # W-P-007：数据元智能推荐生成（读暂存件采样，落 state）
 TASK_DE_DECIDE = "DE_RECO_DECIDE"     # W-P-007：推荐采纳/驳回裁决（只记 state+审计，不改 bindings）
+TASK_VERIFY = "VERIFY"                # REQ-V-004：核查项写通道（裁决/采纳/忽略/人工添加，写 state 不产版本）
 
 
 class TaskExecError(RuntimeError):
@@ -74,14 +75,15 @@ def _emit_build_warnings(conn, repo: MetaRepo, case_id: str, version: int,
     stats = result.get("build_stats")
     if not isinstance(stats, dict):
         return result
-    warnings = (list(stats.get("degraded") or [])
-                + list(stats.get("skipped") or []))
+    degraded = list(stats.get("degraded") or [])
+    skipped = list(stats.get("skipped") or [])
+    warnings = degraded + skipped
     if not warnings:
         return result
     result["warnings"] = warnings
     repo.record_ops("build_degraded", case_id,
-                    {"version": version, "degraded": n_deg, "skipped": n_skip,
-                     "warnings": warnings[:20]})
+                    {"version": version, "degraded": len(degraded),
+                     "skipped": len(skipped), "warnings": warnings[:20]})
     progress(92.0, "degraded", "构建降级留痕",
              f"{len(warnings)} 项降级/跳过已进诊断与运维事件")
     return result
@@ -344,6 +346,12 @@ def _de_decide_handler(task, **kw):
     return handle_de_decide(task, **kw)
 
 
+def _verify_handler(task, **kw):
+    # 惰性导入：verify.py 引用本模块 TaskExecError，模块底导入避免循环
+    from server.app.worker.verify import handle_verify
+    return handle_verify(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -358,4 +366,5 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_DIAGNOSE: _diagnose_handler,       # 手动运行诊断（run_diagnostic 留痕）
     TASK_DE_RECO: _de_reco_handler,         # W-P-007 数据元推荐生成
     TASK_DE_DECIDE: _de_decide_handler,     # W-P-007 推荐裁决
+    TASK_VERIFY: _verify_handler,           # REQ-V-004 核查项写通道
 }

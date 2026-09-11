@@ -29,6 +29,8 @@ const props = defineProps<{
   operator: string
   degraded: boolean
   loading?: boolean
+  /** REQ-V-008：本线索未结核查项数（待核查/核查中）；仅弹窗提示，非前端拦截 */
+  verifyPending?: number
 }>()
 
 const emit = defineEmits<{
@@ -71,6 +73,13 @@ const isExclude = computed(() => pending.value === 'exclude')
 const targetStatus = computed(() => (pending.value ? actionTarget(pending.value, cfg.value) : ''))
 const pendingTitle = computed(() => (pending.value ? actionTitle(pending.value, cfg.value) : ''))
 const statusLabel = computed(() => stateDecl(props.status, cfg.value)?.label ?? props.status)
+
+// REQ-V-008：固证/排除弹窗琥珀警示——真值拦截在 Worker（VERIFY_PENDING），
+// 这里只做提交前可见提示；不置灰确认按钮（非阻断，服务端兜底）。
+const verifyWarnVisible = computed(
+  () => (pending.value === 'confirm' || pending.value === 'exclude')
+    && (props.verifyPending ?? 0) > 0,
+)
 
 // 必填理由类参数（默认仅 exclude.reason；声明驱动，泛化到任意同类动作）
 const reasonRequired = computed(() => requiredReasonParam.value !== null)
@@ -133,7 +142,7 @@ function cancel(): void {
         <NButton
           size="small"
           class="csm-btn csm-btn--file"
-          :disabled="!gate.enabled || loading"
+          :disabled="!gate.entryEnabled || loading"
           @click="open('file')"
         >
           <NIcon :component="WarningOutline" />
@@ -149,8 +158,9 @@ function cancel(): void {
     <p v-if="degradeMsg" class="csm-degrade" role="alert">
       <NIcon :component="WarningOutline" /> {{ degradeMsg }}
     </p>
+    <!-- 入口置灰原因（角色/降级/前置状态）；法定依据空的提示只出现在弹窗内 -->
     <p
-      v-else-if="gate.render && !gate.enabled && !isFiledNow"
+      v-else-if="gate.render && !gate.entryEnabled && !isFiledNow"
       class="csm-hint"
     >
       {{ gate.reason }}
@@ -167,6 +177,18 @@ function cancel(): void {
       <div class="confirm-body">
         <p class="confirm-transition">
           状态迁移：<b>{{ statusLabel }}</b> → <b class="target">{{ targetStatus }}</b>
+        </p>
+
+        <!-- REQ-V-008 核查门禁提示（非阻断；Worker VERIFY_PENDING 兜底拦截） -->
+        <p
+          v-if="verifyWarnVisible"
+          class="confirm-verify-warn"
+          role="alert"
+          data-testid="csm-verify-warn"
+        >
+          <NIcon :component="WarningOutline" />
+          尚有 {{ verifyPending }} 项核查未结（服务端将拒绝）——请先在核查工作区
+          逐项得出结论，或标记无法核实。
         </p>
 
         <template v-if="isFile">
@@ -279,6 +301,20 @@ function cancel(): void {
   color: var(--sun-filed-text);
   background: var(--sun-filed-bg);
   border: 1px solid var(--sun-filed-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+}
+/* REQ-V-008 核查门禁琥珀警示 */
+.confirm-verify-warn {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sun-warn-text);
+  background: var(--sun-warn-bg);
+  border: 1px solid var(--sun-warn-border);
   border-radius: 4px;
   padding: 8px 10px;
 }

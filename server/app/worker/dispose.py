@@ -13,6 +13,10 @@ Worker 不接受请求体 operator（REQ-009 主体一致性由 core 兜底）�
 校验失败转 TaskExecError（任务 FAILED + 明确错误码，不崩 Worker）：
   PermissionError → ACTION_FORBIDDEN（如正兵 file）；
   ValueError      → ACTION_REJECTED（缺 legal_basis/非法状态迁移等）。
+
+REQ-V-008 核查门禁：confirm/exclude 前要求核查项全结（pending=只统计
+待核查/核查中；建议/已忽略不阻塞；无核查项 total=0 向后兼容放行）。
+门禁在 Worker（core 真值）而非 API，与 file 校验同款纵深防御。
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from typing import Any
 from core.access import AccessContext
 from core.disposal import DisposalBoard
 from core.registry import ClueStatus
+from core.verify_machine import VERIFY_PENDING_STATUSES
 
 from server.app import ontology_meta
 from server.app.clues_artifact import load_case_clues
@@ -73,6 +78,7 @@ def handle_dispose(task, *, repo, factory, **_: Any) -> dict[str, Any]:
         board = DisposalBoard(clues, store=sink, pack=case.pack_id,
                               sink=sink, access=ctx)
         board.restore()  # state 状态回灌（处置状态真值源）
+        _enforce_verify_gate(state, action, clue_id)  # REQ-V-008
         try:
             clue = _apply_action(board, action, clue_id, operator,
                                  action_params)
@@ -85,6 +91,32 @@ def handle_dispose(task, *, repo, factory, **_: Any) -> dict[str, Any]:
                 "status": clue.status, "version": ver}
     finally:
         state.close()
+
+
+def _enforce_verify_gate(state: StateStore, action: str,
+                         clue_id: str) -> None:
+    """REQ-V-008：固证/排除前核查项必须全结。
+
+    pending 口径与 state_store.verify_progress 同源（待核查/核查中）；
+    建议、已忽略是未采纳的手册建议，从不阻塞；total=0（无核查项）放行，
+    行为与门禁上线前完全一致。file/verify/reset 不经此门。
+    """
+    if action not in ("confirm", "exclude"):
+        return
+    progress = state.verify_progress(clue_id)
+    pending = int(progress.get("pending") or 0)
+    if pending <= 0:
+        return
+    pending_set = set(VERIFY_PENDING_STATUSES)
+    texts = [it["text"] for it in state.list_verify_items(clue_id)
+             if it.get("status") in pending_set][:3]
+    preview = "；".join((t or "（空文本）")[:24] for t in texts)
+    if pending > len(texts):
+        preview += " 等"
+    raise TaskExecError(
+        "VERIFY_PENDING",
+        f"尚有 {pending} 项核查未结：{preview}…"
+        "（先逐项得出结论，或标记无法核实）")
 
 
 def _apply_action(board: DisposalBoard, action: str, clue_id: str,

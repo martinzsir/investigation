@@ -23,6 +23,11 @@ import sqlite3
 from pathlib import Path
 
 from core.audit import _compute_signature
+# 核查项门禁计数口径单一事实源（REQ-V-003/008；pending 只计 待核查/核查中）
+from core.verify_machine import (
+    VERIFY_CONCLUDED_STATUSES as _VERIFY_CONCLUDED_STATUSES,
+    VERIFY_PENDING_STATUSES as _VERIFY_PENDING_STATUSES,
+)
 
 _GENESIS_HASH = "0" * 64
 
@@ -118,7 +123,83 @@ CREATE TABLE IF NOT EXISTS etl_fix_draft (
 );
 CREATE INDEX IF NOT EXISTS idx_etl_fix_upload ON etl_fix_draft(upload_id);
 CREATE INDEX IF NOT EXISTS idx_etl_fix_status ON etl_fix_draft(case_id, status);
+
+-- ---- 核查工作区（REQ-V-001，ADR-V-4/5；详见 .trae/documents/核查工作区/实施方案.md）----
+-- 核查项：每条待核实/推断的可操作裁决对象（结论只落 state、不回写 artifact）
+CREATE TABLE IF NOT EXISTS clue_verify_item (
+    item_id     TEXT PRIMARY KEY,            -- vi_{item_key}
+    case_id     TEXT NOT NULL,
+    clue_id     TEXT NOT NULL,
+    item_key    TEXT NOT NULL,               -- sha1(clue_id|kind|text)[:16]
+    kind        TEXT NOT NULL,               -- pending_degrade|pending_hypothesis|pending_rule|inference|manual|suggested
+    text        TEXT NOT NULL,
+    origin      TEXT NOT NULL DEFAULT 'auto',-- auto=供给生成 / manual=人工添加 / suggested=手册建议 / ai_draft=LLM草案人审通过(REQ-V-019)
+    status      TEXT NOT NULL DEFAULT '待核查',
+                -- 建议 → 待核查(采纳) | 已忽略(忽略)；已忽略 → 待核查(重新采纳)
+                -- 待核查 → 核查中 → 已证实 | 已查否 | 无法核实
+    conclusion  TEXT NOT NULL DEFAULT '',
+    operator    TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    -- REQ-V-018 建议项路由字段（manual/auto 项为空串）
+    channel       TEXT NOT NULL DEFAULT '',  -- function=库内可复跑 | external=需外部调取
+    ref_function  TEXT NOT NULL DEFAULT '',  -- channel=function 时挂钩的只读 Function 名
+    external_json TEXT NOT NULL DEFAULT '',  -- channel=external 时 {target,material} 预填 JSON
+    falsification TEXT NOT NULL DEFAULT '',  -- 证伪条件（取自假设模板/playbook，裁决"已查否"引用）
+    UNIQUE(clue_id, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_vi_clue ON clue_verify_item(clue_id);
+-- 证据材料：人工调取的书证（区别于 uploads/ 数据源，不参与自动检测；P2 落文件）
+CREATE TABLE IF NOT EXISTS clue_evidence (
+    material_id   TEXT PRIMARY KEY,          -- ev_{uuid12}
+    case_id       TEXT NOT NULL,
+    clue_id       TEXT NOT NULL,
+    item_id       TEXT,                      -- 可空=线索级材料
+    material_type TEXT NOT NULL,             -- 缴款单|监控截图|合同|付款凭证|审批文件|其他
+    filename      TEXT NOT NULL,             -- 消毒后存储名
+    orig_name     TEXT NOT NULL,
+    sha256        TEXT NOT NULL,
+    size          INTEGER NOT NULL,
+    note          TEXT NOT NULL DEFAULT '',
+    uploaded_by   TEXT NOT NULL,
+    uploaded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ev_clue ON clue_evidence(clue_id);
+-- 调取清单：外部取证的台账（超期可跟踪；REQ-V-013 P2 接方法层）
+CREATE TABLE IF NOT EXISTS verify_request (
+    request_id       TEXT PRIMARY KEY,       -- vr_{uuid12}
+    case_id          TEXT NOT NULL,
+    clue_id          TEXT NOT NULL,
+    item_id          TEXT,                   -- 关联核查项（可空）
+    target           TEXT NOT NULL,          -- 调取单位/对象
+    material         TEXT NOT NULL,          -- 调取材料
+    legal_instrument TEXT NOT NULL DEFAULT '',-- 法律手续（调取函/审批文号）
+    handler          TEXT NOT NULL DEFAULT '',-- 经办人
+    due_date         TEXT NOT NULL DEFAULT '',-- 期限 YYYY-MM-DD
+    status           TEXT NOT NULL DEFAULT '待发起',
+                     -- 待发起 → 已发起 → 材料已回 | 超期 → 关闭
+    note             TEXT NOT NULL DEFAULT '',
+    created_by       TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_vr_clue ON verify_request(clue_id);
 """
+
+# 旧库幂等迁移：clue_verify_item 在 REQ-V-018 字段加入前可能已存在，
+# 打开时探测缺列再 ADD COLUMN（均带 DEFAULT，旧数据零脚本迁移）。
+_VERIFY_ITEM_ADDED_COLUMNS = {
+    "channel": "TEXT NOT NULL DEFAULT ''",
+    "ref_function": "TEXT NOT NULL DEFAULT ''",
+    "external_json": "TEXT NOT NULL DEFAULT ''",
+    "falsification": "TEXT NOT NULL DEFAULT ''",
+}
+
+# list_verify_items 状态展示序：待办在前、建议态垫后（rowid 保创建序）
+_VERIFY_STATUS_RANK_SQL = (
+    "CASE status WHEN '待核查' THEN 0 WHEN '核查中' THEN 1 "
+    "WHEN '已证实' THEN 2 WHEN '已查否' THEN 3 WHEN '无法核实' THEN 4 "
+    "WHEN '建议' THEN 5 WHEN '已忽略' THEN 6 ELSE 9 END"
+)
 
 _AC_COLUMNS = (
     "seq, event_id, case_id, ontology_version, rule_version, function_version, "
@@ -147,6 +228,7 @@ class StateStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._migrate_verify_item_columns()
 
     @property
     def conn(self):
@@ -413,6 +495,150 @@ class StateStore:
                 d.pop("preview_samples_json") or "[]")
         except _json.JSONDecodeError:
             d["preview_samples"] = []
+        return d
+
+    # ---- 核查工作区（REQ-V-001；ADR-V-4 稳定键；结论只落 state 不回写 artifact）----
+    def _migrate_verify_item_columns(self) -> None:
+        """旧库幂等补列：PRAGMA table_info 探测缺列再 ADD COLUMN（带 DEFAULT）。"""
+        cols = {r[1] for r in self._conn.execute(
+            "PRAGMA table_info(clue_verify_item)").fetchall()}
+        for name, decl in _VERIFY_ITEM_ADDED_COLUMNS.items():
+            if name not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE clue_verify_item ADD COLUMN {name} {decl}")
+
+    @staticmethod
+    def verify_item_key(clue_id: str, kind: str, text: str) -> str:
+        """ADR-V-4：item_key = sha1('{clue_id}|{kind}|{text}')[:16]。"""
+        import hashlib
+        raw = f"{clue_id}|{kind}|{text}".encode("utf-8")
+        return hashlib.sha1(raw).hexdigest()[:16]
+
+    def upsert_verify_items(self, case_id: str, clue_id: str,
+                            items: list[dict]) -> dict:
+        """惰性供给批量落项：INSERT OR IGNORE，只补缺、永不覆盖既有结论/状态。
+
+        items=[{kind, text, status?, origin?, channel?, ref_function?,
+                external?(dict), falsification?}]；
+        suggested 项携带 status='建议' 与路由字段（REQ-V-018）。
+        返回 {added:int, total:int}。
+        """
+        import json as _json
+        added = 0
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for it in items:
+                kind = it["kind"]
+                text = it["text"]
+                key = self.verify_item_key(clue_id, kind, text)
+                external = it.get("external")
+                cur = self._conn.execute(
+                    "INSERT OR IGNORE INTO clue_verify_item "
+                    "(item_id, case_id, clue_id, item_key, kind, text, "
+                    " origin, status, channel, ref_function, "
+                    " external_json, falsification) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [f"vi_{key}", case_id, clue_id, key, kind, text,
+                     it.get("origin", "auto"),
+                     it.get("status", "待核查"),
+                     it.get("channel", ""),
+                     it.get("ref_function", ""),
+                     _json.dumps(external, ensure_ascii=False)
+                     if external is not None else "",
+                     it.get("falsification", "")])
+                added += int(cur.rowcount)
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        total = self._conn.execute(
+            "SELECT COUNT(*) FROM clue_verify_item WHERE clue_id=?",
+            [clue_id]).fetchone()[0]
+        return {"added": added, "total": int(total)}
+
+    def add_manual_verify_item(self, case_id: str, clue_id: str,
+                               text: str) -> dict:
+        """人工添加核查项（kind=origin='manual'）；同文本重复提交幂等。
+
+        返回行 dict（含 item_id），附带 added=1 新增 / 0 已存在。
+        """
+        result = self.upsert_verify_items(
+            case_id, clue_id,
+            [{"kind": "manual", "text": text, "origin": "manual"}])
+        item_id = f"vi_{self.verify_item_key(clue_id, 'manual', text)}"
+        row = self.get_verify_item(item_id)
+        row["added"] = result["added"]
+        return row
+
+    def list_verify_items(self, clue_id: str) -> list[dict]:
+        """按状态展示序 + 创建序（rowid）列出。"""
+        rows = self._conn.execute(
+            "SELECT * FROM clue_verify_item WHERE clue_id=? "
+            f"ORDER BY {_VERIFY_STATUS_RANK_SQL}, rowid",
+            [clue_id]).fetchall()
+        return [self._verify_item_dict(r) for r in rows]
+
+    def get_verify_item(self, item_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM clue_verify_item WHERE item_id=?",
+            [item_id]).fetchone()
+        return self._verify_item_dict(row) if row is not None else None
+
+    def transition_verify_item(self, item_id: str, *, status: str,
+                               conclusion: str, operator: str,
+                               updated_at: str, text: str | None = None
+                               ) -> dict | None:
+        """覆写状态/结论/操作人/时间。合法转移校验在 REQ-V-003，方法层不重复；
+        item 不存在（rowcount=0）→ None。
+
+        text 非 None 时一并覆写文本列——仅用于 REQ-V-004 采纳建议项时的
+        「改一改」（建议→待核查）；item_key/item_id 保持 ADR-V-4 稳定，
+        建议原文由审计链 before 留痕，不在本表保留历史。
+        """
+        if text is None:
+            cur = self._conn.execute(
+                "UPDATE clue_verify_item SET status=?, conclusion=?, "
+                "operator=?, updated_at=? WHERE item_id=?",
+                [status, conclusion, operator, updated_at, item_id])
+        else:
+            cur = self._conn.execute(
+                "UPDATE clue_verify_item SET status=?, conclusion=?, "
+                "operator=?, updated_at=?, text=? WHERE item_id=?",
+                [status, conclusion, operator, updated_at, text, item_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_verify_item(item_id)
+
+    def verify_progress(self, clue_id: str) -> dict:
+        """{total, concluded, pending, suggested, ignored, by_status}。
+
+        pending 只统计 待核查/核查中；建议、已忽略独立计数，不进门禁。
+        """
+        rows = self._conn.execute(
+            "SELECT status, COUNT(*) AS n FROM clue_verify_item "
+            "WHERE clue_id=? GROUP BY status", [clue_id]).fetchall()
+        by_status = {r["status"]: int(r["n"]) for r in rows}
+        return {
+            "total": sum(by_status.values()),
+            "concluded": sum(by_status.get(s, 0)
+                             for s in _VERIFY_CONCLUDED_STATUSES),
+            "pending": sum(by_status.get(s, 0)
+                           for s in _VERIFY_PENDING_STATUSES),
+            "suggested": by_status.get("建议", 0),
+            "ignored": by_status.get("已忽略", 0),
+            "by_status": by_status,
+        }
+
+    @staticmethod
+    def _verify_item_dict(row) -> dict:
+        import json as _json
+        d = dict(row)
+        raw = d.pop("external_json", "") or ""
+        try:
+            d["external"] = _json.loads(raw) if raw else None
+        except _json.JSONDecodeError:
+            d["external"] = None
         return d
 
     def __enter__(self) -> "StateStore":

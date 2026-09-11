@@ -212,6 +212,8 @@ GROUPS = {
     "scoringv3":  ("P1-3/P0-1/P1-0c 计分 v3（对数曲线+等级主序+0 间类兜底）", [sys.executable, "-m", "unittest", "tests.test_scoring_v3"]),
     "pollution":  ("包缓存污染防护（多源 UNION 裁剪/缺列降级不写回 binding）", [sys.executable, "-m", "unittest", "tests.test_spec_pollution"]),
     "etldraft":     ("v1.3 Phase 4 ETL 处置草稿三分类+预演+双表分离", [sys.executable, "-m", "unittest", "tests.test_etl_drafts"]),
+    "verifyitem":   ("REQ-V-001~004 核查工作区 state 三表/CRUD/稳定键/状态机/Worker 写通道", [sys.executable, "-m", "unittest", "tests.test_verify_item"]),
+    "verifyapi":    ("REQ-V-005 核查项 API（读同步/写 202 入队/幂等/跨租户）+ REQ-V-008 固证/排除核查门禁", [sys.executable, "-m", "unittest", "tests.test_verify_api"]),
 }
 
 

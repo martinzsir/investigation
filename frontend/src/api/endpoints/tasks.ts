@@ -2,7 +2,7 @@ import { api } from '../client'
 import { noteDataVersion } from '../query-keys'
 import { taskEvents as streamTaskEvents, type TaskStreamHandlers } from '../sse'
 import type { StreamHandle } from '../transport/types'
-import type { TaskRow, TaskStatus, TaskStats } from '../../domain/task'
+import { isTerminal, type TaskRow, type TaskStatus, type TaskStats } from '../../domain/task'
 
 // 任务端点（server/app/routers/tasks.py 契约）。
 // 列表服务端分页：GET /tasks?case_id=&status=&task_type=&page=&page_size=
@@ -92,4 +92,61 @@ export const tasksApi = {
   stream(taskId: string, handlers: TaskStreamHandlers): StreamHandle {
     return streamTaskEvents(taskId, handlers)
   },
+}
+
+/** 轮询等待选项（短频写场景：DISPOSE/VERIFY 秒级 FIFO） */
+export interface WaitTerminalOptions {
+  /** 两次轮询间隔（默认 500ms；首查在入队后立即执行，不空等） */
+  intervalMs?: number
+  /** 最长等待（默认 30s）；超时抛 TASK_WAIT_TIMEOUT */
+  timeoutMs?: number
+  /** 组件卸载时中断等待 */
+  signal?: AbortSignal
+}
+
+export class TaskWaitTimeoutError extends Error {
+  constructor(taskId: string) {
+    super(`TASK_WAIT_TIMEOUT：任务 ${taskId} 等待终态超时`)
+    this.name = 'TaskWaitTimeoutError'
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('aborted', 'AbortError'))
+      return
+    }
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = (): void => {
+      clearTimeout(t)
+      reject(new DOMException('aborted', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * 轮询等待任务终态（SUCCEEDED/FAILED/CANCELLED）。
+ *
+ * 纪律：202 只代表「已入队」，刷新读面/提示成功必须以本函数返回的终态任务为
+ * 完成信号（REQ-V-008 闭环）——禁止在入队后立即按成功处理，否则 Worker 异步
+ * 失败（VERIFY_PENDING/ACTION_REJECTED 等）对用户不可见且读到旧 state。
+ * 终态权威行包含 error_code/error_message，由调用方分支展示。
+ */
+export async function waitForTerminal(
+  taskId: string,
+  opts: WaitTerminalOptions = {},
+): Promise<TaskRow> {
+  const interval = opts.intervalMs ?? 500
+  const deadline = Date.now() + (opts.timeoutMs ?? 30_000)
+  for (;;) {
+    const t = await tasksApi.get(taskId)
+    if (isTerminal(t.status)) return t
+    if (Date.now() >= deadline) throw new TaskWaitTimeoutError(taskId)
+    await sleep(Math.min(interval, deadline - Date.now()), opts.signal)
+  }
 }

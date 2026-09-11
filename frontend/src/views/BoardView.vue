@@ -2,13 +2,15 @@
 // FE-P-009 处置看板（MVP-2「能批量」）：五列卡片 + 超期红框 + 卡内直接迁移状态。
 // 演示路径：看板看超期 → 卡片迁移 → 审计链有记录（写操作唯一通道 ActionExecutor，
 // 前端走 cluesApi.action + 状态机确认弹窗）。
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { NSpin, NButton, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
 import { useHealthStore } from '../stores/health'
 import { cluesApi, type ClueListItem } from '../api/endpoints/clues'
+import { waitForTerminal } from '../api/endpoints/tasks'
+import { failureSummary, type TaskRow } from '../domain/task'
 import { presentError } from '../api/errors'
 import { toBoardCard, type BoardCard } from '../domain/board'
 import type { ClueAction } from '../domain/clue'
@@ -53,14 +55,55 @@ async function load(): Promise<void> {
 
 watch(() => cs.currentCaseId, load, { immediate: true })
 
+/** 进行中的终态等待：组件卸载时中断，避免卸载后写 message/响应式状态 */
+let waitAbort: AbortController | null = null
+function beginWait(): AbortSignal {
+  waitAbort?.abort()
+  waitAbort = new AbortController()
+  return waitAbort.signal
+}
+onUnmounted(() => waitAbort?.abort())
+
+function isAbort(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
+}
+
+/** 终态任务分支提示；返回 true 表示调用方应重读看板（仅 SUCCEEDED 变更了状态） */
+function reportDisposeResult(task: TaskRow): boolean {
+  if (task.status === 'SUCCEEDED') {
+    message.success('处置完成，看板列与审计链已更新', { duration: 4000 })
+    return true
+  }
+  if (task.status === 'CANCELLED') {
+    message.warning('处置任务已取消，线索状态未变更', { duration: 5000 })
+    return false
+  }
+  // FAILED：门禁/权限/状态机拒绝均不产生状态变更，不做乐观刷新
+  if (task.error_code === 'VERIFY_PENDING') {
+    message.error(
+      `处置被核查门禁拦截：${task.error_message || '尚有核查项未结'}`,
+      { duration: 7000 },
+    )
+    return false
+  }
+  message.error(`处置未执行：${failureSummary(task)}`, { duration: 6000 })
+  return false
+}
+
 async function onSubmit(clueId: string, payload: { action: ClueAction; note?: string; reason?: string; legal_basis?: string }): Promise<void> {
   if (!cs.currentCaseId) return
+  // 互斥：终态等待期间全看板 busy，禁止第二张卡片并发处置（锁必须包住副作用入口）
+  if (busyId.value) return
   busyId.value = clueId
   try {
     const res = await cluesApi.action(cs.currentCaseId, clueId, payload)
-    message.success(`处置请求已入队（任务 ${res.task_id ?? res.status ?? '已受理'}），看板与审计链稍后更新`, { duration: 4000 })
-    await load()
+    // 202 仅代表「已入队」：必须等到 Worker 终态再提示/刷新（与 ClueDetailView 同源纪律，
+    // REQ-V-008 闭环）——否则 VERIFY_PENDING/ACTION_REJECTED 等异步失败对用户不可见，
+    // 且入队即抢刷会读到 Worker 消费前的旧 state（卡片留在旧列）。
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportDisposeResult(task)) await load()
   } catch (e) {
+    if (isAbort(e)) return
     message.error(presentError(e).title, { duration: 5000 })
   } finally {
     busyId.value = ''

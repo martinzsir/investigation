@@ -258,8 +258,14 @@ export function isMachineRole(role: string): boolean {
 export interface FileGate {
   /** 门禁 1 不通过：按钮根本不渲染 */
   render: boolean
-  /** 渲染但不可提交（置灰 + 写明原因） */
+  /** 四重全过（含弹窗内法定依据非空）：可提交 */
   enabled: boolean
+  /**
+   * 立案「入口」可用：前三重门禁通过（角色 + 未降级 + 前置状态）。
+   * 法定依据（第 3 重）只门控弹窗内的确认提交按钮——若连入口都置灰，
+   * 弹窗永远无法打开、依据永远无法填入，形成死锁。
+   */
+  entryEnabled: boolean
   reason: string
 }
 
@@ -275,10 +281,15 @@ export function fileGate(
   cfg?: OntologyConfig,
 ): FileGate {
   if (!canFileRole(role)) {
-    return { render: false, enabled: false, reason: '' }
+    return { render: false, enabled: false, entryEnabled: false, reason: '' }
   }
   if (degraded) {
-    return { render: true, enabled: false, reason: '系统降级运行中：立案/导出已临时禁用（见顶部降级通栏）' }
+    return {
+      render: true,
+      enabled: false,
+      entryEnabled: false,
+      reason: '系统降级运行中：立案/导出已临时禁用（见顶部降级通栏）',
+    }
   }
   const fileDecl = cfg?.actions.find((a) => a.name === 'file')
   const prerequisite = (fileDecl?.only_from && fileDecl.only_from.length > 0
@@ -288,13 +299,15 @@ export function fileGate(
     return {
       render: true,
       enabled: false,
+      entryEnabled: false,
       reason: `需先完成固证（仅「${prerequisite.join('/')}」线索可立案）`,
     }
   }
   if (!legalBasis.trim()) {
-    return { render: true, enabled: false, reason: '请填写法定依据/案号' }
+    // 入口可开（在弹窗内填写依据），仅最终提交门控
+    return { render: true, enabled: false, entryEnabled: true, reason: '请填写法定依据/案号' }
   }
-  return { render: true, enabled: true, reason: '' }
+  return { render: true, enabled: true, entryEnabled: true, reason: '' }
 }
 
 /** 降级态下所有写动作禁用（FE-T-010） */

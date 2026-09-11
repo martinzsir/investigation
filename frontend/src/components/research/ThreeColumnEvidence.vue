@@ -4,11 +4,40 @@
 // 红线 FE-T-005：推断内容永不进入事实栏；推断栏配色固定琥珀，结构上禁绿。
 import { computed } from 'vue'
 import { partitionEvidence, type EvidenceItem } from '../../domain/clue'
+import { verifyStatusMeta } from '../../domain/verify'
 import StatusBadge from '../common/StatusBadge.vue'
 
-const props = defineProps<{ items: EvidenceItem[] }>()
+// REQ-V-007：interactive 仅在线索详情页开启——待核实卡可点击跳转核查工作区。
+// 默认 false：KanbanCard 等既有调用不传新 props，渲染与现状逐字节兼容。
+// 状态映射按「文本精确匹配」：供给侧（verify_provision）pending 文本原样入库，无关联 ID。
+const props = defineProps<{
+  items: EvidenceItem[]
+  /** 待核实卡是否可点击跳转核查（默认 false） */
+  interactive?: boolean
+  /** pending 文本 → 已有核查项状态（由父层用 verify-items 清单构建） */
+  itemStatusByText?: Map<string, string>
+}>()
+
+const emit = defineEmits<{
+  /** 点击待核实卡：父层滚动定位到工作台对应项并高亮（无核查项则落人工添加入口） */
+  verify: [text: string]
+}>()
 
 const col = computed(() => partitionEvidence(props.items))
+
+function verifyStatusOf(text: string): string {
+  return props.itemStatusByText?.get(text) ?? ''
+}
+
+function badgeStyle(status: string): Record<string, string> {
+  const m = verifyStatusMeta(status)
+  return { color: m.text, borderColor: m.border, background: m.bg }
+}
+
+function emitVerify(text: string): void {
+  if (!props.interactive) return
+  emit('verify', text)
+}
 </script>
 
 <template>
@@ -60,8 +89,28 @@ const col = computed(() => partitionEvidence(props.items))
         <span class="ev-count">{{ col.pending.length }}</span>
       </header>
       <ul class="ev-list">
-        <li v-for="it in col.pending" :key="it.id" class="ev-item ev-item--pending">
+        <li
+          v-for="it in col.pending"
+          :key="it.id"
+          class="ev-item ev-item--pending"
+          :class="{ 'ev-item--link': interactive }"
+          :role="interactive ? 'button' : undefined"
+          :tabindex="interactive ? 0 : undefined"
+          :aria-label="interactive ? `跳转核查：${it.text}` : undefined"
+          @click="emitVerify(it.text)"
+          @keydown.enter.exact.prevent="emitVerify(it.text)"
+          @keydown.space.exact.prevent="emitVerify(it.text)"
+        >
           <p>{{ it.text }}</p>
+          <div v-if="interactive" class="ev-verify-foot">
+            <span
+              v-if="verifyStatusOf(it.text)"
+              class="ev-verify-badge"
+              :style="badgeStyle(verifyStatusOf(it.text))"
+              data-testid="ev-verify-badge"
+            >{{ verifyStatusOf(it.text) }}</span>
+            <span v-else class="ev-verify-go">点击核查 →</span>
+          </div>
         </li>
         <li v-if="!col.pending.length" class="ev-empty">暂无待核实事项</li>
       </ul>
@@ -200,5 +249,43 @@ const col = computed(() => partitionEvidence(props.items))
   border-left-color: var(--sun-text-tertiary);
   border-left-style: dashed;
   opacity: 0.85;
+}
+
+/* REQ-V-007 联动卡（仅 interactive；默认不渲染这些元素） */
+.ev-item--link {
+  cursor: pointer;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  padding: 4px 8px 4px 10px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.ev-item--link:hover,
+.ev-item--link:focus-visible {
+  border-color: var(--sun-border-active);
+  background: var(--sun-bg-card-hover);
+  outline: none;
+}
+.ev-verify-foot {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+}
+/* 状态色由内联 style 给（verifyStatusMeta），样式表只定形制（FE-T-005 禁绿结构不受影响） */
+.ev-verify-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid;
+  border-radius: var(--sun-radius-badge, 12px);
+  font-size: 11px;
+  line-height: 16px;
+}
+.ev-verify-go {
+  font-size: 11px;
+  color: var(--sun-text-tertiary);
+}
+.ev-item--link:hover .ev-verify-go,
+.ev-item--link:focus-visible .ev-verify-go {
+  color: var(--sun-border-active);
 }
 </style>

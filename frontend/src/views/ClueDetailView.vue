@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // FE-P-004 线索详情（MVP-1 闭环核心）：三栏证据 + 溯源抽屉 + 处置状态机。
 // 演示路径：仪表盘 → 点线索 → 三栏（青/琥珀/灰虚线）→ 溯源抽屉 → 处置确认 → 审计回执。
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NSpin, NButton, NDrawer, NDrawerContent, NAlert, NIcon, useMessage } from 'naive-ui'
 import { ArrowBackOutline, DocumentTextOutline, LockClosedOutline } from '@vicons/ionicons5'
@@ -9,6 +9,14 @@ import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
 import { useHealthStore } from '../stores/health'
 import { cluesApi, type ClueDetail } from '../api/endpoints/clues'
+import { verifyApi, type VerifyTransitionBody } from '../api/endpoints/verify'
+import { waitForTerminal } from '../api/endpoints/tasks'
+import { failureSummary, type TaskRow } from '../domain/task'
+import {
+  type VerifyItem,
+  type VerifyItemsPage,
+  type VerifyProgress,
+} from '../domain/verify'
 import { presentError } from '../api/errors'
 import {
   type EvidenceItem, type ClueAction, scoreBasisRows,
@@ -18,6 +26,7 @@ import EmptyState from '../components/common/EmptyState.vue'
 import ThreeColumnEvidence from '../components/research/ThreeColumnEvidence.vue'
 import TraceabilityPanel from '../components/research/TraceabilityPanel.vue'
 import ClueStatusMachine from '../components/research/ClueStatusMachine.vue'
+import VerifyWorkbench from '../components/research/VerifyWorkbench.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +43,79 @@ const forbidden = ref(false)
 const errorMsg = ref('')
 const detail = ref<ClueDetail | null>(null)
 const drawerOpen = ref(false)
+// REQ-V-006：核查工作区写请求与刷新
+const verifyRef = ref<InstanceType<typeof VerifyWorkbench> | null>(null)
+const verifySubmitting = ref(false)
+// REQ-V-007：工作台清单回传 → 三栏待核实卡「文本→状态」映射（供给侧文本原样入库，按文本精确匹配）
+const verifyItems = ref<VerifyItem[]>([])
+// REQ-V-008：门禁计数直接取后端 progress.pending（与 Worker verify_progress 同源，
+// 不在客户端重复口径；未加载前缺省 0，等同无未结项）
+const verifyProgress = ref<VerifyProgress | null>(null)
+const verifyStatusByText = computed(() => {
+  const m = new Map<string, string>()
+  for (const it of verifyItems.value) m.set(it.text, it.status)
+  return m
+})
+const verifyPendingCount = computed(() => verifyProgress.value?.pending ?? 0)
+
+function onVerifyLoaded(page: VerifyItemsPage): void {
+  verifyItems.value = page.items ?? []
+  verifyProgress.value = page.progress ?? null
+}
+
+/** 进行中的终态等待：组件卸载时中断，避免卸载后写响应式状态 */
+let waitAbort: AbortController | null = null
+function beginWait(): AbortSignal {
+  waitAbort?.abort()
+  waitAbort = new AbortController()
+  return waitAbort.signal
+}
+onUnmounted(() => waitAbort?.abort())
+
+function isAbort(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
+}
+
+/** 终态任务分支提示；返回 true 表示调用方应刷新读面（仅 SUCCEEDED/CANCELLED 语义） */
+function reportDisposeResult(task: TaskRow): 'reload' | 'refresh-verify' | 'none' {
+  if (task.status === 'SUCCEEDED') {
+    message.success('处置完成，线索状态与审计链已更新', { duration: 4000 })
+    return 'reload'
+  }
+  if (task.status === 'CANCELLED') {
+    message.warning('处置任务已取消，线索状态未变更', { duration: 5000 })
+    return 'none'
+  }
+  // FAILED：门禁/权限/状态机拒绝均不产生状态变更，不做乐观刷新
+  if (task.error_code === 'VERIFY_PENDING') {
+    message.error(
+      `处置被核查门禁拦截：${task.error_message || '尚有核查项未结'}`,
+      { duration: 7000 },
+    )
+    // 同步工作区（可能在他处已有裁决），让警示计数回到真值
+    return 'refresh-verify'
+  }
+  message.error(`处置未执行：${failureSummary(task)}`, { duration: 6000 })
+  return 'none'
+}
+
+function reportVerifyResult(kindLabel: string, task: TaskRow): boolean {
+  if (task.status === 'SUCCEEDED') {
+    message.success(`${kindLabel}已完成`, { duration: 3000 })
+    return true
+  }
+  if (task.status === 'CANCELLED') {
+    message.warning(`${kindLabel}任务已取消`, { duration: 4000 })
+    return false
+  }
+  message.error(`${kindLabel}失败：${failureSummary(task)}`, { duration: 6000 })
+  return false
+}
+
+/** 三栏待核实卡点击：命中核查项则滚动高亮；未命中由工作台预填人工添加框 */
+function onPendingVerify(text: string): void {
+  void verifyRef.value?.jumpTo(text)
+}
 
 const evidence = computed<EvidenceItem[]>(() => {
   const ev = detail.value?.evidence
@@ -71,17 +153,67 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
   submitting.value = true
   try {
     const res = await cluesApi.action(cs.currentCaseId, detail.value.clue_id, payload)
-    // DISPOSE 异步任务：202 已入队（进度 SSE 属 MVP-2）；审计链稍后可查
-    message.success(
-      `处置请求已入队（任务 ${res.task_id ?? res.status ?? '已受理'}），状态与审计链将在处置完成后更新`,
-      { duration: 5000 },
-    )
-    await load()
+    // 202 仅代表入队：必须等到 Worker 终态再提示/刷新，
+    // 否则 VERIFY_PENDING 等异步失败对用户不可见（REQ-V-008 闭环）
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    switch (reportDisposeResult(task)) {
+      case 'reload':
+        await load()
+        await verifyRef.value?.refresh()
+        break
+      case 'refresh-verify':
+        await verifyRef.value?.refresh()
+        break
+      case 'none':
+        break
+    }
   } catch (e) {
-    const p = presentError(e)
-    message.error(p.title, { duration: 5000 })
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
   } finally {
     submitting.value = false
+  }
+}
+
+// REQ-V-006：核查工作区写动作（202 入队 TASK_VERIFY，终态后才拉新清单——
+// 入队即刷新会读到 Worker 消费前的旧 state，门禁计数/列表出现竞态旧值）
+async function onVerifyAdd(payload: { text: string }): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await verifyApi.add(
+      cs.currentCaseId, detail.value.clue_id, payload.text)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('核查项添加', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
+async function onVerifyTransition(payload: VerifyTransitionBody & { item_id: string }): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await verifyApi.transition(
+      cs.currentCaseId, detail.value.clue_id, payload.item_id, {
+        next_status: payload.next_status,
+        conclusion: payload.conclusion,
+        text: payload.text,
+      })
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('核查裁决', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
   }
 }
 </script>
@@ -150,7 +282,25 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
               :operator="auth.operator"
               :degraded="health.degraded"
               :loading="submitting"
+              :verify-pending="verifyPendingCount"
               @submit="onSubmit"
+            />
+          </section>
+
+          <!-- REQ-V-006 核查工作区：核查项在裁决过程中累积（202 入队 VERIFY） -->
+          <section class="panel">
+            <header class="panel-head"><h3>核查工作区</h3></header>
+            <VerifyWorkbench
+              ref="verifyRef"
+              :case-id="cs.currentCaseId"
+              :clue-id="detail.clue_id"
+              :operator="auth.operator"
+              :role="auth.role"
+              :degraded="health.degraded"
+              :submitting="verifySubmitting"
+              @add="onVerifyAdd"
+              @transition="onVerifyTransition"
+              @loaded="onVerifyLoaded"
             />
           </section>
 
@@ -192,7 +342,12 @@ async function onSubmit(payload: { action: ClueAction; note?: string; reason?: s
                 溯源抽屉（{{ detail.source_rows?.length ?? 0 }} 行）
               </NButton>
             </header>
-            <ThreeColumnEvidence :items="evidence" />
+            <ThreeColumnEvidence
+              :items="evidence"
+              interactive
+              :item-status-by-text="verifyStatusByText"
+              @verify="onPendingVerify"
+            />
             <NAlert v-if="suppressedCount > 0" type="warning" class="suppressed" :bordered="false">
               {{ suppressedCount }} 条审计记录因当前会话权限不足已遮蔽（未展示，非不存在）
             </NAlert>

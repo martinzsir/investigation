@@ -79,7 +79,10 @@ export interface ClueDetail extends ClueListItem {
 }
 
 export interface ClueActionResult {
-  task_id: string
+  /** 任务行 ID（task_dto 直出 asdict(TaskRow)，字段为 id） */
+  id: string
+  /** 兼容旧引用（后端不返回该字段） */
+  task_id?: string
   status: string
   task_type?: string
   [key: string]: unknown
