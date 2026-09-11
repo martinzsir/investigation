@@ -203,5 +203,41 @@ class TestChecksToggle(unittest.TestCase):
         self.assertEqual(s["violations"], 0)
 
 
+class TestPrecheckValues(unittest.TestCase):
+    """接入期预检 precheck_values：与 scan 同一套判定/违规码，
+    纯只读不落 run_diagnostic；供 analyze element_hints 消费。"""
+
+    def test_range_and_nan_strings_skipped(self):
+        """range 违规计数；pandas astype(str) 的空/NaN 字符串不算违规值。"""
+        el = {"name": "金额", "type": "decimal", "range": {"min": 0}}
+        out = compliance.precheck_values(
+            ["100", "  ", "nan", "None", "-5"], el)
+        self.assertEqual(out, {"checked": 2,
+                               "violations": {"range_violation": 1}})
+
+    def test_enum_and_checks_filter(self):
+        """enum 违规；checks 只开 format 时 enum 不检（与 resolve 同口径）。"""
+        el = {"name": "性别", "type": "string", "enum": ["男", "女"]}
+        out = compliance.precheck_values(["男", "X"], el)
+        self.assertEqual(out, {"checked": 2,
+                               "violations": {"enum_unknown": 1}})
+        out2 = compliance.precheck_values(["男", "X"], el,
+                                          checks=("format",))
+        self.assertEqual(out2, {"checked": 2, "violations": {}})
+
+    def test_format_and_checksum(self):
+        """身份证：格式合法但校验位错 → 只 checksum_failed（与 scan 同码）。"""
+        el = {"name": "公民身份号码", "type": "string",
+              "format": r"^\d{17}[\dXx]$", "checksum": "idcard_mod11"}
+        out = compliance.precheck_values([_VALID_ID, _BAD_CHECKSUM], el)
+        self.assertEqual(out, {"checked": 2,
+                               "violations": {"checksum_failed": 1}})
+
+    def test_no_applicable_checks_returns_none(self):
+        """数据元未声明 format/checksum/range/enum 任一 → 无可预检项。"""
+        self.assertIsNone(
+            compliance.precheck_values(["张三"], {"name": "姓名"}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,9 @@
   5. person_identity 为 optional 源：主案件包缺该表时优雅跳过（不中断 build）；
   6. 属性级敏感遮蔽：见习读 person_identity.id_card 部分遮蔽，主办见原文；
   7. 五格式接入夹具（data/test/ingest/，由 scripts/gen_ingest_fixtures.py 生成）：
-     read_table 全解析 + analyze_source 自动选表/数据元推荐 + 别名列人工映射提示。
+     read_table 全解析 + analyze_source 自动选表/数据元推荐 + 别名列人工映射提示；
+  8. 接入期预检：analyze element_hints[].precheck 样本级违规计数
+     （core.compliance.precheck_values，与合规扫描同一套违规码）。
 """
 import unittest
 from pathlib import Path
@@ -312,6 +314,41 @@ class TestFiveFormatFixtures(unittest.TestCase):
         self.assertEqual(set(sug["missing_required"]), {"主体", "对方"})
         hints = {h["element_id"] for h in a["element_hints"]}
         self.assertIn("DE_CURRENCY", hints)
+
+
+class TestIngestPrecheck(unittest.TestCase):
+    """接入期预检：analyze_source element_hints[].precheck（覆盖第 8 项）。
+
+    样本级违规计数与物化后 compliance.scan 同一套违规码；纯只读，
+    不影响推荐、映射与任何写路径。
+    """
+
+    def _analyze(self, df):
+        from server.app.source_analyze import analyze_source
+        return analyze_source(df=df, pack="default",
+                              base_dir=ROOT / "ontology")
+
+    def test_precheck_counts_by_code(self):
+        import pandas as pd
+        df = pd.DataFrame({
+            # 8 个校验位合法 + 2 个格式合法校验位错
+            "身份证号": ["11010519491231002X"] * 8 + ["110105194912310021"] * 2,
+            # 9/10 落枚举（≥0.70 仍推荐），"X" 超枚举
+            "性别": ["男", "女", "男", "女", "男", "女", "男", "未知", "X", "男"],
+            "币种": ["人民币"] * 10,
+        })
+        a = self._analyze(df)
+        hints = {h["col"]: h for h in a["element_hints"]}
+        self.assertEqual(hints["身份证号"]["element_id"], "DE_IDCARD")
+        self.assertEqual(hints["身份证号"]["precheck"],
+                         {"checked": 10,
+                          "violations": {"checksum_failed": 2}})
+        self.assertEqual(hints["性别"]["element_id"], "DE_GENDER")
+        self.assertEqual(hints["性别"]["precheck"],
+                         {"checked": 10, "violations": {"enum_unknown": 1}})
+        # 全合规枚举列：precheck 键存在、违规空表
+        self.assertEqual(hints["币种"]["precheck"],
+                         {"checked": 10, "violations": {}})
 
 
 if __name__ == "__main__":

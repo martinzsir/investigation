@@ -7,7 +7,8 @@ W-P-002 上传件列分析（纯只读计算：不产任务、不写映射、不
   - suggestion：声明列 ↔ 上传列匹配（exact > normalized > fuzzy > none），
     自动选表按必选列平均置信；missing_required/low_confidence 清单；
   - element_hints：core.de_recommend 数据元推荐（只读 data_elements，
-    推荐永不自动生效）。
+    推荐永不自动生效）；命中数据元附带 precheck 样本级合规预检
+    （core.compliance.precheck_values，与物化后 scan 同一套违规码）。
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core.compliance import precheck_values, resolve_checks
 from core.de_recommend import recommend_for_table
 from core.ontology_loader import load_data_elements, load_pack
 
@@ -162,6 +164,7 @@ def analyze_source(*, df, pack: str, base_dir: str | Path,
         suggestion = _suggest_for(chosen, tables_map[chosen], source_cols)
 
     elements = load_data_elements(pack, Path(base_dir))
+    enabled_checks = resolve_checks(pack, None, base_dir=Path(base_dir))
     element_hints: list[dict] = []
     for r in recommend_for_table(source_cols, col_values, elements):
         recs = r.get("recommendations") or []
@@ -172,7 +175,7 @@ def analyze_source(*, df, pack: str, base_dir: str | Path,
         de_spec = elements.get(eid) or {}
         cr = de_spec.get("clean_rule")
         clean_rule_list = [cr] if isinstance(cr, str) else (cr or [])
-        element_hints.append({
+        hint = {
             "col": r["col"],
             "element_id": eid,
             "element_name": top.get("de_name"),
@@ -180,7 +183,12 @@ def analyze_source(*, df, pack: str, base_dir: str | Path,
             "evidence": {"match_values": (col_values.get(r["col"]) or [])[:3]},
             "clean_rule": clean_rule_list,
             "format": de_spec.get("format"),
-        })
+        }
+        pre = precheck_values(col_values.get(r["col"]) or [],
+                              de_spec, enabled_checks)
+        if pre is not None:
+            hint["precheck"] = pre
+        element_hints.append(hint)
 
     return {"columns": columns, "declared_tables": tables,
             "suggestion": suggestion, "element_hints": element_hints}

@@ -113,6 +113,35 @@ def resolve_checks(pack: str, checks: tuple | None,
     return tuple(c for c in COMPLIANCE_CHECK_NAMES if off.get(c, True))
 
 
+# pandas astype(str) 产生的空值字符串（接入画像样本里混入，不算违规值）
+_NAN_STRINGS = frozenset({"", "nan", "none", "nat", "null"})
+
+
+def precheck_values(values, element: dict,
+                    checks: tuple = COMPLIANCE_CHECK_NAMES) -> "dict | None":
+    """接入期预检（v1.3 方案 §2.4 判据补全）：对上传件样本值逐值跑合规检查。
+
+    与物化后 scan() 共用 _check_value 判定与同一套违规码，但不落
+    run_diagnostic、不碰健康度——纯只读预览，供接入向导质量面板在
+    导入前提示样本级违规。values：样本值序列（跳过 None 与空/NaN
+    字符串）。返回 {"checked": n, "violations": {违规码: 次数}}
+    （零违规的码不出现）；数据元未声明任何检查字段 → None（无可预检项）。
+    """
+    applicable = _applicable_checks(element, checks)
+    if not applicable:
+        return None
+    checked = 0
+    violations: dict[str, int] = {}
+    for v in values:
+        if v is None or (isinstance(v, str)
+                         and v.strip().lower() in _NAN_STRINGS):
+            continue
+        checked += 1
+        for code in _check_value(v, element, applicable):
+            violations[code] = violations.get(code, 0) + 1
+    return {"checked": checked, "violations": violations}
+
+
 def scan(gateway, *, health=None, checks=None, max_records: int = 200,
          base_dir: "Path | None" = None) -> dict:
     """对已物化对象执行合规扫描，返回聚合摘要（画像/健康度消费）。

@@ -160,6 +160,14 @@ const HIGH_NULL_THRESHOLD = 0.5
 const LOW_CONF_THRESHOLD = 0.70
 const DELIMITER_RE = /[-,，/|]/
 
+/** 数据元预检违规码 → 中文标签（与 core/compliance.py 违规码同源） */
+const PRECHECK_LABELS: Record<string, string> = {
+  format_mismatch: '格式不符',
+  checksum_failed: '校验位不符',
+  range_violation: '超出值域',
+  enum_unknown: '超出枚举',
+}
+
 /** 质量问题清单（基于 analyze 画像 + 映射状态，导入前预检） */
 const qualityIssues = computed<QualityIssue[]>(() => {
   const issues: QualityIssue[] = []
@@ -194,6 +202,20 @@ const qualityIssues = computed<QualityIssue[]>(() => {
       issues.push({
         severity: 'info', prop: col.name,
         message: `样本含分隔符（源列 ${sc}），可能为复合列`,
+      })
+    }
+  }
+  // 4. 数据元合规预检（analyze 样本级 format/checksum/range/enum 违规）
+  for (const col of declaredColumns.value) {
+    const sc = sourceColOf(col.name)
+    if (!sc) continue
+    const h = elementHintOf(col.name)
+    if (!h?.precheck) continue
+    for (const [code, count] of Object.entries(h.precheck.violations)) {
+      issues.push({
+        severity: 'warn', prop: col.name,
+        message: `${PRECHECK_LABELS[code] ?? code} ${count}/${h.precheck.checked}`
+          + `（${h.element_id}，源列 ${sc}）`,
       })
     }
   }

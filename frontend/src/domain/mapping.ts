@@ -56,6 +56,9 @@ export interface ElementHint {
   clean_rule?: string[]
   /** 数据元 format 正则（可空） */
   format?: string
+  /** 接入期合规预检（样本级 format/checksum/range/enum 违规计数，
+   * 与 core/compliance.py 违规码同源；数据元无可检字段时缺省） */
+  precheck?: { checked: number; violations: Record<string, number> }
 }
 
 /** analyze 端点返回 */
