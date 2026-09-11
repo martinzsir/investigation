@@ -1,0 +1,6 @@
+﻿LIB markdown False
+LIB weasyprint False
+LIB reportlab False
+LIB fitz False
+LIB pypandoc False
+LIB bs4 False

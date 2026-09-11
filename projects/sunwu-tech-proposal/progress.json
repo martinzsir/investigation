@@ -1,0 +1,124 @@
+{
+  "project": "孙武侦查官技术方案书",
+  "projectDir": "D:\\dev\\inves_duckdb\\projects\\sunwu-tech-proposal",
+  "type": "内部技术设计文档",
+  "totalChapters": 8,
+  "totalWords": 43000,
+  "actualWords": 42074,
+  "completionRate": "97.8%",
+  "completed": [
+    "chapter-01",
+    "chapter-02",
+    "chapter-03",
+    "chapter-04",
+    "chapter-05",
+    "chapter-06",
+    "chapter-07",
+    "chapter-08"
+  ],
+  "current": null,
+  "status": "completed",
+  "autoContinue": false,
+  "agents": {
+    "chapter-01": "milo",
+    "chapter-02": "milo",
+    "chapter-03": "milo+dev",
+    "chapter-04": "dev",
+    "chapter-05": "dev",
+    "chapter-06": "dev",
+    "chapter-07": "josh",
+    "chapter-08": "josh"
+  },
+  "wordCounts": {
+    "chapter-01": 4447,
+    "chapter-02": 5888,
+    "chapter-03": 6506,
+    "chapter-04": 4462,
+    "chapter-05": 5919,
+    "chapter-06": 4860,
+    "chapter-07": 5481,
+    "chapter-08": 4511
+  },
+  "chapters": {
+    "chapter-01": {
+      "title": "项目定位与设计目标",
+      "agent": "milo",
+      "targetWords": 4500,
+      "status": "completed",
+      "words": 4447,
+      "startedAt": "2026-09-11T15:44:00",
+      "completedAt": "2026-09-11T15:48:00"
+    },
+    "chapter-02": {
+      "title": "总体架构设计",
+      "agent": "milo",
+      "targetWords": 6000,
+      "status": "completed",
+      "words": 5888,
+      "startedAt": "2026-09-11T15:48:00",
+      "completedAt": "2026-09-11T15:53:00"
+    },
+    "chapter-03": {
+      "title": "语义层：Ontology 编译内核",
+      "agent": "milo+dev",
+      "targetWords": 6500,
+      "status": "completed",
+      "words": 6506,
+      "startedAt": "2026-09-11T15:53:00",
+      "completedAt": "2026-09-11T15:58:00"
+    },
+    "chapter-04": {
+      "title": "数据接入与治理",
+      "agent": "dev",
+      "targetWords": 5000,
+      "status": "completed",
+      "words": 4462,
+      "startedAt": "2026-09-11T15:55:00",
+      "completedAt": "2026-09-11T16:00:00"
+    },
+    "chapter-05": {
+      "title": "规则引擎与 Function 计算层",
+      "agent": "dev",
+      "targetWords": 6000,
+      "status": "completed",
+      "words": 5919,
+      "startedAt": "2026-09-11T16:00:00",
+      "completedAt": "2026-09-11T16:06:00"
+    },
+    "chapter-06": {
+      "title": "线索生命周期、处置与写路径",
+      "agent": "dev",
+      "targetWords": 5000,
+      "status": "completed",
+      "words": 4860,
+      "startedAt": "2026-09-11T16:01:00",
+      "completedAt": "2026-09-11T16:07:00"
+    },
+    "chapter-07": {
+      "title": "安全、权限与可观测性",
+      "agent": "josh",
+      "targetWords": 5500,
+      "status": "completed",
+      "words": 5481,
+      "startedAt": "2026-09-11T16:07:00",
+      "completedAt": "2026-09-11T16:13:00"
+    },
+    "chapter-08": {
+      "title": "质量保障、部署与演进路线",
+      "agent": "josh",
+      "targetWords": 4500,
+      "status": "completed",
+      "words": 4511,
+      "startedAt": "2026-09-11T16:10:00",
+      "completedAt": "2026-09-11T16:15:00"
+    }
+  },
+  "qualityGate": {
+    "章节齐全": true,
+    "总字数达标": true,
+    "无四级及以下标题": true,
+    "无TODO标记": true
+  },
+  "startTime": "2026-09-11T15:40:00",
+  "lastUpdate": "2026-09-11T16:16:00"
+}

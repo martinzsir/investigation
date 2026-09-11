@@ -1,0 +1,4 @@
+﻿shot -> D:\dev\inves_duckdb\projects\sunwu-tech-proposal\_shots\shot-1.png
+shot -> D:\dev\inves_duckdb\projects\sunwu-tech-proposal\_shots\shot-2.png
+shot -> D:\dev\inves_duckdb\projects\sunwu-tech-proposal\_shots\shot-3.png
+shot -> D:\dev\inves_duckdb\projects\sunwu-tech-proposal\_shots\shot-4.png
