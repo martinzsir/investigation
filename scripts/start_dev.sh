@@ -90,33 +90,74 @@ usage_exit() {
     exit 2
 }
 
-# 按命令行特征查找并停止进程：先 SIGTERM 优雅退出，5s 后仍存活则 SIGKILL
-stop_by_pattern() {
-    local name="$1" pattern="$2" pids
-    pids=$(pgrep -f "$pattern" || true)
-    if [ -z "$pids" ]; then
-        echo "[start_dev] $name 未在运行"
-        return 0
-    fi
-    echo "[start_dev] 停止 $name (PID: $(echo "$pids" | tr '\n' ' '))"
+# 优雅杀一组 PID：先 SIGTERM，每 0.5s 轮询最长 5s，仍存活则 SIGKILL
+kill_pids() {
+    local name="$1"; shift
+    local pids alive
+    pids=$(printf '%s\n' "$@" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')
+    [ -z "$pids" ] && return 0
+    echo "[start_dev] 停止 $name (PID: $pids)"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
     for _ in $(seq 1 10); do
-        pids=$(pgrep -f "$pattern" || true)
-        [ -z "$pids" ] && break
+        alive=""
+        for p in $pids; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+        [ -z "$alive" ] && break
         sleep 0.5
     done
-    pids=$(pgrep -f "$pattern" || true)
-    if [ -n "$pids" ]; then
+    if [ -n "$alive" ]; then
         echo "[start_dev] $name 5s 内未退出，SIGKILL 强制结束"
         # shellcheck disable=SC2086
-        kill -9 $pids 2>/dev/null || true
+        kill -9 $alive 2>/dev/null || true
     fi
     echo "[start_dev] $name 已停止"
 }
 
-stop_api()    { stop_by_pattern "API"    "uvicorn server\.app\.main:app"; }
-stop_worker() { stop_by_pattern "Worker" "server\.run_worker"; }
+# 由种子 PID 出发，向下收集全部子孙进程（处理 --reload / multiprocessing 派生子进程）
+collect_descendants() {
+    local all="$1" added p c
+    while :; do
+        added=""
+        for p in $all; do
+            for c in $(pgrep -P "$p" 2>/dev/null || true); do
+                case " $all " in
+                    *" $c "*) ;;
+                    *) added="$added $c" ;;
+                esac
+            done
+        done
+        [ -z "$added" ] && break
+        all="$all$added"
+    done
+    echo "$all"
+}
+
+stop_api() {
+    # 主 uvicorn 进程
+    local seed
+    seed=$(pgrep -f "uvicorn server\.app\.main:app" || true)
+    # --reload 模式下真正监听端口的是 multiprocessing spawn 子进程，
+    # 其命令行不含 uvicorn，需按监听端口兜底定位
+    seed="$seed $(ss -tlnp 2>/dev/null | grep ":$PORT[[:space:]]" | grep -oP 'pid=\K[0-9]+' || true)"
+    seed=$(printf '%s\n' $seed | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')
+    if [ -z "$seed" ]; then
+        echo "[start_dev] API 未在运行"
+        return 0
+    fi
+    # shellcheck disable=SC2086
+    kill_pids "API" $(collect_descendants "$seed")
+}
+
+stop_worker() {
+    local seed
+    seed=$(pgrep -f "server\.run_worker" || true)
+    if [ -z "$seed" ]; then
+        echo "[start_dev] Worker 未在运行"
+        return 0
+    fi
+    # shellcheck disable=SC2086
+    kill_pids "Worker" $(collect_descendants "$seed")
+}
 
 stop_target() {
     case "$1" in
