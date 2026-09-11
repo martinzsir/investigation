@@ -83,7 +83,7 @@ def _heatmap(raws: list[dict], jian_names: list[str],
     counts = [[0] * len(jian_names) for _ in level_names]
     for raw in raws:
         det = raw.get("detail") or {}
-        li = _level_idx(det.get("级别") or det.get("level"), level_names)
+        li = _level_idx(det.get("cross_level") or det.get("级别") or det.get("level"), level_names)
         if li is None:
             continue
         for j in (raw.get("jian_types") or []):
@@ -106,7 +106,7 @@ def _candidates(raws: list[dict], state_map: dict[str, dict]) -> list[dict]:
             "clue_id": raw.get("clue_id"),
             "title": raw.get("title", ""),
             "jian_types": raw.get("jian_types") or [],
-            "level": det.get("级别") or det.get("level"),
+            "level": det.get("cross_level") or det.get("级别") or det.get("level"),
             "priority_score": det.get("priority_score"),
             "score_basis": det.get("score_basis"),
             "score_formula": det.get("score_formula"),

@@ -12,7 +12,8 @@
       },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT date_trunc('quarter', CAST(date AS DATE)) AS q, COUNT(*) AS cnt, SUM(CAST(amount AS DOUBLE)) AS amt FROM obj_transaction WHERE CAST(amount AS BIGINT) % {{round_unit}} = 0 AND to_raw = {{cash_summary_tokens}} AND ({{quarter_end_window_days}} = 0 OR LEAST(ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) - INTERVAL 1 DAY)), ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) + INTERVAL 3 MONTH - INTERVAL 1 DAY))) <= {{quarter_end_window_days}}) GROUP BY q ORDER BY q",
+      "sql": "SELECT date_trunc('quarter', CAST(date AS DATE)) AS q, COUNT(*) AS cnt, SUM(CAST(amount AS DOUBLE)) AS amt FROM obj_transaction WHERE TRY_CAST(amount AS BIGINT) % {{round_unit}} = 0 AND to_raw = {{cash_summary_tokens}} AND ({{quarter_end_window_days}} = 0 OR LEAST(ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) - INTERVAL 1 DAY)), ABS(date_diff('day', CAST(date AS DATE), date_trunc('quarter', CAST(date AS DATE)) + INTERVAL 3 MONTH - INTERVAL 1 DAY))) <= {{quarter_end_window_days}}) GROUP BY q ORDER BY q",
+      "_note_cast": "整数判定用 TRY_CAST（非数值/Inf/越界 DOUBLE 降级 NULL 被 WHERE 排除），裸 CAST 遇 Inf 会抛 ConversionException 使整条函数崩溃",
       "description": "资金维度：季末窗口内整万元现金存入按季度聚合（规则 R1 挂钩；阈值见 rules.json）"
     },
     {
@@ -24,7 +25,7 @@
       },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT from_raw, to_raw, SUM(CAST(amount AS DOUBLE)) AS total FROM obj_transaction WHERE CAST(amount AS BIGINT) % {{round_unit}} = 0 GROUP BY from_raw, to_raw",
+      "sql": "SELECT from_raw, to_raw, SUM(CAST(amount AS DOUBLE)) AS total FROM obj_transaction WHERE TRY_CAST(amount AS BIGINT) % {{round_unit}} = 0 GROUP BY from_raw, to_raw",
       "description": "资金维度：整数转账 from→to 聚合，第三方过桥结构识别（规则 R2 挂钩）"
     },
     {
@@ -69,7 +70,7 @@
       },
       "output_type": "rows",
       "impl": "sql",
-      "sql": "SELECT l.title AS 项目, l.owner_raw AS 资金主体, CAST(l.amount AS BIGINT) AS 金额, l.offset_days AS 偏移天数, CAST(b.pub_date AS DATE) AS 中标公示日 FROM lnk_time_window l JOIN obj_bid_project b ON b.project_id = l.project_id WHERE CAST(l.amount AS BIGINT) % {{round_unit}} = 0 AND l.owner_raw NOT LIKE '%' || {{exclude_org_suffix}} || '%' ORDER BY l.offset_days",
+      "sql": "SELECT l.title AS 项目, l.owner_raw AS 资金主体, TRY_CAST(l.amount AS BIGINT) AS 金额, l.offset_days AS 偏移天数, CAST(b.pub_date AS DATE) AS 中标公示日 FROM lnk_time_window l JOIN obj_bid_project b ON b.project_id = l.project_id WHERE TRY_CAST(l.amount AS BIGINT) % {{round_unit}} = 0 AND l.owner_raw NOT LIKE '%' || {{exclude_org_suffix}} || '%' ORDER BY l.offset_days",
       "description": "时间维度：中标公示 ±20 天邻接边（lnk_time_window 关系层）上，整数资金且主体为个人的碰撞（Q1，奇兵拓线；规则 R6 挂钩，判据在规则层不在链接层）"
     },
     {

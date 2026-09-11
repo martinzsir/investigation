@@ -318,8 +318,10 @@ class OntologyReadGateway:
         self._guard_fresh()
         qcol = f'"{prop}"'
         if metric == "wan_integer_rate":
+            # TRY_CAST：非数值/Inf/越界 DOUBLE 降级 NULL（MOD NULL 不命中），
+            # 裸 CAST 遇 Inf 抛 ConversionException 会使整个指标查询崩溃。
             num, den = self._conn.execute(
-                f'SELECT SUM(CASE WHEN MOD(CAST({qcol} AS BIGINT), 10000) = 0 '
+                f'SELECT SUM(CASE WHEN MOD(TRY_CAST({qcol} AS BIGINT), 10000) = 0 '
                 f'THEN 1 ELSE 0 END), COUNT({qcol}) FROM {table} '
                 f'WHERE {qcol} IS NOT NULL').fetchone()
             return {"metric": metric, "value": (num / den) if den else 0.0,

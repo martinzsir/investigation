@@ -37,9 +37,33 @@
           "from_raw": "主体",
           "to_raw": "对方",
           "amount": "金额",
+          "currency": "币种",
           "date": "日期"
         }
+      },
+      "optional_columns": ["币种"],
+      "_note_transform": "DE_AMOUNT/DE_DATE 的 clean_rule 在 py 层（fetch 后）执行，晚于编译期 TRY_CAST——千分位/中文日期必须在 SQL 投影内 CAST 前抢救（REQ-D-009 transform）。strip_currency 同链剥货币符与空白。",
+      "transform": {
+        "amount": ["strip_thousands", "strip_currency"],
+        "date": ["cn_date_norm", "pad_date"]
       }
+    },
+    {
+      "object": "person_identity",
+      "optional": true,
+      "source": {
+        "table": "人员信息",
+        "columns": {
+          "raw_name": "姓名",
+          "id_type": "证件类型",
+          "id_card": "身份证号",
+          "phone": "手机号",
+          "gender": "性别",
+          "case_type": "案件类别"
+        }
+      },
+      "optional_columns": ["证件类型", "身份证号", "手机号", "性别", "案件类别"],
+      "_note": "数据接入演示源表（五格式夹具见 data/test/ingest/）。身份证/手机为 string 直通投影，DE clean_rule 经 prop_de_clean 在 py 层自动挂接（despace / strip_cc+digits_only），无需重复声明 transform。"
     },
     {
       "object": "call",
@@ -52,7 +76,8 @@
           "times": "次数"
         }
       },
-      "optional_columns": ["日期"]
+      "optional_columns": ["日期"],
+      "transform": {"date": ["cn_date_norm", "pad_date"]}
     },
     {
       "object": "trackpoint",
@@ -63,7 +88,8 @@
           "location": "地点",
           "date": "日期"
         }
-      }
+      },
+      "transform": {"date": ["cn_date_norm", "pad_date"]}
     },
     {
       "object": "bid_project",
@@ -76,7 +102,8 @@
           "leader": "分管领导"
         }
       },
-      "optional_columns": ["分管领导"]
+      "optional_columns": ["分管领导"],
+      "transform": {"pub_date": ["cn_date_norm", "pad_date"]}
     },
     {
       "object": "clue",
@@ -104,7 +131,8 @@
           "reporter_raw": "举报人",
           "content_raw": "内容"
         }
-      }
+      },
+      "transform": {"submit_date": ["cn_date_norm", "pad_date"]}
     },
     {
       "object": "osint_article",
@@ -120,7 +148,8 @@
           "retention_days": "保留天数"
         }
       },
-      "optional_columns": ["采集时间", "保留天数"]
+      "optional_columns": ["采集时间", "保留天数"],
+      "transform": {"pub_date": ["cn_date_norm", "pad_date"]}
     }
   ],
   "link_bindings": [

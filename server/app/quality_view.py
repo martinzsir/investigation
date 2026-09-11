@@ -161,7 +161,8 @@ def list_clean_trace(conn, *, obj: str | None = None,
             e["dropped_rows"] += int(d.get("duplicate_rows") or 0)
             e["source"] = src
             e["created_at"] = r.get("created_at") or e["created_at"]
-        elif kind in ("source_value_cast_failed", "source_column_missing"):
+        elif kind in ("source_value_cast_failed", "source_column_missing",
+                      "entity_null_name_dropped"):
             e = _entry(d.get("object"), d.get("prop"))
             if kind not in e["rules"]:
                 e["rules"].append(kind)

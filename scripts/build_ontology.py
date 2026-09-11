@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  ⚠ 脏值降级 {d}")
     for d in stats.get("degraded", ()):
         print(f"  ⚠ 缺列降级 {d}")
+    for d in stats.get("null_identity", ()):
+        print(f"  ⚠ 无身份剔除 {d}")
     print(f"  声明：{len(pack.objects)} 对象 / {len(pack.links)} 链接 / "
           f"{len(pack.actions)} 动作 / {len(pack.functions)} 函数")
 

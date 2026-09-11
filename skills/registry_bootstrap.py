@@ -121,6 +121,7 @@ def _clue_from_qi_zheng(spec: SkillSpec, result: dict) -> list[LineageClue]:
         skill_id=spec.skill_id,
         title=title,
         detail=detail,
+        source_rows=[dict(r) for r in q1_rows],
         jian_types=list(spec.consumes_jian),
         needs_human_review=True,
     )]

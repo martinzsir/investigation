@@ -475,9 +475,16 @@ class AuditChain:
             if action is not None and act != action:
                 continue
             if clue_id is not None:
-                haystack = (f"{before_json or ''}{after_json or ''}"
-                            f"{source_row_ids_json or ''}")
-                if clue_id not in haystack:
+                before_d = before if isinstance(before, dict) else {}
+                after_d = after if isinstance(after, dict) else {}
+                cid_in_event = before_d.get("clue_id") or after_d.get("clue_id")
+                if cid_in_event is None:
+                    # 旧事件无 clue_id 字段 → 回落包含匹配（保留可追溯性）
+                    haystack = (f"{before_json or ''}{after_json or ''}"
+                                f"{source_row_ids_json or ''}")
+                    if clue_id not in haystack:
+                        continue
+                elif cid_in_event != clue_id:
                     continue
             status_from = (before or {}).get("status") if isinstance(before, dict) else None
             status_to = (after or {}).get("status") if isinstance(after, dict) else None

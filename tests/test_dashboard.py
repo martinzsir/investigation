@@ -105,7 +105,10 @@ class DashboardTest(unittest.TestCase):
     def build_version(self, case_id: str, version: int = 1,
                       with_diagnostics: bool = True,
                       statuses: list[LineageClue] | None = None) -> None:
-        """构造版本文件：诊断行 + 可选处置留痕。"""
+        """构造版本文件：诊断行 + 可选处置留痕。
+
+        同时清除 make_case() 产生的 state.sqlite 生命周期事件，
+        让 dashboard 读 DuckDB 版本库而非 state.sqlite。"""
         store = self.factory.for_case(case_id, mode="write", version=version)
         conn = store.write_conn
         try:
@@ -116,6 +119,9 @@ class DashboardTest(unittest.TestCase):
         finally:
             store.close()
         self.repo.set_version(case_id, version, "test")
+        sp = self.factory.case_dir(case_id) / "state.sqlite"
+        if sp.exists():
+            sp.unlink()
 
     # ------------------------------------------------------------------
     # AC-1 健康度横幅
@@ -254,6 +260,9 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
         # 已建案未 BUILD：逐节降级不 500
         self.make_case("c9")
+        sp9 = self.factory.case_dir("c9") / "state.sqlite"
+        if sp9.exists():
+            sp9.unlink()
         r = self.client.get("/api/v1/cases/c9/dashboard", headers=self.auth_w)
         self.assertEqual(r.status_code, 200, r.text)
         data = r.json()["data"]

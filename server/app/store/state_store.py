@@ -98,6 +98,26 @@ CREATE TABLE IF NOT EXISTS de_recommendation (
     recommendations_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_de_reco_upload ON de_recommendation(upload_id);
+CREATE TABLE IF NOT EXISTS etl_fix_draft (
+    draft_id          TEXT PRIMARY KEY,
+    case_id           TEXT NOT NULL,
+    upload_id         TEXT NOT NULL,
+    target_object     TEXT NOT NULL,
+    target_prop       TEXT NOT NULL,
+    op_token          TEXT NOT NULL,
+    op_class          TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    preview_affected_rows INTEGER NOT NULL DEFAULT 0,
+    preview_samples_json  TEXT NOT NULL DEFAULT '[]',
+    status            TEXT NOT NULL DEFAULT '待复核',
+    created_at        TEXT NOT NULL,
+    created_by        TEXT NOT NULL DEFAULT '',
+    reviewed_by       TEXT NOT NULL DEFAULT '',
+    reviewed_at       TEXT NOT NULL DEFAULT '',
+    note              TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_etl_fix_upload ON etl_fix_draft(upload_id);
+CREATE INDEX IF NOT EXISTS idx_etl_fix_status ON etl_fix_draft(case_id, status);
 """
 
 _AC_COLUMNS = (
@@ -277,6 +297,122 @@ class StateStore:
                 d.pop("recommendations_json") or "[]")
         except _json.JSONDecodeError:
             d["recommendations"] = []
+        return d
+
+    # ---- v1.3 ETL 处置草稿（与 de_recommendation 分表；不自动生效）----
+    # 生命周期：Step2 质检创建 → 待复核 → 已确认/已驳回 → 已发布
+    # 落点：bindings.clean / bindings.source_sql（发布时写入，非此处）
+    # 红线：status != 已确认 时 publish 拒绝（fail-closed）；B 类需 reviewed_by
+    def save_etl_fix_draft(self, *, draft_id: str, case_id: str,
+                          upload_id: str, target_object: str,
+                          target_prop: str, op_token: str, op_class: str,
+                          source: str = "Step2",
+                          preview_affected_rows: int = 0,
+                          preview_samples: list | None = None,
+                          created_at: str, created_by: str,
+                          note: str = "") -> None:
+        """创建/更新 ETL 处置草稿（幂等：draft_id 存在则覆盖，status 重置为待复核）。"""
+        import json as _json
+        self._conn.execute(
+            "INSERT OR REPLACE INTO etl_fix_draft "
+            "(draft_id, case_id, upload_id, target_object, target_prop, "
+            " op_token, op_class, source, preview_affected_rows, "
+            " preview_samples_json, status, created_at, created_by, "
+            " reviewed_by, reviewed_at, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '待复核', ?, ?, '', '', ?)",
+            [draft_id, case_id, upload_id, target_object, target_prop,
+             op_token, op_class, source, int(preview_affected_rows),
+             _json.dumps(preview_samples or [], ensure_ascii=False,
+                         default=str),
+             created_at, created_by, note])
+        self._conn.commit()
+
+    def get_etl_fix_draft(self, draft_id: str) -> dict | None:
+        return self._etl_fix_row(
+            "SELECT * FROM etl_fix_draft WHERE draft_id=?", [draft_id])
+
+    def list_etl_fix_drafts(self, *, case_id: str, upload_id: str | None = None,
+                            status: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM etl_fix_draft WHERE case_id=?"
+        params: list = [case_id]
+        if upload_id:
+            sql += " AND upload_id=?"
+            params.append(upload_id)
+        if status:
+            sql += " AND status=?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC, rowid DESC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._etl_fix_dict(r) for r in rows]
+
+    def confirm_etl_fix_draft(self, draft_id: str, *,
+                              reviewed_by: str,
+                              reviewed_at: str) -> dict | None:
+        """复核通过：待复核 → 已确认（A 类 created_by 可自审；B 类需独立 reviewer）。"""
+        cur = self._conn.execute(
+            "UPDATE etl_fix_draft SET status='已确认', reviewed_by=?, "
+            "reviewed_at=? WHERE draft_id=? AND status='待复核'",
+            [reviewed_by, reviewed_at, draft_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_etl_fix_draft(draft_id)
+
+    def reject_etl_fix_draft(self, draft_id: str, *,
+                             reviewed_by: str, reviewed_at: str,
+                             note: str = "") -> dict | None:
+        """复核驳回：待复核 → 已驳回（不可再发布）。"""
+        cur = self._conn.execute(
+            "UPDATE etl_fix_draft SET status='已驳回', reviewed_by=?, "
+            "reviewed_at=?, note=? WHERE draft_id=? AND status='待复核'",
+            [reviewed_by, reviewed_at, note, draft_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_etl_fix_draft(draft_id)
+
+    def publish_etl_fix_draft(self, draft_id: str, *,
+                               reviewed_by: str = "",
+                               reviewed_at: str = "") -> dict | None:
+        """发布：已确认 → 已发布（fail-closed：其他状态拒绝）。
+
+        发布只改 state 状态；真正写 bindings.clean/source_sql 由调用方
+        在本方法返回后执行（state 不触 bindings，保持单写口红线）。
+        A 类（op_class='A'）允许 reviewed_by 留空（免复核）；B/C 类必填。
+        """
+        row = self._conn.execute(
+            "SELECT status, op_class FROM etl_fix_draft WHERE draft_id=?",
+            [draft_id]).fetchone()
+        if row is None:
+            raise KeyError(f"草稿不存在：{draft_id}")
+        if row["status"] != "已确认":
+            raise ValueError(
+                f"仅已确认草稿可发布，当前状态：{row['status']}")
+        if row["op_class"] != "A" and not reviewed_by:
+            raise ValueError(
+                f"op_class={row['op_class']} 需 reviewed_by（B 类强制复核）")
+        self._conn.execute(
+            "UPDATE etl_fix_draft SET status='已发布', "
+            "reviewed_by=COALESCE(NULLIF(reviewed_by,''), ?), "
+            "reviewed_at=COALESCE(NULLIF(reviewed_at,''), ?) "
+            "WHERE draft_id=?",
+            [reviewed_by, reviewed_at, draft_id])
+        self._conn.commit()
+        return self.get_etl_fix_draft(draft_id)
+
+    def _etl_fix_row(self, sql: str, args: list) -> dict | None:
+        row = self._conn.execute(sql, args).fetchone()
+        return self._etl_fix_dict(row) if row is not None else None
+
+    @staticmethod
+    def _etl_fix_dict(row) -> dict:
+        import json as _json
+        d = dict(row)
+        try:
+            d["preview_samples"] = _json.loads(
+                d.pop("preview_samples_json") or "[]")
+        except _json.JSONDecodeError:
+            d["preview_samples"] = []
         return d
 
     def __enter__(self) -> "StateStore":

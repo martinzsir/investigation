@@ -87,6 +87,13 @@ class CaseService:
             shutil.rmtree(dst)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(src, dst)
+        # 复制 _shared 全域基础层（数据元三层合并需要）
+        shared_src = self.ontology_root / "_shared"
+        if shared_src.exists():
+            shared_dst = self.snapshot_ontology_root(case_id) / "_shared"
+            if shared_dst.exists():
+                shutil.rmtree(shared_dst)
+            shutil.copytree(shared_src, shared_dst)
         version = self.fingerprint(dst)
 
         locked_at = datetime.now().isoformat(timespec="seconds")

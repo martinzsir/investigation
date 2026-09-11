@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-D-001 全域基础层数据元标准（v1.2 §3.0.3）：跨行业通用的标准数据元收敛到此层，由平台维护。案件包 data_elements.json 仅追加案件特有声明（如 DE_CASE_TYPE 因案而异）。加载顺序：全域基础 → 行业叠加 → 案件追加（仅追加，ID 冲突硬失败；案件层覆盖须 override:true + 审计，见 P2-7）。敏感数据元在此层声明默认 mask（§3.0.5），包级 policies 可覆盖，二者皆无仍硬失败。clean_rule 只能引用已注册 op（core/clean_ops.py）。",
+  "elements": {
+    "DE_IDCARD": {
+      "name": "公民身份号码",
+      "type": "string",
+      "length": 18,
+      "format": "^[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]$",
+      "checksum": "idcard_mod11",
+      "sensitive": true,
+      "mask": "partial",
+      "clean_rule": ["despace"]
+    },
+    "DE_PHONE": {
+      "name": "移动电话号码",
+      "type": "string",
+      "length": 11,
+      "format": "^1[3-9]\\d{9}$",
+      "clean_rule": ["strip_cc", "digits_only"]
+    },
+    "DE_GENDER": {
+      "name": "性别",
+      "type": "string",
+      "enum": ["男", "女", "未知"],
+      "enum_space_dim": "性别"
+    },
+    "DE_CURRENCY": {
+      "name": "币种",
+      "type": "string",
+      "enum": ["人民币", "美元", "欧元", "港币", "日元"],
+      "enum_space_dim": "币种"
+    },
+    "DE_ID_TYPE": {
+      "name": "证件类型",
+      "type": "string",
+      "enum": ["居民身份证", "护照", "军官证", "港澳居民来往内地通行证", "台湾居民来往大陆通行证"],
+      "enum_space_dim": "证件类型"
+    },
+    "DE_AMOUNT": {
+      "name": "交易金额（元）",
+      "type": "decimal",
+      "range": {"min": 0},
+      "clean_rule": ["strip_thousands", "strip_currency"]
+    },
+    "DE_DATE": {
+      "name": "业务日期",
+      "type": "date",
+      "range": {"max": "2025-12-31"},
+      "clean_rule": ["cn_date_norm", "pad_date"]
+    }
+  }
+}

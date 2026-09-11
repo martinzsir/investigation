@@ -126,9 +126,11 @@ GROUPS = {
     "cleanscope":   ("REQ-D-005 属性级清洗作用域（双通道）", [sys.executable, "-m", "unittest", "tests.test_clean_scope"]),
     "transform":    ("REQ-D-009 transform 层（脏值可用性抢救）", [sys.executable, "-m", "unittest", "tests.test_transform"]),
     "casterror":    ("REQ-D-010 on_cast_error 三态（null/fail/quarantine）", [sys.executable, "-m", "unittest", "tests.test_cast_error"]),
+    "nullidentity": ("鲁棒性：NULL 名实体剔除留痕 + 整数金额 TRY_CAST 防 Inf 崩溃", [sys.executable, "-m", "unittest", "tests.test_null_identity"]),
     "composite":    ("REQ-D-013 复合列声明（显式降级+画像检出）", [sys.executable, "-m", "unittest", "tests.test_composite"]),
     "reqdcase":     ("REQ-D 海州电诈案 24 探针端到端验收", [sys.executable, "-m", "unittest", "tests.test_reqd_case"]),
     "compliance":   ("REQ-D-016 数据元合规扫描（违规行落诊断+画像违规率）", [sys.executable, "-m", "unittest", "tests.test_compliance"]),
+    "deingest":     ("数据元驱动接入全链路（人员信息对象/transform抢救/py清洗/合规/遮蔽/五格式夹具）", [sys.executable, "-m", "unittest", "tests.test_de_ingest"]),
     "cleanstats":   ("REQ-D-008 清洗统计落健康度（剔除率告警+画像前后行数）", [sys.executable, "-m", "unittest", "tests.test_clean_stats"]),
     "sensitivescan":("REQ-D-018 敏感列启发式扫描（只告警不阻断）", [sys.executable, "-m", "unittest", "tests.test_sensitive_scan"]),
     "versionanchor":("REQ-G-007/001 版本锚定+缓存失效令牌", [sys.executable, "-m", "unittest", "tests.test_version_anchor", "tests.test_derived"]),
@@ -207,6 +209,7 @@ GROUPS = {
     "jiansdecl":  ("R5/R9 五间声明化 jians.json", [sys.executable, "-m", "unittest", "tests.test_jians_decl"]),
     "statesdecl": ("R6/R10 状态机声明化 states.json", [sys.executable, "-m", "unittest", "tests.test_states_decl"]),
     "scoringdecl":("R7/R12/R13 计分声明化 scoring.json+score_basis", [sys.executable, "-m", "unittest", "tests.test_scoring_decl"]),
+    "etldraft":     ("v1.3 Phase 4 ETL 处置草稿三分类+预演+双表分离", [sys.executable, "-m", "unittest", "tests.test_etl_drafts"]),
 }
 
 

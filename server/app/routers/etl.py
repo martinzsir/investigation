@@ -15,15 +15,19 @@ import json
 import os
 import shutil
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from core import clean_ops
 from core.ontology_loader import load_pack
 
+from server.app import ingest_io
 from server.app.deps import WebContext, get_ctx, get_principal
-from server.app.envelope import ERR_VALIDATION, APIError, ok
+from server.app.envelope import ERR_NOT_FOUND, ERR_VALIDATION, ERR_CONFLICT, APIError, ok
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
@@ -124,6 +128,8 @@ def _pipeline_from_bindings(bindings: dict) -> list[dict]:
             # 复合列无声明位置（诊断由 quality 页 composite_column_detected
             # 提示）；处置路径见 validate 的 A/B 两路出路。
             "composite_props": [],
+            # P3-2：binding 级 split 声明直出（只读展示，不在此编辑）
+            "split": list(b.get("split") or []),
         })
     return sources
 
@@ -256,3 +262,250 @@ def validate_etl_mapping(case_id: str, body: ValidateIn,
     return ok({"valid": not conflicts, "conflicts": conflicts,
                "paths": _VALIDATE_PATHS},
               data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# P3-3: ETL 清洗预演（不写盘、不创草稿；仅对样本展示 before/after）
+# ----------------------------------------------------------------------
+class PreviewIn(BaseModel):
+    upload_id: str
+    source_col: str
+    op_token: str          # e.g. "trim_prefix:ID-" / "strip_thousands"
+    sqlite_table: str = ""
+
+
+@router.post("/cases/{case_id}/etl-pipeline/preview")
+def preview_etl_op(case_id: str, body: PreviewIn,
+                   p: Principal = Depends(get_principal),
+                   ctx: WebContext = Depends(get_ctx)):
+    """ETL 清洗预演：对上传件样本值应用 clean op，返回 before/after 对。
+
+    只支持 py clean 层 op（无 SQL 注入风险）；transform 层预演需 DuckDB
+    编译，属后续批次。不写盘、不创建草稿——仅展示效果供分析师决策。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    src = ctx.repo.get_source(case_id, body.upload_id)
+    if src is None:
+        raise APIError(ERR_NOT_FOUND,
+                       f"上传件不存在：{body.upload_id}", 404)
+    staged = (ctx.factory.case_dir(case_id) / "uploads"
+              / f"{src['upload_id']}.{src['fmt']}")
+    if not staged.exists():
+        raise APIError(ERR_NOT_FOUND, f"暂存文件已丢失：{staged.name}", 404)
+    try:
+        df = ingest_io.read_table(
+            staged, src["fmt"],
+            table=body.sqlite_table or None)
+    except Exception as e:
+        raise APIError(ERR_VALIDATION, f"文件解析失败：{e}", 400)
+    if body.source_col not in df.columns:
+        raise APIError(ERR_VALIDATION,
+                       f"源列 {body.source_col!r} 不在上传件列 "
+                       f"{list(df.columns)}", 400)
+    # 校验 op token（clean 层；未知 op / 层不匹配硬失败）
+    try:
+        name, param = clean_ops.validate_op(body.op_token, "clean")
+    except ValueError as e:
+        raise APIError(ERR_VALIDATION, f"op 校验失败：{e}", 400)
+    spec = clean_ops.OPS.get(name)
+    if not spec or not callable(spec.fn):
+        raise APIError(ERR_VALIDATION,
+                       f"op {name!r} 无 py 实现，不能预演", 400)
+    # 取样本值（前 10 个非空值）
+    series = df[body.source_col].astype(str)
+    samples = [v for v in series.tolist() if v and v.strip()][:10]
+    # 应用 clean op（paramless op 不接受 param 关键字，仅带参 op 传递）
+    clean_ctx = clean_ops.CleanContext()
+    call_kwargs = {"param": param} if param is not None else {}
+    pairs: list[dict] = []
+    for v in samples:
+        result = spec.fn(v, clean_ctx, **call_kwargs)
+        # reject_if 返回 (value, False) tuple
+        if isinstance(result, tuple) and len(result) == 2:
+            after, keep = result
+            pairs.append({"before": v, "after": str(after),
+                          "rejected": not keep})
+        else:
+            pairs.append({"before": v, "after": str(result),
+                          "rejected": False})
+    # 全量非空行统计 affected_rows（IN-TC-21）
+    non_empty_all = [v for v in series.tolist() if v and v.strip()]
+    affected_rows = 0
+    for v in non_empty_all:
+        result = spec.fn(v, clean_ctx, **call_kwargs)
+        if isinstance(result, tuple) and len(result) == 2:
+            after, keep = result
+            if not keep or str(after) != v:
+                affected_rows += 1
+        elif str(result) != v:
+            affected_rows += 1
+    return ok({"op": body.op_token, "source_col": body.source_col,
+               "samples": pairs, "total_rows": len(df),
+               "affected_rows": affected_rows},
+              data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# P4: ETL 处置草稿（etl_fix_draft；与 de_recommendation 分表）
+# 红线：publish 只改 state 状态，不写 bindings.clean/source_sql（后续批次）
+# ----------------------------------------------------------------------
+
+def _open_etl_state(ctx: WebContext, case_id: str):
+    """复用 research.py _open_state 模式；state.sqlite 缺失返 None。"""
+    from server.app.store.state_store import StateStore
+    path = ctx.factory.case_dir(case_id) / "state.sqlite"
+    return StateStore(case_id, path) if path.exists() else None
+
+
+class EtlDraftIn(BaseModel):
+    upload_id: str
+    target_object: str
+    target_prop: str
+    op_token: str
+    op_class: str
+    preview_affected_rows: int = 0
+    preview_samples: list[dict] = []
+    note: str = ""
+
+
+class EtlDraftDecideIn(BaseModel):
+    note: str = ""
+
+
+@router.post("/cases/{case_id}/etl-drafts")
+def create_etl_draft(case_id: str, body: EtlDraftIn,
+                     p: Principal = Depends(get_principal),
+                     ctx: WebContext = Depends(get_ctx)):
+    """创建 ETL 处置草稿（A/B 类；C 类不调此端点）。
+
+    幂等：save_etl_fix_draft 用 INSERT OR REPLACE，draft_id 由后端生成。
+    op 校验：clean 层未知 op 硬失败（防注入），与 preview 端点同口径。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    if body.op_class not in ("A", "B"):
+        raise APIError(ERR_VALIDATION,
+                       f"op_class 非法：{body.op_class}（A|B；C 类不落表）", 400)
+    if ctx.repo.get_source(case_id, body.upload_id) is None:
+        raise APIError(ERR_NOT_FOUND, f"上传件不存在：{body.upload_id}", 404)
+    try:
+        clean_ops.validate_op(body.op_token, "clean")
+    except ValueError as e:
+        raise APIError(ERR_VALIDATION, f"op 校验失败：{e}", 400)
+    draft_id = f"draft_{uuid.uuid4().hex[:12]}"
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    st = _open_etl_state(ctx, case_id)
+    try:
+        if st is None:
+            raise APIError(ERR_NOT_FOUND,
+                           f"案件 state.sqlite 不存在：{case_id}", 404)
+        st.save_etl_fix_draft(
+            draft_id=draft_id, case_id=case_id, upload_id=body.upload_id,
+            target_object=body.target_object, target_prop=body.target_prop,
+            op_token=body.op_token, op_class=body.op_class,
+            source="Step2",
+            preview_affected_rows=body.preview_affected_rows,
+            preview_samples=body.preview_samples,
+            created_at=now, created_by=p.operator, note=body.note)
+        draft = st.get_etl_fix_draft(draft_id)
+    finally:
+        if st is not None:
+            st.close()
+    return ok(draft, data_version=ctx.repo.current_version(case_id))
+
+
+@router.get("/cases/{case_id}/etl-drafts")
+def list_etl_drafts(case_id: str,
+                    upload_id: str | None = None,
+                    p: Principal = Depends(get_principal),
+                    ctx: WebContext = Depends(get_ctx)):
+    """草稿列表（可按 upload_id 过滤；IN-TC-18 与 de_recommendation 分表）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    st = _open_etl_state(ctx, case_id)
+    try:
+        items = (st.list_etl_fix_drafts(
+            case_id=case_id, upload_id=upload_id)
+            if st is not None else [])
+    finally:
+        if st is not None:
+            st.close()
+    return ok({"items": items, "total": len(items)},
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/etl-drafts/{draft_id}/confirm")
+def confirm_etl_draft(case_id: str, draft_id: str,
+                      body: EtlDraftDecideIn,
+                      p: Principal = Depends(get_principal),
+                      ctx: WebContext = Depends(get_ctx)):
+    """复核通过：待复核 → 已确认（A 类 created_by 可自审；B 类需独立 reviewer）。
+
+    IN-TC-19：A 类 reviewed_by 允许空，故 A 类前端用 created_by 自审通过；
+    IN-TC-20：B 类强制 reviewed_by（在 publish 端点 fail-closed 拦截）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    st = _open_etl_state(ctx, case_id)
+    try:
+        if st is None or st.get_etl_fix_draft(draft_id) is None:
+            raise APIError(ERR_NOT_FOUND, f"草稿不存在：{draft_id}", 404)
+        draft = st.confirm_etl_fix_draft(
+            draft_id, reviewed_by=p.operator, reviewed_at=now)
+        if draft is None:
+            raise APIError(ERR_CONFLICT,
+                           f"草稿状态非待复核，无法确认：{draft_id}", 409)
+    finally:
+        if st is not None:
+            st.close()
+    return ok(draft, data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/etl-drafts/{draft_id}/reject")
+def reject_etl_draft(case_id: str, draft_id: str,
+                     body: EtlDraftDecideIn,
+                     p: Principal = Depends(get_principal),
+                     ctx: WebContext = Depends(get_ctx)):
+    """复核驳回：待复核 → 已驳回（不可再发布）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    st = _open_etl_state(ctx, case_id)
+    try:
+        if st is None or st.get_etl_fix_draft(draft_id) is None:
+            raise APIError(ERR_NOT_FOUND, f"草稿不存在：{draft_id}", 404)
+        draft = st.reject_etl_fix_draft(
+            draft_id, reviewed_by=p.operator, reviewed_at=now,
+            note=body.note)
+        if draft is None:
+            raise APIError(ERR_CONFLICT,
+                           f"草稿状态非待复核，无法驳回：{draft_id}", 409)
+    finally:
+        if st is not None:
+            st.close()
+    return ok(draft, data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/etl-drafts/{draft_id}/publish")
+def publish_etl_draft(case_id: str, draft_id: str,
+                      p: Principal = Depends(get_principal),
+                      ctx: WebContext = Depends(get_ctx)):
+    """发布草稿：已确认 → 已发布（fail-closed：未确认/已驳回一律拒绝）。
+
+    IN-TC-22：state_store.publish_etl_fix_draft 硬断言 status=已确认
+    IN-TC-20：op_class != A 且 reviewed_by 空 → ValueError
+    红线：本端点只改 state 状态；写 bindings.clean/source_sql 属后续批次
+    （保持单写口红线，state_store 不触 bindings）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    st = _open_etl_state(ctx, case_id)
+    try:
+        if st is None or st.get_etl_fix_draft(draft_id) is None:
+            raise APIError(ERR_NOT_FOUND, f"草稿不存在：{draft_id}", 404)
+        try:
+            draft = st.publish_etl_fix_draft(
+                draft_id, reviewed_by=p.operator, reviewed_at=now)
+        except ValueError as e:
+            raise APIError(ERR_CONFLICT, str(e), 409)
+    finally:
+        if st is not None:
+            st.close()
+    return ok(draft, data_version=ctx.repo.current_version(case_id))

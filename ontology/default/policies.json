@@ -3,6 +3,7 @@
   "_note": "REQ-010 对象级/属性级策略。对象未在本文件声明 → fail-closed 默认拒绝（AC4）；coverage_missing() 保证 objects.json 每个对象都有显式声明（AC5）。角色分级与 core.access.ROLE_RANK 同源。schema_version 必须与其余 ontology 声明一致（REQ-G-016，core/policy.py 装载校验，不符硬失败）。",
   "object_policies": [
     {"object": "person",       "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "基础情报"},
+    {"object": "person_identity", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "人员建档信息：对象全队可见，身份证号经 property_policy 遮蔽"},
     {"object": "org",          "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
     {"object": "account",      "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
     {"object": "bid_project",  "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
@@ -28,6 +29,7 @@
   ],
   "property_policies": [
     {"object": "person", "property": "id_card",    "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "身份证号：主办及以上原文，其余部分遮蔽（310****1234）"},
+    {"object": "person_identity", "property": "id_card", "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "人员建档身份证号：与 person.id_card 同口径（DE_IDCARD sensitive，全域 mask:partial 兜底）"},
     {"object": "tipoff", "property": "content_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报材料正文：主办及以上原文"},
     {"object": "tipoff", "property": "reporter_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报人身份：主办及以上原文"}
   ]

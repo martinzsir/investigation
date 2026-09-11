@@ -51,6 +51,7 @@ def declared_tables_view(spec) -> list[dict]:
             entry = tables.setdefault(tbl, {
                 "name": tbl,
                 "title": obj_title.get(b.object, tbl) if projs else tbl,
+                "object": b.object,
                 "required_columns": [], "optional_columns": []})
         elif projs and entry["title"] == tbl:
             # 先前被 source_sql 借道绑定用表名占位，结构化源补正式标题
@@ -167,12 +168,18 @@ def analyze_source(*, df, pack: str, base_dir: str | Path,
         top = next((x for x in recs if x.get("data_element")), None)
         if top is None:
             continue
+        eid = top["data_element"]
+        de_spec = elements.get(eid) or {}
+        cr = de_spec.get("clean_rule")
+        clean_rule_list = [cr] if isinstance(cr, str) else (cr or [])
         element_hints.append({
             "col": r["col"],
-            "element_id": top["data_element"],
+            "element_id": eid,
             "element_name": top.get("de_name"),
             "confidence": _DE_CONF.get(top.get("confidence"), 0.6),
             "evidence": {"match_values": (col_values.get(r["col"]) or [])[:3]},
+            "clean_rule": clean_rule_list,
+            "format": de_spec.get("format"),
         })
 
     return {"columns": columns, "declared_tables": tables,

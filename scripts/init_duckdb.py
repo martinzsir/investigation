@@ -115,7 +115,7 @@ def main():
         CREATE OR REPLACE VIEW mv_quarterly_integer_deposits AS
         SELECT 主体, date_trunc('quarter', 日期::DATE) AS q, COUNT(*) AS cnt, SUM(金额) AS total
         FROM v_flow
-        WHERE CAST(金额 AS BIGINT) % 10000 = 0
+        WHERE TRY_CAST(金额 AS BIGINT) % 10000 = 0
         GROUP BY 主体, date_trunc('quarter', 日期::DATE)
     """)
 
@@ -124,10 +124,10 @@ def main():
         CREATE OR REPLACE TABLE Q1_time_window AS
         SELECT b.项目 AS 项目, b.中标公示日::DATE AS bid_date, f.日期::DATE AS deposit_date,
                date_diff('day', b.中标公示日::DATE, f.日期::DATE) AS offset_days,
-               CAST(f.金额 AS BIGINT) AS amount
+               TRY_CAST(f.金额 AS BIGINT) AS amount
         FROM read_parquet('{(DATA / '招投标档案.parquet').as_posix()}') b
         JOIN read_parquet('{(DATA / '银行流水.parquet').as_posix()}') f
-          ON f.主体 = '张卫国' AND CAST(f.金额 AS BIGINT) % 10000 = 0
+          ON f.主体 = '张卫国' AND TRY_CAST(f.金额 AS BIGINT) % 10000 = 0
          AND f.日期::DATE BETWEEN b.中标公示日::DATE - 20 AND b.中标公示日::DATE + 20
         ORDER BY offset_days
     """)

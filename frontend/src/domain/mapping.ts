@@ -26,6 +26,7 @@ export interface MappingSuggestion {
 export interface DeclaredTable {
   name: string
   title?: string
+  object?: string
   required_columns: string[]
   optional_columns: string[]
 }
@@ -39,6 +40,24 @@ export interface SourceColumn {
   samples?: string[]
 }
 
+/**
+ * 数据元推荐（analyze element_hints[]，v1.1 从 Step4 前移到 Step1 同步返回）。
+ * col 为上传源列名；与映射表（按声明列展示）正交，需按“该声明列映射到的源列”查 hint。
+ */
+export interface ElementHint {
+  /** 上传源列名（hint 按 source col 索引，非声明列） */
+  col: string
+  element_id: string
+  element_name?: string
+  /** 0–1 置信度 */
+  confidence: number
+  evidence?: { match_values?: string[] }
+  /** 数据元声明的清洗 op 链（P4 三分类用） */
+  clean_rule?: string[]
+  /** 数据元 format 正则（可空） */
+  format?: string
+}
+
 /** analyze 端点返回 */
 export interface AnalyzeResult {
   upload_id: string
@@ -50,7 +69,7 @@ export interface AnalyzeResult {
   columns: SourceColumn[]
   declared_tables: DeclaredTable[]
   suggestion: MappingSuggestion
-  element_hints?: unknown[]
+  element_hints?: ElementHint[]
 }
 
 /** 后端低置信阈值（source_analyze.LOW_CONFIDENCE） */

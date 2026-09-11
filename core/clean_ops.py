@@ -77,8 +77,12 @@ def split_op(tok: str) -> tuple[str, str | None]:
 def validate_op(tok: str, layer: str) -> tuple[str, str | None]:
     """校验 op token 在指定层（'clean'|'transform'）可用；返回 (name, param)。
 
-    未知 op / 层不匹配 / 缺该层实现 / 带参但无白名单或参数不在白名单 → ValueError
-    （REQ-D-009 AC-6 未知硬失败；REQ-D-011 字符串参数仅白名单取值，防注入）。
+    未知 op / 层不匹配 / 缺该层实现 → ValueError（REQ-D-009 AC-6 未知硬失败）。
+    参数校验分层（v1.3 §2-2/2-3）：
+      - sql transform 层：强制 param_enum 白名单（防 SQL 注入，红线不放宽）；
+      - py clean 层：有 param_enum 时校验白名单（兼容 reject_if:contains_mask），
+        无 param_enum 时允许自由文本参数（Python 侧处理，无 SQL 注入风险），
+        支持 trim_prefix/regex_extract 等带自由文本参数的 op。
     """
     name, param = split_op(tok)
     spec = OPS.get(name)
@@ -97,12 +101,18 @@ def validate_op(tok: str, layer: str) -> tuple[str, str | None]:
     else:  # pragma: no cover - 内部调用约定
         raise ValueError(f"validate_op layer='{layer}' 非法，允许 clean | transform")
     if param is not None:
-        if not spec.param_enum:
-            raise ValueError(f"op '{name}' 不接受参数（得到 ':{param}'）")
-        if param not in spec.param_enum:
+        if spec.param_enum:
+            # 有白名单：两层都校验（reject_if:contains_mask 等枚举参数）
+            if param not in spec.param_enum:
+                raise ValueError(
+                    f"op '{name}' 参数 '{param}' 不在白名单 {list(spec.param_enum)}"
+                    f"（字符串参数仅白名单取值，防注入）")
+        elif layer == "transform":
+            # sql 层无白名单但有参数：硬失败（防 SQL 注入）
             raise ValueError(
-                f"op '{name}' 参数 '{param}' 不在白名单 {list(spec.param_enum)}"
-                f"（字符串参数仅允许白名单取值，防注入）")
+                f"transform op '{name}' 不接受自由文本参数（得到 ':{param}'），"
+                f"sql 层参数必须声明 param_enum 白名单（防注入）")
+        # py clean 层无 param_enum：允许自由文本参数（trim_prefix/regex_extract 等）
     return name, param
 
 
@@ -152,13 +162,28 @@ def compile_sql_expr(ops, col_expr: str) -> str:
 
 # ---- 内置 SQL transform op（REQ-D-009 脏值抢救最小集；paramless，批 D5 扩充参数化 op）----
 # 模板约定：{col} = 被处理表达式（链式编译时为前序 op 的结果）。
-register_op("strip_thousands", impl="sql", layer="transform",
+# v1.3 §2-1：strip_thousands/strip_currency/cn_date_norm 升级为 layer="any"（py+sql
+# 双实现），使 data_elements.clean_rule 可引用（prop_de_clean 走 _apply_clean py 层）。
+def _strip_thousands(v, _ctx=None):
+    return str(v if v is not None else "").replace(",", "")
+
+
+def _strip_currency(v, _ctx=None):
+    return re.sub(r"[¥￥$€£\s]", "", str(v if v is not None else ""))
+
+
+def _cn_date_norm(v, _ctx=None):
+    s = str(v if v is not None else "")
+    return s.replace("年", "-").replace("月", "-").replace("日", "")
+
+
+register_op("strip_thousands", impl="sql", layer="any", fn=_strip_thousands,
             sql_template="regexp_replace({col}, ',', '', 'g')",
             description="千分位逗号剥离：48,000.00 → 48000.00（TRY_CAST 前生效）")
-register_op("strip_currency", impl="sql", layer="transform",
+register_op("strip_currency", impl="sql", layer="any", fn=_strip_currency,
             sql_template=r"regexp_replace({col}, '[¥￥$€£\s]', '', 'g')",
             description="货币符号剥离：￥1,280.50 → 1,280.50")
-register_op("cn_date_norm", impl="sql", layer="transform",
+register_op("cn_date_norm", impl="sql", layer="any", fn=_cn_date_norm,
             sql_template=("regexp_replace(regexp_replace(regexp_replace("
                           "{col}, '年', '-'), '月', '-'), '日', '')"),
             description="中文日期归一：2024年3月15日 → 2024-3-15（TRY_CAST 可解析）")
@@ -295,3 +320,71 @@ register_op("reject_if", impl="py", layer="clean", fn=_reject_if,
             param_enum=("contains_mask",),
             description="条件拒绝整行：reject_if:contains_mask 命中星号/全角乘号遮蔽"
                         "（如 6222********7890 为脱敏残片，不入语义层）")
+
+
+# ---- v1.3 §2-2/2-3：带自由文本参数的 py clean op（无 param_enum，py 层允许自由文本）----
+# 与 reject_if（param_enum 白名单）不同，以下 op 的参数是 prefix/suffix/正则/换算因子，
+# 本质是自由文本/数值——py 层处理无 SQL 注入风险，故不设 param_enum（validate_op
+# 对 py 层无 param_enum 的 op 允许自由文本参数）。sql 层仍强制白名单（红线不放宽）。
+
+def _trim_prefix(v, _ctx=None, param=None):
+    """去固定前缀：trim_prefix:ID- 把 'ID-001' → '001'。param 为前缀字面字符串。"""
+    if not param:
+        return v
+    s = str(v if v is not None else "")
+    p = str(param)
+    return s[len(p):] if s.startswith(p) else s
+
+
+def _trim_suffix(v, _ctx=None, param=None):
+    """去固定后缀：trim_suffix:元 把 '100元' → '100'。param 为后缀字面字符串。"""
+    if not param:
+        return v
+    s = str(v if v is not None else "")
+    p = str(param)
+    return s[:-len(p)] if s.endswith(p) and len(s) > len(p) else s
+
+
+def _regex_extract(v, _ctx=None, param=None):
+    """正则提取首个捕获组：regex_extract:^(\\d+) 把 '123abc' → '123'。
+    param 为正则表达式（py 层 re 模块，无 SQL 注入风险）。无匹配返回原值。"""
+    if not param:
+        return v
+    s = str(v if v is not None else "")
+    try:
+        m = re.search(str(param), s)
+    except re.error:
+        return v   # 非法正则不阻断，返回原值（ETL 处置层应预演拦截）
+    if m and m.groups():
+        return m.group(1)
+    return s
+
+
+def _unit_convert(v, _ctx=None, param=None):
+    """量纲换算：unit_convert:0.0001 把元→万元（÷10000）。param 为换算因子（float）。
+    数值类清洗：非数值返回原值（不阻断，由 TRY_CAST 后续降级）。"""
+    if not param:
+        return v
+    try:
+        factor = float(str(param))
+    except (ValueError, TypeError):
+        return v
+    try:
+        return str(float(v) * factor) if v is not None else v
+    except (ValueError, TypeError):
+        return v
+
+
+register_op("trim_prefix", impl="py", layer="clean", fn=_trim_prefix,
+            description="去固定前缀（A 类无损）：trim_prefix:ID- 把 'ID-001' → '001'"
+                        "（param 为前缀字面字符串，py 层自由文本参数）")
+register_op("trim_suffix", impl="py", layer="clean", fn=_trim_suffix,
+            description="去固定后缀（A 类无损）：trim_suffix:元 把 '100元' → '100'"
+                        "（param 为后缀字面字符串，py 层自由文本参数）")
+register_op("regex_extract", impl="py", layer="clean", fn=_regex_extract,
+            description="正则提取首个捕获组（B 类可能丢信息）："
+                        "regex_extract:^(\\d+) 把 '123abc' → '123'"
+                        "（param 为正则表达式，py 层自由文本参数）")
+register_op("unit_convert", impl="py", layer="clean", fn=_unit_convert,
+            description="量纲换算（B 类）：unit_convert:0.0001 把元→万元（×0.0001）"
+                        "（param 为换算因子 float，py 层自由文本参数）")

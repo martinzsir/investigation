@@ -63,16 +63,18 @@ class TestDeRecommend(unittest.TestCase):
         self.assertTrue(r["needs_confirmation"])
         self.assertTrue(rec["needs_confirmation"])
 
-    def test_phone_rule_hint_without_data_element(self):
-        """手机号列无对应数据元 → 仍推荐 transform digits_only/strip_cc，标需确认。"""
+    def test_phone_matches_de_phone_after_globalization(self):
+        """v1.2 全域化后：手机号列命中全域 DE_PHONE（format），high 置信。
+        DE-TC-01：default 包装载后数据元引用数 > 0（原 default 无 DE_PHONE，
+        全域化后从 _shared 获得）。value_pattern 回退路径由 test_masked_account 覆盖。"""
         rec = _rec("手机号", ["13800138000", "13912345678"])
-        self.assertEqual(len(rec["recommendations"]), 1)
-        r = rec["recommendations"][0]
-        self.assertIsNone(r["data_element"])
-        self.assertEqual(r["match_by"], "value_pattern")
-        self.assertIn("digits_only", r["transform"])
-        self.assertIn("strip_cc", r["transform"])
-        self.assertTrue(r["needs_confirmation"])
+        r = _find(rec, "DE_PHONE")
+        self.assertIsNotNone(r)
+        self.assertEqual(r["match_by"], "format")
+        self.assertGreaterEqual(r["match_rate"], 0.9)
+        self.assertEqual(r["confidence"], "high")
+        self.assertFalse(r["needs_confirmation"])
+        self.assertFalse(r["sensitive"])   # DE_PHONE 非敏感
 
     def test_masked_account_reject_hint(self):
         """遮蔽卡号列 → clean reject_if:contains_mask + digits_only（双通道拒行建议）。"""

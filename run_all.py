@@ -183,6 +183,12 @@ def main():
         print(f"  ⚠ 可选源列缺失降级 {n_deg} 项（已置类型化 NULL，诊断 kind=source_column_missing）")
         for d in ontology_stats["degraded"]:
             print(f"    · {d}")
+    from core.run_health import record_build_null_identity
+    n_null = record_build_null_identity(store, ontology_stats, run_id=health.run_id)
+    if n_null:
+        print(f"  ⚠ 无身份实体行剔除 {n_null} 项（name_property=NULL，诊断 kind=entity_null_name_dropped）")
+        for d in ontology_stats["null_identity"]:
+            print(f"    · {d}")
     n_qua = record_build_quarantine(store, ontology_stats, run_id=health.run_id)
     if n_qua:
         print(f"  ⚠ CAST 失败隔离 {n_qua} 项（整行剔出语义层，落 build_quarantine，"

@@ -134,6 +134,7 @@ async function doSave(): Promise<void> {
     <template v-else>
       <div class="notice-bar">
         ⚠ 清洗策略决定哪些行进模型、哪些行进隔离区；变更影响全部装载结果，保存即记入审计链。
+        <b>策略变更需重跑 BUILD 才能在语义层（obj_*）生效</b>——保存仅改 bindings.json，下次 BUILD/RESCAN 装载时据此重算。
       </div>
 
       <NSpin :show="loading">

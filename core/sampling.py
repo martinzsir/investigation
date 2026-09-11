@@ -126,7 +126,8 @@ def _default_hit(row: dict) -> bool:
         return False
     try:
         return int(amt) % 10000 == 0
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError：int(float('inf'))（如脏值 "1e400" 经 TRY_CAST AS DOUBLE 成 Inf）
         return False
 
 

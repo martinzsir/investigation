@@ -138,6 +138,22 @@ def dedupe_and_merge(
 # 用间交叉升格（合并后的副产品）
 # ----------------------------------------------------------------------
 
+def _cross_level_name_single(n: int, pack: str = "default") -> str:
+    """单条线索的交叉等级名：按自身 jian_types 独立源数映射。
+
+    与 core/functions._cross_level_name 同口径（1/2/3 硬编码，
+    名称从 jians.json cross_levels 读取），但是线索级而非案件级。
+    """
+    try:
+        from core.ontology_loader import load_cross_levels
+        for lv in load_cross_levels(pack):
+            if lv["min_independent_sources"] == n:
+                return lv["name"]
+    except Exception:
+        pass
+    return {1: "观察", 2: "线索", 3: "可立案依据候选"}.get(n, "观察")
+
+
 def cross_level(clues: list[LineageClue]) -> str:
     """
     根据线索覆盖的间类数量决定交叉等级。
@@ -259,11 +275,15 @@ def prioritize_clues(
                               "weight": w_data,
                               "contrib": round(raw["data_strength"] * w_data, 4)},
         }
+        # P0-0b：单条线索的交叉等级（按自身 jian_types 独立源数）
+        n_jians = len(set(c.jian_types))
+        c_level = _cross_level_name_single(n_jians, pack)
         c.detail = {**c.detail, "priority_rank": i + 1,
                     "priority_score": round(score_val, 3),
                     "score_basis": score_basis,
                     "score_formula": formula,
-                    "score_source": "scoring.json@v2"}
+                    "score_source": "scoring.json@v2",
+                    "cross_level": c_level}
     return scored
 
 

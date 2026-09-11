@@ -33,6 +33,8 @@ from tests.test_ontology_version import make_store        # noqa: E402
 
 def _profiler(**kw):
     s = make_store()
+    # 删除公开OSINT表让 osint_article 保持未物化（test_ac02 验证未物化对象占位）
+    s.execute("DROP TABLE IF EXISTS 公开OSINT")
     build_ontology(s.conn)
     gw = OntologyReadGateway(s.conn)
     return s, gw, OntologyProfiler(gw, **kw)

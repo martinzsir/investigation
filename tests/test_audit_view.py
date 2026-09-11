@@ -104,7 +104,10 @@ class AuditViewTest(unittest.TestCase):
 
     def write_chain(self, case_id: str, version: int, events: list[dict],
                     statuses: list[LineageClue] | None = None) -> None:
-        """写版本文件：audit_chain 事件 + 可选 clue_disposal_status 处置留痕。"""
+        """写版本文件：audit_chain 事件 + 可选 clue_disposal_status 处置留痕。
+
+        同时清除 state.sqlite（make_case 触发的 case_created 生命周期事件），
+        让本测试只看到 DuckDB 版本链事件，不与 state.sqlite 链混并。"""
         store = self.factory.for_case(case_id, mode="write", version=version)
         conn = store.write_conn
         try:
@@ -116,6 +119,10 @@ class AuditViewTest(unittest.TestCase):
         finally:
             store.close()
         self.repo.set_version(case_id, version, "test")
+        # 清除 make_case() 产生的 state.sqlite 生命周期事件
+        state_path = self.factory.case_dir(case_id) / "state.sqlite"
+        if state_path.exists():
+            state_path.unlink()
 
     # ------------------------------------------------------------------
     # W-023 AC-1/2：时间线字段与筛选分页
@@ -183,6 +190,10 @@ class AuditViewTest(unittest.TestCase):
 
     def test_timeline_cross_tenant_404_and_unbuilt_case_empty(self):
         self.make_case("c1")
+        # 清除 make_case() 产生的 state.sqlite 生命周期事件
+        sp = self.factory.case_dir("c1") / "state.sqlite"
+        if sp.exists():
+            sp.unlink()
         # 跨租户 404（李检属 t1，这里用另一租户用户验证）
         salt3, h3 = hash_password("pw-zhao")
         self.repo.create_user(User(operator="赵检", password_hash=h3,
@@ -240,6 +251,9 @@ class AuditViewTest(unittest.TestCase):
         self.assertEqual(data["actual_count"], 0)
         # 场景 2：建案后从未 BUILD（无版本文件）
         self.make_case("c2")
+        sp2 = self.factory.case_dir("c2") / "state.sqlite"
+        if sp2.exists():
+            sp2.unlink()
         r = self.client.post("/api/v1/cases/c2/audit/verify",
                              headers=self.auth_w)
         data = r.json()["data"]

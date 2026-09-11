@@ -154,7 +154,7 @@ class TestTransformValidation(unittest.TestCase):
         # transform 层 sql op 带了它不接受的参数 → 硬失败
         with self.assertRaises(ValueError) as cm:
             _load(_bind(transform={"amount": ["digits_only:xx"]}))
-        self.assertIn("不接受参数", str(cm.exception))
+        self.assertIn("不接受自由文本参数", str(cm.exception))
         # 未注册的带参 op 同样硬失败（不报"D5 拒绝"，而是未注册 fail-closed）
         with self.assertRaises(ValueError) as cm2:
             _load(_bind(transform={"amount": ["regex:,=>"]}))

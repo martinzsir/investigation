@@ -22,7 +22,9 @@ from server.app.store.state_store import StateStore
 from server.app.worker.tasks import TaskExecError
 
 _DE_CONF = {"high": 0.9, "medium": 0.6}
-_SAMPLE_ROWS = 50
+# v1.3：与 source_analyze._column_profile 的 .head(200) 对齐，
+# 保证 Step1 同步推荐与本异步通道推荐逐列一致（去重后可回归）。
+_SAMPLE_ROWS = 200
 _DECISIONS = {"adopt": "采纳", "reject": "驳回"}
 
 

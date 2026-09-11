@@ -91,7 +91,8 @@ def enqueue_task(repo: MetaRepo, *, case_id: str, task_type: str,
 def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
                  snapshot_base_for: Callable[[str], Path],
                  template_db: str | Path | None = None,
-                 builder: BuilderFn = default_builder) -> dict[str, Any]:
+                 builder: BuilderFn = default_builder,
+                 auto_quality_after_build: bool = True) -> dict[str, Any]:
     case = repo.get_case(task.case_id)
     if case is None:
         raise TaskExecError("CASE_NOT_FOUND", f"案件不存在：{task.case_id}")
@@ -189,6 +190,27 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
     except Exception as e:  # noqa: BLE001
         repo.record_ops("build_stats_persist_failed", case.id,
                         {"version": nxt, "error": f"{type(e).__name__}: {e}"})
+
+    # v1.3 §1-2：BUILD 成功后自动链式触发语义态质检（双阶段质检：接入态 + 语义态）。
+    # 语义态质检要求 ver>=1（set_version 已生效），故须在 BUILD 成功后入队；
+    # 若放 import 末尾，此时版本指针未前进，handle_quality 会 NO_VERSION 失败。
+    # 失败只 ops 留痕，不回滚已生效版本（质检是只读扫描，不产版本）。
+    # auto_quality_after_build 开关：生产默认 True；taskqueue 单元测试用 fake
+    # builder 不建 obj_* 表，显式设 False 关闭以保持"BUILD 是终点"的测试契约。
+    if auto_quality_after_build:
+        try:
+            quality = enqueue_task(
+                repo, case_id=case.id, task_type=TASK_QUALITY,
+                params={"triggered_by": "build", "version": nxt,
+                        "operator": task.created_by},
+                idem_key=f"quality:build:{case.id}:v{nxt}",
+                created_by=task.created_by)
+            progress(99.5, "quality_queued", "语义态质检已入队",
+                     f"v{nxt} 质检任务 {quality.id}")
+        except Exception as e:  # noqa: BLE001
+            repo.record_ops("quality_enqueue_failed", case.id,
+                            {"version": nxt,
+                             "error": f"{type(e).__name__}: {e}"})
 
     progress(100.0, "done", "构建完成", f"v{nxt} 已生效")
     summary = {k: result.get(k) for k in ("objects", "links", "skipped")} \

@@ -111,11 +111,17 @@ class ReqdCaseBase(unittest.TestCase):
         return None
 
     def _temp_pack(self, mutate):
-        """复制声明包到临时目录并做声明变异（D-06/D-20 负路径），返回包名。"""
+        """复制声明包到临时目录并做声明变异（D-06/D-20 负路径），返回包名。
+
+        v1.2 全域化：同时复制 _shared 全域层到 tmp/_shared，三层合并才能在
+        临时目录加载全域数据元（否则 objects.json 引用 DE_PHONE 等会因未注册硬失败）。"""
         tmp = Path(tempfile.mkdtemp())
         name = "reqd_case_probe_neg"
         dst = tmp / name
         shutil.copytree(PACK_DIR, dst)
+        shared_src = PACK_DIR.parent / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp / "_shared")
         mutate(dst)
         return tmp, name
 
@@ -180,8 +186,11 @@ class TestLoadSurvival(ReqdCaseBase):
                                 .get("source_column_missing", 0), 1)
 
     def test_d06_missing_sensitive_policy_hard_fail(self):
-        """D-06（AD-5/002 AC-4）：policies 漏声明 id_card 遮蔽 → 装载前硬失败
-        并提示补声明；声明在位（现包）则正常装载。"""
+        """D-06（AD-5/002 AC-4 + v1.2 §3.0.5）：包无遮蔽 + 数据元无 mask → 硬失败。
+
+        P0-2 后全域敏感数据元声明的 mask 可作默认兜底（DE-TC-04：默认 mask 生效），
+        故需同时删除包级遮蔽声明与全域 DE_IDCARD 的 mask 才触发 fail-closed
+        （DE-TC-06：二者皆无才硬失败）。声明在位（现包）则正常装载。"""
         def remove_person_idcard_policy(pack_dir: Path):
             pf = pack_dir / "policies.json"
             data = json.loads(pf.read_text(encoding="utf-8"))
@@ -193,6 +202,12 @@ class TestLoadSurvival(ReqdCaseBase):
                           encoding="utf-8")
 
         tmp, name = self._temp_pack(remove_person_idcard_policy)
+        # v1.2 §3.0.5：额外删除 _shared 全域层 DE_IDCARD 的 mask（模拟"二者皆无"）
+        shared_de = tmp / "_shared" / "data_elements.json"
+        sdata = json.loads(shared_de.read_text(encoding="utf-8"))
+        sdata["elements"]["DE_IDCARD"].pop("mask", None)
+        shared_de.write_text(json.dumps(sdata, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
         orig = ol.PACK_ROOT
         try:
             ol.PACK_ROOT = tmp

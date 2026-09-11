@@ -18,7 +18,7 @@ from core.ontology import build_ontology
 from tests.test_one2one import _PackCtx
 
 _DE_PHONE = {"name": "电话", "type": "string", "clean_rule": "strip"}
-_DE_ID = {"name": "证件号", "type": "string", "sensitive": True, "mask": "partial"}
+_DE_ID = {"name": "证件号", "type": "string", "sensitive": True}
 
 
 def _write_de(pc, elements):
@@ -87,7 +87,7 @@ class TestDataElementReference(unittest.TestCase):
             val = conn.execute("SELECT phone FROM obj_person").fetchone()[0]
             self.assertEqual(val, "13800138000")   # strip 自动生效
             pack = ol.load_pack("p")
-            self.assertEqual(pack.objects[0].prop_de_clean.get("phone"), "strip")
+            self.assertEqual(pack.objects[0].prop_de_clean.get("phone"), ("strip",))
 
     def test_sensitive_requires_mask_declaration(self):
         """AC-4/AD-5：引用 sensitive 数据元的属性必须已声明遮蔽。

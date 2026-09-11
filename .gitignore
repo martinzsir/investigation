@@ -25,3 +25,11 @@ data/t3.sqlite
 
 # 运行时日志
 /logs/
+
+# 本地工具与写作工作区（不入库）
+.workbuddy/
+/projects/
+.tmp_inspect.sh
+
+# 鲁棒性生成数据（scripts/gen_robust_case.py 可再生；data/test/ingest 夹具入库）
+/data/test/*.parquet

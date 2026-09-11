@@ -24,6 +24,7 @@ from core.run_health import (
     RunHealth,
     record_build_degraded,
     record_build_dirty,
+    record_build_null_identity,
     record_build_quarantine,
     record_clean_stats,
     record_dedup_conflicts,
@@ -65,21 +66,22 @@ def handle_diagnose(task, *, repo, factory, snapshot_base_for,
         conn = store.write_conn
         rh = RunHealth(conn)
 
-        # 1) BUILD 五类留痕（原料缺失=旧版本，跳过而非报错）
+        # 1) BUILD 六类留痕（原料缺失=旧版本，跳过而非报错）
         stats = load_build_stats(factory.case_dir(case.id), ver)
         if stats is not None:
             progress(20.0, "build_stats", "补落构建期留痕",
-                     "脏值/缺列/隔离/清洗剔除/去重冲突")
+                     "脏值/缺列/无身份/隔离/清洗剔除/去重冲突")
             build_counts = {
                 "dirty": record_build_dirty(conn, stats, run_id=rh.run_id),
                 "degraded": record_build_degraded(conn, stats, run_id=rh.run_id),
+                "null_identity": record_build_null_identity(conn, stats, run_id=rh.run_id),
                 "quarantine": record_build_quarantine(conn, stats, run_id=rh.run_id),
                 "clean_stats": record_clean_stats(conn, stats, run_id=rh.run_id),
                 "dedup_conflicts": record_dedup_conflicts(conn, stats, run_id=rh.run_id),
             }
         else:
             progress(20.0, "build_stats", "无构建期原料",
-                     "v{} 为升级前旧版本，跳过 BUILD 五类留痕".format(ver))
+                     "v{} 为升级前旧版本，跳过 BUILD 六类留痕".format(ver))
 
         # 2) 构建后质量门四扫描（与 run_all 6.6 / QUALITY_CHECK 同扫描，
         #    区别：此处 health 写入 run_diagnostic；STALE 不阻断）

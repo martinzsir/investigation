@@ -43,6 +43,7 @@ KINDS = (
     "profile_unmaterialized",     # REQ-P-021：画像对象未物化（info，非错误）
     "map_normalize_gap",          # REQ-P-021：数据地图检出归一缺口（M 波 build_sql 未 JOIN 实体表）
     "source_value_cast_failed",   # TRY_CAST 脏值降级（源列非空→NULL，构建/入库期计数，鲁棒性 B2-08）
+    "entity_null_name_dropped",   # 实体型对象 name_property 为 NULL 的无身份行编译期剔除（不入语义层）
     "source_column_missing",      # 可选源列缺失降级类型化 NULL（鲁棒性 B5-01；必填列缺失为硬失败不产生诊断）
     "source_value_quarantined",   # REQ-D-010：on_cast_error=quarantine 隔离计数（整行剔出语义层落 build_quarantine）
     "composite_column_detected",  # REQ-D-013：画像期检出疑似复合值（分隔符分片，建议拆分或显式 composite 降级）
@@ -296,6 +297,23 @@ def record_build_degraded(db: Any, stats: dict | None, run_id: str | None = None
     rh = RunHealth(db, run_id=run_id)
     for e in entries:
         rh.record("source_column_missing", severity="warning",
+                  source=source, reason=str(e))
+    return len(entries)
+
+
+def record_build_null_identity(db: Any, stats: dict | None, run_id: str | None = None,
+                               source: str = "build_ontology") -> int:
+    """把 build stats["null_identity"]（实体型对象 name_property=NULL 行剔除）落 run_diagnostic。
+
+    无身份行无法参与身份 JOIN，编译期剔出 obj_*（不中断 build），此处按对象留痕
+    （kind=entity_null_name_dropped，warning）。返回落账条数；无剔除返回 0。
+    """
+    entries = (stats or {}).get("null_identity") or []
+    if not entries:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in entries:
+        rh.record("entity_null_name_dropped", severity="warning",
                   source=source, reason=str(e))
     return len(entries)
 

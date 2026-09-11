@@ -102,12 +102,17 @@ class ClueStatusMachine:
 
 @dataclass
 class StatusAuditEntry:
-    """单条状态变更审计记录。"""
+    """单条状态变更审计记录。
+
+    event_id：关联 audit_chain 持久哈希链中的对应事件（P0-3 哈希链线索级）。
+              仅写内存 audit_log 时为空串；经 audit_chain 落链时填入返回值。
+    """
     from_status: str
     to_status: str
     operator: str          # 操作人/主体；AI 自动化时应为 "system" 或具体技能
     note: str = ""
     timestamp: str = field(default_factory=lambda: _now())
+    event_id: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -184,16 +189,19 @@ class LineageClue:
         if target == ClueStatus.FILED:
             raise ValueError("「已立案」为受控红线状态，须调用 set_filed()，禁止经 set_status 设置")
         ClueStatusMachine.validate(self.status, target)
-        self.audit_log.append(StatusAuditEntry(self.status, target, operator, note).to_dict())
+        # P0-3：先落持久哈希链拿 event_id，再写入内存 audit_log（关联受保护事件）
+        event_id = ""
         if audit_chain is not None:
-            audit_chain.append(
+            event_id = audit_chain.append(
                 operator=operator,
-                before={"status": self.status},
-                after={"status": target, "note": note},
+                before={"status": self.status, "clue_id": self.clue_id},
+                after={"status": target, "note": note, "clue_id": self.clue_id},
                 source_row_ids=[json.dumps(r, ensure_ascii=False, default=str)
                                 if not isinstance(r, str) else r
                                 for r in self.source_rows],
                 ontology_version=audit_chain.current_ontology_version())
+        self.audit_log.append(StatusAuditEntry(
+            self.status, target, operator, note, event_id=event_id).to_dict())
         self.status = target
         if note:
             self.note = note
@@ -210,16 +218,21 @@ class LineageClue:
         if self.status not in (ClueStatus.CONFIRMED, ClueStatus.FILED):
             raise ValueError(f"「已立案」须由「已固证」迁移，当前状态={self.status}")
         note = f"法定程序完备：{legal_basis}"
-        self.audit_log.append(StatusAuditEntry(self.status, ClueStatus.FILED, operator, note).to_dict())
+        # P0-3：先落持久哈希链拿 event_id，再写入内存 audit_log（关联受保护事件）
+        event_id = ""
         if audit_chain is not None:
-            audit_chain.append(
+            event_id = audit_chain.append(
                 operator=operator,
-                before={"status": self.status},
-                after={"status": ClueStatus.FILED, "legal_basis": legal_basis},
+                before={"status": self.status, "clue_id": self.clue_id},
+                after={"status": ClueStatus.FILED, "legal_basis": legal_basis,
+                       "clue_id": self.clue_id},
                 source_row_ids=[json.dumps(r, ensure_ascii=False, default=str)
                                 if not isinstance(r, str) else r
                                 for r in self.source_rows],
                 ontology_version=audit_chain.current_ontology_version())
+        self.audit_log.append(StatusAuditEntry(
+            self.status, ClueStatus.FILED, operator, note,
+            event_id=event_id).to_dict())
         self.status = ClueStatus.FILED
         self.note = note
         return self

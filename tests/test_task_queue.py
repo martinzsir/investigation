@@ -61,6 +61,9 @@ class TaskQueueTestBase(unittest.TestCase):
         self.ctx = {
             "factory": self.factory,
             "snapshot_base_for": self.svc.snapshot_ontology_root,
+            # v1.3 §1-2：关闭 BUILD 后自动语义态质检（fake builder 不建 obj_*，
+            # 触发会让 QUALITY 任务失败且打乱 H1/H2/H4 的"BUILD 是终点"契约）
+            "auto_quality_after_build": False,
         }
 
     def tearDown(self):

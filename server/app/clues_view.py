@@ -64,7 +64,7 @@ def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
         "skill_id": raw.get("skill_id", ""),
         "jian_types": raw.get("jian_types") or [],
         "assumption_chain": raw.get("assumption_chain") or [],
-        "level": det.get("级别") or det.get("level"),
+        "level": det.get("cross_level") or det.get("级别") or det.get("level"),
         "dimension": det.get("维度") or det.get("dimension"),
         "priority_rank": det.get("priority_rank"),
         "priority_score": det.get("priority_score"),

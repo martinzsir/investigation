@@ -90,7 +90,9 @@ class ObjectType:
     prop_data_elements: dict[str, str] = field(default_factory=dict)
     # REQ-D-002 AC-3：数据元 clean_rule 自动挂接——属性引用的数据元声明了 clean_rule
     # 时，_apply_clean 自动应用（无需在 binding.clean 重复声明；binding 显式声明优先）。
-    prop_de_clean: dict[str, str] = field(default_factory=dict)
+    # v1.3 §2-1：clean_rule 支持 op 链（list[str]），loader 统一为 tuple[str, ...]；
+    # 旧 str 值仍兼容（_apply_clean 自动包单元素元组）。
+    prop_de_clean: dict[str, tuple[str, ...] | str] = field(default_factory=dict)
 
 
 @dataclass
@@ -123,6 +125,10 @@ class ObjectBinding:
     # {keep_latest, keep_first, fail}；去重在代理键分配**之前**按业务键（非全行比对）。
     dedup_key: tuple = ()
     dedup_on_conflict: str = ""
+    # P3-2：binding 级列拆分声明 ((source_col, delimiter, ((alias, prop, index, value_type), ...)), ...)
+    # 一源列按 delimiter 拆分为多属性；编译期生成 split_part() 投影注入 source_sql。
+    # 与 REQ-D-012 不矛盾：split 是结构化声明（非 transform op），在源投影内完成拆分。
+    split: tuple = ()
 
 
 @dataclass
@@ -399,7 +405,8 @@ def build_ontology(conn, pack: str = "default", base_dir=None) -> dict:
     spec = load_pack(pack, base_dir=Path(base_dir) if base_dir else None)
 
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [],
-                   "degraded": [], "clean_stats": [], "quarantine": []}
+                   "degraded": [], "clean_stats": [], "quarantine": [],
+                   "null_identity": []}
     # REQ-D-007：org 名单 + 案件级词表（clean_rules.json 合并/替换）汇成清洗上下文
     org_names = _clean_ops.build_clean_context(
         _default_org_names(conn), getattr(spec, "clean_rules", None))
@@ -551,7 +558,9 @@ def _apply_clean(rows: list, cols: list[str], otype: ObjectType,
         if _prop in _declared:
             continue
         if _prop == "_name" or _prop == name_prop or _prop in cols:
-            cmap.append((_prop, (_rule,)))
+            # v1.3 §2-1：_rule 可能是 str（旧）或 tuple（op 链），统一为 tuple。
+            ops = (_rule,) if isinstance(_rule, str) else tuple(_rule)
+            cmap.append((_prop, ops))
     if not cmap:
         return rows
     idx_map: dict[str, tuple[int, str]] = {}   # 声明属性 → (列索引, 实际列名)
@@ -687,19 +696,57 @@ def _render_projection(alias: str, raw: str | None, t: str,
     return f'{cast_fn}("{raw}" AS {TYPE_SQL[t]}) AS {alias}'
 
 
+def _render_split_projection(alias: str, source_col: str, delimiter: str,
+                             index: int, t: str,
+                             transform_ops=None, hard: bool = False,
+                             missing: bool = False) -> str:
+    """P3-2：拆分投影渲染——split_part("source_col", 'delimiter', index) AS alias。
+
+    missing=True（source_col 缺失）→ 类型化 NULL（与 _render_projection raw=None 一致）。
+    transform/on_cast_error 与常规投影同口径：split_part 表达式为被处理表达式，
+    transform ops 链式套用后非 string 再 TRY_CAST。
+    """
+    cast_fn = "CAST" if hard else "TRY_CAST"
+    if missing:
+        return f'CAST(NULL AS {TYPE_SQL[t]}) AS {alias}'
+    expr = f"split_part(\"{source_col}\", '{delimiter}', {index})"
+    if transform_ops:
+        expr = _clean_ops.compile_sql_expr(transform_ops, expr)
+    if t == "string":
+        return f'{expr} AS {alias}'
+    return f'{cast_fn}({expr} AS {TYPE_SQL[t]}) AS {alias}'
+
+
 def _rerender_source_sql(b: "ObjectBinding", missing: set) -> str:
     """可选源列缺失后重渲染结构化源 SQL：缺失列投影为类型化 NULL（列集/列序不变）。
     transform 声明与编译期投影同口径注入（REQ-D-009）；on_cast_error 同口径：
-    fail 属性渲染硬 CAST，quarantine 属性保留 TRY_CAST 并追加 __raw_ 隐藏列（REQ-D-010）。"""
+    fail 属性渲染硬 CAST，quarantine 属性保留 TRY_CAST 并追加 __raw_ 隐藏列（REQ-D-010）。
+    P3-2：split 目标按 split_part 表达式重渲染（source_col 缺失 → 类型化 NULL）。"""
     tf_map = {alias: ops for alias, ops in (b.transform or ())}
     oce = {alias: state for alias, state in (b.on_cast_error or ())}
+    # Build split lookup: {alias: (source_col, delimiter, index)}
+    split_lookup = {}
+    for sc, delim, targets in (b.split or ()):
+        for alias, _prop, idx, _t in targets:
+            split_lookup[alias] = (sc, delim, idx)
     parts = []
     for alias, raw, t in b.projections:
-        parts.append(_render_projection(
-            alias, None if raw in missing else raw, t,
-            tf_map.get(alias), hard=(oce.get(alias) == "fail")))
-        if oce.get(alias) == "quarantine" and raw not in missing:
-            parts.append(f'"{raw}" AS "__raw_{alias}"')
+        if alias in split_lookup:
+            sc, delim, idx = split_lookup[alias]
+            parts.append(_render_split_projection(
+                alias, sc, delim, idx, t,
+                tf_map.get(alias), hard=(oce.get(alias) == "fail"),
+                missing=sc in missing))
+            if oce.get(alias) == "quarantine" and sc not in missing:
+                parts.append(
+                    f"split_part(\"{sc}\", '{delim}', {idx}) "
+                    f'AS "__raw_{alias}"')
+        else:
+            parts.append(_render_projection(
+                alias, None if raw in missing else raw, t,
+                tf_map.get(alias), hard=(oce.get(alias) == "fail")))
+            if oce.get(alias) == "quarantine" and raw not in missing:
+                parts.append(f'"{raw}" AS "__raw_{alias}"')
     return f"SELECT {', '.join(parts)} FROM {b.source_table}"
 
 
@@ -1055,7 +1102,19 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     elif otype.pk == otype.name_property:
         keys = [r[0] for r in rows]          # 自引用自然键，直通不重映射
     else:
-        # 实体型：归并后变体行折叠为同一 canonical，按 name_property 去重
+        # 实体型：身份列（name_property）为 NULL 的行没有身份——无法参与任何
+        # 身份 JOIN，且会让下方 sorted() 代理键分配抛 TypeError（NULL 与 str 不可
+        # 比较）。编译期剔除并按对象计数落 stats["null_identity"]
+        # （run_health kind=entity_null_name_dropped），不中断 build。
+        # 空串 "" 是确定值（空串之间可互联），保留既有语义不在此剔除。
+        null_rows = [r for r in rows if r[0] is None]
+        if null_rows:
+            rows = [r for r in rows if r[0] is not None]
+            if stats is not None:
+                stats.setdefault("null_identity", []).append(
+                    f"obj_{otype.name}.{otype.name_property}: {len(null_rows)} 行"
+                    f"实体名为 NULL（无身份，不入语义层）")
+        # 归并后变体行折叠为同一 canonical，按 name_property 去重
         seen: set = set()
         deduped = []
         for r in rows:
@@ -1183,7 +1242,8 @@ def materialize_changed(conn, plan, *, pack: str = "default",
     org_names = _default_org_names(conn)
     entity_mapping = _load_entity_mapping(conn)   # REQ-016 受保护归并映射
     stats: dict = {"objects": {}, "links": {}, "skipped": [], "dirty": [], "degraded": [],
-                   "clean_stats": [], "rewritten_rows": 0, "plan_mode": plan.mode}
+                   "clean_stats": [], "null_identity": [],
+                   "rewritten_rows": 0, "plan_mode": plan.mode}
 
     conn.execute("BEGIN TRANSACTION")
     try:
@@ -1307,6 +1367,7 @@ def rebuild_from_partition(conn, part, *, pack: str = "default",
     if plan.mode == "skip" or plan.is_empty():
         return plan, {"objects": {}, "links": {}, "skipped": [],
                       "dirty": [], "degraded": [], "clean_stats": [],
+                      "null_identity": [],
                       "rewritten_rows": 0, "plan_mode": "skip"}
     stats = materialize_changed(conn, plan, pack=pack, bus=bus, actor=actor)
     return plan, stats

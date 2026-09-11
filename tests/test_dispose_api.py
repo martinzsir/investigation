@@ -139,7 +139,7 @@ class DisposeApiTest(unittest.TestCase):
                          f"verify 应成功：{t.error_code} {t.error_message}")
         state = self._state("c1")
         try:
-            self.assertEqual(state.event_count(), 1)
+            self.assertEqual(state.event_count(), 2)  # lifecycle + verify
             self.assertTrue(state.chain_verify())
             row = state.conn.execute(
                 "SELECT status FROM clue_disposal_status "
@@ -163,7 +163,7 @@ class DisposeApiTest(unittest.TestCase):
                          f"file 应成功：{t.error_code} {t.error_message}")
         state = self._state("c1")
         try:
-            self.assertEqual(state.event_count(), 3)  # AC-6
+            self.assertEqual(state.event_count(), 4)  # AC-6: lifecycle + verify + confirm + file
             self.assertTrue(state.chain_verify())
             # AC-7：状态真值=已立案；决策副作用落 review_decision
             row = state.conn.execute(
@@ -226,7 +226,7 @@ class DisposeApiTest(unittest.TestCase):
         # 被拒动作不落链
         state = self._state("c1")
         try:
-            self.assertEqual(state.event_count(), 0)
+            self.assertEqual(state.event_count(), 1)  # lifecycle event only, rejected action不落链
         finally:
             state.close()
 

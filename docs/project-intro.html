@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>孙武侦查官 · 项目介绍</title>
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#ffffff; --ink:#1c1c1a; --ink2:#5f5e5a; --ink3:#888780;
+    --line:#e4e1da; --line2:#cfccc4;
+    --blue:#185FA5; --blue-bg:#E6F1FB;
+    --teal:#0F6E56; --teal-bg:#E1F5EE;
+    --purple:#534AB7; --purple-bg:#EEEDFE;
+    --amber:#854F0B; --amber-bg:#FAEEDA;
+    --red:#A32D2D; --red-bg:#FCEBEB;
+    --gray-bg:#F1EFE8;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.75;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:0 32px 96px}
+  header.hero{padding:64px 0 40px; border-bottom:1px solid var(--line)}
+  .kicker{font-size:13px; letter-spacing:.14em; color:var(--ink3); margin-bottom:14px}
+  h1{font-size:34px; line-height:1.3; margin:0 0 16px; font-weight:600; letter-spacing:-.01em}
+  .lede{font-size:17px; color:var(--ink2); max-width:760px; margin:0}
+  h2{font-size:23px; margin:64px 0 8px; font-weight:600; letter-spacing:-.01em; scroll-margin-top:20px}
+  h2 .num{color:var(--ink3); font-weight:400; margin-right:10px; font-variant-numeric:tabular-nums}
+  h3{font-size:16px; margin:34px 0 10px; font-weight:600}
+  h4{font-size:14px; margin:22px 0 6px; font-weight:600; color:var(--ink2)}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0; padding-left:22px}
+  li{margin:5px 0}
+  code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.86em;
+    background:var(--gray-bg); padding:1.5px 5px; border-radius:4px; color:#3a3a37;
+  }
+  .sub{color:var(--ink2); font-size:14px; margin:0 0 22px}
+  hr{border:0; border-top:1px solid var(--line); margin:52px 0}
+
+  /* 指标卡 */
+  .metrics{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:28px 0 8px}
+  .metric{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px}
+  .metric .v{font-size:26px; font-weight:600; line-height:1.2; font-variant-numeric:tabular-nums}
+  .metric .k{font-size:12.5px; color:var(--ink2); margin-top:4px}
+
+  /* 表格 */
+  .tw{overflow-x:auto; margin:16px 0 6px}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--panel)}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top}
+  th{background:var(--gray-bg); font-weight:600; white-space:nowrap}
+  td code{font-size:12.5px}
+  tbody tr:nth-child(even){background:#fdfcfb}
+
+  /* 图 */
+  figure{margin:26px 0; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 18px 14px}
+  figure svg{display:block; width:100%; height:auto}
+  figcaption{font-size:12.5px; color:var(--ink3); margin-top:10px; text-align:center}
+
+  /* 提示块 */
+  .note{border-left:3px solid var(--blue); background:var(--blue-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:18px 0; font-size:14px}
+  .warn{border-left:3px solid var(--amber); background:var(--amber-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:18px 0; font-size:14px}
+  .crit{border-left:3px solid var(--red); background:var(--red-bg); padding:12px 16px; border-radius:0 8px 8px 0; margin:18px 0; font-size:14px}
+  .note b,.warn b,.crit b{font-weight:600}
+
+  /* 原则卡 */
+  .principles{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; margin:22px 0}
+  .pcard{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px}
+  .pcard .t{font-weight:600; font-size:15px; margin-bottom:6px}
+  .pcard .d{font-size:13.5px; color:var(--ink2); line-height:1.65}
+
+  /* 目录 */
+  .toc{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin:36px 0 0}
+  .toc ol{columns:2; column-gap:36px; margin:6px 0 0; padding-left:20px}
+  .toc a{color:var(--ink); text-decoration:none}
+  .toc a:hover{color:var(--blue); text-decoration:underline}
+  .toc li{margin:4px 0; font-size:14px}
+
+  .tag{display:inline-block; font-size:11.5px; padding:1.5px 8px; border-radius:20px; border:1px solid var(--line2); color:var(--ink2); background:var(--gray-bg); white-space:nowrap}
+  .tag.b{background:var(--blue-bg); border-color:#b5d4f4; color:var(--blue)}
+  .tag.t{background:var(--teal-bg); border-color:#9fe1cb; color:var(--teal)}
+  .tag.p{background:var(--purple-bg); border-color:#cecbf6; color:var(--purple)}
+  .tag.a{background:var(--amber-bg); border-color:#fac775; color:var(--amber)}
+
+  footer{margin-top:72px; padding-top:24px; border-top:1px solid var(--line); font-size:13px; color:var(--ink3)}
+  @media (max-width:720px){ .wrap{padding:0 18px 64px} h1{font-size:27px} .toc ol{columns:1} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">DETERMINISTIC INVESTIGATION KERNEL · 代码核对报告</div>
+  <h1>孙武侦查官<br>确定性侦查推演内核</h1>
+  <p class="lede">
+    一个纯离线、确定性、可审计的调查分析内核。核心命题是：<b>把"侦查研判"从人的经验手艺，变成机器可复现、可回放、可追责的确定性计算过程</b>——
+    同时严格守住一条边界：机器只做计算与提示，绝不做定性结论、绝不置"已立案"。
+  </p>
+</header>
+
+<div class="metrics">
+  <div class="metric"><div class="v">66</div><div class="k">core 内核 Python 模块</div></div>
+  <div class="metric"><div class="v">121</div><div class="k">注册测试组</div></div>
+  <div class="metric"><div class="v">98</div><div class="k">测试文件</div></div>
+  <div class="metric"><div class="v">27</div><div class="k">ontology 声明文件</div></div>
+  <div class="metric"><div class="v">3</div><div class="k">案件包（pack）</div></div>
+  <div class="metric"><div class="v">13</div><div class="k">MCP 工具</div></div>
+  <div class="metric"><div class="v">79 / 57</div><div class="k">server .py / frontend .vue</div></div>
+  <div class="metric"><div class="v">0</div><div class="k">核心链路对 LLM 的依赖</div></div>
+</div>
+
+<div class="toc">
+  <b style="font-size:14px">目录</b>
+  <ol>
+    <li><a href="#s1">项目定位与三条禁令</a></li>
+    <li><a href="#s2">五条设计原则</a></li>
+    <li><a href="#s3">系统架构（分层视图）</a></li>
+    <li><a href="#s4">端到端数据流</a></li>
+    <li><a href="#s5">语义层：Ontology 编译内核</a></li>
+    <li><a href="#s6">规则引擎与 Function 层</a></li>
+    <li><a href="#s7">业务模型：五间 × 五维 × 庙算</a></li>
+    <li><a href="#s8">线索生命周期与处置闭环</a></li>
+    <li><a href="#s9">权限、脱敏与合规面</a></li>
+    <li><a href="#s10">可观测性：审计链、健康度、溯源</a></li>
+    <li><a href="#s11">三种产品形态：CLI / MCP / Web</a></li>
+    <li><a href="#s12">多案件包与新数据源接入</a></li>
+    <li><a href="#s13">业务价值</a></li>
+    <li><a href="#s14">工程治理与质量现状</a></li>
+    <li><a href="#s15">核对发现：风险与改进建议</a></li>
+  </ol>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="s1"><span class="num">01</span>项目定位与三条禁令</h2>
+<p class="sub">这不是一个聊天助手，也不是一个"AI 断案"产品。它是一个跑完就出结构化产物的侦查推演内核。</p>
+
+<p>系统把多源异构的原始数据（银行流水、通话记录、招投标档案、工商登记、轨迹出行、公开 OSINT、举报材料）统一编译成一套<b>语义层</b>（<code>obj_*</code> 对象表 / <code>lnk_*</code> 链接表），
+在其上执行<b>声明式规则</b>，产出带溯源 ID 的线索（clue），再经去重、优先级排序、交叉升格，进入人工处置看板。全程确定性，同一份输入必然产出同一份输出。</p>
+
+<h3>三条硬性禁令（写在 AGENTS.md，并由代码强制）</h3>
+<table>
+  <thead><tr><th style="width:30%">禁令</th><th>代码中的强制点</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>① 不自己写业务 SQL</b></td>
+      <td><code>core/store.py</code> 维护 <code>_FORBIDDEN_TABLES</code>（银行流水/通话记录/招投标档案/工商信息/轨迹出行/公开OSINT/举报材料），命中即抛 <code>DirectSourceAccessError</code>；<code>scripts/audit_straight_sql.py</code> 做静态扫描，CI 组 <code>audit</code> 强制通过。绕过方式只有 <code>unsafe=True</code> 通道，且必须带 <code>operator + reason</code> 并落 <code>meta_unsafe_query</code>。</td>
+    </tr>
+    <tr>
+      <td><b>② 不把原始明细搬进上下文</b></td>
+      <td>Function 只返回聚合结果与溯源 ID；<code>core/row_uri.py</code> 用 <code>dataset@version#partition/rowid</code> 内容寻址定位原行，需要时再 <code>resolve_row_uri</code> 回捞，而不是把明细灌进提示词。</td>
+    </tr>
+    <tr>
+      <td><b>③ 不下定性结论、不置"已立案"</b></td>
+      <td><code>core/access.py</code> 的 <code>HUMAN_ONLY_STATUSES = frozenset({"已立案"})</code>；<code>core/action_executor.py</code> 的 <code>FORBIDDEN_OPERATORS = {system, ai, assistant, model, bot, auto, llm}</code>；MCP <code>clue_transition</code> 额外拦截 <code>agent:</code> 前缀操作人。所有返回体强制挂 <code>needs_human_review / 定性_policy / disclaimer</code> 红线字段。</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============ 2 ============ -->
+<h2 id="s2"><span class="num">02</span>五条设计原则</h2>
+<div class="principles">
+  <div class="pcard">
+    <div class="t">确定性优先于智能</div>
+    <div class="d">核心链路（入库 → 语义层 → 规则 → 线索 → 处置）不依赖任何大模型。LLM 只是可选增强层（草案、解释、对齐），且有一键降级开关与影子模式（REQ-040）。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">声明是数据，实现是代码</div>
+    <div class="d">"查什么、怎么判定、谁能看"全部写在 <code>ontology/&lt;pack&gt;/*.json</code>；Python 只提供编译器、执行器与原子能力。换数据源、加规则不改检测器代码。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">类型层与管道层分离</div>
+    <div class="d"><code>objects.json / links.json</code> 定义"是什么"（类型层），<code>bindings.json</code> 定义"数据从哪来"（管道层）。二者解耦，同一套业务语义可挂不同数据源。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">失败要留痕，不许静默</div>
+    <div class="d">零命中四分类、脏值降级计数、结构降级、派发失败——全部进 <code>run_diagnostic</code> 与 <code>RunHealth</code>，与 findings 主列表<b>物理分离</b>，绝不污染线索、绝不参与交叉升格。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">未声明即拒绝（fail-closed）</div>
+    <div class="d">对象/链接未在 <code>policies.json</code> 声明策略 → 运行时一律拒绝；<code>policies.json</code> 文件缺失 → 全拒而非放行；<code>schema_version != 2</code> → 装载期硬失败。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">写路径唯一</div>
+    <div class="d">所有写操作（状态迁移、决策、归并、人审驳回）只能经 <code>ActionExecutor</code>；Function 层是只读的，SQL 白名单强制首词必须是 <code>SELECT/WITH</code>。</div>
+  </div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="s3"><span class="num">03</span>系统架构（分层视图）</h2>
+<p class="sub">六个存储层 + 五个逻辑层。语义层（obj_*/lnk_*）是整个系统的枢纽，所有消费方都必须经过它。</p>
+
+<figure>
+<svg viewBox="0 0 1000 540" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>孙武侦查官系统分层架构</title>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    .bx{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .la{font-size:13px; font-weight:600; fill:#1c1c1a}
+    .lb{font-size:11px; fill:#5f5e5a}
+    .lc{font-size:11px; fill:#888780}
+    .zt{font-size:11.5px; font-weight:600; fill:#5f5e5a; letter-spacing:.08em}
+  </style>
+
+  <!-- zone labels -->
+  <text class="zt bx" x="24" y="26">消费层 · CONSUMERS</text>
+  <text class="zt bx" x="24" y="186">逻辑层 · KERNEL</text>
+  <text class="zt bx" x="24" y="440">存储层 · STORAGE</text>
+
+  <!-- consumers -->
+  <rect x="24" y="38" width="180" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="114" y="58" text-anchor="middle">CLI 脚本</text>
+  <text class="lb bx" x="114" y="75" text-anchor="middle">scripts/ · 22 个入口</text>
+
+  <rect x="216" y="38" width="180" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="306" y="58" text-anchor="middle">MCP Server</text>
+  <text class="lb bx" x="306" y="75" text-anchor="middle">13 工具 · stdio JSON-RPC</text>
+
+  <rect x="408" y="38" width="180" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="498" y="58" text-anchor="middle">Web 服务</text>
+  <text class="lb bx" x="498" y="75" text-anchor="middle">FastAPI + Vue3</text>
+
+  <rect x="600" y="38" width="180" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="690" y="58" text-anchor="middle">LLM Agent</text>
+  <text class="lb bx" x="690" y="75" text-anchor="middle">可选 · 只读 + 提案轨</text>
+
+  <rect x="792" y="38" width="184" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="884" y="58" text-anchor="middle">导出 / 看板</text>
+  <text class="lb bx" x="884" y="75" text-anchor="middle">dashboard · ladybug CSV</text>
+
+  <!-- gateway bar -->
+  <rect x="24" y="112" width="952" height="44" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="500" y="127" text-anchor="middle">统一读入口 · OntologyReadGateway（REQ-002）　—　权限校验 → 新鲜度校验 → 读表 → 属性级脱敏</text>
+  <text class="lc bx" x="500" y="145" text-anchor="middle">任何消费方都不得直读 Parquet 或中文业务源表</text>
+
+  <path d="M114 90 L114 112" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M306 90 L306 112" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M498 90 L498 112" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M690 90 L690 112" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M884 90 L884 112" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M500 156 L500 196" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+
+  <!-- kernel: semantic layer -->
+  <rect x="24" y="200" width="952" height="76" rx="10" fill="#EEEDFE" stroke="#534AB7" stroke-width=".5"/>
+  <text class="la bx" x="44" y="224">语义层　obj_person · obj_transaction · obj_call · obj_org · obj_bid_project　|　lnk_transfers · lnk_calls_to · lnk_time_window · lnk_co_located</text>
+  <text class="lb bx" x="44" y="245">由 ontology/&lt;pack&gt;/*.json 声明式编译而来 —— objects(11) / links(10) / bindings / rules(6) / functions(11) / actions / views / policies</text>
+  <text class="lb bx" x="44" y="264">代理键幂等分配：entity 按 name_property 值哈希，event 按行内容哈希 —— 重建语义层不漂移</text>
+
+  <path d="M500 276 L500 300" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+
+  <!-- kernel lower: 4 boxes -->
+  <rect x="24" y="304" width="228" height="88" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="138" y="326" text-anchor="middle">规则引擎</text>
+  <text class="lb bx" x="138" y="345" text-anchor="middle">core/rules.py</text>
+  <text class="lb bx" x="138" y="362" text-anchor="middle">R1–R6 · 零命中诊断</text>
+  <text class="lb bx" x="138" y="379" text-anchor="middle">互斥组重叠消解</text>
+
+  <rect x="264" y="304" width="228" height="88" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="378" y="326" text-anchor="middle">Function 层（只读）</text>
+  <text class="lb bx" x="378" y="345" text-anchor="middle">core/functions.py</text>
+  <text class="lb bx" x="378" y="362" text-anchor="middle">SQL 白名单 + {{param}}</text>
+  <text class="lb bx" x="378" y="379" text-anchor="middle">模板类型化渲染</text>
+
+  <rect x="504" y="304" width="228" height="88" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="618" y="326" text-anchor="middle">庙算 / 五间交叉</text>
+  <text class="lb bx" x="618" y="345" text-anchor="middle">core/hypotheses.py</text>
+  <text class="lb bx" x="618" y="362" text-anchor="middle">五维覆盖 · 假设枚举</text>
+  <text class="lb bx" x="618" y="379" text-anchor="middle">冲突检测 · 交叉升格</text>
+
+  <rect x="744" y="304" width="232" height="88" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="860" y="326" text-anchor="middle">写路径（唯一）</text>
+  <text class="lb bx" x="860" y="345" text-anchor="middle">core/action_executor.py</text>
+  <text class="lb bx" x="860" y="362" text-anchor="middle">两阶段提交 + 状态机</text>
+  <text class="lb bx" x="860" y="379" text-anchor="middle">"已立案" human 专属</text>
+
+  <!-- storage -->
+  <rect x="24" y="458" width="228" height="62" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="138" y="480" text-anchor="middle">L4 图库 · LadybugDB</text>
+  <text class="lb bx" x="138" y="499" text-anchor="middle">data/ladybug/*.lbug</text>
+
+  <rect x="264" y="458" width="228" height="62" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="378" y="480" text-anchor="middle">L2 温层 · DuckDB</text>
+  <text class="lb bx" x="378" y="499" text-anchor="middle">investigation.duckdb</text>
+
+  <rect x="504" y="458" width="228" height="62" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="618" y="480" text-anchor="middle">L3 冷层 · Parquet</text>
+  <text class="lb bx" x="618" y="499" text-anchor="middle">data/*.parquet</text>
+
+  <rect x="744" y="458" width="232" height="62" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="860" y="480" text-anchor="middle">旁路 · 审计 / 事件 / 元数据</text>
+  <text class="lb bx" x="860" y="499" text-anchor="middle">audit_chain · event_log · state.sqlite</text>
+
+  <path d="M138 392 L138 458" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M378 392 L378 458" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M618 392 L618 458" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+  <path d="M860 392 L860 458" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 1　系统分层架构：消费层 → 统一读网关 → 语义层 → 计算/写层 → 存储层</figcaption>
+</figure>
+
+<h3>存储层的分工</h3>
+<table>
+  <thead><tr><th style="width:12%">层</th><th style="width:26%">载体</th><th>职责与关键实现</th></tr></thead>
+  <tbody>
+    <tr><td><b>L0</b></td><td>原始文件</td><td>Parquet / CSV / Excel / JSON / SQLite 五类适配器（<code>data_ingest.py</code>），统一 schema 后入冷层。</td></tr>
+    <tr><td><b>L1</b></td><td>进程内 dict + <code>feat_l1</code> 表</td><td>特征缓存（REQ-015）。<code>feature_set_hash = sha1(entity_id|time_window|feature_name|inputs)</code>，输入变化即 <code>mark_stale</code>。</td></tr>
+    <tr><td><b>L2</b></td><td>DuckDB <code>investigation.duckdb</code></td><td>温层。存放中文业务冷表 + 编译后的 <code>obj_*/lnk_*</code> + 诊断表 + 审计链。全部查询经 <code>Store.query()</code>。</td></tr>
+    <tr><td><b>L3</b></td><td>Parquet <code>data/*.parquet</code></td><td>冷层不可变分区。<code>ingest_validate.py</code> 做四类校验（DATA_GAP / PK_DUPLICATE / SCHEMA_DRIFT / TIME_NON_MONOTONIC），异常进隔离区。</td></tr>
+    <tr><td><b>L4</b></td><td>LadybugDB <code>data/ladybug/*.lbug</code></td><td>图库，可选。未安装时全线降级为 SQL 单轨并标 <code>degraded</code>。</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ 4 ============ -->
+<h2 id="s4"><span class="num">04</span>端到端数据流</h2>
+<p class="sub">从 <code>data/*.parquet</code> 到 <code>output/*.json</code>，主入口 <code>run_all.py:47 main()</code>。</p>
+
+<figure>
+<svg viewBox="0 0 1000 620" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>端到端数据流</title>
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    .bx{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .la{font-size:12.5px; font-weight:600; fill:#1c1c1a}
+    .lb{font-size:10.5px; fill:#5f5e5a}
+    .ln{font-size:10px; fill:#888780}
+    .hd{font-size:11.5px; font-weight:600; fill:#5f5e5a; letter-spacing:.08em}
+  </style>
+
+  <text class="hd bx" x="20" y="20">阶段一 · 接入与准备</text>
+
+  <rect x="20" y="34" width="150" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="95" y="55" text-anchor="middle">生成/接入</text>
+  <text class="lb bx" x="95" y="73" text-anchor="middle">data.gen_sim</text>
+
+  <rect x="190" y="34" width="150" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="265" y="55" text-anchor="middle">建冷层表</text>
+  <text class="lb bx" x="265" y="73" text-anchor="middle">scripts.init_duckdb</text>
+
+  <rect x="360" y="34" width="150" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="435" y="55" text-anchor="middle">五格式入库</text>
+  <text class="lb bx" x="435" y="73" text-anchor="middle">DataIngestManager</text>
+
+  <rect x="530" y="34" width="150" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="605" y="55" text-anchor="middle">实体对齐</text>
+  <text class="lb bx" x="605" y="73" text-anchor="middle">core.entity</text>
+
+  <rect x="700" y="34" width="150" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="775" y="55" text-anchor="middle">人工确认台</text>
+  <text class="lb bx" x="775" y="73" text-anchor="middle">core.review</text>
+
+  <rect x="870" y="34" width="110" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="925" y="55" text-anchor="middle">1% 采样预演</text>
+  <text class="lb bx" x="925" y="73" text-anchor="middle">SamplingPreflight</text>
+
+  <path d="M170 62 L190 62" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M340 62 L360 62" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M510 62 L530 62" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M680 62 L700 62" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M850 62 L870 62" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M925 90 L925 118" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+
+  <text class="hd bx" x="20" y="140">阶段二 · 语义层编译（核心）</text>
+
+  <rect x="20" y="154" width="960" height="112" rx="10" fill="#EEEDFE" stroke="#534AB7" stroke-width=".5"/>
+  <text class="la bx" x="40" y="178">build_ontology(conn)　—　core/ontology.py:393　事务内原子执行，异常 ROLLBACK</text>
+  <text class="lb bx" x="40" y="200">① load_pack 装载 27 份声明文件（schema_version=2 校验，未知名/版本不符硬失败）</text>
+  <text class="lb bx" x="40" y="219">② Object 物化：_compute_object_rows → 清洗 transform → 归并映射 → 去重 → 代理键分配 → _create_obj_table → _insert_object_rows</text>
+  <text class="lb bx" x="40" y="238">③ Link 物化：CREATE TABLE lnk_x AS &lt;bindings.build_sql&gt;，声明边属性与输出列对账（不一致硬失败）</text>
+  <text class="lb bx" x="40" y="257">④ ensure_runtime_tables（obj_decision / lnk_decision_for）→ ⑤ 物化 Object Views → ⑥ 推进版本时钟 → ⑦ snapshot_source_rows 归档</text>
+
+  <path d="M500 266 L500 296" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+
+  <text class="hd bx" x="20" y="318">阶段三 · 检测与研判</text>
+
+  <rect x="20" y="332" width="228" height="72" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="134" y="353" text-anchor="middle">run_rules（虚实）</text>
+  <text class="lb bx" x="134" y="371" text-anchor="middle">R1 R2 R3 R4 R5</text>
+  <text class="lb bx" x="134" y="388" text-anchor="middle">阈值自适应 + 零命中诊断</text>
+
+  <rect x="264" y="332" width="228" height="72" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="378" y="353" text-anchor="middle">奇正 / 用间</text>
+  <text class="lb bx" x="378" y="371" text-anchor="middle">R6 + jian_cross_level</text>
+  <text class="lb bx" x="378" y="388" text-anchor="middle">五间交叉升格</text>
+
+  <rect x="508" y="332" width="228" height="72" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="622" y="353" text-anchor="middle">去重合并</text>
+  <text class="lb bx" x="622" y="371" text-anchor="middle">dedupe_and_merge(0.5)</text>
+  <text class="lb bx" x="622" y="388" text-anchor="middle">prioritize_clues 权重排序</text>
+
+  <rect x="752" y="332" width="228" height="72" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="866" y="353" text-anchor="middle">图库两跳过桥</text>
+  <text class="lb bx" x="866" y="371" text-anchor="middle">Cypher ⇄ SQL 双轨互校</text>
+  <text class="lb bx" x="866" y="388" text-anchor="middle">不一致只标记不采信</text>
+
+  <path d="M248 368 L264 368" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M492 368 L508 368" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M736 368 L752 368" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M866 404 L866 428" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+
+  <text class="hd bx" x="20" y="450">阶段四 · 处置与产出</text>
+
+  <rect x="20" y="464" width="228" height="72" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="134" y="485" text-anchor="middle">DisposalBoard</text>
+  <text class="lb bx" x="134" y="503" text-anchor="middle">待查→查证中→已固证→已立案</text>
+  <text class="lb bx" x="134" y="520" text-anchor="middle">status=人类专属终态</text>
+
+  <rect x="264" y="464" width="228" height="72" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="378" y="485" text-anchor="middle">ActionExecutor</text>
+  <text class="lb bx" x="378" y="503" text-anchor="middle">submit→approve→dispatch</text>
+  <text class="lb bx" x="378" y="520" text-anchor="middle">file 副作用建 obj_decision</text>
+
+  <rect x="508" y="464" width="228" height="72" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="622" y="485" text-anchor="middle">Outbox → 回写 → 对账</text>
+  <text class="lb bx" x="622" y="503" text-anchor="middle">幂等键 wb:{action_id}</text>
+  <text class="lb bx" x="622" y="520" text-anchor="middle">指数退避 1m→8h，5 次进死信</text>
+
+  <rect x="752" y="464" width="228" height="72" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="866" y="485" text-anchor="middle">产物</text>
+  <text class="lb bx" x="866" y="503" text-anchor="middle">lineage_clues.json</text>
+  <text class="lb bx" x="866" y="520" text-anchor="middle">entity_mapping / review_queue</text>
+
+  <path d="M248 500 L264 500" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M492 500 L508 500" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+  <path d="M736 500 L752 500" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar2)"/>
+
+  <rect x="20" y="556" width="960" height="46" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width=".5"/>
+  <text class="lb bx" x="500" y="573" text-anchor="middle">旁路贯穿全程：AuditChain（SHA-256 哈希链）· EventBus（17 类事件）· RunHealth（~20 类诊断）· RowURI（内容寻址溯源）· PolicyEngine（对象/链接/属性三级鉴权）</text>
+  <text class="lb bx" x="500" y="590" text-anchor="middle">诊断与 findings 物理分离：异常线索标 is_anomaly=True、级别"待核实"，绝不参与五间交叉升格</text>
+</svg>
+<figcaption>图 2　端到端数据流：四阶段主链路 + 五条贯穿旁路</figcaption>
+</figure>
+
+<h3>产物清单</h3>
+<table>
+  <thead><tr><th style="width:30%">产物</th><th style="width:24%">生成处</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>output/lineage_clues.json</code></td><td><code>run_all.py:357</code></td><td>主报告：健康度、去重后线索、五间覆盖度、交叉等级、庙算覆盖度、审计链完备性、待核实异常、ontology 统计、graph_overpass。</td></tr>
+    <tr><td><code>output/entity_mapping.json</code></td><td><code>run_all.py:360</code></td><td>人审 accept 后的正式实体映射（person / org / review）。</td></tr>
+    <tr><td><code>output/review_queue.json</code></td><td><code>run_all.py:131</code></td><td>待人工裁决的对齐候选（accept / reject / defer 三选一）。</td></tr>
+    <tr><td><code>output/dashboard_data.json</code> + <code>.html</code></td><td><code>scripts/export_dashboard.py</code></td><td>以 DuckDB 处置表为<b>真值源</b>导出（覆盖 JSON 快照），生成单文件操作台。</td></tr>
+    <tr><td><code>output/drafts/…</code></td><td><code>core/draft_assembler.py</code></td><td>新表接入的本体草案（只写 output，绝不写 ontology）。</td></tr>
+    <tr><td>图谱 CSV</td><td><code>scripts/export_ladybug.py</code></td><td>4 类节点 + 按 links.json 通用生成的 9 类边文件，导出前做策略检查。</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ 5 ============ -->
+<h2 id="s5"><span class="num">05</span>语义层：Ontology 编译内核</h2>
+<p class="sub">这是整个项目最有价值的资产。它把"数据"翻译成"业务语义"，并让翻译规则本身成为可版本化、可审计的数据。</p>
+
+<h3>八段声明（schema_version = 2）</h3>
+<table>
+  <thead><tr><th style="width:20%">声明文件</th><th style="width:14%">层</th><th>内容与工程意义</th></tr></thead>
+  <tbody>
+    <tr><td><code>objects.json</code></td><td><span class="tag p">类型层</span></td><td>Object 是什么：pk、kind（entity|event）、name_property、<code>properties{属性: 值类型}</code>。<b>不含任何数据来源信息</b>。值类型经 <code>TYPE_SQL</code> 驱动物化列类型。</td></tr>
+    <tr><td><code>links.json</code></td><td><span class="tag p">类型层</span></td><td>Link 是什么：端点对象、边属性。<b>只表达关系，检测判据一律不写在这里</b>（如 lnk_time_window 不含"整数金额/排除公司"判据，过滤在 R6）。</td></tr>
+    <tr><td><code>bindings.json</code></td><td><span class="tag b">管道层</span></td><td>数据从哪来：object_bindings（source / source_sql / clean / optional）+ link_bindings（build_sql）。<b>换数据源、换案件只改这里</b>。</td></tr>
+    <tr><td><code>rules.json</code></td><td><span class="tag b">规则手册</span></td><td><code>rule_text</code>（分析师写的自然语言判据，LLM 可读、随线索落产物可审计）+ <code>function / params</code>（唯一的机器挂钩）。</td></tr>
+    <tr><td><code>functions.json</code></td><td><span class="tag b">能力目录</span></td><td>Function 声明。SQL 实现强制 SELECT/WITH 白名单 + <code>{{param}}</code> 模板参数；py 实现必须在 <code>core/functions.FUNCTION_IMPLS</code> 注册。</td></tr>
+    <tr><td><code>actions.json</code></td><td><span class="tag a">写路径</span></td><td>可写动作声明：角色、必填参数、副作用、终态。<code>allowed_from</code> 由 <code>states.json</code> 反向派生（单一事实来源）。</td></tr>
+    <tr><td><code>views.json</code></td><td><span class="tag b">语义视图</span></td><td>Object Views 按角色投影，查询时派生、不物化、不改写 obj_*。权限仍按 base_object 判定，不复制到视图层。</td></tr>
+    <tr><td><code>policies.json</code></td><td><span class="tag a">权限面</span></td><td>对象级 / 链接级策略 + 属性级敏感列遮蔽。<b>未声明一律 fail-closed</b>。</td></tr>
+  </tbody>
+</table>
+<p class="sub" style="margin-top:14px">另有配置/知识文件（非八段）：<code>thresholds.json</code>、<code>case_knowledge.json</code>、<code>dimensions.json</code>、<code>enum_space.json</code>、<code>jians.json</code>、<code>states.json</code>、<code>scoring.json</code>、<code>derived_properties.json</code>、<code>data_elements.json</code>、<code>llm_policy.json</code>、<code>clean_rules.json</code>。其中 <code>case_knowledge.json</code> 是<b>人名唯一合法存放处</b>——SQL 模板硬编码人名会被 <code>scripts/scan_hardcoded_names.py</code> 扫出。</p>
+
+<h3>编译流程中的三个关键机制</h3>
+<h4>① 代理键的幂等分配（<code>ontology.py:978</code>）</h4>
+<ul>
+  <li><b>event 型</b>（transaction / call / trackpoint）：按行内容排序后取 <code>sha1(行内容)[:12]</code>，同内容追加 <code>_02/_03</code> 后缀。</li>
+  <li><b>entity 型</b>（person / org / account…）：按 <code>name_property</code> 值排序后分配 <code>sha1(名称)[:12]</code>——<b>新增名字不会改变已有键</b>。</li>
+  <li><b>自引用</b>（pk == name_property，如 clue）：直通源自然键。</li>
+  <li>意义：语义层可以反复重建，主键不漂移，历史线索与审计记录始终对得上。</li>
+</ul>
+
+<h4>② 脏值降级不中断（TRY_CAST）</h4>
+<ul>
+  <li>默认 <code>TRY_CAST</code>，脏值降级为 NULL 并记 <code>obj_x.prop&lt;-raw: N 行不可转</code> 进 <code>RunHealth</code>；<code>on_cast_error=fail</code> 才硬失败；<code>quarantine</code> 态整行剔除落 <code>build_quarantine</code>。</li>
+  <li>缺列预检：<code>DESCRIBE</code> 源表，必填列缺失硬失败；<code>optional_columns</code> 内缺失则渲染类型化 NULL 保持列集列序。</li>
+  <li>多源 UNION 走 <code>_prune_union_sql()</code> 按已挂载表裁剪分支，避免一个分支缺失拖垮整个 BUILD。</li>
+</ul>
+
+<h4>③ 版本时钟与增量（REQ-001 / REQ-018）</h4>
+<ul>
+  <li>双 watermark：源端（源表时间列 MAX）vs 语义层。差异即 <code>STALE + affected_objects</code>；读网关默认拒绝陈旧数据（<code>StaleOntologyError</code>）。</li>
+  <li>输入哈希 = sha256（按 pk 排序的全行 JSON）；参数哈希含 rules params + functions parameters + <b>views 声明</b>。</li>
+  <li>增量重建 <code>materialize_changed()</code>：先对象后链接 → TEMP 暂存表 → 行级 diff → 只重写增删行 → 只重算 <code>affected_rules</code>。<code>entity_mapping</code> 是受保护表，重建不清除人工归并结果。</li>
+</ul>
+
+<!-- ============ 6 ============ -->
+<h2 id="s6"><span class="num">06</span>规则引擎与 Function 层</h2>
+<p class="sub">规则是"判据"，Function 是"能力"。二者通过 <code>rules.json</code> 的 function/params 挂钩，Python 里没有硬编码的业务判断。</p>
+
+<h3>R1–R6 检测规则（<code>ontology/default/rules.json</code>）</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>编号</th><th>名称</th><th>阶段</th><th>维度</th><th>间类</th><th>Function</th><th>判据</th></tr></thead>
+  <tbody>
+    <tr><td><b>R1</b></td><td>季度末整数现金存入</td><td>虚实</td><td>资金</td><td>生间</td><td><code>quarter_end_integer_deposits</code></td><td>金额对 10000 取模为 0 <b>且</b> 类型为"现金存入"，<b>且</b> 日期距季末边界 ≤ 15 天；按季度聚合。<span class="tag b">组内 primary</span></td></tr>
+    <tr><td><b>R2</b></td><td>整数转账聚合（第三方过桥）</td><td>虚实</td><td>资金</td><td>反间</td><td><code>integer_transfer_aggregates</code></td><td>金额 % 10000 = 0，按 转出→转入 聚合成单向大额链条。与 R1 同互斥组 <code>integer_amount</code>，primary 命中则本条抑制。</td></tr>
+    <tr><td><b>R3</b></td><td>公示期通话频次突增</td><td>虚实</td><td>通讯</td><td>生间</td><td><code>call_frequency_spike</code></td><td>头部对端通话数 ≥ 其余对端中位数 × 2；<b>单一对端无法算中位数时降级</b>为绝对阈值 ≥30 并标 degraded。</td></tr>
+    <tr><td><b>R4</b></td><td>二人公示期轨迹同框</td><td>虚实</td><td>行为</td><td>生间</td><td><code>co_located_pairs</code></td><td>直接读 <code>lnk_co_located</code>：不同主体、同地点、±1 天。</td></tr>
+    <tr><td><b>R5</b></td><td>工商登记利益关联</td><td>虚实</td><td>关系</td><td>因间</td><td><code>org_interest_links</code></td><td>遍历 <code>obj_org</code>，法人/关系字段命中案件知识包的 subject_aliases 或未过期 relation_assertions。<b>人名只在 case_knowledge.json</b>。</td></tr>
+    <tr><td><b>R6</b></td><td>中标-资金时间窗碰撞</td><td>奇正</td><td>时间</td><td>反间</td><td><code>time_window_collision</code></td><td><code>lnk_time_window JOIN obj_bid_project</code>：金额 %10000=0 <b>且</b> owner 不含"公司"（只留个人），按 offset_days 排序。</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>11 个 Function（7 个 Python + 4 个 SQL）</h3>
+<table>
+  <thead><tr><th style="width:26%">Function</th><th style="width:12%">实现</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td><code>quarter_end_integer_deposits</code></td><td>SQL</td><td>R1 的季度末整数存入聚合</td></tr>
+    <tr><td><code>integer_transfer_aggregates</code></td><td>SQL</td><td>R2 的整数转账单向链条聚合</td></tr>
+    <tr><td><code>co_located_pairs</code></td><td>SQL</td><td>R4 的轨迹同框对</td></tr>
+    <tr><td><code>time_window_collision</code></td><td>SQL</td><td>R6 的中标-资金时间窗碰撞</td></tr>
+    <tr><td><code>call_frequency_spike</code></td><td>Python</td><td>R3 频次突增，含无对照时的降级路径</td></tr>
+    <tr><td><code>call_pair_coverage</code></td><td>Python</td><td>生间对端充足度体检，判断 R3 是否运行在降级模式</td></tr>
+    <tr><td><code>jian_cross_level</code></td><td>Python</td><td>五间交叉等级：独立源 1/2/3 → 观察/线索/可立案依据候选</td></tr>
+    <tr><td><code>tipoff_cross_reference</code></td><td>Python</td><td>内间：按被举报人聚合举报数 + 三类在案证据交叉，match_count≥2 为高优先级</td></tr>
+    <tr><td><code>org_interest_links</code></td><td>Python</td><td>R5 的工商利益关联</td></tr>
+    <tr><td><code>overpass_two_hop</code></td><td>Python</td><td>资金链路两跳（与 Cypher 轨互校）</td></tr>
+    <tr><td><code>location_colocated</code></td><td>Python</td><td>地点标准化与同框判定（实现在 <code>core/geo.py</code>，离线无外部地理编码）</td></tr>
+  </tbody>
+</table>
+
+<h3>只读红线与防注入</h3>
+<div class="crit">
+  <b>SQL 白名单：</b><code>_FORBIDDEN_SQL</code> 正则命中 INSERT / UPDATE / DELETE / DROP / CREATE / ALTER / ATTACH / DETACH / COPY / TRUNCATE / GRANT / REVOKE 即拒；<code>_assert_readonly()</code> 另要求首词必须是 <code>SELECT</code> 或 <code>WITH</code>。<br>
+  <b>模板参数双向核对：</b>SQL 中的 <code>{{param}}</code> 与 <code>parameters</code> 声明必须一一对应（多一个少一个都硬失败）；integer 拒 bool、boolean 严格 <code>isinstance</code>、date 须匹配 <code>YYYY-MM-DD</code>；<b>string 类型必须声明 enum 白名单，自由文本一律拒绝</b>。装载期与运行期共用同一决策点。
+</div>
+
+<h3>零命中不是"没发现"，而是四分类（REQ-G-002）</h3>
+<table>
+  <thead><tr><th style="width:26%">分类</th><th style="width:12%">级别</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td><code>data_absent</code></td><td>info</td><td>依赖的数据本来就没有——不是"干净"，是"没数据"</td></tr>
+    <tr><td><code>config_missing</code></td><td>warning</td><td>配置缺失导致规则跑不起来</td></tr>
+    <tr><td><code>empty_result_suspect</code></td><td>warning</td><td>数据齐全却零命中，<b>可疑</b>，需要人工确认</td></tr>
+    <tr><td><code>clean_scan</code></td><td>info</td><td>确属干净——<b>必须由分析师在 rules.json 显式声明 <code>zero_is_clean</code></b>，不许系统自行解释</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  <b>这是本项目最能体现专业度的一处设计。</b>调查系统最危险的失败模式不是"漏报"，而是"把没查当成查清了"。这套四分类把"零命中"强制暴露给分析师，而不是让它安静地消失在空列表里。
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="s7"><span class="num">07</span>业务模型：五间 × 五维 × 庙算</h2>
+<p class="sub">《孙子兵法》的"五间"与"庙算"被工程化成了可计算的覆盖度模型。</p>
+
+<h3>五间（<code>jians.json</code>，声明式、新增不改 Python）</h3>
+<table>
+  <thead><tr><th style="width:10%">间类</th><th style="width:26%">证据来源对象</th><th style="width:12%">权重</th><th style="width:14%">默认密级</th><th>侦查含义</th></tr></thead>
+  <tbody>
+    <tr><td><b>因间</b></td><td>org、bid_project</td><td>3</td><td>1</td><td>利用敌方的既有关系网络——工商登记、招投标参与关系</td></tr>
+    <tr><td><b>内间</b></td><td>tipoff</td><td>5</td><td>3</td><td>来自内部的举报线索——权重最高、密级最高（clearance 3）</td></tr>
+    <tr><td><b>反间</b></td><td>transaction</td><td>2</td><td>1</td><td>从对手的资金往来中反向获取信息</td></tr>
+    <tr><td><b>死间</b></td><td>osint_article、org</td><td>4</td><td>0</td><td>公开情报——密级最低但可对外引用</td></tr>
+    <tr><td><b>生间</b></td><td>call、trackpoint</td><td>1</td><td>1</td><td>当场取得的动态信息——通话、轨迹</td></tr>
+  </tbody>
+</table>
+<p><b>交叉升格（cross_levels，映射关系硬编码不可配）：</b>
+<span class="tag">1 个独立源 → 观察</span>
+<span class="tag b">2 个独立源 → 线索</span>
+<span class="tag t">3 个及以上 → 可立案依据候选</span>
+—— 注意是"候选"，仍不是"已立案"。</p>
+
+<h3>五维覆盖（<code>dimensions.json</code>）</h3>
+<p><span class="tag">资金</span> <span class="tag">通讯</span> <span class="tag">行为</span> <span class="tag">关系</span> <span class="tag">时间</span>
+—— 庙算引擎（<code>core/hypotheses.py</code>）用五维 × 五间构成覆盖矩阵，做假设枚举、维度覆盖度、间类覆盖度、冲突检测。
+<b>覆盖缺口会独立报警</b>（REQ-G-008/009/024），且"实证缺口"与"阈值边界"分开报警——没查过和查了没中，是两回事。</p>
+
+<!-- ============ 8 ============ -->
+<h2 id="s8"><span class="num">08</span>线索生命周期与处置闭环</h2>
+
+<figure>
+<svg viewBox="0 0 1000 250" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>线索状态机与写路径</title>
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <style>
+    .bx{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .la{font-size:13px; font-weight:600; fill:#1c1c1a}
+    .lb{font-size:10.5px; fill:#5f5e5a}
+    .hd{font-size:11.5px; font-weight:600; fill:#5f5e5a; letter-spacing:.08em}
+  </style>
+
+  <text class="hd bx" x="20" y="22">线索状态机（ClueStatusMachine，声明在 states.json）</text>
+
+  <rect x="20" y="40" width="130" height="52" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="85" y="60" text-anchor="middle">待查</text>
+  <text class="lb bx" x="85" y="78" text-anchor="middle">规则产出</text>
+
+  <rect x="180" y="40" width="130" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width=".5"/>
+  <text class="la bx" x="245" y="60" text-anchor="middle">查证中</text>
+  <text class="lb bx" x="245" y="78" text-anchor="middle">分析师接手</text>
+
+  <rect x="340" y="40" width="130" height="52" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width=".5"/>
+  <text class="la bx" x="405" y="60" text-anchor="middle">已固证</text>
+  <text class="lb bx" x="405" y="78" text-anchor="middle">证据固定</text>
+
+  <rect x="500" y="40" width="130" height="52" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width=".5"/>
+  <text class="la bx" x="565" y="60" text-anchor="middle">已立案</text>
+  <text class="lb bx" x="565" y="78" text-anchor="middle">human 专属终态</text>
+
+  <rect x="340" y="118" width="130" height="52" rx="8" fill="#F1EFE8" stroke="#cfccc4" stroke-width=".5"/>
+  <text class="la bx" x="405" y="138" text-anchor="middle">已排除</text>
+  <text class="lb bx" x="405" y="156" text-anchor="middle">终态</text>
+
+  <path d="M150 66 L180 66" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <path d="M310 66 L340 66" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <path d="M470 66 L500 66" stroke="#A32D2D" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <path d="M405 92 L405 118" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <text class="lb bx" x="418" y="108" fill="#A32D2D">需 legal_basis + human 角色</text>
+  <text class="lb bx" x="500" y="104" fill="#A32D2D">仅可从「已固证」迁移</text>
+
+  <text class="hd bx" x="660" y="22">写路径：两阶段提交（REQ-012）</text>
+  <rect x="660" y="40" width="106" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="713" y="60" text-anchor="middle">proposed</text>
+  <text class="lb bx" x="713" y="78" text-anchor="middle">submit</text>
+
+  <rect x="784" y="40" width="106" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="837" y="60" text-anchor="middle">approved</text>
+  <text class="lb bx" x="837" y="78" text-anchor="middle">具名 approve</text>
+
+  <rect x="660" y="118" width="106" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="713" y="138" text-anchor="middle">dispatching</text>
+  <text class="lb bx" x="713" y="156" text-anchor="middle">Outbox enqueue</text>
+
+  <rect x="784" y="118" width="106" height="52" rx="8" fill="#FAEEDA" stroke="#854F0B" stroke-width=".5"/>
+  <text class="la bx" x="837" y="138" text-anchor="middle">confirmed</text>
+  <text class="lb bx" x="837" y="156" text-anchor="middle">外部回执</text>
+
+  <path d="M766 66 L784 66" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <path d="M837 92 L837 118" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <path d="M766 144 L784 144" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#ar3)"/>
+  <text class="lb bx" x="900" y="70" fill="#A32D2D">未 approve 抛 NotApprovedError</text>
+  <text class="lb bx" x="900" y="88" fill="#A32D2D">Outbox 不可用 → 派发 fail-closed</text>
+  <text class="lb bx" x="900" y="106" fill="#A32D2D">不假装在途</text>
+  <text class="lb bx" x="900" y="130">重试：1m→5m→30m→2h→8h</text>
+  <text class="lb bx" x="900" y="148">5 次后进死信 manual_409</text>
+</svg>
+<figcaption>图 3　线索状态机（左）与两阶段写路径（右）</figcaption>
+</figure>
+
+<h3>闭环机制</h3>
+<ul>
+  <li><b>人审闭环（REQ-016）：</b>review 裁决 → <code>plan_from_review</code> 算影响面 → <code>materialize_changed</code> 增量重建 → 只重算受影响规则 → 发 <code>finding.changed</code>。<code>entity_mapping</code> 受保护，重建不清人工归并。</li>
+  <li><b>defer 回捞（REQ-017）：</b>三类唤醒条件（on_dataset / after / evidence_count_gte，OR 语义），条件不可解析时留痕告警而非静默跳过。</li>
+  <li><b>异常线索通道（REQ-G-019）：</b>诊断产生的线索强制 <code>is_anomaly=True</code>、级别"待核实"，<b>绝不参与五间交叉升格</b>——防止系统故障被误当成侦查发现。</li>
+  <li><b>案例库（REQ-031）：</b>沉淀片段需过四道质量门（终态 / 脱敏 / 适用条件 / legal_basis）才能入库。</li>
+</ul>
+
+<!-- ============ 9 ============ -->
+<h2 id="s9"><span class="num">09</span>权限、脱敏与合规面</h2>
+
+<h3>角色体系（两套不可互比的尺子）</h3>
+<table>
+  <thead><tr><th style="width:14%">角色</th><th style="width:16%">ROLE_RANK</th><th style="width:18%">ROLE_CLEARANCE</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>见习</td><td>0</td><td>0</td><td>最低权限</td></tr>
+    <tr><td>正兵</td><td>1</td><td>1</td><td>默认值；<code>review.get_evidence</code> 只给类型/计数摘要</td></tr>
+    <tr><td>偏将</td><td>2</td><td>3</td><td>可看完整证据明细</td></tr>
+    <tr><td>主办</td><td>3</td><td>3</td><td>—</td></tr>
+    <tr><td>human</td><td>4</td><td>3</td><td><b>唯一可置"已立案"</b></td></tr>
+    <tr><td>system</td><td>99</td><td>99</td><td>唯一旁路（<code>access=None</code> 全兼容）</td></tr>
+  </tbody>
+</table>
+<div class="warn"><b>代码注释明确禁止两把尺子互比。</b>rank 管"能不能做这个动作"，clearance 管"能不能看这份密级"，是两个正交维度。</div>
+
+<h3>三级鉴权</h3>
+<ul>
+  <li><b>对象级：</b><code>check_object()</code> —— <code>policies.json</code> 中查不到即 <code>PolicyDeniedError</code>（fail-closed）。</li>
+  <li><b>链接级：</b><code>check_link()</code> —— 同口径，未声明即拒。</li>
+  <li><b>属性级：</b><code>mask_value()</code> —— <code>partial</code> 保前 3 后 4（<code>310****1234</code>），长度 &lt; 8 全遮；<code>full</code> 全 <code>***</code>。<code>value_profile / distinct_values</code> 对敏感属性连 samples/min/max 一起遮蔽。</li>
+</ul>
+
+<h3>五条出口统一管控</h3>
+<p><code>AccessContext</code>（frozen dataclass，operator 必填）贯穿 <b>网关 / Function / Action / MCP / 导出</b> 五个出口。
+<code>network="isolated"</code> 时 <code>can_llm_call()</code> 返回 False——<b>物理隔离网络下 LLM 调用被强制关闭</b>。
+MCP 会话身份由环境变量 <code>SUNZI_OPERATOR / SUNZI_ROLE / SUNZI_CLEARANCE / SUNZI_NETWORK</code> 声明。</p>
+
+<h3>LLM 治理（可选层，REQ-038~040）</h3>
+<ul>
+  <li><b>脱敏闸门：</b><code>core/llm/redact.py</code>，PII 正则<b>顺序敏感</b>（身份证先于银行卡，否则 18 位身份证会被 16-19 位银行卡规则吃掉）。</li>
+  <li><b>提示注入防护（REQ-039）：</b><code>scan_text / wrap_untrusted / sanitize_candidate / assert_no_status_change</code>，提案不得含状态变更。</li>
+  <li><b>定性词黑名单：</b><code>explain.py</code> 的 <code>_QUALITATIVE_WORDS</code>，LLM 解释中出现的定性词会被拦截。</li>
+  <li><b>一键降级 + 影子模式（REQ-040）：</b>LLM 不可用时核心链路照跑；<code>LLM_OWNED_TABLES</code> 隔离 LLM 可写范围。</li>
+  <li><b>confidence 只排序不定性（REQ-033 AC7）：</b>七项强类型硬校验，confidence 只能影响排序，不能变成结论依据。</li>
+</ul>
+
+<!-- ============ 10 ============ -->
+<h2 id="s10"><span class="num">10</span>可观测性：审计链、健康度、溯源</h2>
+<table>
+  <thead><tr><th style="width:18%">机制</th><th style="width:22%">实现</th><th>设计要点</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>审计哈希链</b><br>REQ-007</td><td><code>core/audit.py</code><br><code>audit_chain</code> 表</td>
+      <td>SHA-256 链：每条取上一条 signature 作 prev_hash，链首 <code>0×64</code>。版本锚点缺失时不改表结构，而是打 <code>anchor_status=missing</code> 并落诊断。支持 duckdb / sqlite 双后端且跨后端签名等价。</td>
+    </tr>
+    <tr>
+      <td><b>事件总线</b><br>REQ-006</td><td><code>core/event_bus.py</code><br>17 类事件</td>
+      <td><code>event_log</code> + <code>event_dead_letter</code> + <code>event_idempotency</code>。payload_hash 幂等去重、handler 异常进死信、<code>detect_cycle()</code> 沿 causation_id 回溯（深度 &gt; 10 判环）、支持 replay。</td>
+    </tr>
+    <tr>
+      <td><b>运行健康度</b><br>REQ-G-010</td><td><code>core/run_health.py</code><br>~20 类诊断</td>
+      <td>统一落 <code>run_diagnostic</code>，<b>与 findings 主列表物理分离</b>。所有接入点签名 <code>health=None</code> → NullRunHealth 空操作，向后兼容。</td>
+    </tr>
+    <tr>
+      <td><b>内容寻址溯源</b><br>REQ-008</td><td><code>core/row_uri.py</code></td>
+      <td><code>dataset@version#partition/rowid</code>。结论不背明细，只背 ID；需要时按 URI 回捞原始行并落 <code>row_archive</code>。</td>
+    </tr>
+    <tr>
+      <td><b>规则度量</b><br>REQ-030</td><td><code>core/metrics.py</code></td>
+      <td><code>rule_version = hash(rule_id + rule_text + sorted params)</code> 按版本分层；命中率、精确率估计、<b>推翻率告警</b>（规则老被人推翻说明规则有问题）。</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============ 11 ============ -->
+<h2 id="s11"><span class="num">11</span>三种产品形态</h2>
+
+<h3>① CLI —— 分析师/工程师直接操作</h3>
+<p><code>scripts/</code> 下 22 个入口。常用：<code>build_ontology.py</code>（编译语义层，<code>--actions</code>/<code>--functions</code> 查看注册表）、<code>validate_ontology.py</code>（装载期 + JSON Schema 双校验）、
+<code>incremental.py</code>（季度增量）、<code>export_ladybug.py</code>（图谱导出，含策略检查）、<code>pr_impact.py</code>（PR 影响报告）、<code>profile_table.py</code>（新表画像 + 生成草案）、
+<code>scan_hardcoded_names.py</code> / <code>audit_straight_sql.py</code>（两条红线静态扫描）。</p>
+
+<h3>② MCP Server —— 给 LLM Agent 的安全窗口</h3>
+<p>手写 JSON-RPC 2.0 over stdio，零第三方依赖，13 个工具：</p>
+<div class="tw">
+<table>
+  <thead><tr><th style="width:22%">工具</th><th>功能与约束</th></tr></thead>
+  <tbody>
+    <tr><td><code>scan_anomaly</code></td><td>虚实扫描，按 scope（flow/call/trajectory/all）过滤，<b>只返摘要</b></td></tr>
+    <tr><td><code>cross_jian</code></td><td>五间交叉等级与覆盖度</td></tr>
+    <tr><td><code>graph_overpass</code></td><td>两跳过桥，Cypher + SQL 双轨（无图库降级 SQL 单轨并标 degraded）</td></tr>
+    <tr><td><code>clue_list</code></td><td>线索列表，<b>状态源强制读 DuckDB</b> 而非 JSON 快照，按间类密级过滤</td></tr>
+    <tr><td><code>clue_transition</code></td><td>状态迁移。禁 system/ai/agent 操作人；置"已立案"必带 legal_basis 且只能从"已固证"</td></tr>
+    <tr><td><code>run_pipeline</code></td><td>跑全链路，<b>必须显式 <code>confirm=true</code></b></td></tr>
+    <tr><td><code>function_list</code> / <code>function_invoke</code></td><td>只读 Function 目录与调用（SQL 白名单 / py 注册）</td></tr>
+    <tr><td><code>rule_list</code></td><td>规则手册目录，返回 rule_text 判据原文 + 绑定 + 阈值</td></tr>
+    <tr><td><code>review.list_pending</code></td><td>待确认实体对齐候选，<b>不附 evidence 明细</b></td></tr>
+    <tr><td><code>review.get_evidence</code></td><td>单条候选证据引用；<b>正兵及以下只给类型/计数摘要</b></td></tr>
+    <tr><td><code>action.status</code></td><td><code>act_</code> 走 ActionExecutor 状态机，<code>pp-</code> 走 ProposalStore</td></tr>
+    <tr><td><code>review.submit_proposal</code></td><td><b>Agent 唯一写通道</b>：注入扫描 → 白名单清洗 → 状态变更拦截 → 建 status=draft 提案，<b>永不自动生效</b></td></tr>
+  </tbody>
+</table>
+</div>
+<p class="sub">所有返回体强制挂 <code>needs_human_review / 定性_policy / disclaimer</code> 三个红线字段。</p>
+
+<h3>③ Web 平台 —— FastAPI + Vue 3 全功能工作台</h3>
+<p><code>server/</code> 79 个 Python 模块（routers / worker / store / meta 四层），<code>frontend/</code> 57 个 .vue + 85 个 .ts。已实现：</p>
+<ul>
+  <li><b>研判主流程：</b>接入 → BUILD → 线索 → 处置 → 审计 → RESCAN 全链路（M3）</li>
+  <li><b>治理仪表盘：</b>诊断下钻、版本延迟回收 + 读者租约、孤儿版本扫描 + 隔离区 TTL</li>
+  <li><b>配置中心：</b>对象模型设计器、规则工坊、权限与字段遮蔽配置、知识包维护、角色视图配置</li>
+  <li><b>数据治理：</b>数据元管理、ETL 管道、缺列降级、敏感列扫描、代码表</li>
+  <li><b>跨案与打包：</b>跨案件查询（全有或全无鉴权）、案件包导出导入、代码逃生舱</li>
+  <li><b>前端特色组件：</b>三栏证据（fact / inference / pending）、双轨对比、间类雷达、处置看板、审计时间线、策略门禁</li>
+</ul>
+
+<!-- ============ 12 ============ -->
+<h2 id="s12"><span class="num">12</span>多案件包与新数据源接入</h2>
+
+<h3>三个案件包</h3>
+<table>
+  <thead><tr><th style="width:14%">包</th><th style="width:16%">案件</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td><code>default</code></td><td>张卫国受贿/串标案</td><td>11 个对象、10 个链接、6 条规则、11 个 Function、完整 27 份声明文件</td></tr>
+    <tr><td><code>reqd_case</code></td><td>海州"11·03"电诈案</td><td>REQ-D 业务测试包。7 个对象、2 个链接，含 <code>call_old</code>（缺对端列降级路径）、<code>cp_split</code>（拆分路径）、<code>cp_whole</code>（composite 整列降级路径）三条故意的脏数据路径</td></tr>
+    <tr><td><code>_shared</code></td><td>共享数据元</td><td><code>DE_IDCARD</code> / <code>DE_PHONE</code> / <code>DE_AMOUNT</code> / <code>DE_DATE</code>，含 idcard_mod11 与 luhn 校验</td></tr>
+  </tbody>
+</table>
+<p><code>PackManager</code>（REQ-044）保证包间隔离：每包独立 <code>investigation_&lt;pack&gt;.duckdb</code>，跨包访问需 <code>assert_authorized</code> 并留 <code>cross_pack_audit</code>。</p>
+
+<h3>接入一类全新数据源要做什么</h3>
+<ol>
+  <li><code>profile_table.py</code> 做列画像，自动识别值类型（否定式 phone/id_card/date_str/amount/account/number + 肯定式 person/org）；</li>
+  <li><code>DraftAssembler</code> 生成 <code>objects / links / bindings</code> 三份草案（<b>只写 <code>output/drafts/</code>，绝不写 ontology</b>）；</li>
+  <li>分析师审阅后把草案落到 <code>ontology/&lt;pack&gt;/</code>；</li>
+  <li>若需新检测能力：在 <code>functions.json</code> 声明（py 实现需在 <code>FUNCTION_IMPLS</code> 注册），在 <code>rules.json</code> 写 <code>rule_text</code> 判据 + params；</li>
+  <li><b>在 <code>policies.json</code> 补策略</b>——漏了会在运行时被 fail-closed 拒绝；</li>
+  <li><code>validate_ontology.py --strict</code> 校验后 <code>build_ontology.py</code> 编译。</li>
+</ol>
+<p class="sub">全程不改检测器 Python 代码——这是"声明是数据"原则的直接兑现。</p>
+
+<!-- ============ 13 ============ -->
+<h2 id="s13"><span class="num">13</span>业务价值</h2>
+
+<div class="principles">
+  <div class="pcard">
+    <div class="t">① 把经验手艺变成可复现的计算</div>
+    <div class="d">同一份数据跑两次，结果逐字节一致。判据写在 <code>rules.json</code> 的 <code>rule_text</code> 里，机器可解释、人可审计，不再依赖"某位老侦查员脑子里的那套"。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">② 结论可追溯到原始行</div>
+    <div class="d">每条 finding 都背溯源 ID（<code>dataset@version#partition/rowid</code>）。要复核时按 URI 回捞原始行，而不是重新跑一遍 hoping 结果一样。这是调查工作能进法庭的前提。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">③ 分清"没查"和"查了没中"</div>
+    <div class="d">零命中四分类 + 维度覆盖缺口独立报警。调查系统最危险的失败是把"数据没接进来"静默呈现为"没有异常"，这套机制把这个坑堵上了。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">④ 人机边界由代码强制，不由自觉</div>
+    <div class="d">"已立案"是 human 专属终态、LLM 不能定性、Agent 只能提 draft 提案、confidence 只排序不定性。这些不是提示词里的软约束，是代码里的硬拦截。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">⑤ 换数据源不改代码</div>
+    <div class="d">类型层与管道层分离，新数据源只加 binding 声明。对调查场景尤其关键——每个案子的数据源都不一样，接入成本必须趋近于零。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">⑥ 全程留痕，可自证清白</div>
+    <div class="d">哈希链审计 + 17 类事件 + 内容寻址归档。任何一步"你当时为什么这么判"都能回放，且能自证记录未被篡改。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">⑦ 密级与脱敏内建</div>
+    <div class="d">对象/链接/属性三级鉴权 + 五间密级。举报线索（内间，clearance 3）天然对见习、正兵不可见；导出、MCP、Web 三条出口共用同一套策略。</div>
+  </div>
+  <div class="pcard">
+    <div class="t">⑧ 纯离线可部署</div>
+    <div class="d">内核零 LLM 依赖、零 API Key。可完整部署在物理隔离网络中（<code>network="isolated"</code> 时 LLM 调用被强制关闭）。</div>
+  </div>
+</div>
+
+<h3>适用的业务场景</h3>
+<table>
+  <thead><tr><th style="width:22%">场景</th><th>本系统的适配点</th></tr></thead>
+  <tbody>
+    <tr><td>职务犯罪侦查</td><td>资金（整数存入/过桥转账）+ 工商关系 + 招投标时间窗 + 通话突增，四维交叉正是 R1–R6 的设计原型</td></tr>
+    <tr><td>电信诈骗资金链追踪</td><td>两跳过桥（Cypher ⇄ SQL 双轨）+ 账户网络；<code>reqd_case</code> 包即为该场景的验证样本</td></tr>
+    <tr><td>招投标串标识别</td><td><code>lnk_time_window</code> 把"中标时间"与"资金往来"耦合，配合工商法人关系做三角验证</td></tr>
+    <tr><td>企业合规/反舞弊内审</td><td>举报（内间）+ 工商（因间）+ OSINT（死间）交叉升格，密级体系天然适配内审权限分层</td></tr>
+    <tr><td>任何"多源异构数据 + 需要可审计结论"的调查</td><td>声明式本体 + 确定性规则 + 哈希链审计，与具体罪名无关</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ 14 ============ -->
+<h2 id="s14"><span class="num">14</span>工程治理与质量现状</h2>
+
+<h3>测试体系</h3>
+<ul>
+  <li><code>run_tests.py</code> 注册 <b>121 个测试组</b>，<code>tests/</code> 下 98 个测试文件。</li>
+  <li>每个测试组绑定需求编号（REQ-001~046、REQ-G-001~024、REQ-D-001~022、REQ-P M1~M6、Web M1~M6）。<b>需求 → 测试 → 代码三者可互查</b>，这是极好的可追溯性。</li>
+  <li>两条静态红线进 CI：<code>audit</code> 组（直查扫描）与 <code>guard</code> 组（直查拦截）。</li>
+  <li>MCP 端到端：<code>scripts/mcp_client_test.py</code>，69 项断言覆盖 13 工具并含三条红线用例。</li>
+  <li><code>e2e</code> 组跑全链路；<code>--fast</code> 跳过，<code>--only &lt;组&gt;</code> 单跑。</li>
+</ul>
+
+<h3>降级协议（REQ-G 系列）是一大亮点</h3>
+<p>项目用整整三波需求（约 20 个测试组）专门处理"系统自己出问题时该怎么办"：脏日期、缺列、实体解析跳过、函数空转、事件发布失败、唤醒条件不可解析、版本锚点缺失、派发失败……
+统一协议是：<b>降级但不静默，留痕但不污染</b>。降级结果进 <code>run_diagnostic</code>，绝不进 findings，绝不参与交叉升格。这一点比绝大多数同类系统想得深。</p>
+
+<h3>技术栈</h3>
+<p><span class="tag">Python 3.12+</span> <span class="tag">DuckDB</span> <span class="tag">LadybugDB（可选）</span> <span class="tag">FastAPI</span> <span class="tag">Vue 3 + TypeScript</span> <span class="tag">JSON Schema</span>
+—— 内核部分无重量级框架，无 ORM，SQL 手写并严格白名单化。</p>
+
+<!-- ============ 15 ============ -->
+<h2 id="s15"><span class="num">15</span>核对发现：风险与改进建议</h2>
+<p class="sub">以下为逐行核对代码后发现的<b>事实性偏差与能力边界</b>，供参考。</p>
+
+<div class="warn">
+  <b>① 文档与代码已漂移（建议优先修）</b><br>
+  <code>AGENTS.md</code> 写"70 组测试"、后又写"73 组全绿"，但 <code>run_tests.py</code> 的 <code>GROUPS</code> 注册表实际有 <b>121 组</b>（Web M1–M6、REQ-D、REQ-P、六项解耦等大批测试组未同步进文档）。
+  AGENTS.md 是 agent 的第一入口，数字错误会导致新人/AI 误判"跑完就是全绿"。<b>建议改为"以 <code>run_tests.py</code> 的 GROUPS 注册表为准"并删除硬编码数字。</b>
+</div>
+
+<div class="warn">
+  <b>② 图算法能力偏薄</b><br>
+  全仓检索确认：仅实现<b>两跳定长路径</b>、<b>变长跳邻居</b>（<code>[:*1..N]</code>）、<b>度（degree）统计</b>。
+  <b>未实现</b>社区发现（Louvain/LPA）、PageRank、中介/接近中心性、最短路径、k-core。
+  对"资金网络团伙识别"这类需求，目前只能人工看两跳。建议优先补 Louvain 与最短路径。
+</div>
+
+<div class="warn">
+  <b>③ Windows 原生无法使用图库</b><br>
+  LadybugDB 官方 CI 不构建 Windows 版扩展，<code>core/graph.py</code> 走 CSV 中转，<code>ATTACH DuckDB</code> 在 Windows 上不可用（WSL/Linux 可用，需手工把 <code>libduckdb.so</code> 放到 <code>~/.lbdb/extension/&lt;版本&gt;/&lt;平台&gt;/common/</code>）。
+  意味着 <b>Windows 环境下图能力实质是残缺的</b>，交付前需明确标注环境要求。
+</div>
+
+<div class="warn">
+  <b>④ 规则数量偏少，且集中在资金维度</b><br>
+  R1–R6 中资金维度占 3 条（R1/R2/R6），通讯/行为/关系各 1 条，<b>时间维度仅 R6 一条且依附于资金判据</b>。
+  作为演示骨架合格，作为生产系统需扩充。不过架构上扩展成本很低——加规则只写 rules.json。
+</div>
+
+<div class="warn">
+  <b>⑤ 两把角色尺子存在认知负担</b><br>
+  <code>ROLE_RANK</code> 与 <code>ROLE_CLEARANCE</code> 数值不一致（如偏将 rank=2 但 clearance=3，human rank=4 但 clearance=3）。
+  虽有注释禁止互比，但这是典型的易错点，建议在 <code>AccessContext</code> 层提供语义化方法而非暴露裸数值。
+</div>
+
+<div class="warn">
+  <b>⑥ 启发式扫描是告警而非判定</b><br>
+  <code>sensitive_scan.py</code>（列名 hints + 值模式，hit_ratio 默认 0.3）、<code>unit_scan.py</code>（中位数差 ≥10000 倍）都是启发式，
+  设计上"只告警不阻断"是对的，但需防止使用者误当作权威结论。建议在产物中显式标注 <code>method=heuristic</code>。
+</div>
+
+<div class="warn">
+  <b>⑦ 代码规模与二元结构</b><br>
+  <code>core/ontology.py</code> 单文件 1380 行，是编译器 + 类型模型 + 增量逻辑的聚合体，是全仓最难维护的模块。
+  同时 <code>core/</code>（离线内核）与 <code>server/</code>（Web 后端）存在一定职责重叠（server 侧有独立的 <code>disposal_board.py</code>、<code>graph_view.py</code>），
+  需警惕逻辑双写导致的行为不一致。
+</div>
+
+<h3>总体判断</h3>
+<div class="note">
+  这是一个<b>架构设计明显强于功能覆盖度</b>的项目。它的真正资产不是那 6 条规则，而是那套"声明式语义层 + 确定性规则引擎 + 失败留痕 + 哈希链审计 + 人机边界硬拦截"的骨架。
+  规则可以补、图算法可以加，但这套骨架一旦缺失，任何"AI 侦查系统"都只是一次性的、不可复现的、无法追责的玩具。<br><br>
+  <b>最值得肯定的三处设计：</b>零命中四分类（堵住"把没查当成查清"这个最危险的坑）、诊断与 findings 物理分离（系统故障不会被误当侦查发现）、
+  Agent 唯一写通道只产 draft 提案（人机边界由代码而非提示词保证）。
+</div>
+
+<footer>
+  本文档基于 <code>D:\dev\inves_duckdb</code> 仓库源码逐模块核对生成，未引用既有 md/txt 文档结论。
+  核对范围：<code>core/</code>（66 模块）、<code>server/</code>（79 模块）、<code>scripts/</code>、<code>skills/</code>、<code>ontology/</code>（27 声明文件）、<code>tests/</code>（98 文件）、<code>run_tests.py</code>、<code>run_all.py</code>、<code>frontend/</code>。<br>
+  生成时间：2026-09-11
+</footer>
+
+</div>
+</body>
+</html>

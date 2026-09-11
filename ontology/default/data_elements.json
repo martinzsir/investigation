@@ -1,34 +1,7 @@
 {
   "schema_version": 2,
-  "_note": "REQ-D-001 数据元标准注册（第 14 声明文件）：值该长什么样的规范层。属性经 objects.json 的 data_element 引用（REQ-D-002，批 D5 接线）。clean_rule 只能引用已注册 op（core/clean_ops.py，与 binding→clean 同口径）；checksum 只能引用已注册算法（core/data_elements.py）。",
+  "_note": "REQ-D-001 default 案件包数据元（v1.2 全域化迁移后）：通用数据元（DE_IDCARD/DE_GENDER/DE_CURRENCY/DE_ID_TYPE）已迁至 ontology/_shared/data_elements.json 全域基础层，由 load_data_elements 三层合并自动加载。本文件仅保留案件特有声明（DE_CASE_TYPE 因案而异，模板包为通用类别）。新数据元如跨案件通用应迁全域层，勿在此重复声明（ID 冲突硬失败）。",
   "elements": {
-    "DE_IDCARD": {
-      "name": "公民身份号码",
-      "type": "string",
-      "length": 18,
-      "format": "^[1-9]\\d{5}(19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[\\dXx]$",
-      "checksum": "idcard_mod11",
-      "sensitive": true,
-      "mask": "partial"
-    },
-    "DE_GENDER": {
-      "name": "性别",
-      "type": "string",
-      "enum": ["男", "女", "未知"],
-      "enum_space_dim": "性别"
-    },
-    "DE_CURRENCY": {
-      "name": "币种",
-      "type": "string",
-      "enum": ["人民币", "美元", "欧元", "港币", "日元"],
-      "enum_space_dim": "币种"
-    },
-    "DE_ID_TYPE": {
-      "name": "证件类型",
-      "type": "string",
-      "enum": ["居民身份证", "护照", "军官证", "港澳居民来往内地通行证", "台湾居民来往大陆通行证"],
-      "enum_space_dim": "证件类型"
-    },
     "DE_CASE_TYPE": {
       "name": "案件类别",
       "type": "string",

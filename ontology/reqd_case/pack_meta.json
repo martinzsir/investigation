@@ -1,0 +1,5 @@
+{
+  "schema_version": 2,
+  "_note": "v1.2 §3.0.6 行业维度绑定：海州电诈案属金融类（涉资金流转/银行账号/交易金额）。load_data_elements 加载顺序：_shared 全域 → _industry/金融 行业叠加（当前空壳，跳过）→ reqd_case 案件追加。行业层有 data_elements.json 时自动合并，无则跳过不报错（DE-TC-09 向后兼容）。",
+  "industry": "金融"
+}

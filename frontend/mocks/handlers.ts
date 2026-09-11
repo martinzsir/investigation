@@ -1215,6 +1215,70 @@ export const handlers = [
     })
   }),
 
+  // P4: ETL 清洗预演（返 affected_rows）
+  http.post('*/api/v1/cases/:cid/etl-pipeline/preview', async ({ request }) => {
+    const body = (await request.json()) as { source_col?: string; op_token?: string }
+    const col = body.source_col ?? '金额'
+    const op = body.op_token ?? 'strip_thousands'
+    const before = col.includes('金额') ? ['48,000.00', '12,345.67', '9,876.50'] : ['abc123', 'def456']
+    const after = op.startsWith('strip_thousands') ? before.map(v => v.replace(/,/g, '')) : before
+    const samples = before.map((b, i) => ({ before: b, after: after[i], rejected: false }))
+    return ok({
+      op, source_col: col, samples,
+      total_rows: 100, affected_rows: before.length,
+    })
+  }),
+
+  // P4: ETL 处置草稿 CRUD（内存数组）
+  http.get('*/api/v1/cases/:cid/etl-drafts', ({ request }) => {
+    const url = new URL(request.url)
+    const uid = url.searchParams.get('upload_id')
+    const items = uid ? mockEtlDrafts.filter(d => d.upload_id === uid) : mockEtlDrafts
+    return ok({ items, total: items.length })
+  }),
+  http.post('*/api/v1/cases/:cid/etl-drafts', async ({ request }) => {
+    const body = (await request.json()) as { target_prop?: string; op_token?: string; op_class?: string; preview_affected_rows?: number; preview_samples?: unknown[] }
+    const d = {
+      draft_id: `draft_${Math.random().toString(36).slice(2, 14)}`,
+      case_id: 'c1', upload_id: 'u1',
+      target_object: 'transaction',
+      target_prop: body.target_prop ?? '金额',
+      op_token: body.op_token ?? 'strip_thousands',
+      op_class: body.op_class ?? 'A',
+      source: 'Step2',
+      preview_affected_rows: body.preview_affected_rows ?? 0,
+      preview_samples: body.preview_samples ?? [],
+      status: '待复核', created_at: '2026-09-11 14:00:00',
+      created_by: '王检察官', reviewed_by: '', reviewed_at: '', note: '',
+    }
+    mockEtlDrafts.unshift(d)
+    return ok(d)
+  }),
+  http.post('*/api/v1/cases/:cid/etl-drafts/:did/confirm', ({ params }) => {
+    const did = String(params.did)
+    const d = mockEtlDrafts.find(x => x.draft_id === did)
+    if (!d) return fail('NOT_FOUND', `草稿不存在：${did}`, 404)
+    if (d.status !== '待复核') return fail('CONFLICT', '草稿状态非待复核', 409)
+    d.status = '已确认'; d.reviewed_by = '王检察官'; d.reviewed_at = '2026-09-11 14:01:00'
+    return ok(d)
+  }),
+  http.post('*/api/v1/cases/:cid/etl-drafts/:did/reject', ({ params }) => {
+    const did = String(params.did)
+    const d = mockEtlDrafts.find(x => x.draft_id === did)
+    if (!d) return fail('NOT_FOUND', `草稿不存在：${did}`, 404)
+    if (d.status !== '待复核') return fail('CONFLICT', '草稿状态非待复核', 409)
+    d.status = '已驳回'
+    return ok(d)
+  }),
+  http.post('*/api/v1/cases/:cid/etl-drafts/:did/publish', ({ params }) => {
+    const did = String(params.did)
+    const d = mockEtlDrafts.find(x => x.draft_id === did)
+    if (!d) return fail('NOT_FOUND', `草稿不存在：${did}`, 404)
+    if (d.status !== '已确认') return fail('CONFLICT', '仅已确认草稿可发布', 409)
+    d.status = '已发布'
+    return ok(d)
+  }),
+
   // 质量检查：触发 202 + 最近报告（c2 无报告）
   http.post('*/api/v1/cases/:cid/quality-checks', ({ params }) =>
     HttpResponse.json({ ok: true, data: makeTask(String(params.cid), 'QUALITY_CHECK', {}), data_version: 1 }, { status: 202 }),
@@ -2212,6 +2276,7 @@ const mockDataElements = {
   },
 }
 
+const mockEtlDrafts: Array<Record<string, unknown>> = []
 const mockEtlSources = [
   {
     object: 'transaction', source_table: '银行流水',

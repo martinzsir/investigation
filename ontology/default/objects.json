@@ -42,6 +42,22 @@
       }
     },
     {
+      "name": "person_identity",
+      "title": "人员信息",
+      "pk": "identity_id",
+      "kind": "entity",
+      "name_property": "raw_name",
+      "_note": "数据接入全流程演示对象：人员建档信息承载 5 个数据元落点（DE_IDCARD/DE_PHONE/DE_GENDER/DE_ID_TYPE/DE_CASE_TYPE；金额/日期/币种落点在 transaction）。源表「人员信息」缺失时 binding optional 跳过；身份证 clean_rule(despace)/手机(strip_cc+digits_only) 经 prop_de_clean 在 py 层自动挂接。",
+      "properties": {
+        "raw_name": "string",
+        "id_card": {"data_element": "DE_IDCARD"},
+        "phone": {"data_element": "DE_PHONE"},
+        "gender": {"data_element": "DE_GENDER"},
+        "id_type": {"data_element": "DE_ID_TYPE"},
+        "case_type": {"data_element": "DE_CASE_TYPE"}
+      }
+    },
+    {
       "name": "transaction",
       "title": "交易",
       "pk": "txn_id",
@@ -52,8 +68,9 @@
       "properties": {
         "from_raw": "string",
         "to_raw": "string",
-        "amount": "decimal",
-        "date": "date"
+        "amount": {"type": "decimal", "data_element": "DE_AMOUNT"},
+        "currency": {"data_element": "DE_CURRENCY"},
+        "date": {"data_element": "DE_DATE"}
       }
     },
     {
@@ -67,7 +84,7 @@
       "properties": {
         "caller_raw": "string",
         "callee_raw": "string",
-        "date": "date",
+        "date": {"data_element": "DE_DATE"},
         "times": "integer"
       }
     },
@@ -82,7 +99,7 @@
       "properties": {
         "person_raw": "string",
         "location": "string",
-        "date": "date"
+        "date": {"data_element": "DE_DATE"}
       }
     },
     {
@@ -96,7 +113,7 @@
       "properties": {
         "title": "string",
         "winner_raw": "string",
-        "pub_date": "date",
+        "pub_date": {"data_element": "DE_DATE"},
         "leader": "string"
       },
       "metadata_props": [
@@ -170,7 +187,7 @@
       "_note": "五间映射：内间（内部线索/举报材料）。接入后 jian_cross_level 内间自动从缺口变命中。",
       "properties": {
         "title": "string",
-        "submit_date": "date",
+        "submit_date": {"data_element": "DE_DATE"},
         "target_raw": "string",
         "reporter_raw": "string",
         "content_raw": "string"
@@ -193,7 +210,7 @@
       "properties": {
         "raw_name": "string",
         "info_text": "string",
-        "pub_date": "date",
+        "pub_date": {"data_element": "DE_DATE"},
         "source_name": "string",
         "crawled_at": "timestamp",
         "retention_days": "duration_days"

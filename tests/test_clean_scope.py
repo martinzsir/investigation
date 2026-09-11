@@ -163,10 +163,11 @@ class TestCleanScope(unittest.TestCase):
         self.assertIn("ghost_col", str(cm.exception))
 
     def test_clean_sql_op_hard_fail(self):
-        """clean 引用 SQL op → 硬失败（SQL op 属 transform 层，clean 仅 py op）。"""
+        """clean 引用未注册 op → 硬失败（v1.3 后 strip_thousands 升级为 layer=any，
+        不再适合做"SQL-only"测试桩；改用未注册 op 名验证 fail-closed）。"""
         with self.assertRaises(ValueError) as cm:
-            _build({"card_no": ["strip_thousands"]})
-        self.assertIn("strip_thousands", str(cm.exception))
+            _build({"card_no": ["nonexistent_sql_op"]})
+        self.assertIn("nonexistent_sql_op", str(cm.exception))
 
 
 if __name__ == "__main__":
