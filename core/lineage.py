@@ -210,7 +210,7 @@ def _jian_weights(pack: str = "default") -> dict[str, int]:
         from core.ontology_loader import load_jians
         return {j["name"]: j.get("weight", 1) for j in load_jians(pack)}
     except Exception:
-        return {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 1}
+        return {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 4}
 
 
 # 计分口径版本：随 scoring.json 消费方式变更而 bump，产物自带该标识可审计。

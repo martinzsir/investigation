@@ -1,11 +1,12 @@
 """
 tests/test_scoring_v3.py
-P1-3 + P0-1 + P1-0c 修复回归护栏（score_source=scoring.json@v3）。
+P1-3 + P0-1 + P1-0c + P2-5 修复回归护栏（score_source=scoring.json@v3）。
 
 覆盖：
   - P1-3：data_strength.curve=log，0 行不再压过多行；
   - P0-1：等级作主序（声明推导），候选级恒在观察级之前；
   - P1-0c：无间类线索 cross_level 不再误标"观察"，退回让读面用级别字段；
+  - P2-5：权重复核（B vs G 偏好）—— 50 行通讯记录优先于 1 条内间举报；
   - 红线：分数不参与等级判定（等级仍由独立源数决定）；
   - version 标识：score_source=scoring.json@v3。
 """
@@ -86,7 +87,7 @@ class LevelPrimarySortTests(unittest.TestCase):
 
     def test_candidate_ranks_before_observation_with_lower_score(self):
         """构造候选级(0.45) vs 观察级(0.90)：候选级必须排前。"""
-        # 候选级：三源低权 (生间1+反间2+因间3=6)，按线性旧口径 jian_cov=min(1,6/5)=1.0
+        # 候选级：三源 (生间4+反间2+因间3=9)，jian_cov=min(1,9/5)=1.0
         # 观察级：单源内间=5/5=1.0；同等分场景：让候选级 data_strength=0，
         # 观察级 data_strength=1.0（50 行）；conf 都 H1=0.9
         cand = _clue(cid="cand", jians=["生间", "反间", "因间"], rows=0,
@@ -184,6 +185,29 @@ class ScoreBasisConsistencyTests(unittest.TestCase):
         s = out.detail["priority_score"]
         contrib_sum = sum(basis[k]["contrib"] for k in basis)
         self.assertAlmostEqual(contrib_sum, s, places=3)
+
+
+class JianWeightPreferenceTests(unittest.TestCase):
+    """P2-5：权重复核（B vs G 偏好）—— 50 行通讯记录 优先于 1 条内间举报。"""
+
+    def test_B_shengjian_50rows_beats_G_neijian_10rows(self):
+        """B（单源生间 50 行）分数必须高于 G（单源内间 10 行）。
+
+        偏好依据：数据量（50 行通讯记录）压过单条内间举报的间类权重优势。
+        由 jians.json 生间权重=4 实现：B jian_cov=4/5=0.8，G jian_cov=5/5=1.0，
+        但 B 的 data_strength=1.0（饱和）足以拉开差值。
+        """
+        b = _clue(cid="B", jians=["生间"], rows=50, assumptions=["H1"])
+        g = _clue(cid="G", jians=["内间"], rows=10, assumptions=["H1"])
+        out = prioritize_clues([b, g], pack="default")
+        b_score = next(c.detail["priority_score"] for c in out
+                       if c.clue_id == "B")
+        g_score = next(c.detail["priority_score"] for c in out
+                       if c.clue_id == "G")
+        self.assertGreater(b_score, g_score,
+            f"P2-5 偏好未生效：B(生间50行)={b_score} 应高于 G(内间10行)={g_score}")
+        # 排序首位必须是 B
+        self.assertEqual(out[0].clue_id, "B")
 
 
 if __name__ == "__main__":

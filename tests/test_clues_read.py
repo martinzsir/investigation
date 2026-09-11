@@ -38,7 +38,7 @@ from server.app.store import StoreFactory
 from server.app.worker.pool import WorkerPool
 
 
-def _clue(cid, title, *, jian=("生间",), level="高", dim="资金",
+def _clue(cid, title, *, jian=("生间",), level="观察", dim="资金",
           score=0, rank=9, source_rows=None, detail_extra=None,
           merged_from=None):
     det = {"级别": level, "维度": dim, "priority_score": score,
@@ -54,12 +54,18 @@ def _clue(cid, title, *, jian=("生间",), level="高", dim="资金",
 
 
 def _seed_clues():
+    # P0-1：等级主序压过分数——分数与等级刻意反向，验证排序确实以
+    # jians.json cross_levels 声明的等级为主键（可立案依据候选 > 线索 > 观察），
+    # 分数仅在同级组内生效。
     return [
-        _clue("clue-a", "大额取现 100 万", level="高", dim="资金",
-              score=90, rank=1),
-        _clue("clue-b", "内间通话高频", jian=("内间",), level="高",
-              dim="通讯", score=95, rank=0),
-        _clue("clue-c", "轨迹伴行", jian=("生间", "因间"), level="中",
+        # clue-a：观察级（最低）但分数最高——若退化为分数序它会排第一，应被压到最后
+        _clue("clue-a", "大额取现 100 万", level="观察", dim="资金",
+              score=100, rank=1),
+        # clue-b：可立案依据候选级（最高）但分数最低——应排第一
+        _clue("clue-b", "内间通话高频", jian=("内间",), level="可立案依据候选",
+              dim="通讯", score=10, rank=0),
+        # clue-c：线索级
+        _clue("clue-c", "轨迹伴行", jian=("生间", "因间"), level="线索",
               dim="轨迹", score=50, rank=3,
               merged_from=["clue-c-1", "clue-c-2"],
               detail_extra={"suppressed_log": [
@@ -67,7 +73,8 @@ def _seed_clues():
                    "reason": "exclusive_group 主规则命中，抑制备选",
                    "suppressed_by_group": "G2",
                    "suppressed_by_rule": "R2"}]}),
-        _clue("clue-d", "低额零散", level="低", dim="资金", score=10, rank=5),
+        # clue-d：线索级，分数高于 clue-c → 同级内 clue-d 排在 clue-c 前
+        _clue("clue-d", "低额零散", level="线索", dim="资金", score=60, rank=5),
     ]
 
 
@@ -139,23 +146,25 @@ class CluesReadTest(unittest.TestCase):
         self.assertTrue(data["available"])
         self.assertEqual(data["total"], 4)
         ids = [i["clue_id"] for i in data["items"]]
-        # priority_score 降序：b(95) > a(90) > c(50) > d(10)
-        self.assertEqual(ids, ["clue-b", "clue-a", "clue-c", "clue-d"])
+        # 等级主序（P0-1）：可立案依据候选(b) > 线索(d, c) > 观察(a)；
+        # 同级内分数降序：线索组 d(60) > c(50)。
+        # 注意：a 分数 100 最高但等级最低，必须排在最后——验证等级压过分数。
+        self.assertEqual(ids, ["clue-b", "clue-d", "clue-c", "clue-a"])
         # 分页
         r = self.client.get("/api/v1/cases/c1/clues?page=2&page_size=2",
                             headers=self.auth_h)
         data = r.json()["data"]
         self.assertEqual([i["clue_id"] for i in data["items"]],
-                         ["clue-c", "clue-d"])
+                         ["clue-c", "clue-a"])
         self.assertEqual(data["total"], 4)
 
     def test_list_filters(self):
         self.make_case("c1")
         # 级别
-        r = self.client.get("/api/v1/cases/c1/clues?level=高",
+        r = self.client.get("/api/v1/cases/c1/clues?level=线索",
                             headers=self.auth_h)
         self.assertEqual({i["clue_id"] for i in r.json()["data"]["items"]},
-                         {"clue-a", "clue-b"})
+                         {"clue-c", "clue-d"})
         # 维度
         r = self.client.get("/api/v1/cases/c1/clues?dimension=资金",
                             headers=self.auth_h)
@@ -268,7 +277,7 @@ class CluesReadTest(unittest.TestCase):
         self.client.get("/api/v1/cases/c1/clues/clue-a", headers=self.auth_h)
         self.client.get("/api/v1/cases/c1/clues/suppressed",
                         headers=self.auth_h)
-        self.client.get("/api/v1/cases/c1/clues?level=高&status=待查",
+        self.client.get("/api/v1/cases/c1/clues?level=线索&status=待查",
                         headers=self.auth_h)
         self.assertEqual(self.repo.list_tasks(case_id="c1"), [])
 

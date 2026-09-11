@@ -6,7 +6,7 @@
     {"name": "内间", "default_clearance": 3, "weight": 5, "source_object_types": ["tipoff"]},
     {"name": "反间", "default_clearance": 1, "weight": 2, "source_object_types": ["transaction"]},
     {"name": "死间", "default_clearance": 0, "weight": 4, "source_object_types": ["osint_article", "org"]},
-    {"name": "生间", "default_clearance": 1, "weight": 1, "source_object_types": ["call", "trackpoint"]}
+    {"name": "生间", "default_clearance": 1, "weight": 4, "source_object_types": ["call", "trackpoint"]}
   ],
   "cross_levels": [
     {"min_independent_sources": 1, "name": "观察"},
