@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "playbooks": [
+    {
+      "id": "r6_fund_tw_rerun",
+      "channel": "function",
+      "match": {"rule_id": "R6", "assumption": "H1"},
+      "function": "time_window_collision",
+      "fallback_function": "integer_transfer_aggregates",
+      "text": "复跑 {subject} 的整数资金时间窗核查：{project_count} 笔整数资金落在中标公示 ±20 天窗口，逐一确认是否对公工程往来",
+      "falsification": "窗口期资金均为对公工程尾款、无个人账户整数进出"
+    },
+    {
+      "id": "r6_call_window",
+      "channel": "function",
+      "match": {"rule_id": "R6", "assumption": ["H1", "H4"]},
+      "function": "call_frequency_spike",
+      "text": "补查 {subject} 在 R6 中标窗口期（公示日前后 20 天）与中标方联系人的通话频次"
+    },
+    {
+      "id": "r6_bid_archive",
+      "channel": "external",
+      "match": {"rule_id": "R6"},
+      "external": {
+        "target": "住建局招标办",
+        "material": "中标项目招投标底档及资金审批联签单"
+      },
+      "text": "向住建局招标办调取 {subject} 关联中标项目招投标底档及资金审批联签单"
+    }
+  ]
+}

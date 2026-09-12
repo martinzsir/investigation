@@ -137,7 +137,12 @@ def compile_sql_expr(ops, col_expr: str) -> str:
     """
     if isinstance(ops, str):
         ops = [ops]
-    expr = col_expr
+    if not ops:
+        return col_expr
+    # duckdb 1.5+ 取消 numeric→varchar 隐式转换：清洗链语义即「按文本处理」
+    # （py 实现同以 str(v) 起步），入口统一显式转 VARCHAR，使 DOUBLE/DECIMAL/
+    # DATE 等源列也可直接走 strip_thousands 等文本 op；链式中间结果恒为 VARCHAR。
+    expr = f"CAST(({col_expr}) AS VARCHAR)"
     for tok in ops:
         name, param = split_op(tok)
         spec = OPS.get(name)

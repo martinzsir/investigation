@@ -298,6 +298,7 @@ async function onVerifyTransition(payload: VerifyTransitionBody & { item_id: str
               :role="auth.role"
               :degraded="health.degraded"
               :submitting="verifySubmitting"
+              :source-rows="detail.source_rows ?? []"
               @add="onVerifyAdd"
               @transition="onVerifyTransition"
               @loaded="onVerifyLoaded"

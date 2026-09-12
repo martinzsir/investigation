@@ -8,10 +8,12 @@
 // 组件只 emit payload，真实 API 由 ClueDetailView 薄编排（提交后调 refresh()）。
 // degraded（FE-T-010 延续）：全部写按钮禁用 + 降级通栏。
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { NModal, NButton, NInput, NIcon } from 'naive-ui'
+import { NModal, NButton, NInput, NIcon, NSelect, NRadioGroup, NRadio } from 'naive-ui'
 import { WarningOutline, RefreshOutline, AddOutline } from '@vicons/ionicons5'
 import {
   allowedVerifyActions,
+  assembleVerifyText,
+  entityCandidates,
   isManualOrigin,
   isVerifySideStatus,
   verifyKindLabel,
@@ -25,6 +27,7 @@ import {
 } from '../../domain/verify'
 import { degradeReason } from '../../domain/clue'
 import { verifyApi } from '../../api/endpoints/verify'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 
 const props = defineProps<{
   caseId: string
@@ -34,6 +37,11 @@ const props = defineProps<{
   degraded: boolean
   /** 父层写请求进行中（提交后入队回执前禁用所有写按钮） */
   submitting?: boolean
+  /**
+   * REQ-V-018 结构化构造器数据源：线索 source_rows（ClueDetail.source_rows）。
+   * 缺省/空 → 构造器不渲染，回落纯手填（可选 prop，旧用例零影响）。
+   */
+  sourceRows?: Array<Record<string, unknown>>
 }>()
 
 const emit = defineEmits<{
@@ -140,6 +148,42 @@ function submitAdd(): void {
   newText.value = ''
 }
 
+// ---------- REQ-V-018：结构化构造器（实体→维度→渠道→核查点，拼装后可改） ----------
+const { config: ontologyCfg } = useCaseOntologyConfig()
+
+const entityOptions = computed<{ label: string; value: string }[]>(() =>
+  entityCandidates(props.sourceRows).map((v) => ({ label: v, value: v })),
+)
+
+const dimensionOptions = computed<{ label: string; value: string }[]>(() =>
+  (ontologyCfg.value.dimensions ?? []).map((d) => ({ label: d.name, value: d.name })),
+)
+
+const entity = ref('')
+const dimension = ref('')
+const channel = ref<'function' | 'external'>('function')
+const extTarget = ref('')
+const extMaterial = ref('')
+const constructPoint = ref('')
+
+/** 构造器是否可用：有实体候选才渲染（sourceRows 缺省 → 纯手填兜底） */
+const constructorReady = computed(() => entityOptions.value.length > 0)
+
+/** 拼装到人工添加框：确定性模板（domain 纯函数），用户可「改一改」后再提交 */
+function assembleText(): void {
+  newText.value = assembleVerifyText({
+    entity: entity.value,
+    dimension: dimension.value,
+    point: constructPoint.value,
+    channel: channel.value,
+    extTarget: extTarget.value,
+    extMaterial: extMaterial.value,
+  })
+  void nextTick(() => {
+    rootEl.value?.querySelector<HTMLTextAreaElement>('textarea')?.focus?.()
+  })
+}
+
 // ---------- 行动作 → 单门禁弹窗（动作延续契约：校验通过后恢复 emit） ----------
 const modalOpen = ref(false)
 const pendingItem = ref<VerifyItem | null>(null)
@@ -158,6 +202,11 @@ const chips = computed(() =>
 
 function actionsOf(item: VerifyItem): VerifyAction[] {
   return allowedVerifyActions(item.status)
+}
+
+/** REQ-V-018：采纳后（待核查/核查中）才显示路由按钮；建议态用渠道徽标即可 */
+function routeActive(item: VerifyItem): boolean {
+  return item.status === '待核查' || item.status === '核查中'
 }
 
 function statusStyle(item: VerifyItem): Record<string, string> {
@@ -259,8 +308,67 @@ function cancel(): void {
       <NButton text size="tiny" @click="refresh">重试</NButton>
     </p>
 
-    <!-- 人工添加 -->
+    <!-- 人工添加（REQ-V-018：结构化构造器三步引导 + 自由输入兜底） -->
     <div class="vw-add">
+      <div v-if="constructorReady" class="vw-ctor" data-testid="vw-ctor">
+        <div class="vw-ctor-row">
+          <NSelect
+            v-model:value="entity"
+            size="small"
+            :options="entityOptions"
+            placeholder="1 · 实体（source_rows 候选）"
+            :disabled="degraded || submitting"
+            class="vw-ctor-entity"
+            data-testid="vw-ctor-entity"
+          />
+          <NSelect
+            v-model:value="dimension"
+            size="small"
+            :options="dimensionOptions"
+            placeholder="2 · 维度"
+            :disabled="degraded || submitting"
+            class="vw-ctor-dim"
+            data-testid="vw-ctor-dim"
+          />
+        </div>
+        <div class="vw-ctor-row">
+          <NRadioGroup v-model:value="channel" size="small" :disabled="degraded || submitting">
+            <NRadio value="function">库内可复跑</NRadio>
+            <NRadio value="external">外部调取</NRadio>
+          </NRadioGroup>
+          <NButton
+            size="small"
+            :disabled="degraded || submitting"
+            data-testid="vw-ctor-assemble"
+            @click="assembleText"
+          >
+            拼装到输入框
+          </NButton>
+        </div>
+        <div v-if="channel === 'external'" class="vw-ctor-row">
+          <NInput
+            v-model:value="extTarget"
+            size="small"
+            :disabled="degraded || submitting"
+            placeholder="调取对象（如：住建局招标办）"
+            data-testid="vw-ctor-target"
+          />
+          <NInput
+            v-model:value="extMaterial"
+            size="small"
+            :disabled="degraded || submitting"
+            placeholder="调取材料"
+            data-testid="vw-ctor-material"
+          />
+        </div>
+        <NInput
+          v-model:value="constructPoint"
+          size="small"
+          :disabled="degraded || submitting"
+          placeholder="3 · 核查点（要核实什么）"
+          data-testid="vw-ctor-point"
+        />
+      </div>
       <NInput
         v-model:value="newText"
         type="textarea"
@@ -312,7 +420,7 @@ function cancel(): void {
               可复跑 · <code class="mono">{{ it.ref_function }}</code>
             </span>
             <span v-else-if="it.channel === 'external'" class="vw-route vw-route--external">
-              外部调取<template v-if="it.external?.target"> · {{ it.external.target }}</template>
+              外部调取<template v-if="it.external?.target"> · {{ it.external.target }}</template><template v-if="it.external?.material">（{{ it.external.material }}）</template>
             </span>
           </div>
           <p class="vw-text">{{ it.text }}</p>
@@ -338,6 +446,28 @@ function cancel(): void {
             @click="openAction(it, a)"
           >
             {{ a.label }}
+          </NButton>
+          <!-- REQ-V-018 采纳后路由（D2 分期）：目标端点未上线，禁用占位 + tooltip，
+               预填路由数据（ref_function / target·material）已随行就绪 -->
+          <NButton
+            v-if="routeActive(it) && it.channel === 'function'"
+            size="tiny"
+            disabled
+            class="vw-route-btn"
+            :title="`运行内核核查（${it.ref_function}）——将在后续批次开放（REQ-V-017 复跑）`"
+            data-testid="vw-route-function"
+          >
+            ▶ 运行内核核查
+          </NButton>
+          <NButton
+            v-else-if="routeActive(it) && it.channel === 'external'"
+            size="tiny"
+            disabled
+            class="vw-route-btn"
+            :title="`转调取台账（${it.external?.target ?? ''}）——将在后续批次开放（REQ-V-013 台账）`"
+            data-testid="vw-route-external"
+          >
+            转调取台账
           </NButton>
         </div>
       </li>
@@ -495,6 +625,32 @@ function cancel(): void {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+/* REQ-V-018 结构化构造器：三步引导（实体/维度/渠道/核查点）紧凑行 */
+.vw-ctor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--sun-border);
+  border-radius: 6px;
+  background: var(--sun-bg-card-hover);
+}
+.vw-ctor-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.vw-ctor-entity {
+  flex: 1;
+  min-width: 120px;
+}
+.vw-ctor-dim {
+  width: 130px;
+}
+.vw-route-btn {
+  font-size: 11px;
 }
 .vw-empty {
   margin: 4px 0;

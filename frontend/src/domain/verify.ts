@@ -200,6 +200,70 @@ export function isManualOrigin(origin: string): boolean {
   return origin === 'manual'
 }
 
+// ---------- REQ-V-018 结构化构造器（确定性拼装，组件薄调用） ----------
+
+/** 核查渠道：function=库内可复跑 / external=外部调取 */
+export type VerifyChannel = 'function' | 'external'
+
+/** 数据源常见主体列名（source_rows 候选抽取依据；与后端主体列约定对齐） */
+const SUBJECT_COLUMNS = ['人', 'from_raw', '资金主体', '对方户名', '户名',
+  'to_raw', '姓名', 'person', '主体'] as const
+
+/**
+ * 实体候选抽取：命中主体列的非空字符串值去重排序。
+ * source_rows 缺省/无命中 → 空数组（构造器不渲染，回落纯手填）。
+ */
+export function entityCandidates(
+  sourceRows?: Array<Record<string, unknown>>,
+): string[] {
+  const hits = new Set<string>()
+  for (const col of SUBJECT_COLUMNS) {
+    for (const row of sourceRows ?? []) {
+      const v = row?.[col]
+      if (typeof v === 'string' && v.trim()) hits.add(v.trim())
+    }
+  }
+  return [...hits].sort()
+}
+
+export interface VerifyCtorInput {
+  /** 实体（entityCandidates 候选之一，可空） */
+  entity?: string
+  /** 维度（ontology dimensions，可空） */
+  dimension?: string
+  /** 核查点（要核实什么） */
+  point?: string
+  /** function=库内可复跑 / external=外部调取 */
+  channel: VerifyChannel
+  /** 外部调取对象/材料（channel=external 时拼入渠道段） */
+  extTarget?: string
+  extMaterial?: string
+}
+
+/**
+ * 结构化构造 → 核查项文本（确定性模板；提交仍只发 text，用户可「改一改」）。
+ * 无实体/维度时不输出前导冒号；外部渠道按 对象/材料 有无拼细节段。
+ */
+export function assembleVerifyText(input: VerifyCtorInput): string {
+  const segs: string[] = []
+  const entity = (input.entity ?? '').trim()
+  const dimension = (input.dimension ?? '').trim()
+  const point = (input.point ?? '').trim()
+  if (entity) segs.push(`对「${entity}」`)
+  if (dimension) segs.push(`开展${dimension}维度核查`)
+  if (point) segs.push(segs.length ? `：${point}` : point)
+  let text = segs.join('')
+  if (input.channel === 'external') {
+    const t = (input.extTarget ?? '').trim()
+    const m = (input.extMaterial ?? '').trim()
+    const detail = t && m ? `向${t}调取${m}` : (t ? `向${t}` : (m ? `调取${m}` : ''))
+    text += `（渠道：外部调取${detail ? `·${detail}` : ''}）`
+  } else {
+    text += '（渠道：库内可复跑）'
+  }
+  return text.trim()
+}
+
 /**
  * 核查七态色调：复用 StatusBadge 变量色板（tokens STATUS_TONE_META），
  * states.json 不含核查态（核查态不是线索处置态），故在本域单独声明映射。

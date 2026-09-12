@@ -214,6 +214,7 @@ GROUPS = {
     "etldraft":     ("v1.3 Phase 4 ETL 处置草稿三分类+预演+双表分离", [sys.executable, "-m", "unittest", "tests.test_etl_drafts"]),
     "verifyitem":   ("REQ-V-001~004 核查工作区 state 三表/CRUD/稳定键/状态机/Worker 写通道", [sys.executable, "-m", "unittest", "tests.test_verify_item"]),
     "verifyapi":    ("REQ-V-005 核查项 API（读同步/写 202 入队/幂等/跨租户）+ REQ-V-008 固证/排除核查门禁", [sys.executable, "-m", "unittest", "tests.test_verify_api"]),
+    "verifysuggest": ("REQ-V-018 核查手册建议项（playbook 装载硬失败/确定性渲染/采纳路由/agent 拒绝）", [sys.executable, "-m", "unittest", "tests.test_verify_suggest"]),
 }
 
 

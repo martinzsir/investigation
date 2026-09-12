@@ -65,7 +65,8 @@ class TestTransformCompile(unittest.TestCase):
     def test_transform_compiled_into_projection_before_try_cast(self):
         """声明式 op 编译进投影：transform 表达式位于 TRY_CAST 之内（AD-1）。"""
         b = _load(_bind(transform={"amount": ["strip_thousands"]}))
-        self.assertIn("TRY_CAST(regexp_replace(\"金额\", ',', '', 'g')", b.source_sql)
+        self.assertIn("TRY_CAST(regexp_replace(CAST((\"金额\") AS VARCHAR), ',', '', 'g')",
+                      b.source_sql)
         self.assertEqual(b.transform, (("amount", ("strip_thousands",)),))
 
     def test_undeclared_property_projection_unchanged(self):

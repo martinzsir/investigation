@@ -14,6 +14,7 @@ server/app/clues_view.py
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,8 @@ from server.app.clues_artifact import (
     artifact_path,
     latest_artifact_version,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | None]:
@@ -184,6 +187,7 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
         from server.app.verify_provision import (
             backfill_rule_fields,
             provision_from_evidence,
+            render_suggested,
         )
         # REQ-V-002 方案 b：合并线索回填规则字段（只渲染、不回写 artifact）；
         # 三栏证据与核查项供给同源一次构建（文本逐字一致）
@@ -198,9 +202,20 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
             base_dir=base_dir, access=access)
         # REQ-V-002：state.sqlite 存在才供给落库（读面顺带、只补缺）
         if state_store is not None:
+            # REQ-V-018：手册建议项（origin=suggested/status=建议）与 auto 项
+            # 同批 upsert（INSERT OR IGNORE 只补缺，不覆盖已采纳/已忽略）；
+            # 建议不进固证门禁（verify_progress 独立计数）
+            suggested, skipped = render_suggested(
+                raw_for_view, evidence, pack_id=pack_id, base_dir=base_dir)
             state_store.upsert_verify_items(
                 state_store.case_id, clue_id,
-                provision_from_evidence(evidence))
+                provision_from_evidence(evidence) + suggested)
+            # D3：读面无 run handle，skipped 以 logging 留痕（不写 run_diagnostic）
+            for sk in skipped:
+                logger.warning(
+                    "verify_suggest skipped case=%s clue=%s playbook=%s reason=%s",
+                    state_store.case_id, clue_id,
+                    sk.get("playbook_id"), sk.get("reason"))
             item["verify"] = {
                 "items": state_store.list_verify_items(clue_id),
                 "progress": state_store.verify_progress(clue_id),

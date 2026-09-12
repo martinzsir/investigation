@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { setTransport } from '../src/api/transport'
 import { FakeTransport, okEnvelope } from './helpers'
 import VerifyWorkbench from '../src/components/research/VerifyWorkbench.vue'
+import { assembleVerifyText, entityCandidates } from '../src/domain/verify'
 import type { VerifyItem, VerifyItemsPage } from '../src/domain/verify'
 
 // REQ-V-006 AC-2~6（happy-dom 真实挂载；写动作只 emit，API 由父层编排）。
@@ -116,6 +118,8 @@ const confirmBtn = () =>
 
 beforeEach(async () => {
   document.body.innerHTML = ''
+  // 构造器经 useCaseOntologyConfig → pinia store（拉取失败回落 DEFAULT，不阻塞）
+  setActivePinia(createPinia())
 })
 
 afterEach(() => {
@@ -351,5 +355,158 @@ describe('REQ-V-007 三栏联动：loaded 回传与 jumpTo 定位', () => {
     expect(wrapper!.emitted('add')).toBeUndefined() // 只预填，不替用户提交
 
     expect(await vm.jumpTo('   ')).toBe(false)
+  })
+})
+
+// ---------- REQ-V-018：结构化构造器 + 采纳后路由按钮 ----------
+
+describe('REQ-V-018 构造器纯函数：实体抽取与文本拼装', () => {
+  it('entityCandidates：主体列命中/去重/排序；非主体列与空白值不收', () => {
+    expect(entityCandidates([
+      { 人: '张某', 户名: ' 李某 ', 金额: 100, from_raw: '张某' },
+      { 姓名: '', 无关: 'x', person: '王某' },
+    ])).toEqual(['张某', '李某', '王某']) // 码元序：张 U+5F20 < 李 U+674E < 王 U+738B
+    expect(entityCandidates([{ 金额: 1 }])).toEqual([])
+    expect(entityCandidates(undefined)).toEqual([])
+  })
+
+  it('assembleVerifyText：实体/维度/核查点/渠道全矩阵（无前缀不输出冒号）', () => {
+    // 全量（function 渠道）
+    expect(assembleVerifyText({
+      entity: '张某', dimension: '资金', point: '整数资金是否对公往来',
+      channel: 'function',
+    })).toBe('对「张某」开展资金维度核查：整数资金是否对公往来（渠道：库内可复跑）')
+    // 仅核查点：不输出前导冒号
+    expect(assembleVerifyText({ point: '整数资金是否对公往来', channel: 'function' }))
+      .toBe('整数资金是否对公往来（渠道：库内可复跑）')
+    // 外部调取：对象+材料 / 仅对象 / 仅材料 / 均缺
+    expect(assembleVerifyText({
+      entity: '张某', point: '底档', channel: 'external',
+      extTarget: '住建局招标办', extMaterial: '招投标底档',
+    })).toBe('对「张某」：底档（渠道：外部调取·向住建局招标办调取招投标底档）')
+    expect(assembleVerifyText({ channel: 'external', extTarget: '住建局招标办' }))
+      .toBe('（渠道：外部调取·向住建局招标办）')
+    expect(assembleVerifyText({ channel: 'external', extMaterial: '底档' }))
+      .toBe('（渠道：外部调取·调取底档）')
+    expect(assembleVerifyText({ channel: 'external' })).toBe('（渠道：外部调取）')
+    // 全空兜底
+    expect(assembleVerifyText({ channel: 'function' })).toBe('（渠道：库内可复跑）')
+  })
+})
+
+describe('REQ-V-018 结构化构造器渲染与链路（AC4/5）', () => {
+  it('sourceRows 缺省：构造器不渲染，回落纯手填（textarea 仍在）', async () => {
+    mountWith(pageOf([]))
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="vw-ctor"]').exists()).toBe(false)
+    expect(wrapper!.findAll('textarea')).toHaveLength(1)
+  })
+
+  it('sourceRows 有候选：构造器渲染；拼装 → textarea 预填 → 提交只发 text', async () => {
+    mountWith(pageOf([]), {
+      sourceRows: [{ 人: '张某' }, { 金额: 1 }],
+    })
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="vw-ctor"]').exists()).toBe(true)
+
+    // 核查点（NInput → 原生 input）+ 默认渠道 function → 拼装
+    await wrapper!.find('[data-testid="vw-ctor-point"] input')
+      .setValue('窗口期整数资金是否为对公工程往来')
+    await wrapper!.find('[data-testid="vw-ctor-assemble"]').trigger('click')
+    expect((wrapper!.find('textarea').element as HTMLTextAreaElement).value)
+      .toBe('窗口期整数资金是否为对公工程往来（渠道：库内可复跑）')
+
+    // 改一改再提交：emit 只携带最终 text
+    await wrapper!.find('textarea')
+      .setValue('对「张某」核查窗口期整数资金是否为对公工程往来')
+    const addBtn = wrapper!.findAll('button')
+      .find((b) => b.text().includes('添加核查项'))!
+    await addBtn.trigger('click')
+    expect(wrapper!.emitted('add')![0][0]).toEqual({
+      text: '对「张某」核查窗口期整数资金是否为对公工程往来',
+    })
+  })
+
+  it('渠道切外部调取：目标/材料输入框出现，拼装文本带外部渠道段', async () => {
+    mountWith(pageOf([]), { sourceRows: [{ 人: '张某' }] })
+    await flushPromises()
+    // 默认 function：外部输入框不渲染
+    expect(wrapper!.find('[data-testid="vw-ctor-target"]').exists()).toBe(false)
+
+    await wrapper!.find('input[type="radio"][value="external"]').setValue()
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="vw-ctor-target"]').exists()).toBe(true)
+    await wrapper!.find('[data-testid="vw-ctor-target"] input').setValue('住建局招标办')
+    await wrapper!.find('[data-testid="vw-ctor-material"] input').setValue('招投标底档')
+    await wrapper!.find('[data-testid="vw-ctor-point"] input').setValue('招投标底档联签单')
+    await wrapper!.find('[data-testid="vw-ctor-assemble"]').trigger('click')
+    expect((wrapper!.find('textarea').element as HTMLTextAreaElement).value)
+      .toBe('招投标底档联签单（渠道：外部调取·向住建局招标办调取招投标底档）')
+  })
+
+  it('degraded=true：构造器全部控件禁用', async () => {
+    mountWith(pageOf([]), {
+      degraded: true,
+      sourceRows: [{ 人: '张某' }],
+    })
+    await flushPromises()
+    for (const sel of ['vw-ctor-point', 'vw-ctor-target', 'vw-ctor-material']) {
+      const el = wrapper!.find(`[data-testid="${sel}"] input`)
+      if (el.exists()) expect((el.element as HTMLInputElement).disabled).toBe(true)
+    }
+    expect((wrapper!.find('[data-testid="vw-ctor-assemble"]').element as HTMLButtonElement)
+      .disabled).toBe(true)
+  })
+})
+
+describe('REQ-V-018 采纳后路由按钮（AC6/D2 禁用占位）', () => {
+  const ADOPTED_FN = item({
+    item_id: 'vi_af', kind: 'suggested', origin: 'suggested',
+    status: '待核查', text: '复跑时间窗核查',
+    channel: 'function', ref_function: 'time_window_collision',
+  })
+  const ADOPTED_EXT = item({
+    item_id: 'vi_ae', kind: 'suggested', origin: 'suggested',
+    status: '核查中', text: '调取招投标底档',
+    channel: 'external',
+    external: { target: '住建局招标办', material: '招投标底档' },
+  })
+
+  it('建议态无路由按钮；采纳后 function 项显示运行按钮（禁用 + tooltip 预填）', async () => {
+    mountWith(pageOf([S1, ADOPTED_FN]))
+    await flushPromises()
+    const rows = wrapper!.findAll('.vw-item')
+    // S1（建议态）：仅 采纳/忽略，无路由按钮
+    expect(rows[0].findAll('.vw-route-btn')).toHaveLength(0)
+    // ADOPTED_FN：function 渠道路由按钮
+    const btn = rows[1].find('[data-testid="vw-route-function"]')
+    expect(btn.exists()).toBe(true)
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    expect(btn.attributes('title')).toContain('time_window_collision')
+    expect(btn.attributes('title')).toContain('后续批次')
+    expect(rows[1].find('[data-testid="vw-route-external"]').exists()).toBe(false)
+  })
+
+  it('external 采纳项：转调取台账按钮禁用 + tooltip 带 target；行内徽标预填 target/material', async () => {
+    mountWith(pageOf([ADOPTED_EXT]))
+    await flushPromises()
+    const btn = wrapper!.find('[data-testid="vw-route-external"]')
+    expect(btn.exists()).toBe(true)
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    expect(btn.attributes('title')).toContain('住建局招标办')
+    expect(btn.attributes('title')).toContain('后续批次')
+    // AC6 预填可见：行内外部调取徽标带 target 与 material
+    expect(wrapper!.text()).toContain('住建局招标办')
+    expect(wrapper!.text()).toContain('招投标底档')
+    expect(wrapper!.find('[data-testid="vw-route-function"]').exists()).toBe(false)
+  })
+
+  it('已结态（已证实）不再显示路由按钮', async () => {
+    mountWith(pageOf([item({
+      item_id: 'vi_done', status: '已证实', conclusion: '证据确凿',
+      channel: 'function', ref_function: 'time_window_collision',
+    })]))
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="vw-route-function"]').exists()).toBe(false)
   })
 })

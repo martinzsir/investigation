@@ -30,9 +30,12 @@ REQ-V-002 核查项惰性供给（读面组装；纯函数，不自己开库、�
 """
 from __future__ import annotations
 
+import logging
+import re
+from collections import Counter
 from typing import Any
 
-from core.ontology_loader import load_pack
+from core.ontology_loader import load_pack, load_verify_playbooks
 
 #: pending 卡 id 前缀（evidence_builder 产出约定）→ 核查项 kind。
 #: r（规则判据留痕）不在表中 → 不成项（REQ-V-002 AC6）。
@@ -140,3 +143,148 @@ def provision_for_clue(raw_clue: dict[str, Any], *,
         raw_clue=raw_for_view, conn=None, pack_id=pack_id,
         base_dir=base_dir, access=access)
     return provision_from_evidence(evidence)
+
+
+# ----------------------------------------------------------------------
+# REQ-V-018：核查手册建议项确定性渲染
+# ----------------------------------------------------------------------
+logger = logging.getLogger(__name__)
+
+_HYP_RE = re.compile(r"H\d+")
+#: 金额列候选（首个存在的列生效；demoF R6=金额，合成行集兼容 amount）
+_AMOUNT_COLUMNS = ("金额", "amount")
+
+
+def _assumptions_of(raw_for_view: dict[str, Any],
+                    evidence: list[dict[str, Any]] | None) -> set[str]:
+    """有效假设并集：detail/raw 的 assumption_chain ∪ 待核实 h 卡文本中的 H\\d+。
+
+    h 卡文本由 evidence_builder 逐字产出（`待验证假设：H1（…）`），此处只做
+    正则解析、不二次跑关键词匹配（与三栏同源，REQ-V-018 步骤 3）。
+    """
+    hyps: set[str] = set()
+    for src in ((raw_for_view or {}).get("detail") or {},
+                raw_for_view or {}):
+        for v in (src.get("assumption_chain") or []):
+            s = str(v)
+            if _HYP_RE.fullmatch(s):
+                hyps.add(s)
+    for ev in evidence or []:
+        if (ev.get("kind") == "pending"
+                and str(ev.get("id") or "").startswith("h")):
+            hyps.update(_HYP_RE.findall(ev.get("text") or ""))
+    return hyps
+
+
+def _subject_stats(raw_for_view: dict[str, Any], rule_id: str, *,
+                   pack_id: str, base_dir=None) -> tuple[str, int] | None:
+    """槽位统计：行集按主体列过滤计数 → (最多主体, 计数)；无有效主体 → None。
+
+    过滤口径（可声明复现，D1=8）：
+      - 主体列（rule.subject_column）值非空字符串、不含
+        rule.params.exclude_org_suffix（R6="公司"，与检测 SQL NOT LIKE 同口径）；
+      - 金额列（金额/amount，首个存在的列生效）可解析为数值且 > 0 且
+        % round_unit == 0（round_unit 取 rule.params，缺省 1）；
+      - 窗口判据由行集本身保证（行集即检测函数 ±20 天产物），不再另造阈值；
+      - 并列取名称排序首者（确定性，D1）。
+    """
+    rule = load_pack(pack_id, base_dir=base_dir).rules.get(rule_id)
+    if rule is None or not rule.subject_column:
+        return None
+    params = rule.params or {}
+    try:
+        round_unit = int(params.get("round_unit", 1))
+    except (TypeError, ValueError):
+        round_unit = 1
+    exclude_suffix = str(params.get("exclude_org_suffix", "") or "")
+
+    counter: Counter[str] = Counter()
+    for r in raw_for_view.get("source_rows") or []:
+        if not isinstance(r, dict):
+            continue
+        subj = r.get(rule.subject_column)
+        if not isinstance(subj, str) or not subj.strip():
+            continue
+        if exclude_suffix and exclude_suffix in subj:
+            continue
+        ok = True
+        for col in _AMOUNT_COLUMNS:
+            if col not in r:
+                continue
+            try:
+                amt = float(r[col])
+            except (TypeError, ValueError):
+                ok = False
+                break
+            if amt <= 0 or round_unit <= 0 or amt % round_unit != 0:
+                ok = False
+            break
+        if ok:
+            counter[subj.strip()] += 1
+    if not counter:
+        return None
+    # 最多者；并列取名称排序首者（(-n, s) 字典序最小）
+    top = min((-n, s) for s, n in counter.items())
+    return top[1], -top[0]
+
+
+def render_suggested(raw_for_view: dict[str, Any],
+                     evidence: list[dict[str, Any]] | None, *,
+                     pack_id: str = "default",
+                     base_dir=None) -> tuple[list[dict[str, Any]],
+                                             list[dict[str, str]]]:
+    """核查手册建议项渲染（纯函数：不写库、不回写 artifact，AC7）。
+
+    匹配口径：playbook.match.rule_id == detail.rule_id（合并线索经
+    backfill_rule_fields 回填后），且（playbook 未声明 assumption，
+    或与有效假设并集有交集）。fact/r 卡永不成为建议项（AC7）。
+
+    返回 (items, skipped)：
+      items=[{kind:'suggested', text, origin:'suggested', status:'建议',
+              channel, ref_function, external?, falsification}]，
+      item 稳定键由调用方 upsert_verify_items 按
+      verify_item_key(clue_id, 'suggested', text) 生成（ADR-V-4）；
+      skipped=[{playbook_id, reason}]（调用方留痕——读面无 run handle，
+      不写 run_diagnostic，D3）。
+    """
+    det = (raw_for_view or {}).get("detail") or {}
+    rule_id = det.get("rule_id")
+    if not rule_id:
+        return [], []
+    playbooks = [pb for pb in load_verify_playbooks(pack_id, base_dir)
+                 if pb["rule_id"] == rule_id]
+    if not playbooks:
+        return [], []
+
+    hyps = _assumptions_of(raw_for_view, evidence)
+    items: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    stats: tuple[str, int] | None = None
+    stats_done = False
+    for pb in playbooks:
+        # 假设门：playbook 未约束或与有效集有交集才命中（不命中=正常筛选，非 skip）
+        if pb["assumptions"] and not (hyps & set(pb["assumptions"])):
+            continue
+        text = pb["text"]
+        if "{subject}" in text or "{project_count}" in text:
+            if not stats_done:
+                stats = _subject_stats(raw_for_view, rule_id,
+                                       pack_id=pack_id, base_dir=base_dir)
+                stats_done = True
+            if stats is None:
+                skipped.append({"playbook_id": pb["id"],
+                                "reason": "过滤后无有效主体"})
+                continue
+            text = (text.replace("{subject}", stats[0])
+                        .replace("{project_count}", str(stats[1])))
+        item: dict[str, Any] = {
+            "kind": "suggested", "text": text,
+            "origin": "suggested", "status": "建议",
+            "channel": pb["channel"],
+            "ref_function": pb["function"] or "",
+            "falsification": pb["falsification"],
+        }
+        if pb["channel"] == "external" and pb.get("external"):
+            item["external"] = pb["external"]
+        items.append(item)
+    return items, skipped

@@ -882,6 +882,8 @@ class VerifyProvisionViewTest(unittest.TestCase):
         self.assertFalse((self.case_dir / "state.sqlite").exists())
 
     # ---- AC5：demoF v8 合并线索读面回归（2 个 auto 项 + item_id 锁定）----
+    # REQ-V-018：R6 线索同批供给 3 个手册建议项（function×2 + external×1），
+    # 状态展示序 auto（待核查）在前、建议垫后（list_verify_items 状态序+rowid）。
     def test_detail_demof_v8_merged_regression(self):
         art_dir = self.case_dir / "artifacts"
         art_dir.mkdir(parents=True)
@@ -893,11 +895,31 @@ class VerifyProvisionViewTest(unittest.TestCase):
                 state_map={}, access=self.access, pack_id="default",
                 base_dir=DEMOF_ONTO_BASE, state_store=st)
         items = data["verify"]["items"]
+        auto, sugg = items[:2], items[2:]
         self.assertEqual(
-            [(i["kind"], i["item_id"]) for i in items],
+            [(i["kind"], i["item_id"]) for i in auto],
             [("inference", "vi_d0577e14036a1c2e"),
              ("pending_hypothesis", "vi_6a7a9feea147f413")])
+        # 3 个建议项：声明序 function 复跑/补查 + external 调档；槽位已渲染
+        self.assertEqual(len(sugg), 3)
+        self.assertEqual([i["kind"] for i in sugg], ["suggested"] * 3)
+        self.assertEqual([i["origin"] for i in sugg], ["suggested"] * 3)
+        self.assertEqual([i["status"] for i in sugg], ["建议"] * 3)
+        self.assertEqual([i["channel"] for i in sugg],
+                         ["function", "function", "external"])
+        self.assertEqual([i["ref_function"] for i in sugg],
+                         ["time_window_collision", "call_frequency_spike", ""])
+        self.assertIn("张卫国", sugg[0]["text"])
+        self.assertIn("8", sugg[0]["text"])  # D1 裁决 project_count=8
+        self.assertEqual(sugg[2]["external"]["target"], "住建局招标办")
+        # 建议项稳定键锁定（vi_ + sha1(clue|suggested|text)[:16]）
+        for i in sugg:
+            self.assertEqual(
+                i["item_id"],
+                "vi_" + StateStore.verify_item_key(CLUE, "suggested",
+                                                   i["text"]))
         self.assertEqual(data["verify"]["progress"]["pending"], 2)
+        self.assertEqual(data["verify"]["progress"]["suggested"], 3)
         # 三栏回显：回填后推断/待核实出现；r 卡只留痕、不成项
         ekinds = [e["kind"] for e in data["evidence"]]
         self.assertIn("inference", ekinds)

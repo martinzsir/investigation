@@ -81,6 +81,12 @@ ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
 RULE_TEXT_MIN = 30
 _DERIVE_RULES = {"reverse_reach"}
 ALLOWED_OVERLAP_RESOLUTION = {None, "drop_if_primary_hit"}
+# REQ-V-018：核查手册建议项（verify_playbooks.json）声明白名单
+ALLOWED_PLAYBOOK_CHANNELS = {"function", "external"}
+ALLOWED_PLAYBOOK_SLOTS = {"subject", "project_count"}
+_PLAYBOOK_SLOT_RE = re.compile(r"\{(\w+)\}")
+_PLAYBOOK_ASSUMPTION_RE = re.compile(r"H\d+")
+_PLAYBOOK_CACHE: dict[tuple, list[dict]] = {}
 
 
 @dataclass
@@ -139,6 +145,10 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
                         allowed_jian=allowed_jian)
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
+    # REQ-V-018：核查手册建议项装载校验（缺失回落 []，零破坏旧包；
+    # 坏手册在此硬失败——build_ontology / RE-SCAN 装载环节即暴露，AC5）。
+    # 结果不挂 OntologyPack、不参与语义层编译；渲染侧经本函数自取（带缓存）。
+    load_verify_playbooks(pack, base_dir)
     # REQ-D-007：案件级清洗词表（clean_rules.json，缺失回落内置基线词表）。
     clean_rules = _load_clean_rules(root)
     result = OntologyPack(name=pack, objects=objects, links=links,
@@ -502,6 +512,146 @@ def load_enum_space(pack: str = "default", base_dir: Path | None = None) -> dict
             raise ValueError(
                 f"enum_space.json space.{k} 枚举值必须是非空字符串（REQ-D-003 AC-3）")
     return space
+
+
+def load_verify_playbooks(pack: str = "default",
+                          base_dir: Path | None = None) -> list[dict]:
+    """REQ-V-018：核查手册建议项装载（verify_playbooks.json）。
+
+    文件缺失 → []（旧案件包/精简包零破坏）；存在即强校验（硬失败，AC5）：
+      schema_version==1、playbooks 非空、id 非空且包内唯一、
+      channel ∈ {function, external}、match.rule_id 必须在 rules.json 声明、
+      channel=function 时 function/fallback_function 必须在 functions.json 声明、
+      channel=external 时 external.target/material 非空、
+      text 槽位仅允许 {subject}/{project_count}、
+      match.assumption 为 H\\d+ 字符串或非空字符串数组。
+
+    与 load_pack 同一指纹缓存（_pack_fingerprint 覆盖包目录全部 *.json，
+    手册改动自动失效）；结果为归一化 dict 列表（assumption 归一为
+    assumptions 数组），不挂 OntologyPack、不参与语义层编译。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "verify_playbooks.json"
+    if not p.exists():
+        return []
+    fp = _pack_fingerprint(pack, base_dir)
+    cache_key = (pack, str(base_dir) if base_dir else "", fp)
+    cached = _PLAYBOOK_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 配置/知识文件（非八段声明）：裸读，不走 _read_json 的 v2 门禁；
+    # 自有 schema_version=1 在下方校验（与 data_elements.json 等配置文件同例）。
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"verify_playbooks.json JSON 非法：{e}") from e
+    if data.get("schema_version") != 1:
+        raise ValueError(
+            f"verify_playbooks.json schema_version 必须为 1：{p}")
+    playbooks = data.get("playbooks")
+    if not isinstance(playbooks, list) or not playbooks:
+        raise ValueError("verify_playbooks.json playbooks 必须为非空数组")
+
+    # 交叉引用名集（raw 解析：仅做名字存在性；完整结构校验由
+    # _load_rules/_load_functions 在 load_pack 内负责）。裸读不施 v2 门禁
+    # （临时/精简包的 rules/functions 可能不完整；名字缺引用即 fail-closed）。
+    def _raw_names(path: Path, key: str, field: str) -> set:
+        if not path.exists():
+            return set()
+        try:
+            d = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{path.name} JSON 非法：{e}") from e
+        return {r.get(field) for r in d.get(key, [])}
+
+    rule_ids = _raw_names(root / "rules.json", "rules", "id")
+    fn_names = _raw_names(root / "functions.json", "functions", "name")
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, pb in enumerate(playbooks):
+        ctx = f"verify_playbooks.json playbooks[{i}]"
+        pb_id = pb.get("id")
+        if not pb_id or not isinstance(pb_id, str):
+            raise ValueError(f"{ctx} 缺非空字符串 id")
+        if pb_id in seen:
+            raise ValueError(f"verify_playbooks.json playbook id 重复：{pb_id}")
+        seen.add(pb_id)
+
+        channel = pb.get("channel")
+        if channel not in ALLOWED_PLAYBOOK_CHANNELS:
+            raise ValueError(
+                f"{ctx}（{pb_id}）channel 必须为 function|external：{channel!r}")
+
+        match = pb.get("match") or {}
+        rule_id = match.get("rule_id")
+        if not rule_id:
+            raise ValueError(f"{ctx}（{pb_id}）match.rule_id 必填")
+        if rule_id not in rule_ids:
+            raise ValueError(
+                f"{ctx}（{pb_id}）match.rule_id 未在 rules.json 声明：{rule_id}")
+        assumption = match.get("assumption")
+        if assumption is None:
+            assumptions: list[str] = []
+        else:
+            assumptions = ([assumption] if isinstance(assumption, str)
+                           else list(assumption))
+            if (not assumptions
+                    or not all(isinstance(v, str)
+                               and _PLAYBOOK_ASSUMPTION_RE.fullmatch(v)
+                               for v in assumptions)):
+                raise ValueError(
+                    f"{ctx}（{pb_id}）match.assumption 必须为 H\\d+ 字符串"
+                    "或非空字符串数组")
+
+        if channel == "function":
+            fn = pb.get("function")
+            if not fn:
+                raise ValueError(
+                    f"{ctx}（{pb_id}）channel=function 必须声明 function")
+            if fn not in fn_names:
+                raise ValueError(
+                    f"{ctx}（{pb_id}）function 未在 functions.json 声明：{fn}")
+            fb = pb.get("fallback_function")
+            if fb and fb not in fn_names:
+                raise ValueError(
+                    f"{ctx}（{pb_id}）fallback_function 未在 functions.json "
+                    f"声明：{fb}")
+        else:
+            ext = pb.get("external") or {}
+            if not isinstance(ext.get("target"), str) or not ext["target"].strip():
+                raise ValueError(
+                    f"{ctx}（{pb_id}）channel=external 必须声明非空 external.target")
+            if not isinstance(ext.get("material"), str) \
+                    or not ext["material"].strip():
+                raise ValueError(
+                    f"{ctx}（{pb_id}）channel=external 必须声明非空 "
+                    "external.material")
+
+        text = pb.get("text")
+        if not text or not isinstance(text, str):
+            raise ValueError(f"{ctx}（{pb_id}）text 必填且为字符串")
+        bad_slots = (set(_PLAYBOOK_SLOT_RE.findall(text))
+                     - ALLOWED_PLAYBOOK_SLOTS)
+        if bad_slots:
+            raise ValueError(
+                f"{ctx}（{pb_id}）text 槽位越界（白名单 subject/project_count）："
+                f"{sorted(bad_slots)}")
+
+        out.append({
+            "id": pb_id,
+            "channel": channel,
+            "rule_id": rule_id,
+            "assumptions": assumptions,
+            "function": pb.get("function", "") or "",
+            "fallback_function": pb.get("fallback_function", "") or "",
+            "external": pb.get("external"),
+            "text": text,
+            "falsification": pb.get("falsification", "") or "",
+        })
+    _PLAYBOOK_CACHE[cache_key] = out
+    return out
 
 
 def derive_code_tables(elements: dict) -> dict:
