@@ -37,10 +37,16 @@ class TestCaseLifecycleAndSnapshot(unittest.TestCase):
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        # 用临时 ontology 根（复制 default），便于验证"源包升级不影响快照"
+        # 用临时 ontology 根（复制 default + _shared 全域层），
+        # 便于验证"源包升级不影响快照"。
+        # 注：default/objects.json 引用 DE_IDCARD 等全域数据元，
+        # 必须同时复制 _shared，否则 load_pack 因数据元未注册硬失败。
         self.onto_root = self.tmp / "ontology"
         shutil.copytree(ROOT / "ontology" / "default",
                         self.onto_root / "default")
+        shared_src = ROOT / "ontology" / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, self.onto_root / "_shared")
         self.repo = SqliteMetaRepo(self.tmp / "meta.db")
         self.factory = StoreFactory(cases_root=self.tmp / "cases")
         self.svc = CaseService(self.repo, self.factory,

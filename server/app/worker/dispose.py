@@ -87,6 +87,8 @@ def handle_dispose(task, *, repo, factory, **_: Any) -> dict[str, Any]:
         except ValueError as e:
             raise TaskExecError("ACTION_REJECTED", str(e))
         board.persist()  # clue_disposal_status 落 state（UPSERT 幂等）
+        if action == "confirm":
+            _append_confirm_summary(state, sink, clue_id, operator, ver)
         return {"action": action, "clue_id": clue_id,
                 "status": clue.status, "version": ver}
     finally:
@@ -117,6 +119,24 @@ def _enforce_verify_gate(state: StateStore, action: str,
         "VERIFY_PENDING",
         f"尚有 {pending} 项核查未结：{preview}…"
         "（先逐项得出结论，或标记无法核实）")
+
+
+def _append_confirm_summary(state: StateStore, sink: StateSink,
+                            clue_id: str, operator: str, ver: int) -> None:
+    """REQ-V-015：固证成功后核查结论结构化快照落链。
+
+    门禁已保证待核查/核查中=0（建议/已忽略是未采纳旁路态，随快照如实
+    留痕）；items 是当刻 state 的**副本**（压缩为 text/status/conclusion），
+    事后重开核查项不篡改历史事件（哈希链不可变性自然保证）；total=0
+    也落一条 items=[]——标记"固证时无未结核查"。
+    """
+    items = [{"text": it.get("text", ""),
+              "status": it.get("status", ""),
+              "conclusion": it.get("conclusion", "")}
+             for it in state.list_verify_items(clue_id)]
+    sink.audit_append({"event": "confirm_summary", "clue_id": clue_id,
+                       "items": items, "operator": operator,
+                       "ontology_version": f"v{ver}"})
 
 
 def _apply_action(board: DisposalBoard, action: str, clue_id: str,

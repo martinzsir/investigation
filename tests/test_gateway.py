@@ -235,7 +235,8 @@ class EntityLinkExplorerTests(unittest.TestCase):
         got = self.ex.connectable_props()
         self.assertEqual(got["person"], ["raw_name", "id_card"])
         self.assertEqual(got["org"], ["raw_name", "legal_rep", "relation"])  # status 排除
-        self.assertEqual(got["transaction"], ["from_raw", "to_raw"])
+        self.assertEqual(got["transaction"],
+                         ["from_raw", "to_raw", "currency"])
         self.assertNotIn("clue", got)        # 全列 metadata → 不出现
         self.assertNotIn("decision", got)    # runtime → 不出现
 

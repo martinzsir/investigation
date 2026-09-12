@@ -215,6 +215,10 @@ GROUPS = {
     "verifyitem":   ("REQ-V-001~004 核查工作区 state 三表/CRUD/稳定键/状态机/Worker 写通道", [sys.executable, "-m", "unittest", "tests.test_verify_item"]),
     "verifyapi":    ("REQ-V-005 核查项 API（读同步/写 202 入队/幂等/跨租户）+ REQ-V-008 固证/排除核查门禁", [sys.executable, "-m", "unittest", "tests.test_verify_api"]),
     "verifysuggest": ("REQ-V-018 核查手册建议项（playbook 装载硬失败/确定性渲染/采纳路由/agent 拒绝）", [sys.executable, "-m", "unittest", "tests.test_verify_suggest"]),
+    "evidencefile": ("REQ-V-009 证据材料存储（文件名消毒/sha256/20MB 上限/元数据 CRUD/挂接）", [sys.executable, "-m", "unittest", "tests.test_evidence_file"]),
+    "verifyreq":    ("REQ-V-012 调取清单台账（verify_request CRUD/状态机/超期读面派生）", [sys.executable, "-m", "unittest", "tests.test_verify_request"]),
+    "verifydraft":  ("REQ-V-019 LLM 核查方向草案（能力闸/端点闸/脱敏/护栏/幂等/影子/审批桥接）", [sys.executable, "-m", "unittest", "tests.test_verify_draft"]),
+    "verifyreplay": ("REQ-V-016 核查方向→只读 Function 映射（playbook 唯一数据源/关键词兜底/fail-closed）+ REQ-V-017 一键复跑回填（replay_json 列/op=replay/审计留痕）", [sys.executable, "-m", "unittest", "tests.test_verify_replay"]),
 }
 
 

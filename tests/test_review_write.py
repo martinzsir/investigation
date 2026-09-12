@@ -271,8 +271,8 @@ class ReviewWriteTests(unittest.TestCase):
         r = self._submit(kind="rule_draft", candidate=candidate)
         self.assertFalse(r["ok"])
         self.assertIn("validation_errors", r)
-        self.assertIsInstance(r["validation_errors"], str)
-        self.assertIn("AC2", r["validation_errors"])
+        self.assertIsInstance(r["validation_errors"], list)
+        self.assertTrue(any("AC2" in e for e in r["validation_errors"]))
         self.assertEqual(self._proposal_count(), 0)
 
     # ---- action.status：pp- 路由 ----

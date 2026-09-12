@@ -181,6 +181,11 @@ class TestREQ046ObjectViews(unittest.TestCase):
             dst = tmpdir / "bad"
             import shutil
             shutil.copytree(src, dst)
+            # 复制 _shared 全域层：default/objects.json 引用 DE_IDCARD 等
+            # 全域数据元，缺 _shared 则 load_pack 因数据元未注册硬失败。
+            shared_src = ROOT / "ontology" / "_shared"
+            if shared_src.is_dir():
+                shutil.copytree(shared_src, tmpdir / "_shared")
             vp = dst / "views.json"
             data = json.loads(vp.read_text(encoding="utf-8"))
             data["schema_version"] = 1  # 改坏
@@ -196,6 +201,11 @@ class TestREQ046ObjectViews(unittest.TestCase):
             dst = tmpdir / "bad"
             import shutil
             shutil.copytree(src, dst)
+            # 复制 _shared 全域层：default/objects.json 引用 DE_IDCARD 等
+            # 全域数据元，缺 _shared 则 load_pack 因数据元未注册硬失败。
+            shared_src = ROOT / "ontology" / "_shared"
+            if shared_src.is_dir():
+                shutil.copytree(shared_src, tmpdir / "_shared")
             vp = dst / "views.json"
             data = json.loads(vp.read_text(encoding="utf-8"))
             data["views"][0]["base_object"] = "nonexistent_obj"
@@ -211,6 +221,11 @@ class TestREQ046ObjectViews(unittest.TestCase):
             dst = tmpdir / "bad"
             import shutil
             shutil.copytree(src, dst)
+            # 复制 _shared 全域层：default/objects.json 引用 DE_IDCARD 等
+            # 全域数据元，缺 _shared 则 load_pack 因数据元未注册硬失败。
+            shared_src = ROOT / "ontology" / "_shared"
+            if shared_src.is_dir():
+                shutil.copytree(shared_src, tmpdir / "_shared")
             vp = dst / "views.json"
             data = json.loads(vp.read_text(encoding="utf-8"))
             data["views"][0]["properties"] = ["nonexistent_prop"]
@@ -226,6 +241,11 @@ class TestREQ046ObjectViews(unittest.TestCase):
             dst = tmpdir / "bad"
             import shutil
             shutil.copytree(src, dst)
+            # 复制 _shared 全域层：default/objects.json 引用 DE_IDCARD 等
+            # 全域数据元，缺 _shared 则 load_pack 因数据元未注册硬失败。
+            shared_src = ROOT / "ontology" / "_shared"
+            if shared_src.is_dir():
+                shutil.copytree(shared_src, tmpdir / "_shared")
             vp = dst / "views.json"
             data = json.loads(vp.read_text(encoding="utf-8"))
             data["views"][0]["roles"] = ["未知角色"]

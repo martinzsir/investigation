@@ -232,7 +232,8 @@ class TestPersonIdentityOptional(unittest.TestCase):
     def test_missing_table_skipped(self):
         conn, stats = _build_conn()   # 7 张基础表，无人员信息
         self.assertIn("obj_person_identity(源表缺失,optional)", stats["skipped"])
-        self.assertGreater(stats["objects"].get("transaction", 0), 0)
+        # 银行流水空表 → transaction 物化 0 行，但对象已建表（build 未中断）
+        self.assertIn("transaction", stats["objects"])
 
 
 class TestIdCardMasking(unittest.TestCase):

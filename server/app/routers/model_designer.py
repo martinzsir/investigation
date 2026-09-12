@@ -64,7 +64,15 @@ def _check_object_fields(obj: dict) -> None:
         raise APIError(ERR_VALIDATION, f"对象 {name} properties 必须是对象",
                        400)
     for prop, vtype in props.items():
-        if vtype not in ALLOWED_VALUE_TYPES:
+        # 属性值可为字符串值类型，或映射 {"type":..., "data_element":...}
+        # （与 ontology_loader._load_objects 同口径，REQ-D-013/016）
+        if isinstance(vtype, dict):
+            base = vtype.get("type")
+            if base is not None and base not in ALLOWED_VALUE_TYPES:
+                raise APIError(ERR_VALIDATION,
+                               f"对象 {name}.{prop} 值类型 {base!r} 不在支持集合 "
+                               f"{sorted(ALLOWED_VALUE_TYPES)}", 400)
+        elif vtype not in ALLOWED_VALUE_TYPES:
             raise APIError(ERR_VALIDATION,
                            f"对象 {name}.{prop} 值类型 {vtype!r} 不在支持集合 "
                            f"{sorted(ALLOWED_VALUE_TYPES)}", 400)
@@ -92,12 +100,16 @@ def _check_link_fields(link: dict, declared_objects: set[str]) -> None:
                        f"链接 {name} 的间类仅可选 {FIVE_JIAN}", 400)
 
 
-def _validate_in_temp(snap_dir: Path, pack_id: str, filename: str,
-                      data: dict) -> None:
+def _validate_in_temp(snap_dir: Path, pack_id: str, base_dir: Path,
+                      filename: str, data: dict) -> None:
     """临时副本整包过 load_pack，不合法抛异常（不落盘）。"""
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         atomic_write_json(tmp_root / pack_id / filename, data)
         load_pack(pack_id, base_dir=tmp_root)
 
@@ -119,7 +131,7 @@ def save_objects(case_id: str, body: ObjectsIn,
                  ctx: WebContext = Depends(get_ctx)):
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     for obj in body.objects:
         _check_object_fields(obj)
@@ -127,7 +139,7 @@ def save_objects(case_id: str, body: ObjectsIn,
     data = json.loads(path.read_text(encoding="utf-8"))
     data["objects"] = body.objects
     try:
-        _validate_in_temp(snap_dir, pack_id, "objects.json", data)
+        _validate_in_temp(snap_dir, pack_id, base_dir, "objects.json", data)
     except Exception as e:
         raise APIError(ERR_VALIDATION,
                        f"objects.json 校验失败，未落盘：{e}", 400)
@@ -158,7 +170,7 @@ def save_links(case_id: str, body: LinksIn,
                ctx: WebContext = Depends(get_ctx)):
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     obj_data = json.loads((snap_dir / "objects.json").read_text(
         encoding="utf-8"))
@@ -170,7 +182,7 @@ def save_links(case_id: str, body: LinksIn,
     data = json.loads(path.read_text(encoding="utf-8"))
     data["links"] = body.links
     try:
-        _validate_in_temp(snap_dir, pack_id, "links.json", data)
+        _validate_in_temp(snap_dir, pack_id, base_dir, "links.json", data)
     except Exception as e:
         raise APIError(ERR_VALIDATION,
                        f"links.json 校验失败，未落盘：{e}", 400)

@@ -301,10 +301,12 @@ def _tools() -> list[dict]:
         {
             "name": "review.submit_proposal",
             "description": (
-                "人审工作台写轨（REQ-021-write）：Agent 提交规则草案/参数草案/对齐复核/解释提案。"
-                "服务端执行注入清洗（白名单字段）+ 七项硬校验（函数白名单/参数类型/证据URI/禁写回/禁状态变更），"
-                "只创建 status=draft 的提案，永不自动生效、绝不改变线索状态；审批走人工 decide。"
-                "Agent 唯一写通道：agent 身份不得调用 clue_transition。"
+                "人审工作台写轨（REQ-021-write）：Agent 提交规则草案/参数草案/对齐复核/"
+                "解释/核查项建议/调取清单建议提案。服务端执行注入清洗（白名单字段）+ "
+                "硬校验（函数白名单/参数类型/证据URI/禁写回/禁状态变更/核查形状），"
+                "只创建 status=draft 的提案，永不自动生效、绝不改变线索状态；"
+                "审批走人工 decide，通过后由 server 生成对应核查任务（operator=审批人，"
+                "REQ-V-014）。Agent 唯一写通道：agent 身份不得调用 clue_transition。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -315,12 +317,16 @@ def _tools() -> list[dict]:
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["rule_draft", "parameter_draft", "alignment_review", "explanation"],
+                        "enum": ["rule_draft", "parameter_draft", "alignment_review",
+                                 "explanation", "verify_item", "verify_request"],
                         "description": "提案类型",
                     },
                     "candidate": {
                         "type": "object",
-                        "description": "提案候选体（字段受白名单清洗，越界字段丢弃并回告）",
+                        "description": (
+                            "提案候选体（字段受白名单清洗，越界字段丢弃并回告）。"
+                            "verify_item 必填 text/clue_id；verify_request 必填 target/material"
+                        ),
                     },
                     "case_id": {"type": "string", "description": "案件 ID，默认 default"},
                     "constraints": {"type": "object", "description": "约束（如 expires_at）"},
@@ -838,7 +844,8 @@ def tool_action_status(args: dict) -> dict:
 
 # Agent 代理实例标识：小写字母/数字开头，2-32 位
 _AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
-_PROPOSAL_KINDS = ("rule_draft", "parameter_draft", "alignment_review", "explanation")
+_PROPOSAL_KINDS = ("rule_draft", "parameter_draft", "alignment_review",
+                   "explanation", "verify_item", "verify_request")
 
 
 def tool_review_submit_proposal(args: dict) -> dict:
@@ -911,7 +918,7 @@ def tool_review_submit_proposal(args: dict) -> dict:
         ps = ProposalStore(store.conn)
         pid = ps.submit(envelope, actor=author)
     except ProposalValidationError as e:
-        return _redline({"ok": False, "error": "提案校验未通过", "validation_errors": e.args[0]})
+        return _redline({"ok": False, "error": "提案校验未通过", "validation_errors": e.errors})
     except PermissionError as e:
         return _redline({"ok": False, "error": str(e)})
     except Exception as e:

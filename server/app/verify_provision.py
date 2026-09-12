@@ -44,6 +44,57 @@ _PENDING_KIND_BY_PREFIX = {
     "h": "pending_hypothesis",
 }
 
+#: 聚合型技能：推断口径为表级覆盖度（Function COUNT），行集=表级汇总行。
+#: 双向盘点（zhi_ji_zhi_bi）等技能无确定性 COUNT 口径，不在此列。
+_AGGREGATE_SKILLS = frozenset({"yong_jian"})
+#: 表级汇总行口径标记（与 skills.registry_bootstrap.AGGREGATE_GRANULARITY 同值）
+_AGGREGATE_GRANULARITY = "表级汇总"
+
+
+def backfill_aggregate_rows(raw_clue: dict[str, Any],
+                            cross_rows: list[dict] | None) -> dict[str, Any]:
+    """方案 B：旧版聚合线索产物无行集时，按 Function 当前 COUNT 结果补
+    表级汇总行（只渲染、不回写 artifact；与 backfill_rule_fields 同纪律）。
+
+    cross_rows : jian_cross_level Function result["rows"]（调用方持只读
+                 连接执行后注入；本函数不开库）。
+    匹配口径（fail-safe，对不上原样返回 → evidence_builder 落 a 卡降级）：
+      - 仅处理 skill_id ∈ _AGGREGATE_SKILLS 且 source_rows 为空的线索；
+      - Function 行的「间」∈ jian_types，且命中明细 source ∈ detail.数据源。
+    """
+    if raw_clue.get("skill_id") not in _AGGREGATE_SKILLS:
+        return raw_clue
+    if raw_clue.get("source_rows"):
+        return raw_clue
+    det = raw_clue.get("detail") or {}
+    jian_types = set(str(j) for j in raw_clue.get("jian_types") or [])
+    declared = set(str(s) for s in det.get("数据源") or [])
+    for row in cross_rows or []:
+        if row.get("间") not in jian_types:
+            continue
+        details = row.get("命中明细")
+        if not isinstance(details, list):
+            continue
+        matched = [d for d in details
+                   if isinstance(d, dict) and d.get("table")
+                   and str(d.get("source") or "") in declared]
+        if not matched:
+            continue
+        new_rows = [{
+            "数据源": str(d.get("source") or ""),
+            "语义表": str(d.get("table") or ""),
+            "对象类型": str(d.get("obj_name") or ""),
+            "行数": int(d.get("n") or 0),
+            "粒度": _AGGREGATE_GRANULARITY,
+        } for d in matched]
+        new_detail = dict(det)
+        new_detail.setdefault("行集口径", _AGGREGATE_GRANULARITY)
+        new_raw = dict(raw_clue)
+        new_raw["detail"] = new_detail
+        new_raw["source_rows"] = new_rows
+        return new_raw
+    return raw_clue
+
 
 def backfill_rule_fields(raw_clue: dict[str, Any], *,
                          pack_id: str = "default",
@@ -77,7 +128,7 @@ def backfill_rule_fields(raw_clue: dict[str, Any], *,
         if rule.subject_column and rule.subject_column not in row_keys:
             continue
         candidates.append(rule)
-    if len(candidates) != 1:
+    if not candidates:
         return raw_clue
 
     rule = candidates[0]
@@ -128,17 +179,22 @@ def provision_from_evidence(
 
 def provision_for_clue(raw_clue: dict[str, Any], *,
                        pack_id: str = "default",
-                       base_dir=None, access=None) -> list[dict[str, str]]:
+                       base_dir=None, access=None,
+                       cross_rows: list[dict] | None = None
+                       ) -> list[dict[str, str]]:
     """线索 artifact raw → auto 核查项清单（backfill + build_evidence 组合入口）。
 
     供测试与其它读面复用；clues_view.assemble_detail 需要同时回显三栏证据时，
-    直接组合 backfill_rule_fields + build_evidence + provision_from_evidence，
-    保证证据响应与核查项同源且只构建一次。
+    直接组合 backfill_rule_fields + backfill_aggregate_rows + build_evidence
+    + provision_from_evidence，保证证据响应与核查项同源且只构建一次。
+
+    cross_rows：jian_cross_level Function rows（方案 B 聚合行集回填注入）。
     """
     from server.app.evidence_builder import build_evidence
 
     raw_for_view = backfill_rule_fields(
         raw_clue, pack_id=pack_id, base_dir=base_dir)
+    raw_for_view = backfill_aggregate_rows(raw_for_view, cross_rows)
     evidence = build_evidence(
         raw_clue=raw_for_view, conn=None, pack_id=pack_id,
         base_dir=base_dir, access=access)

@@ -20,7 +20,20 @@
           "name_property": {"type": "string"},
           "properties": {
             "type": "object",
-            "additionalProperties": {"enum": ["string", "integer", "decimal", "date", "boolean", "timestamp", "duration_days", "enum", "json"]}
+            "additionalProperties": {
+              "oneOf": [
+                {"enum": ["string", "integer", "decimal", "date", "boolean", "timestamp", "duration_days", "enum", "json"]},
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {"enum": ["string", "integer", "decimal", "date", "boolean", "timestamp", "duration_days", "enum", "json"]},
+                    "composite": {"type": "boolean"},
+                    "data_element": {"type": "string"}
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
           },
           "runtime": {"type": "boolean"}
         },

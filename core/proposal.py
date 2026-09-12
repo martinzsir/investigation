@@ -4,7 +4,8 @@ REQ-033 LLM 提案（Proposal）强类型校验与提案存储。
 
 提案是 LLM 产出的"只读建议信封"，边界如下：
   - 可承载：规则草案（rule_draft）、参数草案（parameter_draft）、
-    对齐复核（alignment_review）、解释（explanation）；
+    对齐复核（alignment_review）、解释（explanation）、
+    核查项建议（verify_item）、调取清单建议（verify_request，REQ-V-014）；
   - 七项硬校验（validate_proposal 返回错误列表，空=通过）：
     AC1 jsonschema 信封校验；
     AC2 candidate.function 必须在 load_pack(pack).functions 白名单；
@@ -37,8 +38,18 @@ from core.ontology_loader import load_pack
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "proposal.schema.json"
 
-KINDS = ("rule_draft", "parameter_draft", "alignment_review", "explanation")
+KINDS = ("rule_draft", "parameter_draft", "alignment_review", "explanation",
+         "verify_item", "verify_request")
 STATUSES = ("draft", "approved", "rejected", "expired")
+
+# REQ-V-014 核查类提案（verify_item/verify_request）candidate 字段白名单：
+# 提案是"只读建议信封"，候选字段全为标量 str；审批通过后由 server 桥接成
+# TASK_VERIFY 任务（operator=审批人），提案本身永不落库 state.sqlite。
+_VERIFY_ITEM_FIELDS = frozenset({"text", "kind", "clue_id"})
+_VERIFY_REQUEST_FIELDS = frozenset({
+    "target", "material", "legal_instrument", "handler",
+    "due_date", "note", "clue_id", "item_id"})
+_DUE_DATE_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # AC5：rule_draft 禁止的写回类字段名（递归键名扫描，小写精确匹配）
 _FORBIDDEN_WRITEBACK_KEYS = frozenset({
@@ -225,6 +236,10 @@ def validate_proposal(p: dict, pack: str = "default", conn=None) -> list[str]:
                     f"[AC6 禁状态变更] explanation 候选在 {path} 含状态变更指令值 "
                     f"{v[:40]!r}（立案/固证是人工专属动作）")
 
+    # ---- AC8：核查类提案形状（REQ-V-014）----
+    if kind in ("verify_item", "verify_request"):
+        errors.extend(_validate_verify_candidate(kind, cand))
+
     # ---- AC7：confidence 仅排序提示 ----
     for path, key, _v in _iter_keys(p, "$"):
         if str(key) == _CONFIDENCE_KEY:
@@ -235,6 +250,43 @@ def validate_proposal(p: dict, pack: str = "default", conn=None) -> list[str]:
                     f"[AC7 confidence] confidence 只允许出现在 _sort_hint（仅排序用），"
                     f"违规位置 {path}")
 
+    return errors
+
+
+def _validate_verify_candidate(kind: str, cand: dict) -> list[str]:
+    """AC8：核查类提案候选形状（字段白名单 + 必填 + 标量 str + 期限形状）。
+
+    verify_item：text/clue_id 必填；kind（核查项类别）可选；
+    verify_request：target/material 必填，其余登记字段可选；
+    due_date 若给必须 YYYY-MM-DD（与台账 API 同形状）。
+    """
+    errors: list[str] = []
+    allowed = (_VERIFY_ITEM_FIELDS if kind == "verify_item"
+               else _VERIFY_REQUEST_FIELDS)
+    required = (("text", "clue_id") if kind == "verify_item"
+                else ("target", "material"))
+    unknown = sorted(set(cand) - allowed - {"_sort_hint"})
+    if unknown:
+        errors.append(
+            f"[AC8 形状] {kind} 候选含白名单外字段 {unknown}"
+            f"（允许：{sorted(allowed)}）")
+    for name in required:
+        v = cand.get(name)
+        if not isinstance(v, str) or not v.strip():
+            errors.append(
+                f"[AC8 形状] {kind} 候选必须给非空字符串 {name!r}")
+    for name, v in cand.items():
+        if name == "_sort_hint" or name not in allowed:
+            continue
+        if not isinstance(v, str):
+            errors.append(
+                f"[AC8 形状] {kind} 候选字段 {name!r} 必须是标量字符串"
+                f"（收到 {type(v).__name__}）")
+    due = cand.get("due_date")
+    if isinstance(due, str) and due.strip() \
+            and not _DUE_DATE_SHAPE_RE.match(due.strip()):
+        errors.append(
+            f"[AC8 形状] due_date={due!r} 非法（应为 YYYY-MM-DD）")
     return errors
 
 

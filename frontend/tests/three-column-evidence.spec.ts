@@ -99,6 +99,29 @@ describe('REQ-V-007 AC-2 interactive 待核实卡联动', () => {
     expect(w.find('.ev-col--inference .ev-item--link').exists()).toBe(false)
   })
 
+  it('方案 A 聚合留痕卡（id 前缀 a）不可点击：无联动语义/脚注为静态标记/不 emit', async () => {
+    const items: EvidenceItem[] = [
+      ...ITEMS,
+      { id: 'aclue_x', kind: 'pending', text: '案件级聚合（无行级溯源）：举报材料' },
+    ]
+    const w = mount(ThreeColumnEvidence, {
+      props: { items, interactive: true },
+    })
+    const cards = pendingCards(w)
+    const agg = cards[2]
+    expect(agg.classes()).not.toContain('ev-item--link')
+    expect(agg.attributes('role')).toBeUndefined()
+    expect(agg.attributes('tabindex')).toBeUndefined()
+    expect(agg.find('[data-testid="ev-verify-badge"]').exists()).toBe(false)
+    expect(agg.find('.ev-verify-go--static').exists()).toBe(true)
+    expect(agg.find('.ev-verify-go--static').text()).toContain('聚合留痕')
+    await agg.trigger('click')
+    await agg.trigger('keydown.enter')
+    const emitted = w.emitted('verify')
+    // 前两张可交互卡均未点；聚合卡点击不产生 emit
+    expect(emitted).toBeUndefined()
+  })
+
   it('状态映射随 props 更新：采纳后状态变化驱动徽标切换', async () => {
     const w = mount(ThreeColumnEvidence, {
       props: {

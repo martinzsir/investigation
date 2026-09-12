@@ -15,11 +15,19 @@ skills/registry_bootstrap.py
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.registry import (
     DEFAULT_REGISTRY, SkillSpec, LineageClue, SkillRegistry, get_registry,
 )
+
+# 方案 B 行集口径：用间交叉是表级覆盖度判定（语义代理表非空即命中，
+# COUNT(*)），其推断的溯源粒度天然是表级而非行级。命中的每个数据源挂一行
+# 「表级汇总行」：确定性 Function 产物，可复跑、可审计，不伪造行级证据。
+AGGREGATE_GRANULARITY = "表级汇总"
+#: 旧版 Function 依据字符串 "举报材料→obj_tipoff(13行)" 解析回落
+_HIT_STR_RE = re.compile(r"^(.+?)→(\S+?)\((\d+)行\)$")
 
 
 # ----------------------------------------------------------------------
@@ -127,10 +135,47 @@ def _clue_from_qi_zheng(spec: SkillSpec, result: dict) -> list[LineageClue]:
     )]
 
 
+def _aggregate_rows_from_cross_row(row: dict) -> list[dict[str, Any]]:
+    """用间交叉 Function 行 → 表级汇总行集（方案 B 行集口径）。
+
+    优先消费结构化 命中明细 [{source, table, obj_name, n}]；
+    旧版 Function 无此字段时回落解析 依据 字符串（"源→表(n行)"）。
+    """
+    out: list[dict[str, Any]] = []
+    details = row.get("命中明细")
+    if isinstance(details, list):
+        for d in details:
+            if not isinstance(d, dict) or not d.get("table"):
+                continue
+            out.append({
+                "数据源": str(d.get("source") or ""),
+                "语义表": str(d.get("table") or ""),
+                "对象类型": str(d.get("obj_name") or ""),
+                "行数": int(d.get("n") or 0),
+                "粒度": AGGREGATE_GRANULARITY,
+            })
+    if out:
+        return out
+    for hit in row.get("依据") or []:
+        m = _HIT_STR_RE.match(str(hit))
+        if not m:
+            continue
+        out.append({
+            "数据源": m.group(1),
+            "语义表": m.group(2),
+            "对象类型": "",
+            "行数": int(m.group(3)),
+            "粒度": AGGREGATE_GRANULARITY,
+        })
+    return out
+
+
 def _clue_from_yong_jian(spec: SkillSpec, result: dict) -> list[LineageClue]:
     """用间交叉：每行命中 → 一条线索，jian_types 取该行命中的间类。
 
     方案 A：标题补数据源摘要，basis 展开命中的数据源列表。
+    方案 B：行集口径=表级汇总（Function COUNT 命中的语义表，一源一行），
+    推断卡挂确定性表级溯源；detail.行集口径 明示粒度。
     """
     clues: list[LineageClue] = []
     rows = result.get("用间交叉", {}).get("rows", [])
@@ -147,11 +192,18 @@ def _clue_from_yong_jian(spec: SkillSpec, result: dict) -> list[LineageClue]:
         title = f"{jian_name}命中{src_brief}"
         # A：basis 副标题展开全部命中数据源
         basis = "；".join(str(s) for s in sources[:3]) if sources else ""
+        # B：表级汇总行集（旧版 Function 输出回落字符串解析）
+        agg_rows = _aggregate_rows_from_cross_row(row)
+        detail: dict[str, Any] = {
+            "数据源": sources, "等级": result["用间交叉"].get("交叉等级"),
+            "依据": basis, "维度": _dims_for_jian([jian_name])}
+        if agg_rows:
+            detail["行集口径"] = AGGREGATE_GRANULARITY
         clues.append(LineageClue(
             skill_id=spec.skill_id,
             title=title,
-            detail={"数据源": sources, "等级": result["用间交叉"].get("交叉等级"),
-                    "依据": basis, "维度": _dims_for_jian([jian_name])},
+            detail=detail,
+            source_rows=agg_rows,
             jian_types=[jian_name],
         ))
     return clues

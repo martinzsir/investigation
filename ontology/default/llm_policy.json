@@ -18,5 +18,29 @@
     "prompt_days": 0,
     "raw_context": "never_store"
   },
-  "fallback": "deterministic_only"
+  "fallback": "deterministic_only",
+  "deployments": {
+    "local": {
+      "enabled": true,
+      "base_url": "http://127.0.0.1:11434/v1",
+      "allowed_models": ["qwen3:8b"],
+      "redaction": "relaxed",
+      "endpoints": {
+        "allow_loopback": true,
+        "allow_private_cidr": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+      }
+    },
+    "cloud": {
+      "enabled": true,
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "allowed_models": ["qwen-plus"],
+      "redaction": "strict",
+      "require_clearance": true,
+      "min_clearance": 2,
+      "endpoints": {
+        "https_only": true,
+        "host_whitelist": ["dashscope.aliyuncs.com"]
+      }
+    }
+  }
 }

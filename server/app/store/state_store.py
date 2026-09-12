@@ -20,6 +20,7 @@ schema 纪律：
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from core.audit import _compute_signature
@@ -145,10 +146,14 @@ CREATE TABLE IF NOT EXISTS clue_verify_item (
     ref_function  TEXT NOT NULL DEFAULT '',  -- channel=function 时挂钩的只读 Function 名
     external_json TEXT NOT NULL DEFAULT '',  -- channel=external 时 {target,material} 预填 JSON
     falsification TEXT NOT NULL DEFAULT '',  -- 证伪条件（取自假设模板/playbook，裁决"已查否"引用）
+    -- REQ-V-017 一键复跑回填：Function 结果+溯源+时间戳（JSON）；
+    -- 只回填本列，status/conclusion/operator/updated_at 裁决四列不动
+    replay_json   TEXT NOT NULL DEFAULT '',
     UNIQUE(clue_id, item_key)
 );
 CREATE INDEX IF NOT EXISTS idx_vi_clue ON clue_verify_item(clue_id);
--- 证据材料：人工调取的书证（区别于 uploads/ 数据源，不参与自动检测；P2 落文件）
+-- 证据材料：人工调取的书证（区别于 uploads/ 数据源，不参与自动检测；
+-- 文件由 evidence_store.py 落 cases/<cid>/evidence/，REQ-V-009/P2）
 CREATE TABLE IF NOT EXISTS clue_evidence (
     material_id   TEXT PRIMARY KEY,          -- ev_{uuid12}
     case_id       TEXT NOT NULL,
@@ -192,6 +197,7 @@ _VERIFY_ITEM_ADDED_COLUMNS = {
     "ref_function": "TEXT NOT NULL DEFAULT ''",
     "external_json": "TEXT NOT NULL DEFAULT ''",
     "falsification": "TEXT NOT NULL DEFAULT ''",
+    "replay_json": "TEXT NOT NULL DEFAULT ''",
 }
 
 # list_verify_items 状态展示序：待办在前、建议态垫后（rowid 保创建序）
@@ -518,9 +524,10 @@ class StateStore:
                             items: list[dict]) -> dict:
         """惰性供给批量落项：INSERT OR IGNORE，只补缺、永不覆盖既有结论/状态。
 
-        items=[{kind, text, status?, origin?, channel?, ref_function?,
-                external?(dict), falsification?}]；
-        suggested 项携带 status='建议' 与路由字段（REQ-V-018）。
+        items=[{kind, text, status?, origin?, conclusion?, channel?,
+                ref_function?, external?(dict), falsification?}]；
+        suggested 项携带 status='建议' 与路由字段（REQ-V-018）；
+        conclusion 仅测试播种/数据修复用，供给路径不带（结论走 REQ-V-002 迁移）。
         返回 {added:int, total:int}。
         """
         import json as _json
@@ -535,12 +542,13 @@ class StateStore:
                 cur = self._conn.execute(
                     "INSERT OR IGNORE INTO clue_verify_item "
                     "(item_id, case_id, clue_id, item_key, kind, text, "
-                    " origin, status, channel, ref_function, "
+                    " origin, status, conclusion, channel, ref_function, "
                     " external_json, falsification) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     [f"vi_{key}", case_id, clue_id, key, kind, text,
                      it.get("origin", "auto"),
                      it.get("status", "待核查"),
+                     it.get("conclusion", ""),
                      it.get("channel", ""),
                      it.get("ref_function", ""),
                      _json.dumps(external, ensure_ascii=False)
@@ -557,14 +565,22 @@ class StateStore:
         return {"added": added, "total": int(total)}
 
     def add_manual_verify_item(self, case_id: str, clue_id: str,
-                               text: str) -> dict:
-        """人工添加核查项（kind=origin='manual'）；同文本重复提交幂等。
+                               text: str, *, origin: str = "manual",
+                               channel: str = "", ref_function: str = "",
+                               external: dict | None = None,
+                               falsification: str = "") -> dict:
+        """人工添加核查项（kind='manual'）；同文本重复提交幂等。
 
+        REQ-V-019：提案审批桥接可携带结构化路由字段（origin='ai_draft' +
+        channel/ref_function/external/falsification），字段缺省时行为与
+        纯人工通道完全一致（origin='manual'）。
         返回行 dict（含 item_id），附带 added=1 新增 / 0 已存在。
         """
         result = self.upsert_verify_items(
             case_id, clue_id,
-            [{"kind": "manual", "text": text, "origin": "manual"}])
+            [{"kind": "manual", "text": text, "origin": origin,
+              "channel": channel, "ref_function": ref_function,
+              "external": external, "falsification": falsification}])
         item_id = f"vi_{self.verify_item_key(clue_id, 'manual', text)}"
         row = self.get_verify_item(item_id)
         row["added"] = result["added"]
@@ -610,6 +626,22 @@ class StateStore:
             return None
         return self.get_verify_item(item_id)
 
+    def set_verify_item_replay(self, item_id: str, replay: dict) -> dict | None:
+        """REQ-V-017 复跑结果回填：只写 replay_json 列。
+
+        status/conclusion/operator/updated_at 裁决四列不动——复跑是
+        AI辅助推演（需人确认），永不参与固证门禁判定（门禁只看人工
+        status）。item 不存在（rowcount=0）→ None。
+        """
+        import json as _json
+        cur = self._conn.execute(
+            "UPDATE clue_verify_item SET replay_json=? WHERE item_id=?",
+            [_json.dumps(replay, ensure_ascii=False, default=str), item_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_verify_item(item_id)
+
     def verify_progress(self, clue_id: str) -> dict:
         """{total, concluded, pending, suggested, ignored, by_status}。
 
@@ -639,7 +671,152 @@ class StateStore:
             d["external"] = _json.loads(raw) if raw else None
         except _json.JSONDecodeError:
             d["external"] = None
+        # REQ-V-017：复跑结果投影（replay_json → replay dict；未复跑=None）
+        raw_replay = d.pop("replay_json", "") or ""
+        try:
+            d["replay"] = _json.loads(raw_replay) if raw_replay else None
+        except _json.JSONDecodeError:
+            d["replay"] = None
         return d
+
+    # ---- 证据材料（REQ-V-009/P2 书证元数据；文件落 cases/<cid>/evidence/
+    # 由 server/app/evidence_store.save_evidence_file 承担，本层只管库）----
+    def insert_evidence(self, *, case_id: str, clue_id: str,
+                        material_type: str, filename: str, orig_name: str,
+                        sha256: str, size: int, uploaded_by: str,
+                        uploaded_at: str, item_id: str | None = None,
+                        note: str = "",
+                        material_id: str | None = None) -> dict:
+        """书证元数据落库。material_id 缺省生成 ev_{uuid12}；同文件重复上传
+        允许（各占一行一目录），幂等由调用方 idem 键承担（REQ-V-005 同款）。"""
+        import uuid as _uuid
+        mid = material_id or f"ev_{_uuid.uuid4().hex[:12]}"
+        self._conn.execute(
+            "INSERT INTO clue_evidence (material_id, case_id, clue_id, "
+            "item_id, material_type, filename, orig_name, sha256, size, "
+            "note, uploaded_by, uploaded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [mid, case_id, clue_id, item_id, material_type, filename,
+             orig_name, sha256, int(size), note, uploaded_by, uploaded_at])
+        self._conn.commit()
+        return self.get_evidence(mid)
+
+    def get_evidence(self, material_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM clue_evidence WHERE material_id=?",
+            [material_id]).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_evidence(self, clue_id: str, item_id: str | None = None
+                      ) -> list[dict]:
+        """按 uploaded_at 降序（同刻按 rowid 保稳定）；item_id 过滤供
+        REQ-V-011 核查项挂接材料回显。"""
+        sql = "SELECT * FROM clue_evidence WHERE clue_id=?"
+        args: list = [clue_id]
+        if item_id is not None:
+            sql += " AND item_id=?"
+            args.append(item_id)
+        rows = self._conn.execute(
+            sql + " ORDER BY uploaded_at DESC, rowid DESC", args).fetchall()
+        return [dict(r) for r in rows]
+
+    def link_evidence(self, material_id: str, item_id: str) -> dict | None:
+        """书证 ↔ 核查项挂接（材料不存在 → None）。item 存在性校验在
+        Worker 层（REQ-V-011 ITEM_NOT_FOUND），方法层不重复。"""
+        return self._set_evidence_item(material_id, item_id)
+
+    def unlink_evidence(self, material_id: str) -> dict | None:
+        """解除挂接：item_id 置空；材料行与文件均保留（REQ-V-011 验收 2）。"""
+        return self._set_evidence_item(material_id, None)
+
+    def _set_evidence_item(self, material_id: str,
+                           item_id: str | None) -> dict | None:
+        cur = self._conn.execute(
+            "UPDATE clue_evidence SET item_id=? WHERE material_id=?",
+            [item_id, material_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_evidence(material_id)
+
+    # ==================================================================
+    # REQ-V-012：调取清单台账（verify_request）
+    # 状态机校验在 core.verify_machine（validate_request_transition），
+    # Worker 层调用方负责先校验再落库（同核查项纪律）；审计链由
+    # Worker op 落（REQ-V-013 接线），本层只管数据。
+    # ==================================================================
+    def insert_verify_request(self, *, case_id: str, clue_id: str,
+                              target: str, material: str,
+                              item_id: str | None = None,
+                              legal_instrument: str = "",
+                              handler: str = "", due_date: str = "",
+                              note: str = "", created_by: str,
+                              created_at: str | None = None,
+                              request_id: str | None = None) -> dict:
+        """调取请求落台账。request_id 缺省 vr_{uuid12}；状态固定 待发起。"""
+        import uuid as _uuid
+
+        rid = request_id or f"vr_{_uuid.uuid4().hex[:12]}"
+        ts = created_at or datetime.now().isoformat(timespec="seconds")
+        self._conn.execute(
+            "INSERT INTO verify_request (request_id, case_id, clue_id, "
+            "item_id, target, material, legal_instrument, handler, "
+            "due_date, status, note, created_by, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '待发起', ?, ?, ?, '')",
+            [rid, case_id, clue_id, item_id, target, material,
+             legal_instrument, handler, due_date, note, created_by, ts])
+        self._conn.commit()
+        return self.get_verify_request(rid)  # type: ignore[return-value]
+
+    def get_verify_request(self, request_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM verify_request WHERE request_id=?",
+            [request_id]).fetchone()
+        return dict(row) if row is not None else None
+
+    def update_verify_request_status(self, request_id: str, status: str,
+                                     *, updated_at: str | None = None
+                                     ) -> dict | None:
+        """状态迁移落库（合法性由调用方经 verify_machine 校验）。
+
+        request 不存在 → None；状态透传（'超期' 不是存储状态，永不落库）。
+        """
+        ts = updated_at or datetime.now().isoformat(timespec="seconds")
+        cur = self._conn.execute(
+            "UPDATE verify_request SET status=?, updated_at=? "
+            "WHERE request_id=?", [status, ts, request_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_verify_request(request_id)
+
+    def list_verify_requests(self, clue_id: str | None = None,
+                             status: str | None = None) -> list[dict]:
+        """台账行（created_at 降序，同刻 rowid 稳定）+ overdue 读面派生。
+
+        clue_id 为 None 时列全案件（REQ-V-013 案件级台账 GET）；
+        overdue：status=已发起 且 due_date < 今天（YYYY-MM-DD 字典序可比）；
+        存储状态永不因超期改写（实施方案 REQ-V-012 细节：免定时任务）。
+        """
+        sql = "SELECT * FROM verify_request WHERE 1=1"
+        args: list = []
+        if clue_id is not None:
+            sql += " AND clue_id=?"
+            args.append(clue_id)
+        if status is not None:
+            sql += " AND status=?"
+            args.append(status)
+        rows = self._conn.execute(
+            sql + " ORDER BY created_at DESC, rowid DESC", args).fetchall()
+        today = datetime.now().isoformat(timespec="seconds")[:10]
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            due = (d.get("due_date") or "").strip()
+            d["overdue"] = bool(
+                due and d.get("status") == "已发起" and due < today)
+            out.append(d)
+        return out
 
     def __enter__(self) -> "StateStore":
         return self

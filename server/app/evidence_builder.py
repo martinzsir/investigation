@@ -42,12 +42,13 @@ def build_evidence(
     detail = raw_clue.get("detail") or {}
     source_rows = raw_clue.get("source_rows") or []
     clue_id = raw_clue.get("clue_id", "")
-    rule_id = detail.get("rule_id", "")
-    basis = detail.get("依据") or raw_clue.get("依据") or ""
-    rule_text = detail.get("rule_text") or ""
     is_degraded = raw_clue.get("is_degraded", False)
 
     items: list[dict[str, Any]] = []
+
+    refs = [_make_source_ref(sr, idx, clue_id)
+            for idx, sr in enumerate(source_rows)
+            if isinstance(sr, dict)]
 
     # ---- 事实栏（fact）：按行聚合 ----
     for idx, sr in enumerate(source_rows):
@@ -60,18 +61,49 @@ def build_evidence(
             "source_rows": [_make_source_ref(sr, idx, clue_id)],
         })
 
-    # ---- 推断栏（inference）：依据文本 + 全部 source_rows ----
-    if basis:
-        refs = [_make_source_ref(sr, idx, clue_id)
-                for idx, sr in enumerate(source_rows)
-                if isinstance(sr, dict)]
+    # ---- 规则解析：多规则合并线索 detail.rules（回填）优先；否则回落单规则 ----
+    rules = _extract_rules(detail, raw_clue)
+
+    # ---- 推断栏（inference）：规则依据 → 一规则一卡（同文本去重）----
+    seen_basis: set[str] = set()
+    for ridx, rule in enumerate(rules):
+        basis = rule["basis"]
+        if not basis or basis in seen_basis:
+            continue
+        seen_basis.add(basis)
+        suffix = "" if len(rules) == 1 else f"-{ridx}"
         items.append({
-            "id": f"i{clue_id}",
+            "id": f"i{clue_id}{suffix}",
             "kind": "inference",
             "text": basis,
             "source_rows": refs if refs else None,
             # 无 source_rows → 前端 partitionEvidence 丢弃 + droppedInferences++
         })
+
+    # 无规则回填的旧产物：top-level/detail 依据仍出单推断卡（向后兼容）
+    legacy_basis = detail.get("依据") or raw_clue.get("依据") or ""
+    if not rules and legacy_basis and legacy_basis not in seen_basis:
+        if refs:
+            # 方案 B：聚合线索（用间交叉）挂表级汇总行后，推断回到推断栏——
+            # 表级 COUNT 也是确定性溯源，行集口径在事实卡文本/URI 中明示。
+            items.append({
+                "id": f"i{clue_id}",
+                "kind": "inference",
+                "text": legacy_basis,
+                "source_rows": refs,
+            })
+        else:
+            # 方案 A：非规则聚合线索（用间交叉/双向盘点）生产端只有表级摘要、
+            # 无行级证据，不允许产出无溯源推断（FE-T-004 会被前端拒绝并报警告）。
+            # 降级为待核实聚合卡：id 前缀 'a' → provision 不映射为核查项、
+            # 前端不挂点击核查；行集口径补齐后（方案 B，适配器/读侧回填挂
+            # source_rows）自动回到推断栏。
+            items.append({
+                "id": f"a{clue_id}",
+                "kind": "pending",
+                "text": f"案件级聚合（无行级溯源）：{legacy_basis}",
+                "source_rows": [],
+            })
 
     # ---- 待核实栏（pending）----
     # 1. 降级标记
@@ -84,26 +116,64 @@ def build_evidence(
             "source_rows": [],
         })
 
-    # 2. 假设匹配（rule_id 关联的假设）
-    hypothesis = _match_hypothesis(rule_id, basis, rule_text)
-    if hypothesis:
-        items.append({
-            "id": f"h{clue_id}",
-            "kind": "pending",
-            "text": f"待验证假设：{hypothesis['id']}"
-                    f"（{hypothesis['description']}）",
-            "source_rows": [],
-        })
+    # 2. 假设匹配：多规则逐条按 rule_id 直映 + 关键词兜底（同假设去重）
+    seen_h: set[str] = set()
+    if rules:
+        for ridx, rule in enumerate(rules):
+            hypothesis = _match_hypothesis(
+                rule["rule_id"], rule["basis"], rule["rule_text"])
+            if not hypothesis or hypothesis["id"] in seen_h:
+                continue
+            seen_h.add(hypothesis["id"])
+            suffix = "" if len(rules) == 1 else f"-{ridx}"
+            items.append({
+                "id": f"h{clue_id}{suffix}",
+                "kind": "pending",
+                "text": f"待验证假设：{hypothesis['id']}"
+                        f"（{hypothesis['description']}）",
+                "source_rows": [],
+            })
+    else:
+        hypothesis = _match_hypothesis(
+            detail.get("rule_id", ""), legacy_basis,
+            detail.get("rule_text") or "")
+        # 非规则聚合线索（用间交叉等）：依据只是数据源名称列表，关键词匹配会把
+        # "银行流水(过桥)"误判成 H4——假设链由规则驱动，聚合线索（含方案 B
+        # 补了表级汇总行的）永不产出假设卡。
+        if hypothesis and refs and detail.get("rule_id"):
+            items.append({
+                "id": f"h{clue_id}",
+                "kind": "pending",
+                "text": f"待验证假设：{hypothesis['id']}"
+                        f"（{hypothesis['description']}）",
+                "source_rows": [],
+            })
 
-    # 3. rule_text 留痕（审计可追溯，不展示原文——太长）
-    if rule_text:
+    # 3. rule_text 留痕：多规则逐条（同文本去重）；审计可追溯，不展示长原文
+    seen_rt: set[str] = set()
+    for ridx, rule in enumerate(rules):
+        rule_text = rule["rule_text"]
+        if not rule_text or rule_text in seen_rt:
+            continue
+        seen_rt.add(rule_text)
+        suffix = "" if len(rules) == 1 else f"-{ridx}"
         items.append({
-            "id": f"r{clue_id}",
+            "id": f"r{clue_id}{suffix}",
             "kind": "pending",
             "text": f"规则判据：{rule_text[:60]}..."
                     if len(rule_text) > 60 else f"规则判据：{rule_text}",
             "source_rows": [],
         })
+    if not rules:
+        rule_text = detail.get("rule_text") or ""
+        if rule_text:
+            items.append({
+                "id": f"r{clue_id}",
+                "kind": "pending",
+                "text": f"规则判据：{rule_text[:60]}..."
+                        if len(rule_text) > 60 else f"规则判据：{rule_text}",
+                "source_rows": [],
+            })
 
     return items
 
@@ -111,11 +181,49 @@ def build_evidence(
 # ----------------------------------------------------------------------
 # 辅助
 # ----------------------------------------------------------------------
+def _extract_rules(detail: dict[str, Any],
+                   raw_clue: dict[str, Any]) -> list[dict[str, str]]:
+    """从线索产物解析命中规则列表（声明序）。
+
+    - detail.rules（backfill 多规则回填 / 未来 merge 保留）：
+      [{rule_id, 依据, rule_text}]
+    - 单规则旧产物：detail.rule_id + detail.依据/rule_text（或 top-level 依据）
+    - 都没有：[]（调用方走 legacy 依据单卡路径）
+    """
+    multi = detail.get("rules")
+    if isinstance(multi, list) and multi:
+        out: list[dict[str, str]] = []
+        for r in multi:
+            if not isinstance(r, dict):
+                continue
+            out.append({
+                "rule_id": str(r.get("rule_id") or ""),
+                "basis": str(r.get("依据") or r.get("basis") or ""),
+                "rule_text": str(r.get("rule_text") or ""),
+            })
+        if out:
+            return out
+    rid = detail.get("rule_id")
+    if rid:
+        return [{
+            "rule_id": str(rid),
+            "basis": str(detail.get("依据") or raw_clue.get("依据") or ""),
+            "rule_text": str(detail.get("rule_text") or ""),
+        }]
+    return []
+
+
 def _fact_text(sr: dict[str, Any]) -> str:
     """把数据行转人类可读的事实文本。
 
     提取关键业务字段（跳过内部字段），用「字段: 值」拼接。
+    表级汇总行（方案 B：用间交叉 COUNT 口径）显式标注粒度，
+    不与行级证据混淆。
     """
+    if isinstance(sr, dict) and sr.get("粒度") == "表级汇总":
+        return (f"表级汇总｜{sr.get('数据源') or '未知数据源'}"
+                f"（语义表 {sr.get('语义表') or '?'}，"
+                f"{sr.get('行数', '?')} 行非空支撑）")
     _INTERNAL = {"row_uri", "knowledge_sources", "knowledge_version",
                  "matched_person", "source_row_id"}
     parts = []
@@ -139,6 +247,13 @@ def _make_source_ref(sr: dict[str, Any], idx: int,
     """
     if isinstance(sr, dict) and sr.get("row_uri"):
         return {"row_uri": sr["row_uri"], "source": _dataset_of(sr)}
+    # 表级汇总行（方案 B）：URI 明示 #table/ 段 + COUNT 快照，区别于行级 #row/
+    if isinstance(sr, dict) and sr.get("粒度") == "表级汇总" \
+            and sr.get("语义表"):
+        return {
+            "row_uri": f"{sr['语义表']}@local#table/n{sr.get('行数', 'x')}",
+            "source": _dataset_of(sr),
+        }
     # 伪 URI：用内容哈希生成稳定 rowid
     content = json.dumps(sr, sort_keys=True, ensure_ascii=False, default=str)
     rowid = hashlib.md5(content.encode("utf-8")).hexdigest()[:16]
@@ -153,6 +268,9 @@ def _dataset_of(sr: dict[str, Any]) -> str:
     """推断行所属数据源（用于 SourceRef.source 展示）。"""
     if not isinstance(sr, dict):
         return "未知数据源"
+    # 表级汇总行（方案 B）：行内自带数据源展示名
+    if isinstance(sr.get("数据源"), str) and sr["数据源"].strip():
+        return sr["数据源"].strip()
     # 有 knowledge_sources 直接用
     ks = sr.get("knowledge_sources")
     if isinstance(ks, list) and ks:

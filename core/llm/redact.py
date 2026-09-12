@@ -62,6 +62,8 @@ _FAIL_CLOSED_POLICY: dict[str, Any] = {
     },
     "retention": {"prompt_days": 0, "raw_context": "never_store"},
     "fallback": "deterministic_only",
+    # REQ-V-019：fail-closed 策略无任何可用部署档（两档 disabled）
+    "deployments": {"local": {"enabled": False}, "cloud": {"enabled": False}},
     "_source": "fail_closed_default",
 }
 
@@ -92,6 +94,16 @@ def load_llm_policy(pack: str = "default", base_dir=None) -> dict[str, Any]:
     data["pii_redaction"] = red
     data.setdefault("retention", _FAIL_CLOSED_POLICY["retention"])
     data.setdefault("fallback", "deterministic_only")
+    # REQ-V-019 deployments 补齐（fail-closed）：旧文件无段 / 段非法 → 两档
+    # disabled（select_deployment 全 off）；段内个别档非 dict → 该档 disabled。
+    deps = data.get("deployments")
+    if not isinstance(deps, dict):
+        deps = {}
+    norm: dict[str, dict] = {}
+    for slot in ("local", "cloud"):
+        d = deps.get(slot)
+        norm[slot] = d if isinstance(d, dict) else {"enabled": False}
+    data["deployments"] = norm
     data["_source"] = str(path)
     return data
 

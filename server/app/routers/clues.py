@@ -13,15 +13,21 @@ GET 列表/详情/suppressed（W-019）：读产物 artifact + state 状态真�
 """
 from __future__ import annotations
 
+import duckdb
 import hashlib
+import logging
+import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from core.verify_machine import VERIFY_STATUSES
+from core.verify_machine import REQUEST_STATUSES, VERIFY_STATUSES
+from core.llm.draft_verify import draft_verify_items
 
 from core.access import AccessContext, can_see_jian_types
 from server.app import clues_view, ontology_meta
+from server.app.verify_functions_map import resolve_replay_mapping
 from server.app.deps import (
     WebContext,
     get_ctx,
@@ -41,12 +47,37 @@ from server.app.store.state_store import StateStore
 from server.app.worker.tasks import TASK_DISPOSE, TASK_VERIFY, enqueue_task
 
 router = APIRouter(tags=["clues"])
+logger = logging.getLogger(__name__)
+
+
+def _aggregate_cross_rows(ctx: WebContext, case_id: str, pack_id: str,
+                          version: int, base_dir) -> list[dict] | None:
+    """方案 B：只读开版本库执行 jian_cross_level，返回结构化命中间行。
+
+    供旧版用间聚合线索（artifact 无行集）回填表级汇总行。任何失败
+    （版本文件缺失/语义层未建/包装载失败）优雅降级为 None——
+    读面不炸，聚合线索回落 a 卡留痕。pack 经案件快照基目录装载
+    （与 worker verify 同纪律，不用共享 ontology/）。
+    """
+    try:
+        with ctx.factory.for_case(case_id, mode="read",
+                                  version=version) as ro:
+            from core.functions import FunctionExecutor
+            out = FunctionExecutor(
+                ro, pack=pack_id, base_dir=base_dir
+            ).invoke("jian_cross_level")
+        return (out.get("result") or {}).get("rows")
+    except Exception:
+        logger.warning(
+            "jian_cross_level 聚合回填不可用 case=%s v=%s",
+            case_id, version, exc_info=True)
+        return None
 
 # REQ-V-005：核查项读面投影（剔除 case_id/clue_id/item_key 内部列）
 _VERIFY_ITEM_FIELDS = (
     "item_id", "kind", "text", "origin", "status", "conclusion",
     "operator", "updated_at", "channel", "ref_function",
-    "external", "falsification",
+    "external", "falsification", "replay",
 )
 
 _EMPTY_VERIFY_PROGRESS = {
@@ -64,12 +95,25 @@ def _verify_items_payload(state: StateStore | None, clue_id: str) -> dict:
 
     纯读 state 真值；REQ-V-002 惰性供给在线索详情 assemble_detail 触发，
     本端点不重跑 evidence 构建（读面保持轻量、不创建 state.sqlite）。
+    REQ-V-011：每项回显已挂接书证（按 item_id 反查，未挂接不进详情）。
     """
     if state is None:
         return {"items": [], "progress": dict(_EMPTY_VERIFY_PROGRESS),
                 "available": False}
     items = [{k: it.get(k) for k in _VERIFY_ITEM_FIELDS}
              for it in state.list_verify_items(clue_id)]
+    ev_map: dict[str, list[dict]] = {}
+    for r in state.list_evidence(clue_id):
+        owner = r.get("item_id")
+        if owner:
+            ev_map.setdefault(owner, []).append({
+                "material_id": r["material_id"],
+                "orig_name": r["orig_name"],
+                "material_type": r["material_type"],
+                "uploaded_at": r["uploaded_at"],
+            })
+    for it in items:
+        it["evidence"] = ev_map.get(it["item_id"], [])
     return {"items": items,
             "progress": state.verify_progress(clue_id),
             "available": True}
@@ -202,14 +246,18 @@ def clue_detail(case_id: str, clue_id: str,
     access = AccessContext(
         operator=p.operator, role=p.role, clearance=p.clearance,
         case_id=case_id, purpose="线索详情", network="web")
+    base_dir = ctx.cases.snapshot_ontology_root(case_id)
     try:
         decisions = state.list_decisions() if state is not None else []
+        # 方案 B：聚合线索（用间交叉）表级汇总行回填所需的 Function 结果
+        cross_rows = _aggregate_cross_rows(
+            ctx, case_id, case.pack_id, version, base_dir)
         data = clues_view.assemble_detail(
             case_dir=ctx.factory.case_dir(case_id), version=version,
             clue_id=clue_id, state_map=state_map, decisions=decisions,
             access=access, pack_id=case.pack_id,
-            base_dir=ctx.cases.snapshot_ontology_root(case_id),
-            state_store=state)
+            base_dir=base_dir,
+            state_store=state, cross_rows=cross_rows)
     finally:
         if state is not None:
             state.close()
@@ -219,7 +267,7 @@ def clue_detail(case_id: str, clue_id: str,
     if not can_see_jian_types(
             data.get("jian_types") or [], role=p.role,
             jian_clearances=ontology_meta.jian_clearances(
-                case.pack_id, ctx.cases.snapshot_ontology_root(case_id))):
+                case.pack_id, base_dir)):
         raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
     return ok(data, data_version=version)
 
@@ -320,6 +368,328 @@ def transition_verify_item(case_id: str, clue_id: str, item_id: str,
     text_for_key = body.text if body.text is not None else ""
     idem = (body.idem_key.strip()
             or f"verify:{item_id}:{nxt}:{_sha1(text_for_key)}")
+    task = enqueue_task(
+        ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
+        params=params, idem_key=idem, created_by=p.operator)
+    return ok(task_dto(task),
+              data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# REQ-V-017：一键复跑回填（op=replay，202 入队同 transition 纪律）。
+# 归属校验（404）与映射预检（无映射 400 NO_REPLAY_MAPPING）同步做——
+# 入队前快速失败，省一次注定 FAILED 的任务；Worker 侧同款校验兜底
+# （映射/归属在消费时可能已变化，纵深防御）。复跑允许重复执行：
+# idem_key 缺省带秒级时间戳（同秒重试幂等，跨秒可再跑）。
+# ----------------------------------------------------------------------
+@router.post(
+    "/cases/{case_id}/clues/{clue_id}/verify-items/{item_id}/replay",
+    status_code=202)
+def replay_verify_item(case_id: str, clue_id: str, item_id: str,
+                       p: Principal = Depends(get_principal),
+                       ctx: WebContext = Depends(get_ctx)):
+    """运行内核核查：只读 Function 结果回填 replay_json（不改状态/结论）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
+    state, _ = _read_state(ctx.factory, case_id)
+    try:
+        item = state.get_verify_item(item_id) if state is not None else None
+        if item is None or item.get("clue_id") != clue_id:
+            raise APIError(ERR_NOT_FOUND, f"核查项不存在：{item_id}", 404)
+        if resolve_replay_mapping(
+                item, pack_id=case.pack_id,
+                base_dir=ctx.cases.snapshot_ontology_root(case_id)) is None:
+            raise APIError(
+                "NO_REPLAY_MAPPING",
+                f"核查项 {item_id} 无库内可复跑映射"
+                "（channel/ref_function/文本关键词均未命中）", 400)
+    finally:
+        if state is not None:
+            state.close()
+    params = {
+        "op": "replay",
+        "clue_id": clue_id,
+        "item_id": item_id,
+        "operator": p.operator,
+        "role": p.role,
+        "clearance": p.clearance,
+    }
+    idem = (f"verify-replay:{item_id}:"
+            f"{datetime.now().isoformat(timespec='seconds')}"
+            .replace(":", "").replace("-", ""))
+    task = enqueue_task(
+        ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
+        params=params, idem_key=idem, created_by=p.operator)
+    return ok(task_dto(task),
+              data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# REQ-V-011：书证挂接核查项（link/unlink，202 入队同 transition 纪律）
+# 归属/存在性校验在 Worker 兜底；API 侧 agent 红线 + 参数形状快速失败。
+# ----------------------------------------------------------------------
+class EvidenceLinkIn(BaseModel):
+    material_id: str = ""
+    idem_key: str = ""
+
+
+def _reject_agent_evidence(p: Principal) -> None:
+    if p.operator.startswith("agent:"):
+        raise APIError(
+            ERR_FORBIDDEN,
+            f"Agent 身份 {p.operator!r} 不得挂接/解除书证"
+            "（书证挂接是人的判断，REQ-V-011 验收 3）", 403)
+
+
+@router.post(
+    "/cases/{case_id}/clues/{clue_id}/verify-items/{item_id}/evidence",
+    status_code=202)
+def link_evidence_to_item(case_id: str, clue_id: str, item_id: str,
+                          body: EvidenceLinkIn,
+                          p: Principal = Depends(get_principal),
+                          ctx: WebContext = Depends(get_ctx)):
+    """书证挂接到核查项 → 202 + task_dto；核查项详情回显该材料。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    _reject_agent_evidence(p)
+    mid = (body.material_id or "").strip()
+    if not mid:
+        raise APIError(ERR_VALIDATION, "缺少 material_id", 400)
+    params = {
+        "op": "link",
+        "clue_id": clue_id,
+        "item_id": item_id,
+        "material_id": mid,
+        "operator": p.operator,
+        "role": p.role,
+        "clearance": p.clearance,
+    }
+    idem = body.idem_key.strip() or f"verify-link:{clue_id}:{item_id}:{mid}"
+    task = enqueue_task(
+        ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
+        params=params, idem_key=idem, created_by=p.operator)
+    return ok(task_dto(task),
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.delete(
+    "/cases/{case_id}/clues/{clue_id}/evidence/{material_id}/link",
+    status_code=202)
+def unlink_evidence_from_item(case_id: str, clue_id: str, material_id: str,
+                              p: Principal = Depends(get_principal),
+                              ctx: WebContext = Depends(get_ctx)):
+    """解除书证挂接（按材料；行保留）→ 202 + task_dto。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    _reject_agent_evidence(p)
+    params = {
+        "op": "unlink",
+        "clue_id": clue_id,
+        "material_id": material_id,
+        "operator": p.operator,
+        "role": p.role,
+        "clearance": p.clearance,
+    }
+    idem = f"verify-unlink:{clue_id}:{material_id}"
+    task = enqueue_task(
+        ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
+        params=params, idem_key=idem, created_by=p.operator)
+    return ok(task_dto(task),
+              data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# REQ-V-019：LLM 核查方向草案（同步端点；人显式点击触发，不自动发起）。
+# 能力闸/选档交集/端点闸/脱敏分档/幻觉护栏/幂等/shadow 断言全部在
+# core.llm.draft_verify（唯一实现）；本层只做案件归属、线索可见性、
+# 确定性上下文组装与透传。degraded/blocked 一律 200 + {ok:false,...}
+# （前端按档位提示渲染，不当 5xx 报错）。
+# ----------------------------------------------------------------------
+def _draft_context(detail: dict, verify_items: list[dict]) -> dict:
+    """聚合上下文（确定性、轻量）：线索摘要 + 已有核查项。
+
+    只取脱敏面需要的聚合字段；source_rows 明细不进 prompt（量大且
+    轨迹/正文类键会被整段 drop，无增益）。
+    """
+    return {
+        "线索": {
+            "clue_id": detail.get("clue_id"),
+            "标题": detail.get("title", ""),
+            "依据": detail.get("basis", ""),
+            "维度": detail.get("dimension") or "",
+            "等级": detail.get("level") or "",
+            "状态": detail.get("status", ""),
+        },
+        "已有核查项": [
+            {"text": it.get("text", ""), "status": it.get("status", ""),
+             "channel": it.get("channel", ""),
+             "ref_function": it.get("ref_function", "")}
+            for it in verify_items
+        ],
+    }
+
+
+@router.post("/cases/{case_id}/clues/{clue_id}/verify-items/draft")
+def draft_verify_direction(case_id: str, clue_id: str,
+                           p: Principal = Depends(get_principal),
+                           ctx: WebContext = Depends(get_ctx)):
+    """LLM 核查方向草案：成功→提案队列（status=draft，人审后 REQ-V-014
+    桥接 TASK_VERIFY）；降级/拦截→200 {ok:false, degraded/blocked, reason}。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
+    version = ctx.repo.current_version(case_id)
+    base_dir = ctx.cases.snapshot_ontology_root(case_id)
+    state, state_map = _read_state(ctx.factory, case_id)
+    access = AccessContext(
+        operator=p.operator, role=p.role, clearance=p.clearance,
+        case_id=case_id, purpose="draft_verify", network="web")
+    try:
+        detail = clues_view.assemble_detail(
+            case_dir=ctx.factory.case_dir(case_id), version=version,
+            clue_id=clue_id, state_map=state_map, decisions=[],
+            access=access, pack_id=case.pack_id, base_dir=base_dir,
+            state_store=state)
+        verify_items = (state.list_verify_items(clue_id)
+                        if state is not None else [])
+    finally:
+        if state is not None:
+            state.close()
+    if detail is None:
+        raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
+    # 间类密级过滤（与 clue_detail 同款 fail-closed 不可枚举）
+    if not can_see_jian_types(
+            detail.get("jian_types") or [], role=p.role,
+            jian_clearances=ontology_meta.jian_clearances(
+                case.pack_id, base_dir)):
+        raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
+
+    conn = duckdb.connect(ctx.proposals_db)
+    try:
+        result = draft_verify_items(
+            conn, access, clue_id, case_id=case_id,
+            context=_draft_context(detail, verify_items),
+            pack=case.pack_id, base_dir=base_dir)
+    finally:
+        conn.close()
+    return ok(result, data_version=version)
+
+
+# ----------------------------------------------------------------------
+# REQ-V-013：调取清单台账（GET 案件级 + 202 入队 add_request/request_transition）
+# 状态机/归属校验在 Worker 兜底；API 侧 agent 红线 + 参数形状快速失败。
+# ----------------------------------------------------------------------
+class VerifyRequestCreateIn(BaseModel):
+    target: str = ""            # 调取对象（如：海州银行营业部）
+    material: str = ""          # 调取材料
+    legal_instrument: str = ""  # 法律手续（调取函/审批文号）
+    handler: str = ""           # 经办人
+    due_date: str = ""          # 期限 YYYY-MM-DD（可空）
+    note: str = ""
+    item_id: str | None = None  # 关联核查项（可空）
+    idem_key: str = ""
+
+
+class VerifyRequestTransitionIn(BaseModel):
+    next_status: str = ""
+    idem_key: str = ""
+
+
+_DUE_DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@router.get("/cases/{case_id}/verify-requests")
+def list_verify_requests(case_id: str,
+                         clue_id: str | None = Query(None),
+                         status: str | None = Query(None),
+                         p: Principal = Depends(get_principal),
+                         ctx: WebContext = Depends(get_ctx)):
+    """调取清单台账（案件级；overdue 为读面派生，存储状态不变）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    if status is not None and status not in REQUEST_STATUSES:
+        raise APIError(
+            ERR_VALIDATION,
+            f"非法调取请求状态：{status!r}（合法：{'/'.join(REQUEST_STATUSES)}）",
+            400)
+    state, _ = _read_state(ctx.factory, case_id)
+    items: list[dict] = []
+    available = state is not None
+    if state is not None:
+        try:
+            items = state.list_verify_requests(clue_id, status)
+        finally:
+            state.close()
+    return ok({"items": items, "available": available},
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/clues/{clue_id}/verify-requests",
+             status_code=202)
+def create_verify_request(case_id: str, clue_id: str,
+                          body: VerifyRequestCreateIn,
+                          p: Principal = Depends(get_principal),
+                          ctx: WebContext = Depends(get_ctx)):
+    """发起调取登记 → 202 + task_dto（op=add_request）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    _reject_agent_evidence(p)  # 台账是人的催办行为（REQ-V-014 同红线）
+    target = (body.target or "").strip()
+    material = (body.material or "").strip()
+    if not target:
+        raise APIError(ERR_VALIDATION, "缺少调取对象（target）", 400)
+    if not material:
+        raise APIError(ERR_VALIDATION, "缺少调取材料（material）", 400)
+    due = (body.due_date or "").strip()
+    if due and not _DUE_DATE_SHAPE.match(due):
+        raise APIError(ERR_VALIDATION,
+                       f"非法期限格式：{due!r}（应为 YYYY-MM-DD）", 400)
+    params = {
+        "op": "add_request",
+        "clue_id": clue_id,
+        "target": target,
+        "material": material,
+        "legal_instrument": (body.legal_instrument or "").strip(),
+        "handler": (body.handler or "").strip(),
+        "due_date": due,
+        "note": (body.note or "").strip(),
+        "operator": p.operator,
+        "role": p.role,
+        "clearance": p.clearance,
+    }
+    if body.item_id:
+        params["item_id"] = body.item_id.strip()
+    idem = (body.idem_key.strip() or "verify-req:{}:{}".format(
+        clue_id,
+        hashlib.sha1(f"{target}|{material}|{due}".encode()).hexdigest()[:12]))
+    task = enqueue_task(
+        ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
+        params=params, idem_key=idem, created_by=p.operator)
+    return ok(task_dto(task),
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/verify-requests/{request_id}/transitions",
+             status_code=202)
+def transition_verify_request(case_id: str, request_id: str,
+                              body: VerifyRequestTransitionIn,
+                              p: Principal = Depends(get_principal),
+                              ctx: WebContext = Depends(get_ctx)):
+    """调取请求状态迁移（发起/回执登记/关闭）→ 202 + task_dto。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    _reject_agent_evidence(p)
+    nxt = (body.next_status or "").strip()
+    if not nxt:
+        raise APIError(ERR_VALIDATION, "缺少目标状态 next_status", 400)
+    if nxt not in REQUEST_STATUSES:
+        raise APIError(
+            ERR_VALIDATION,
+            f"非法调取请求状态：{nxt!r}（合法：{'/'.join(REQUEST_STATUSES)}）",
+            400)
+    params = {
+        "op": "request_transition",
+        "request_id": request_id,
+        "next_status": nxt,
+        "operator": p.operator,
+        "role": p.role,
+        "clearance": p.clearance,
+    }
+    idem = body.idem_key.strip() or f"verify-req-t:{request_id}:{nxt}"
     task = enqueue_task(
         ctx.repo, case_id=case_id, task_type=TASK_VERIFY,
         params=params, idem_key=idem, created_by=p.operator)

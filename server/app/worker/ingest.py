@@ -106,6 +106,11 @@ def _apply_clean_to_bindings(snap_dir: Path, pack_id: str,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        # （snap_dir = base_dir / pack_id，故 base_dir = snap_dir.parent）
+        shared_src = snap_dir.parent / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         _atomic_write(tmp_root / pack_id / "bindings.json", data)
         load_pack(pack_id, base_dir=tmp_root)  # 校验失败抛 ValueError
     _atomic_write(bp, data)

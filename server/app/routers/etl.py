@@ -54,10 +54,14 @@ def _write_validated(*, ctx: WebContext, case_id: str, filename: str,
                      data, op: str, p: Principal, detail: dict | None = None,
                      reason: str | None = None):
     """临时副本写新内容 → load_pack 全量校验 → 原子写 → ops + 审计链留痕。"""
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         (tmp_root / pack_id / filename).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         try:

@@ -334,6 +334,9 @@ def _jian_cross_level(store, params: dict) -> dict:
     pack = params.get("pack", "default")
     entries = _jian_entries(pack)
     hits: dict[str, list[str]] = {}
+    # 方案 B 行集口径：命中同时保留结构化明细（source/table/obj_name/n），
+    # 供用间线索适配器挂「表级汇总行」做溯源；依据字符串字段保留兼容旧消费方。
+    hits_detail: dict[str, list[dict]] = {}
     hit_sources: list[str] = []
     for table, jian, src, obj_name in entries:
         try:
@@ -342,6 +345,9 @@ def _jian_cross_level(store, params: dict) -> dict:
             n = 0
         if n:
             hits.setdefault(jian, []).append(f"{src}→{table}({n}行)")
+            hits_detail.setdefault(jian, []).append(
+                {"source": src, "table": table,
+                 "obj_name": obj_name, "n": int(n)})
             hit_sources.append(obj_name)
     # 计算总数据源集合（含未建模缺口提示）
     src_by_jian: dict[str, list[str]] = {}
@@ -363,7 +369,9 @@ def _jian_cross_level(store, params: dict) -> dict:
     jian_order = _jian_order(pack)
     rows = [
         {"间": j, "数据源": src_by_jian.get(j, []),
-         "依据": hits.get(j, []), "命中": j in hits,
+         "依据": hits.get(j, []),
+         "命中明细": hits_detail.get(j, []),
+         "命中": j in hits,
          "缺口": _UNMODELED.get(j, [])}
         for j in jian_order
     ]

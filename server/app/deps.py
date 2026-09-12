@@ -39,6 +39,9 @@ class WebContext:
     factory: StoreFactory
     cases: CaseService
     session_ttl_hours: int = 12
+    # REQ-V-014：全局提案库（DuckDB 文件）路径——与 MCP review.submit_proposal
+    # 的 core.Store() 同库（proposal 表按 case_id 区分案件）；测试注入 tmp 路径
+    proposals_db: str = "data/investigation.duckdb"
 
     def new_session(self, user: User, token: str) -> Session:
         now = datetime.now()

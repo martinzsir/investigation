@@ -31,6 +31,27 @@ _TYPE_SQL = {
 _CJK = re.compile(r"[一-鿿]")
 
 
+def _load_data_elements(ontology_dir: Path) -> dict[str, str]:
+    """加载数据元 → 类型映射（全域 _shared + 案件包，仅追加）。
+
+    脚本层不得 import core（AC4），故独立读取 data_elements.json，
+    只取 {元素 ID: type} 用于属性类型推导。文件缺失则跳过该层。
+    """
+    merged: dict[str, str] = {}
+    for layer in (ontology_dir.parent / "_shared", ontology_dir):
+        p = layer / "data_elements.json"
+        if not p.exists():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for eid, spec in (data.get("elements") or {}).items():
+            if isinstance(spec, dict) and isinstance(spec.get("type"), str):
+                merged.setdefault(eid, spec["type"])
+    return merged
+
+
 def _derived_cold_tables(ontology_dir: Path = ONTOLOGY) -> dict[str, dict[str, str]]:
     """从 objects.json + bindings.json 推导冷层业务表 {表名: {源列: 列类型}}。
 
@@ -40,6 +61,7 @@ def _derived_cold_tables(ontology_dir: Path = ONTOLOGY) -> dict[str, dict[str, s
     """
     objects = json.loads((ontology_dir / "objects.json").read_text(encoding="utf-8"))
     bindings = json.loads((ontology_dir / "bindings.json").read_text(encoding="utf-8"))
+    elements = _load_data_elements(ontology_dir)
     prop_types = {o["name"]: o.get("properties", {})
                   for o in objects.get("objects", [])}
     tables: dict[str, dict[str, str]] = {}
@@ -53,15 +75,25 @@ def _derived_cold_tables(ontology_dir: Path = ONTOLOGY) -> dict[str, dict[str, s
         oprops = prop_types.get(b.get("object"), {})
         cols = tables.setdefault(table, {})
         for alias, raw_col in (src.get("columns") or {}).items():
-            cols.setdefault(raw_col, _TYPE_SQL.get(_base_type(oprops.get(alias, "string")),
-                                                   "VARCHAR"))
+            cols.setdefault(raw_col, _TYPE_SQL.get(
+                _base_type(oprops.get(alias, "string"), elements),
+                "VARCHAR"))
     return tables
 
 
-def _base_type(decl) -> str:
-    """属性声明可为 string 或映射 {type|composite|data_element}（REQ-D-013/002）。"""
+def _base_type(decl, elements: dict[str, str] | None = None) -> str:
+    """属性声明可为 string 或映射 {type|composite|data_element}（REQ-D-013/002）。
+
+    映射含 data_element 时，若 elements 提供则从数据元继承 type（AC-1）；
+    否则回落本地 type，再回落 string。
+    """
     if isinstance(decl, dict):
-        return str(decl.get("type", "string"))
+        if "type" in decl:
+            return str(decl["type"])
+        de = decl.get("data_element")
+        if de and elements and de in elements:
+            return elements[de]
+        return "string"
     return str(decl)
 
 

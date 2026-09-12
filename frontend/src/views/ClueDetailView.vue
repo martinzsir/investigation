@@ -9,7 +9,8 @@ import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
 import { useHealthStore } from '../stores/health'
 import { cluesApi, type ClueDetail } from '../api/endpoints/clues'
-import { verifyApi, type VerifyTransitionBody } from '../api/endpoints/verify'
+import { verifyApi, requestApi, type VerifyTransitionBody } from '../api/endpoints/verify'
+import { evidenceApi } from '../api/endpoints/evidence'
 import { waitForTerminal } from '../api/endpoints/tasks'
 import { failureSummary, type TaskRow } from '../domain/task'
 import {
@@ -216,6 +217,117 @@ async function onVerifyTransition(payload: VerifyTransitionBody & { item_id: str
     verifySubmitting.value = false
   }
 }
+
+// REQ-V-017 一键复跑回填（202 入队 TASK_VERIFY op=replay；终态后才拉新清单，
+// 同核查项纪律——入队即刷新会读到 Worker 消费前的旧 state）。只读 Function
+// 结果回填 replay_json，不改状态/结论；无映射 400 由全局错误提示呈现。
+async function onVerifyReplay(payload: { item_id: string }): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await verifyApi.replay(
+      cs.currentCaseId, detail.value.clue_id, payload.item_id)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('内核核查复跑', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
+// REQ-V-013：调取清单写动作（202 入队，终态后才拉新——同核查项纪律，
+// 入队即刷新会读到 Worker 消费前的旧台账）
+async function onRequestCreate(payload: {
+  target: string
+  material: string
+  legal_instrument: string
+  handler: string
+  due_date: string
+  item_id?: string
+}): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await requestApi.create(
+      cs.currentCaseId, detail.value.clue_id, payload)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('调取登记', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
+async function onRequestTransition(payload: {
+  request_id: string
+  next_status: string
+}): Promise<void> {
+  if (!cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await requestApi.transition(
+      cs.currentCaseId, payload.request_id, payload.next_status)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('调取清单操作', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
+// REQ-V-011 书证挂接/解除（202 入队 TASK_VERIFY op=link/unlink；
+// 终态后整体刷新工作区——verify-items 行内书证投影与书证面板清单同源更新）
+async function onEvidenceLink(payload: {
+  item_id: string
+  material_id: string
+}): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await evidenceApi.link(
+      cs.currentCaseId, detail.value.clue_id,
+      payload.item_id, payload.material_id)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('书证挂接', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
+async function onEvidenceUnlink(payload: { material_id: string }): Promise<void> {
+  if (!detail.value || !cs.currentCaseId) return
+  verifySubmitting.value = true
+  try {
+    const res = await evidenceApi.unlink(
+      cs.currentCaseId, detail.value.clue_id, payload.material_id)
+    const task = await waitForTerminal(res.id, { signal: beginWait() })
+    if (reportVerifyResult('解除挂接', task)) {
+      await verifyRef.value?.refresh()
+    }
+  } catch (e) {
+    if (isAbort(e)) return
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    verifySubmitting.value = false
+  }
+}
 </script>
 
 <template>
@@ -301,6 +413,11 @@ async function onVerifyTransition(payload: VerifyTransitionBody & { item_id: str
               :source-rows="detail.source_rows ?? []"
               @add="onVerifyAdd"
               @transition="onVerifyTransition"
+              @replay="onVerifyReplay"
+              @request-create="onRequestCreate"
+              @request-transition="onRequestTransition"
+              @evidence-link="onEvidenceLink"
+              @evidence-unlink="onEvidenceUnlink"
               @loaded="onVerifyLoaded"
             />
           </section>

@@ -1,0 +1,1430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>线索研判画布 · 低保真线框图（PRD V1.0.0 · 2026-09-13）</title>
+<style>
+  :root{
+    --ink:#1a1a1a; --line:#333; --line2:#999; --line3:#c9c9c9;
+    --fill:#e4e4e4; --fill2:#f0f0f0; --fill3:#f7f7f7; --paper:#fff; --bg:#f2f2f2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Microsoft YaHei","PingFang SC",-apple-system,"Segoe UI",sans-serif;font-size:13px;line-height:1.5}
+  .doc{max-width:1600px;margin:0 auto;padding:24px}
+
+  /* ---------- 页头 ---------- */
+  .masthead{border:2px solid var(--line);background:var(--paper);padding:16px 18px;margin-bottom:16px}
+  .masthead h1{margin:0 0 4px;font-size:20px;letter-spacing:1px}
+  .masthead .sub{font-size:12px;color:#555}
+  .masthead .meta{margin-top:10px;font-size:11.5px;color:#444;border-top:1px dashed var(--line2);padding-top:8px}
+
+  /* ---------- 图例 ---------- */
+  .legend{border:1px solid var(--line);background:var(--paper);padding:10px 12px;margin-bottom:16px}
+  .legend b{font-size:12px}
+  .legend ul{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11.5px}
+  .legend li{display:flex;align-items:center;gap:6px}
+  .lg{display:inline-block;width:16px;height:12px;border:1px solid var(--line);background:var(--paper)}
+  .lg.sys{border-width:2px}
+  .lg.man{border-style:dashed;border-width:2px}
+  .lg.stale{border-style:dotted;border-color:#888}
+  .lg.ph{background:repeating-linear-gradient(45deg,#dcdcdc 0 3px,transparent 3px 6px)}
+  .lg.btn{background:var(--fill)}
+  .lg.q{border-style:dotted}
+
+  /* ---------- 流程总览 ---------- */
+  .flowbar{border:1px solid var(--line);background:var(--paper);padding:12px;margin-bottom:20px;overflow-x:auto}
+  .flowbar .t{font-size:12px;font-weight:700;margin-bottom:8px}
+  .flowrow{display:flex;align-items:stretch;gap:0;min-width:max-content}
+  .stg{border:1px solid var(--line);background:var(--fill3);padding:6px 10px;font-size:11.5px;text-align:center;min-width:118px}
+  .stg .n{font-weight:700;font-size:12px}
+  .stg .r{font-size:10.5px;color:#555}
+  .arw{display:flex;align-items:center;padding:0 6px;color:var(--line);font-size:14px}
+
+  /* ---------- 阶段 ---------- */
+  .phase{margin:26px 0 12px;border-left:6px solid var(--line);padding-left:10px}
+  .phase h2{margin:0;font-size:15px}
+  .phase .d{font-size:11.5px;color:#555;margin-top:2px}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:14px}
+  .grid .wide{grid-column:1/-1}
+
+  /* ---------- 单屏 ---------- */
+  .frame{border:1px solid var(--line);background:var(--paper);display:flex;flex-direction:column}
+  .fhead{display:flex;align-items:center;gap:8px;background:var(--fill);border-bottom:1px solid var(--line);padding:6px 8px}
+  .fhead .no{background:var(--line);color:#fff;font-size:11px;padding:1px 6px;font-weight:700}
+  .fhead .nm{font-weight:700;font-size:12.5px}
+  .fhead .tg{margin-left:auto;font-size:10.5px;color:#444;border:1px solid var(--line2);padding:0 4px;background:var(--paper)}
+  .fwire{padding:10px;font-size:11.5px;flex:1}
+  .ffoot{border-top:1px dashed var(--line2);background:var(--fill3);padding:7px 9px;font-size:11px}
+  .ffoot div{margin:2px 0}
+  .ffoot b{font-weight:700}
+
+  /* ---------- 线框元件 ---------- */
+  .win{border:1px solid var(--line);background:var(--paper)}
+  .titlebar{background:var(--fill);border-bottom:1px solid var(--line);padding:3px 6px;font-size:11px;display:flex;gap:8px;align-items:center}
+  .crumbs{font-size:10.5px;color:#555;padding:3px 6px;border-bottom:1px solid var(--line3)}
+  .tabs{display:flex;border-bottom:1px solid var(--line);background:var(--fill2)}
+  .tab{padding:3px 10px;border:1px solid var(--line3);border-bottom:none;font-size:11px;background:var(--paper)}
+  .tab.on{background:var(--paper);border-color:var(--line);font-weight:700;box-shadow:inset 0 2px 0 var(--line)}
+  .tab.new::after{content:"NEW";font-size:8px;border:1px solid var(--line);margin-left:4px;padding:0 2px}
+  .body{padding:8px}
+  .toolbar{display:flex;gap:5px;flex-wrap:wrap;align-items:center;border:1px solid var(--line3);background:var(--fill3);padding:4px;margin-bottom:6px}
+  .btn{border:1px solid var(--line);background:var(--paper);padding:2px 7px;font-size:11px;display:inline-block}
+  .btn.dark{background:var(--line);color:#fff}
+  .btn.dis{border-color:var(--line3);color:#a5a5a5;background:var(--fill2)}
+  .btn.sm{padding:1px 5px;font-size:10.5px}
+  .box{border:1px solid var(--line2);padding:5px;margin-bottom:5px;background:var(--paper)}
+  .box.gray{background:var(--fill2)}
+  .lbl{font-size:10.5px;color:#555;margin-bottom:2px}
+  .ph{border:1px solid var(--line2);background:repeating-linear-gradient(45deg,#e2e2e2 0 4px,transparent 4px 8px);height:46px;margin:4px 0}
+  .ph.sm{height:26px}
+  .ph.tall{height:110px}
+  .sk{background:var(--fill);height:12px;margin:5px 0}
+  .sk.w60{width:60%} .sk.w40{width:40%} .sk.w80{width:80%} .sk.w30{width:30%}
+  .banner{border:1px solid var(--line);border-left:4px solid var(--line);background:var(--fill2);padding:4px 6px;font-size:11px;margin-bottom:6px}
+  .toast{border:1px solid var(--line);background:var(--paper);padding:3px 8px;font-size:11px;display:inline-block;box-shadow:2px 2px 0 var(--line3)}
+  .center{text-align:center}
+  .muted{color:#666}
+  .err{border:1px solid var(--line);background:var(--fill2);padding:5px;font-size:11px}
+  .hr{border-top:1px dashed var(--line2);margin:6px 0}
+
+  /* 表格 */
+  table.tb{border-collapse:collapse;width:100%;font-size:10.5px}
+  table.tb th,table.tb td{border:1px solid var(--line2);padding:2px 4px;text-align:left}
+  table.tb th{background:var(--fill)}
+  tr.hit td{background:var(--fill);font-weight:700}
+  tr.hit td:first-child{box-shadow:inset 3px 0 0 var(--line)}
+
+  /* 画布节点 */
+  .node{border:2px solid var(--line);background:var(--paper);padding:4px 6px;font-size:10.5px;margin:3px 0;min-width:92px}
+  .node .k{font-size:9px;color:#555;display:block}
+  .node.man{border-style:dashed}
+  .node.stale{border-style:dotted;border-color:#888;color:#888}
+  .node.sel{box-shadow:2px 2px 0 var(--line)}
+  .node .pin{font-size:9px;border:1px solid var(--line);padding:0 2px;margin-left:3px}
+  .graph{display:flex;align-items:flex-start;gap:0;padding:6px 0;overflow-x:auto}
+  .gcol{display:flex;flex-direction:column;gap:4px;min-width:104px}
+  .gcol .gt{font-size:9.5px;color:#555;text-align:center;border-bottom:1px solid var(--line3);padding-bottom:2px;margin-bottom:2px}
+  .garw{display:flex;align-items:center;padding:0 4px;font-size:9.5px;color:#555;white-space:nowrap;align-self:center}
+  .side{margin-top:8px;border-top:1px dashed var(--line2);padding-top:6px;display:flex;gap:10px;flex-wrap:wrap}
+
+  /* 抽屉 */
+  .page{display:flex;gap:0;min-height:150px}
+  .canvasside{flex:1;border:1px dashed var(--line2);padding:6px;font-size:10.5px;color:#666}
+  .drawer{width:190px;border:1px solid var(--line);border-left:2px solid var(--line);background:var(--paper);padding:6px;font-size:10.5px}
+  .drawer .dh{font-weight:700;border-bottom:1px solid var(--line);padding-bottom:3px;margin-bottom:5px;font-size:11px}
+  .kv{display:flex;gap:4px;margin:2px 0;font-size:10.5px}
+  .kv .k{color:#555;min-width:52px}
+  .cite{display:inline-block;border:1px solid var(--line);border-radius:50%;width:12px;height:12px;line-height:11px;text-align:center;font-size:8px;vertical-align:super;background:var(--paper)}
+  .qmark{border:1px dotted var(--line);background:var(--fill3);padding:3px 5px;font-size:10.5px;margin-top:5px}
+  .qmark .b{font-weight:700;border:1px solid var(--line);padding:0 3px;margin-right:4px;font-size:9.5px}
+  .msg{border:1px solid var(--line2);padding:4px 6px;margin:4px 0;font-size:10.5px;background:var(--paper)}
+  .msg.me{background:var(--fill2);margin-left:16px}
+  .msg.ai{background:var(--paper);margin-right:10px}
+  .toggle{border:1px solid var(--line);display:inline-flex;font-size:10.5px}
+  .toggle span{padding:1px 7px}
+  .toggle span.on{background:var(--line);color:#fff}
+  .footnote{font-size:10.5px;color:#555;margin-top:10px;border-top:1px dashed var(--line2);padding-top:6px}
+  a{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="doc">
+
+  <div class="masthead">
+    <h1>线索研判画布 · 低保真线框图</h1>
+    <div class="sub">依据 PRD《线索研判画布》V1.0.0（2026-09-13）｜仅表达信息层级、核心文案、按钮位置与页面状态，非正式 UI</div>
+    <div class="meta">
+      覆盖范围：RC-101 ~ RC-402 全部 22 条需求 ｜ 共 10 个阶段、48 屏 ｜
+      画面按<strong>用户真实使用先后顺序</strong>分组平铺，可从头到尾检查流程。<br>
+      标记说明：<strong>［待确认］</strong> = PRD 未说明清楚，未自行补全，需产品确认后回填。
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>图例（低保真约定）</b>
+    <ul>
+      <li><span class="lg sys"></span>系统节点 / 系统边（不可删改）</li>
+      <li><span class="lg man"></span>人工节点 / 人工边（可增删改，虚线）</li>
+      <li><span class="lg stale"></span>失效引用（灰态点线）</li>
+      <li><span class="lg ph"></span>图片 / 图形占位块</li>
+      <li><span class="lg btn"></span>按钮 / 控件</li>
+      <li><span class="lg q"></span>［待确认］点位</li>
+    </ul>
+  </div>
+
+  <div class="flowbar">
+    <div class="t">流程总览（点击阶段跳转）</div>
+    <div class="flowrow">
+      <a href="#p0"><div class="stg"><div class="n">0 · 入口</div><div class="r">线索列表（既有）</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p1"><div class="stg"><div class="n">1 · 首次进入画布</div><div class="r">RC-101 加载/空/失败/降级</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p2"><div class="stg"><div class="n">2 · 画布主区</div><div class="r">RC-101/201/205</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p3"><div class="stg"><div class="n">3 · 规则双视图</div><div class="r">RC-102</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p4"><div class="stg"><div class="n">4 · 反向溯源</div><div class="r">RC-103/104</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p5"><div class="stg"><div class="n">5 · 正向推断</div><div class="r">RC-105</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p6"><div class="stg"><div class="n">6 · 画布编辑</div><div class="r">RC-201/202/203/204</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p7"><div class="stg"><div class="n">7 · 快照回滚</div><div class="r">RC-206</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p8"><div class="stg"><div class="n">8 · 画布问答</div><div class="r">RC-301/302/303</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p9"><div class="stg"><div class="n">9 · 研判报告</div><div class="r">RC-304/305/306</div></div></a>
+      <div class="arw">→</div>
+      <a href="#p10"><div class="stg"><div class="n">10 · 通用异常</div><div class="r">RC-401/402 治理</div></div></a>
+    </div>
+  </div>
+
+  <!-- ============ 阶段 0 ============ -->
+  <div class="phase" id="p0"><h2>阶段 0 · 入口（既有页面，无改动）</h2>
+    <div class="d">用户从既有线索列表进入线索详情。本阶段不新增功能。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">01</span><span class="nm">线索列表页</span><span class="tg">既有 /c/clues</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">孙武侦查官　｜　案件：demoD<span style="margin-left:auto">角色：正兵</span></div>
+          <div class="crumbs">线索列表</div>
+          <div class="body">
+            <div class="toolbar">
+              <span class="lbl">筛选：</span>
+              <span class="btn sm">级别 ▾</span><span class="btn sm">维度 ▾</span>
+              <span class="btn sm">间类 ▾</span><span class="btn sm">状态 ▾</span>
+              <span class="btn sm">搜索</span>
+            </div>
+            <table class="tb">
+              <tr><th>线索</th><th>级别</th><th>间类</th><th>优先级分</th><th>状态</th></tr>
+              <tr class="hit"><td>中标-资金时间窗碰撞 · 张卫国</td><td>可立案依据候选</td><td>反间/因间/生间</td><td>0.880</td><td>待查</td></tr>
+              <tr><td>举报材料线索</td><td>观察</td><td>内间</td><td>0.630</td><td>待查</td></tr>
+              <tr><td>通讯异常聚集</td><td>观察</td><td>生间</td><td>0.600</td><td>查证中</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>全站入口（既有页面，本 PRD 无改动）</div>
+        <div><b>可操作：</b>按级别/维度/间类/状态筛选、搜索、点击某条线索行</div>
+        <div><b>→ 进入：</b>线索详情页（02）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 1 ============ -->
+  <div class="phase" id="p1"><h2>阶段 1 · 首次进入画布：加载 / 空 / 失败 / 降级（RC-101 / RC-207）</h2>
+    <div class="d">首次进入 Tab 触发惰性 seed；本阶段铺满「首次使用、加载中、无数据、失败、异常恢复（降级）」全部状态。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">02</span><span class="nm">线索详情页（Tab 栏）</span><span class="tg">新增 Tab 入口</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">线索详情　｜　中标-资金时间窗碰撞 · 张卫国</div>
+          <div class="crumbs">线索列表 / 线索详情</div>
+          <div class="tabs">
+            <span class="tab">概览</span><span class="tab">证据</span><span class="tab">核查项</span>
+            <span class="tab">书证</span><span class="tab on new">研判画布</span>
+          </div>
+          <div class="body">
+            <div class="box gray">既有内容区（三栏证据 / 处置核查项 / 挂接书证 / 一键复跑）保持不变</div>
+            <div class="center muted" style="padding:10px 0">↓ 点击「研判画布」Tab，首次进入触发画布惰性创建（03）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>阶段 0 → 画布入口</div>
+        <div><b>可操作：</b>切换既有 Tab；点击「研判画布」</div>
+        <div><b>→ 进入：</b>03 画布加载中（首次 seed）／ 09 画布主区（已存在）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">03</span><span class="nm">画布加载中（首次使用 · 骨架屏）</span><span class="tg">RC-101 未创建→加载中</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="banner">正在根据线索事实初始化画布…</div>
+            <div class="ph tall"></div>
+            <div class="sk w80"></div><div class="sk w60"></div><div class="sk w40"></div>
+            <div class="center muted" style="margin-top:8px">GET /clues/{clue_id}/canvas —— 画布不存在，后端 seed_canvas(clue_detail) 生成并落库</div>
+            <div class="qmark"><span class="b">待确认</span>PRD 未定义「首次使用」是否有新手指引/教学浮层；当前仅按骨架屏实现。另：骨架屏是否设超时上限未说明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>首次进入（画布未创建）</div>
+        <div><b>可操作：</b>等待（无操作）</div>
+        <div><b>→ 进入：</b>09 可用画布 ／ 06 空态 ／ 07 语义层未构建 ／ 04 加载失败</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">04</span><span class="nm">画布加载失败（错误态 + 重试）</span><span class="tg">RC-101 错误</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布</div>
+          <div class="body center" style="padding:24px 8px">
+            <div class="ph sm" style="width:120px;margin:0 auto 8px"></div>
+            <div style="font-weight:700">画布加载失败，请重试</div>
+            <div class="muted" style="font-size:10.5px;margin:4px 0 10px">（GET 返回 500 / 网络中断，不空白、不静默）</div>
+            <span class="btn dark">重试</span>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>03 加载中的失败分支（异常恢复入口）</div>
+        <div><b>可操作：</b>点击「重试」重新发起 GET</div>
+        <div><b>→ 进入：</b>09 可用画布（重试成功）／ 回到本屏（仍失败，可再次重试）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">05</span><span class="nm">网络异常（画布未加载）</span><span class="tg">通用文案</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布</div>
+          <div class="body center" style="padding:24px 8px">
+            <div style="font-weight:700">网络异常，画布未加载，请检查连接后重试</div>
+            <div style="margin-top:10px"><span class="btn dark">重试</span></div>
+            <div class="hr"></div>
+            <div class="muted" style="font-size:10.5px">与 04 的区别：本态为网络层不可达，非服务端错误</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>03 的网络异常分支</div>
+        <div><b>可操作：</b>检查网络后「重试」</div>
+        <div><b>→ 进入：</b>09 可用画布 ／ 本屏</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">06</span><span class="nm">画布空态（线索无 source_rows）</span><span class="tg">RC-101 空状态</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布<span style="margin-left:auto"><span class="btn sm">快照</span><span class="btn sm">问答</span><span class="btn sm">研判报告</span></span></div>
+          <div class="body">
+            <div class="graph">
+              <div class="gcol"><div class="gt">规则</div><div class="node"><span class="k">rule</span>R1 中标-资金时间窗碰撞</div></div>
+              <div class="garw">手册建议→</div>
+              <div class="gcol"><div class="gt">待核实</div><div class="node man"><span class="k">verify_item</span>建议：核实资金流向</div></div>
+            </div>
+            <div class="banner">暂无可溯源事实，请先在「核查工作区」补充或运行检测</div>
+            <div class="center muted">（仅生成规则节点 + 待核实节点，不生成数据行/数据源层）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>03 的成功但无数据分支</div>
+        <div><b>可操作：</b>查看规则节点、生成手册核实建议、手动添加假设/备注；按提示去核查工作区补数据</div>
+        <div><b>→ 进入：</b>13 规则节点抽屉 ／ 23 手册建议 ／ 28 添加假设</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">07</span><span class="nm">语义层未构建（顶部横幅）</span><span class="tg">RC-101 降级提示</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="banner">语义层未构建，实体关联暂不可用；数据行溯源仍可使用</div>
+            <div class="graph">
+              <div class="gcol"><div class="gt">规则</div><div class="node"><span class="k">rule</span>R1</div></div>
+              <div class="garw">命中→</div>
+              <div class="gcol"><div class="gt">事实</div><div class="node"><span class="k">fact</span>F1</div><div class="node"><span class="k">fact</span>F2</div></div>
+              <div class="garw">（对象层跳过）</div>
+              <div class="gcol"><div class="gt">数据行</div><div class="node"><span class="k">source_row</span>行 1</div></div>
+            </div>
+            <div class="muted" style="font-size:10.5px">对象层节点跳过，事实/数据行仍生成</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>03 的成功但语义层缺失分支</div>
+        <div><b>可操作：</b>正常使用事实/数据行溯源；按提示到数据治理构建语义层</div>
+        <div><b>→ 进入：</b>16 事实抽屉 ／ 22 实体关联不可用</div>
+      </div>
+    </div>
+
+    <div class="frame wide">
+      <div class="fhead"><span class="no">08</span><span class="nm">G6 降级视图（节点-关系列表）</span><span class="tg">RC-207 异常恢复</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判画布<span style="margin-left:auto"><span class="btn sm">快照</span><span class="btn sm">问答</span><span class="btn sm">研判报告</span><span class="btn sm dark">重试图形视图</span></span></div>
+          <div class="body">
+            <div class="banner">图形渲染组件加载失败，已切换为列表视图；核心研判动作不受影响</div>
+            <div class="box"><span class="lbl">节点（按类型分组）</span>
+              <table class="tb">
+                <tr><th>分组</th><th>节点</th><th>ref</th><th>操作</th></tr>
+                <tr><td>规则</td><td>R1 中标-资金时间窗碰撞</td><td>rule_001</td><td><span class="btn sm">详情</span><span class="btn sm">生成建议</span></td></tr>
+                <tr><td>事实</td><td>F1 张卫国中标前后资金往来</td><td>fact#1</td><td><span class="btn sm">详情</span><span class="btn sm">查看来源行</span></td></tr>
+                <tr><td>实体</td><td>张卫国（person）</td><td>person:12</td><td><span class="btn sm">详情</span><span class="btn sm">展开关联</span></td></tr>
+                <tr><td>数据行</td><td>行 1 · 银行流水#1023</td><td>row_uri…</td><td><span class="btn sm">字段表</span><span class="btn sm">所属文件</span></td></tr>
+                <tr><td>数据源</td><td>银行流水.parquet</td><td>upload_0134</td><td><span class="btn sm">文件卡</span></td></tr>
+                <tr><td>假设</td><td>H 资金过桥（人工）</td><td>cn_a1</td><td><span class="btn sm">编辑</span><span class="btn sm">删除</span></td></tr>
+              </table>
+            </div>
+            <div class="box"><span class="lbl">关系</span>
+              <table class="tb">
+                <tr><th>源</th><th>关系</th><th>目标</th><th>类型</th><th>操作</th></tr>
+                <tr><td>R1</td><td>命中</td><td>F1</td><td>系统边（锁定）</td><td>—</td></tr>
+                <tr><td>F1</td><td>推断为</td><td>H 资金过桥</td><td>人工边</td><td><span class="btn sm">改</span><span class="btn sm">删</span></td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 画布主区的降级分支（G6 动态 import / 渲染异常）</div>
+        <div><b>可操作：</b>行内按钮完成展开溯源、创建假设、发起问答（编辑能力按只读权限收敛）、「重试图形视图」</div>
+        <div><b>→ 进入：</b>09 画布主区（重试成功）／ 16 事实抽屉 ／ 38 问答侧栏 ／ 本屏（重试失败）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 2 ============ -->
+  <div class="phase" id="p2"><h2>阶段 2 · 画布主区（可用态）与自动保存（RC-101 / RC-201 / RC-205）</h2>
+    <div class="d">dagre 左→右分层：规则 → 事实/对象 → 数据行 → 数据源；待核实/书证/假设/备注挂在规则与假设侧。</div></div>
+  <div class="grid">
+
+    <div class="frame wide">
+      <div class="fhead"><span class="no">09</span><span class="nm">画布主区（业务视图 · 可用）</span><span class="tg">RC-101 / RC-201</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">线索详情　｜　中标-资金时间窗碰撞 · 张卫国
+            <span style="margin-left:auto"><span class="btn sm">快照</span><span class="btn sm">问答</span><span class="btn sm">研判报告</span></span>
+          </div>
+          <div class="tabs"><span class="tab">概览</span><span class="tab">证据</span><span class="tab">核查项</span><span class="tab">书证</span><span class="tab on new">研判画布</span></div>
+          <div class="body">
+            <div class="toolbar">
+              <span class="btn sm dark">重新排版</span><span class="btn sm">适应屏幕</span>
+              <span class="btn sm">缩放 ──●──</span>
+              <span class="toggle"><span class="on">业务视图</span><span>审计视图</span></span>
+              <span style="margin-left:auto;font-size:10.5px;color:#555">自动保存：<b>已保存</b></span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <div class="box gray" style="width:96px;flex:none"><span class="lbl">工具箱</span>
+                <div class="node man" style="min-width:0"><span class="k">+ 添加假设</span>假设</div>
+                <div class="node man" style="min-width:0"><span class="k">+ 添加备注</span>备注</div>
+                <div class="node" style="min-width:0"><span class="k">扩展查询</span>白名单 Function</div>
+              </div>
+              <div class="box" style="flex:1">
+                <div class="graph">
+                  <div class="gcol"><div class="gt">规则</div>
+                    <div class="node sel"><span class="k">rule</span>R1 中标-资金时间窗碰撞</div>
+                  </div>
+                  <div class="garw">命中→</div>
+                  <div class="gcol"><div class="gt">事实</div>
+                    <div class="node"><span class="k">fact</span>F1 张卫国中标前后资金往来</div>
+                    <div class="node"><span class="k">fact</span>F2 华清越同期资金</div>
+                  </div>
+                  <div class="garw">涉及→</div>
+                  <div class="gcol"><div class="gt">实体</div>
+                    <div class="node"><span class="k">object</span>张卫国 person:12</div>
+                    <div class="node"><span class="k">object</span>华清越 person:31</div>
+                  </div>
+                  <div class="garw">来源行→</div>
+                  <div class="gcol"><div class="gt">数据行</div>
+                    <div class="node"><span class="k">source_row</span>银行流水#1023</div>
+                    <div class="node"><span class="k">source_row</span>银行流水#1088</div>
+                  </div>
+                  <div class="garw">所属文件→</div>
+                  <div class="gcol"><div class="gt">数据源</div>
+                    <div class="node"><span class="k">source_file</span>银行流水.parquet</div>
+                  </div>
+                </div>
+                <div class="side">
+                  <div class="node man"><span class="k">hypothesis</span>H1 资金过桥假设<span class="pin">已钉住</span></div>
+                  <div class="node man"><span class="k">note</span>备注：需补房产数据</div>
+                  <div class="node"><span class="k">verify_item</span>待核实：核实资金回流</div>
+                  <div class="node"><span class="k">evidence</span>书证：中标公告.pdf</div>
+                  <div class="node"><span class="k">function_result</span>查询结果：资金追踪</div>
+                </div>
+                <div class="hr"></div>
+                <div class="muted" style="font-size:10.5px">
+                  交互：拖动节点 → 松手钉住 → 500ms 防抖自动保存；hover 节点显示连接桩；单击节点开抽屉；系统边锁定不可改删。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>画布主状态（seed 成功 / 重试成功 / 回滚完成后的落点）</div>
+        <div><b>可操作：</b>拖动钉住、重新排版、适应屏幕、缩放平移、视图切换；工具箱添加假设/备注/扩展查询；单击节点开抽屉；工具栏快照/问答/研判报告</div>
+        <div><b>→ 进入：</b>13/14 规则抽屉、16 事实抽屉、28 添加假设、30 连线、32 扩展查询、34 快照条、38 问答、43 报告面板</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">10</span><span class="nm">自动保存状态机（5 态）</span><span class="tg">RC-205</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">画布右上角 · 保存指示</div>
+          <div class="body">
+            <table class="tb">
+              <tr><th>状态</th><th>触发</th><th>用户可见</th></tr>
+              <tr><td>idle</td><td>无改动</td><td>—（不显示）</td></tr>
+              <tr><td>pending</td><td>改动后计时中</td><td>编辑中…</td></tr>
+              <tr><td>saving</td><td>请求中</td><td>保存中…</td></tr>
+              <tr class="hit"><td>saved</td><td>成功</td><td>已保存（toast 2s）</td></tr>
+              <tr><td>error</td><td>失败</td><td>保存失败，重试</td></tr>
+            </table>
+            <div class="hr"></div>
+            <div class="toast">已保存</div>
+            <div class="muted" style="font-size:10.5px;margin-top:6px">连续改动 500ms 内合并为 1 次保存；保存中继续操作则重新计时。</div>
+            <div class="qmark"><span class="b">待确认</span>版本冲突（他人已更新）采用「后写覆盖并提示」，但<strong>提示的 UI 形态</strong>（toast / 弹窗 / 横幅）PRD 未指定。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>贯穿 09 及全部编辑动作之后台状态</div>
+        <div><b>可操作：</b>error 态点击「重试」</div>
+        <div><b>→ 进入：</b>11 保存失败 ／ 回到 saved（重试成功）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">11</span><span class="nm">保存失败（本地保留 + 重试）</span><span class="tg">RC-205 error</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="banner">保存失败，改动保留在本地，可重试</div>
+            <div class="center" style="margin-top:6px"><span class="btn dark">重试保存</span></div>
+            <div class="hr"></div>
+            <div class="muted" style="font-size:10.5px">要求：失败时本地改动不丢失，重试成功后一致；刷新后与最后一次 saved 一致。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>10 的 error 分支</div>
+        <div><b>可操作：</b>「重试保存」（也支持自动重试）</div>
+        <div><b>→ 进入：</b>10 saved ／ 本屏（仍失败）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">12</span><span class="nm">只读权限态（编辑控件收敛）</span><span class="tg">RC-402 / RC-201</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布　｜　角色：只读</div>
+          <div class="body">
+            <div class="toolbar">
+              <span class="btn sm">重新排版</span><span class="btn sm">适应屏幕</span>
+              <span class="btn sm dis">+ 添加假设</span><span class="btn sm dis">+ 添加备注</span><span class="btn sm">问答</span>
+            </div>
+            <div class="banner">当前角色为只读，可查看画布与溯源，编辑控件已停用</div>
+            <div class="ph sm"></div>
+            <div class="muted" style="font-size:10.5px">拖拽是否落库：接口 403 或前端禁用拖拽态，PRD 注明「二选一实现」。</div>
+            <div class="qmark"><span class="b">待确认</span>可编辑的<strong>具体角色枚举</strong>（PRD 仅给建议值「正兵及以上可编辑」）；只读态下拖拽采用哪一种实现未定。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 的权限受限变体</div>
+        <div><b>可操作：</b>查看、展开溯源、缩放平移、快照查看（读类）；写类控件置灰</div>
+        <div><b>→ 进入：</b>33 权限不足提示（尝试写操作）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 3 ============ -->
+  <div class="phase" id="p3"><h2>阶段 3 · 规则节点双视图（RC-102）</h2>
+    <div class="d">单击规则节点开抽屉：默认业务视图（不含技术标识），可切审计视图（只读）。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">13</span><span class="nm">规则节点抽屉 · 业务视图</span><span class="tg">RC-102</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区（规则节点选中态）</div>
+          <div class="drawer">
+            <div class="dh">规则 · R1</div>
+            <div class="kv"><span class="k">判据</span><span>中标公示日前后 N 天内出现同额资金往来</span></div>
+            <div class="kv"><span class="k">依据</span><span>规则手册 rule_text</span></div>
+            <div class="hr"></div>
+            <div class="toggle"><span class="on">业务视图</span><span>审计视图</span></div>
+            <div class="hr"></div>
+            <span class="btn sm dark">生成手册核实建议</span>
+            <div class="muted" style="font-size:10px;margin-top:5px">业务视图不出现 rule_id / function / SQL 等技术标识</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 → 单击 rule 节点</div>
+        <div><b>可操作：</b>阅读判据与依据；切「审计视图」；「生成手册核实建议」</div>
+        <div><b>→ 进入：</b>14 审计视图 ／ 23 手册建议节点</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">14</span><span class="nm">规则节点抽屉 · 审计视图</span><span class="tg">RC-102</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">规则 · R1</div>
+            <div class="toggle"><span>业务视图</span><span class="on">审计视图</span></div>
+            <div class="hr"></div>
+            <div class="lbl">审计信息（仅供排查，不影响研判结论）</div>
+            <div class="kv"><span class="k">rule_id</span><span>rule_time_window_collision</span></div>
+            <div class="kv"><span class="k">function</span><span>time_window_collision</span></div>
+            <div class="kv"><span class="k">params</span><span>window_days=10, min_amount=…</span></div>
+            <div class="kv"><span class="k">版本</span><span>rules.json@v3</span></div>
+            <div class="hr"></div>
+            <span class="btn sm">↗ 在规则页维护（外链）</span>
+            <div class="muted" style="font-size:10px;margin-top:5px">画布内无规则编辑控件</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>13 的视图切换态</div>
+        <div><b>可操作：</b>只读查看技术字段；外链跳既有规则页</div>
+        <div><b>→ 进入：</b>既有规则页（画布外）／ 13 业务视图</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">15</span><span class="nm">规则缺判据 / 历史线索占位</span><span class="tg">RC-101/102 异常</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">规则 · 未关联规则（历史产物）</div>
+            <div class="err">该规则未填写自然语言判据，详见审计视图</div>
+            <div class="hr"></div>
+            <div class="node stale"><span class="k">rule（占位）</span>历史线索</div>
+            <div class="muted" style="font-size:10px;margin-top:6px">detail 无 rule_id/rules 时，缺省生成占位节点，不报错</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>03 seed 的异常分支 → 09 中的占位节点</div>
+        <div><b>可操作：</b>查看占位说明、切审计视图</div>
+        <div><b>→ 进入：</b>14 审计视图</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 4 ============ -->
+  <div class="phase" id="p4"><h2>阶段 4 · 反向逐层溯源下钻（RC-103 / RC-104）</h2>
+    <div class="d">事实 → 对象/链接 → 数据行（row_uri）→ 数据源文件；字段按 PolicyEngine 呈现 visible / masked / denied。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">16</span><span class="nm">事实节点抽屉</span><span class="tg">RC-103</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区（事实节点选中）</div>
+          <div class="drawer">
+            <div class="dh">事实 · F1</div>
+            <div class="box gray">张卫国在项目「测试路改造A」中标前后存在同额资金往来</div>
+            <div class="lbl">命中字段（琥珀高亮）</div>
+            <table class="tb">
+              <tr class="hit"><td>金额</td><td>100000</td></tr>
+              <tr class="hit"><td>偏移天数</td><td>-3</td></tr>
+              <tr><td>项目</td><td>测试路改造A</td></tr>
+            </table>
+            <div class="hr"></div>
+            <span class="btn sm dark">查看来源行</span>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 → 单击 fact 节点</div>
+        <div><b>可操作：</b>查看事实文本与命中字段；「查看来源行」展开下一层</div>
+        <div><b>→ 进入：</b>17 展开中 → 18 数据行字段表</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">17</span><span class="nm">展开中（节点 loading）</span><span class="tg">RC-103 expanding</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="graph">
+              <div class="gcol"><div class="gt">事实</div><div class="node"><span class="k">fact</span>F1 ⟳ 正在追溯来源…</div></div>
+              <div class="garw">···</div>
+              <div class="gcol"><div class="gt">（待展开）</div><div class="node stale"><span class="k">—</span>加载中</div></div>
+            </div>
+            <div class="center muted" style="margin-top:8px">正在追溯来源…（POST /canvas/expand，懒加载）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>16 → 点击展开后的过渡态</div>
+        <div><b>可操作：</b>等待（无操作）</div>
+        <div><b>→ 进入：</b>18 字段表 ／ 19 归档缺失 ／ 21 展开失败 ／ 22 语义层不可用</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">18</span><span class="nm">数据行字段表（含遮蔽）</span><span class="tg">RC-104</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">数据行 · 银行流水#1023</div>
+            <div class="crumbs">F1 › 张卫国 › 行#1023</div>
+            <table class="tb">
+              <tr><th>字段</th><th>值</th><th>可见性</th></tr>
+              <tr class="hit"><td>金额</td><td>100000</td><td>visible</td></tr>
+              <tr><td>交易日期</td><td>2022-04-28</td><td>visible</td></tr>
+              <tr><td>手机号</td><td>138****5678</td><td>masked</td></tr>
+              <tr><td>身份证号</td><td>****</td><td>denied</td></tr>
+            </table>
+            <div class="hr"></div>
+            <span class="btn sm">所属文件</span>
+            <div class="muted" style="font-size:10px;margin-top:5px">denied 不送明文；masked 沿用 MaskedField 口径，不双重遮蔽</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>17 成功分支（已展开）</div>
+        <div><b>可操作：</b>查看字段（命中高亮）、「所属文件」继续下钻、点击折叠</div>
+        <div><b>→ 进入：</b>20 数据源文件卡（叶子）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">19</span><span class="nm">归档行缺失（异常可恢复）</span><span class="tg">RC-103</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">数据行 · 行 URI 解析失败</div>
+            <div class="err">归档行缺失（URI：row://…#1023），可能数据版本已更新</div>
+            <div class="box gray" style="font-size:10px">回显 row_uri 原文（不空白）</div>
+            <div class="muted" style="font-size:10px;margin-top:6px">任一层失败不破坏已渲染图层，错误只作用于当前节点</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>17 的失败分支之一</div>
+        <div><b>可操作：</b>查看 URI 原文；返回上层重新展开</div>
+        <div><b>→ 进入：</b>16 上层节点 ／ 重新展开回到 17</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">20</span><span class="nm">数据源文件卡（叶子节点）</span><span class="tg">RC-103</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">数据源 · 银行流水.parquet</div>
+            <div class="kv"><span class="k">文件名</span><span>银行流水.parquet</span></div>
+            <div class="kv"><span class="k">格式</span><span>parquet</span></div>
+            <div class="kv"><span class="k">行数</span><span>1,204</span></div>
+            <div class="kv"><span class="k">上传人</span><span>张警官</span></div>
+            <div class="kv"><span class="k">上传时间</span><span>2026-09-01 10:22</span></div>
+            <div class="hr"></div>
+            <div class="center muted" style="font-size:10.5px">已到达数据源文件，溯源结束</div>
+            <div class="qmark"><span class="b">待确认</span>数据源未登记时降级为「dataset 名文本节点（不可展开）」并标注「未登记数据源」——该标注在卡片中的具体位置未说明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>18 → 已到达末端（溯源链路终点）</div>
+        <div><b>可操作：</b>查看文件元信息（只读）；返回</div>
+        <div><b>→ 进入：</b>回到 09 画布主区（溯源完成）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">21</span><span class="nm">展开失败（红角标 + 重试）</span><span class="tg">RC-103 expand_failed</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="graph">
+              <div class="gcol"><div class="gt">对象</div>
+                <div class="node" style="border-color:#000;box-shadow:2px 2px 0 #000"><span class="k">object ⚠</span>张卫国（失败）</div>
+              </div>
+            </div>
+            <div class="center" style="margin-top:8px"><span class="btn dark sm">重试展开</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center">失败只作用于当前节点，已渲染图层不受影响</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>17 的失败分支（异常恢复）</div>
+        <div><b>可操作：</b>「重试展开」</div>
+        <div><b>→ 进入：</b>18 成功 ／ 本屏（仍失败）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">22</span><span class="nm">实体关联不可用（语义表缺失）</span><span class="tg">RC-103 降级</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer">
+            <div class="dh">对象 · 关联展开</div>
+            <div class="err">实体关联不可用，请先在数据治理中构建语义层</div>
+            <div class="muted" style="font-size:10px;margin-top:6px">不返回 500；引导运行构建</div>
+            <div class="qmark"><span class="b">待确认</span>对象节点「展开关联」返回一跳邻居，是否提供「展开更多（二跳+）」入口未说明；一跳数量上限未说明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>17 的降级分支</div>
+        <div><b>可操作：</b>按提示到数据治理构建语义层后重试</div>
+        <div><b>→ 进入：</b>构建完成后回到 17（重试成功）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 5 ============ -->
+  <div class="phase" id="p5"><h2>阶段 5 · 正向推断与待核实生成（RC-105）</h2>
+    <div class="d">规则节点按 playbook 生成建议 → 采纳走既有 202 TASK_VERIFY 流程；LLM 建议一律经 proposals 审批。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">23</span><span class="nm">手册建议节点（未采纳 · 虚线）</span><span class="tg">RC-105</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="graph">
+              <div class="gcol"><div class="gt">规则</div><div class="node"><span class="k">rule</span>R1</div></div>
+              <div class="garw">手册建议→</div>
+              <div class="gcol"><div class="gt">待核实（建议）</div>
+                <div class="node man sel"><span class="k">verify_item · adopted=false</span>建议：核实资金是否在中标后回流<br><span class="btn sm dark">采纳为核查项</span><span class="btn sm">忽略</span></div>
+              </div>
+            </div>
+            <div class="muted" style="font-size:10.5px">建议节点 system=true、ref=playbook_id；未采纳前不出现在核查工作台</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>13 →「生成手册核实建议」成功</div>
+        <div><b>可操作：</b>「采纳为核查项」「忽略」</div>
+        <div><b>→ 进入：</b>24 采纳确认 ／ 26 无匹配提示（未生成时）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">24</span><span class="nm">采纳确认弹窗（走 202 任务）</span><span class="tg">RC-105</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">采纳为核查项</div>
+          <div class="body">
+            <div class="box gray">建议内容：核实资金是否在中标后回流（文本默认带入，可编辑）</div>
+            <div class="lbl">核查渠道</div><div class="box">银行流水调取</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">确认采纳</span>　<span class="btn">取消</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center;margin-top:6px">确认后：POST verify-items → 202 task → 终态后刷新节点</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>23 → 点击「采纳为核查项」</div>
+        <div><b>可操作：</b>确认采纳 / 取消</div>
+        <div><b>→ 进入：</b>25 采纳中（202 等待）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">25</span><span class="nm">采纳中 / 采纳失败（任务态）</span><span class="tg">RC-105 202</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布</div>
+          <div class="body">
+            <div class="node man"><span class="k">verify_item</span>⟳ 采纳中…（等待任务终态）</div>
+            <div class="hr"></div>
+            <div class="node" style="border-color:#000;box-shadow:2px 2px 0 #000"><span class="k">verify_item ⚠</span>采纳失败：任务 FAILED<br><span class="muted" style="font-size:10px">错误原因：写入核查项超时</span></div>
+            <div class="center" style="margin-top:6px"><span class="btn dark sm">重试</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center">无假成功：终态失败时节点状态可回退/重试</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>24 确认后的任务等待 / 失败分支</div>
+        <div><b>可操作：</b>等待；失败时「重试」</div>
+        <div><b>→ 进入：</b>09（采纳成功，节点变已采纳 ref=item_id）／ 本屏重试</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">26</span><span class="nm">无匹配 playbook 提示</span><span class="tg">RC-105 空态</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">生成手册核实建议</div>
+          <div class="body center" style="padding:16px 8px">
+            <div class="ph sm" style="width:100px;margin:0 auto 8px"></div>
+            <div>手册暂无该规则的核实建议，可手工添加假设</div>
+            <div style="margin-top:10px"><span class="btn dark">添加假设</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>13 → 建议生成为空的分支</div>
+        <div><b>可操作：</b>「添加假设」手工补充</div>
+        <div><b>→ 进入：</b>28 添加假设表单</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">27</span><span class="nm">人工假设「转为待核实」确认</span><span class="tg">RC-105</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">转为待核实</div>
+          <div class="body">
+            <div class="box gray">待核实内容（默认带入假设内容，可编辑）：<br>「资金疑似经华清越账户过桥回流」</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">确认提交</span>　<span class="btn">取消</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center;margin-top:6px">与采纳同样走 202 流程；此为人工直连路径，不经 LLM 审批</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 → 假设节点操作</div>
+        <div><b>可操作：</b>确认提交 / 取消</div>
+        <div><b>→ 进入：</b>25 任务态 → 09（节点变为待核实）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 6 ============ -->
+  <div class="phase" id="p6"><h2>阶段 6 · 画布编辑：人工节点 / 连线 / 扩展查询（RC-201 / 202 / 203 / 204）</h2>
+    <div class="d">人工节点可增删改；连线受 4 类人工关系合法性矩阵约束；扩展查询走白名单只读 Function。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">28</span><span class="nm">添加假设（含校验错误）</span><span class="tg">RC-202</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">添加假设</div>
+          <div class="body">
+            <div class="lbl">假设标题（必填，1–50）</div>
+            <div class="box gray">［输入框为空］</div>
+            <div class="err" style="border-color:#000">请填写假设标题</div>
+            <div class="lbl">假设内容（必填，1–500）</div>
+            <div class="box gray">资金疑似经华清越账户过桥回流</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">保存</span>　<span class="btn">取消</span></div>
+            <div class="muted" style="font-size:10.5px;margin-top:6px">也可从工具箱拖到画布落点；新增节点落在画布中心（拖动时为落点）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 工具箱「添加假设」／ 26 无匹配后引导</div>
+        <div><b>可操作：</b>填写标题/内容、保存、取消</div>
+        <div><b>→ 进入：</b>09（画布新增假设节点 + 自动保存）／ 本屏（校验不通过）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">29</span><span class="nm">删除确认（含连线级联）</span><span class="tg">RC-202</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">删除确认</div>
+          <div class="body">
+            <div class="box gray">该节点关联 3 条连线，删除后连线一并移除，确认删除？</div>
+            <div class="hr"></div>
+            <div class="muted" style="font-size:10.5px">无连线时文案：删除该节点？此操作记入审计，可通过快照回滚恢复</div>
+            <div class="center" style="margin-top:8px"><span class="btn dark">确认删除</span>　<span class="btn">取消</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 → 人工节点「删除」二次确认</div>
+        <div><b>可操作：</b>确认删除 / 取消</div>
+        <div><b>→ 进入：</b>09（级联删除人工边，系统边保留）；误删可经 34 快照回滚</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">30</span><span class="nm">连线交互（连接桩 + 关系气泡）</span><span class="tg">RC-203</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布 · 拉线中</div>
+          <div class="body">
+            <div class="graph">
+              <div class="gcol"><div class="gt">事实</div><div class="node"><span class="k">fact</span>F1 ●桩</div></div>
+              <div class="garw">- - - ▸</div>
+              <div class="gcol"><div class="gt">假设</div><div class="node man sel"><span class="k">hypothesis</span>H1 资金过桥</div></div>
+            </div>
+            <div class="box" style="margin-top:6px"><span class="lbl">选择关系（4 类人工关系）</span>
+              <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:4px">
+                <span class="btn sm dark">推断为</span><span class="btn sm">证实</span><span class="btn sm">查否</span><span class="btn sm">补充说明</span>
+              </div>
+              <div class="lbl" style="margin-top:5px">备注（选填，≤200）</div><div class="box gray">　</div>
+            </div>
+            <div class="muted" style="font-size:10.5px">合法性矩阵：fact/object→hypothesis=推断为；verify_item/evidence→hypothesis=证实·查否；note→任意=补充说明；任意→note 不允许</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 hover 节点 → 拖连接桩 → 松开</div>
+        <div><b>可操作：</b>选择关系类型、填备注、确认创建</div>
+        <div><b>→ 进入：</b>09（新增人工边并自动保存）／ 31 非法拒绝</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">31</span><span class="nm">非法连线 / 重复边 / 系统边锁定</span><span class="tg">RC-203 拒绝态</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布 · 拒连</div>
+          <div class="body">
+            <div class="node" style="border-color:#000"><span class="k">目标节点（红色拒连）</span>source_row 行#1023</div>
+            <div class="err" style="border-color:#000">该两类节点不能建立该关系</div>
+            <div class="hr"></div>
+            <div class="err">该关系已存在（重复边拒绝）</div>
+            <div class="err">系统推断关系不可修改或删除</div>
+            <div class="muted" style="font-size:10.5px">通用拒绝：自连；同两端同关系重复边；source_file / source_row 作为人工关系目标</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>30 的非法分支</div>
+        <div><b>可操作：</b>取消拉线，另选合法目标/关系</div>
+        <div><b>→ 进入：</b>回到 30 重新连线 ／ 09 放弃</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">32</span><span class="nm">扩展查询（白名单 Function）</span><span class="tg">RC-204 P1</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">扩展查询 · 资金追踪</div>
+          <div class="body">
+            <div class="lbl">业务化参数表单（由 functions.json 动态生成，不暴露 SQL/技术细节）</div>
+            <div class="box"><span class="lbl">主体</span><div class="box gray">张卫国</div></div>
+            <div class="box"><span class="lbl">时间窗（数值校验）</span><div class="box gray">10</div></div>
+            <div class="box"><span class="lbl">方向（枚举下拉）</span><div class="box gray">转入 ▾</div></div>
+            <div class="err" style="border-color:#000">参数非法：方向取值不在允许范围（拒绝自由文本）</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">执行查询</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center">成功 → 画布新增 function_result 节点（可继续溯源）；语义表缺失 → 提示「数据源未接入」，不产生空节点；超时转 202 任务</div>
+            <div class="qmark"><span class="b">待确认</span>画布开放的<strong>白名单 Function 具体清单</strong>PRD 仅举例「如资金追踪类」，未列明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 工具箱「扩展查询」</div>
+        <div><b>可操作：</b>选择查询项、填参数、执行</div>
+        <div><b>→ 进入：</b>09（结果节点落画布 + 审计）／ 本屏（参数报错）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">33</span><span class="nm">权限不足（写操作被拒）</span><span class="tg">RC-402</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">操作被拒绝</div>
+          <div class="body center" style="padding:14px 8px">
+            <div>当前角色无此操作权限；如需开通请联系案件管理员</div>
+            <div class="hr"></div>
+            <div class="muted" style="font-size:10.5px">接口返回 403；尝试编辑/删除系统节点同样返回 4xx 并记审计</div>
+            <div class="qmark" style="text-align:left"><span class="b">待确认</span>PRD 只给出该文案，<strong>是否存在权限申请入口/申请流程</strong>未定义（是否可一键提交开通申请未提供）。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>12 只读态下的写操作 / 系统节点被编辑</div>
+        <div><b>可操作：</b>关闭提示，联系案件管理员</div>
+        <div><b>→ 进入：</b>回到 09（操作未生效）</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 7 ============ -->
+  <div class="phase" id="p7"><h2>阶段 7 · 快照与回滚（RC-206）</h2>
+    <div class="d">快照为不可变完整文档（节点+边+坐标+人工内容版本）；回滚产生新版本，可再滚回。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">34</span><span class="nm">快照条（列表 + 创建）</span><span class="tg">RC-206</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">快照</div>
+          <div class="body">
+            <div class="box"><span class="lbl">快照备注（必填，1–100）</span><div class="box gray">初稿研判完成</div>
+              <div class="center" style="margin-top:5px"><span class="btn dark sm">创建快照</span></div></div>
+            <table class="tb">
+              <tr><th>版本</th><th>时间</th><th>来源</th><th>备注</th><th>操作</th></tr>
+              <tr><td>S3</td><td>09-13 15:20</td><td>manual</td><td>初稿研判完成</td><td><span class="btn sm">预览</span><span class="btn sm">回滚</span></td></tr>
+              <tr><td>S2</td><td>09-13 14:02</td><td>report</td><td>报告 v2 关联快照</td><td><span class="btn sm">预览</span><span class="btn sm">回滚</span></td></tr>
+              <tr><td>S1</td><td>09-13 10:11</td><td>manual</td><td>seed 基线</td><td><span class="btn sm">预览</span><span class="btn sm">回滚</span></td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 工具栏「快照」</div>
+        <div><b>可操作：</b>填备注创建快照（立即，非防抖）；列表「预览」「回滚到此版本」</div>
+        <div><b>→ 进入：</b>35 预览 ／ 36 回滚确认</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">35</span><span class="nm">快照预览（只读 + 差异摘要）</span><span class="tg">RC-206</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">快照 S3 预览（只读）</div>
+          <div class="body">
+            <div class="banner">预览为只读；与当前画布的差异摘要如下</div>
+            <div class="box gray">+ 新增假设节点 1 个｜+ 新增人工边 2 条｜～ 移动节点 4 个｜− 删除备注节点 1 个</div>
+            <div class="ph sm"></div>
+            <div class="center"><span class="btn sm">回滚到此版本</span>　<span class="btn sm">关闭</span></div>
+            <div class="qmark"><span class="b">待确认</span>差异摘要的<strong>具体字段与粒度</strong>（按节点/边计数？是否含坐标变化）PRD 未定义。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>34 →「预览」</div>
+        <div><b>可操作：</b>查看差异；「回滚到此版本」「关闭」</div>
+        <div><b>→ 进入：</b>36 回滚确认 ／ 回到 34</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">36</span><span class="nm">回滚二次确认</span><span class="tg">RC-206</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">回滚到 S3</div>
+          <div class="body">
+            <div class="box gray">回滚将把当前画布整体替换为该快照内容；当前状态会先自动存为恢复点，可再次滚回。</div>
+            <div class="center" style="margin-top:8px"><span class="btn dark">确认回滚</span>　<span class="btn">取消</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center;margin-top:6px">回滚只回滚画布表达层，不回滚业务事实（如核实项裁决）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>34/35 →「回滚到此版本」</div>
+        <div><b>可操作：</b>确认回滚 / 取消</div>
+        <div><b>→ 进入：</b>09（重渲染到快照版本）／ 37 失效引用灰态</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">37</span><span class="nm">回滚后失效引用（灰态）</span><span class="tg">RC-206 stale</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布（已回滚）</div>
+          <div class="body">
+            <div class="node stale"><span class="k">verify_item</span>引用已失效</div>
+            <div class="node stale"><span class="k">object</span>引用已失效</div>
+            <div class="muted" style="font-size:10.5px">快照引用的对象后续已不存在 → 节点灰态展示，不导致整图报错</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>36 回滚后的异常表现</div>
+        <div><b>可操作：</b>查看灰态节点；删除或保留；继续研判</div>
+        <div><b>→ 进入：</b>09 继续编辑 ／ 34 再次回滚</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 8 ============ -->
+  <div class="phase" id="p8"><h2>阶段 8 · 画布只读问答与建议转审批（RC-301 / 302 / 303）</h2>
+    <div class="d">同步接口、强制引用、无据内容进「待核实」；建议必须经 proposals 审批才落节点。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">38</span><span class="nm">问答侧栏 · 空会话（推荐问题）</span><span class="tg">RC-301 空态</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer" style="width:200px">
+            <div class="dh">画布问答（只读）</div>
+            <div class="muted" style="font-size:10px">就当刻画布提问，回答带引用角标</div>
+            <div class="hr"></div>
+            <div class="lbl">推荐问题</div>
+            <div class="msg">这条线索最关键的待核实点是什么？</div>
+            <div class="msg">哪些事实已有数据行支撑？</div>
+            <div class="msg">现有证据能否证实假设？</div>
+            <div class="hr"></div>
+            <div class="box gray">输入问题（≤500 字）</div>
+            <div class="center"><span class="btn dark sm">发送</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 工具栏「问答」→ 首次展开</div>
+        <div><b>可操作：</b>点推荐问题或输入问题后发送</div>
+        <div><b>→ 进入：</b>39 带引用回答 ／ 40 失败 ／ 41 LLM 关闭</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">39</span><span class="nm">问答 · 带引用回答</span><span class="tg">RC-301/302</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区（引用点击 → 高亮并定位节点）</div>
+          <div class="drawer" style="width:200px">
+            <div class="dh">画布问答</div>
+            <div class="msg me">哪些事实已有数据行支撑？</div>
+            <div class="msg ai">
+              F1 张卫国中标前后资金往来<span class="cite">1</span> 已有 3 行银行流水支撑<span class="cite">2</span>；<br>
+              F2 华清越同期资金<span class="cite">3</span> 暂无直接数据行。
+              <div class="hr"></div>
+              <div class="lbl">待核实 / 模型推测（无引用，不输出为事实）</div>
+              <div class="box gray">资金疑似用于过桥，需补充房产数据核实</div>
+              <div class="hr"></div>
+              <span class="btn sm dark">提交为核实建议</span>
+            </div>
+            <div class="muted" style="font-size:10px">引用角标可点：定位并高亮画布节点 / 开抽屉；解析不到的引用被剔除</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>38 发送成功</div>
+        <div><b>可操作：</b>点击引用角标定位；阅读「待核实/模型推测」分区；「提交为核实建议」</div>
+        <div><b>→ 进入：</b>09（定位节点）／ 42 建议转审批</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">40</span><span class="nm">问答失败 / 超时（可重试）</span><span class="tg">RC-301 异常</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区</div>
+          <div class="drawer" style="width:200px">
+            <div class="dh">画布问答</div>
+            <div class="msg me">这条线索最关键的待核实点是什么？</div>
+            <div class="err">回答生成失败，可重试</div>
+            <div class="center" style="margin-top:6px"><span class="btn dark sm">重试</span></div>
+            <div class="hr"></div>
+            <div class="err">回答超时，请重试或缩小问题范围（30s）</div>
+            <div class="muted" style="font-size:10px">失败/超时<strong>不给出无据答案</strong></div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>38 的失败分支（异常恢复）</div>
+        <div><b>可操作：</b>「重试」或缩小问题范围重发</div>
+        <div><b>→ 进入：</b>39 成功 ／ 本屏（仍失败）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">41</span><span class="nm">LLM 关闭（治理态 · 入口禁用）</span><span class="tg">RC-402 / RC-301</span></div>
+      <div class="fwire">
+        <div class="page">
+          <div class="canvasside">画布主区（「问答」「研判报告」按钮置灰）</div>
+          <div class="drawer" style="width:200px">
+            <div class="dh">画布问答</div>
+            <div class="banner">当前案件未启用智能问答（离线/治理策略）</div>
+            <div class="box gray" style="color:#a5a5a5">输入已禁用</div>
+            <div class="center"><span class="btn sm dis">发送</span></div>
+            <div class="muted" style="font-size:10px">llm_enabled=false 或 network 档不允许 → 后端返回明确业务错误码，非 500</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>38 的治理前置拦截（fail-closed）</div>
+        <div><b>可操作：</b>仅查看；无法提问</div>
+        <div><b>→ 进入：</b>回到 09（智能入口不可用）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">42</span><span class="nm">建议转审批（proposal draft）</span><span class="tg">RC-303</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">提交为核实建议</div>
+          <div class="body">
+            <div class="box gray">建议内容：补充调取房产数据核实资金去向（来自问答，可编辑）</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">提交审批</span>　<span class="btn">取消</span></div>
+            <div class="muted" style="font-size:10.5px;text-align:center;margin-top:6px">
+              提交到既有 proposals（pp- 前缀、draft 态）→ 审批 /proposals/{id}/decide<br>
+              approve 后生成 TASK_VERIFY，终态成功才在画布出现节点；reject 不产生任何画布变化
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>39 →「提交为核实建议」</div>
+        <div><b>可操作：</b>提交审批 / 取消</div>
+        <div><b>→ 进入：</b>既有审批流（画布外）→ 通过后 09 出现 verify_item 节点</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 9 ============ -->
+  <div class="phase" id="p9"><h2>阶段 9 · 研判报告：生成 / 阅读 / 导出（RC-304 / 305 / 306）</h2>
+    <div class="d">每次生成先建不可变快照，202 异步任务，version_no 递增；事实句逐句引用，无据内容进「待核实事项」。</div></div>
+  <div class="grid">
+
+    <div class="frame">
+      <div class="fhead"><span class="no">43</span><span class="nm">报告面板 · 空态</span><span class="tg">RC-304 空状态</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判报告</div>
+          <div class="body center" style="padding:18px 8px">
+            <div class="ph sm" style="width:110px;margin:0 auto 8px"></div>
+            <div>尚无研判报告。生成时将自动冻结当前画布快照，报告逐句可溯源。</div>
+            <div style="margin-top:10px"><span class="btn dark">生成第一版</span></div>
+            <div class="qmark" style="text-align:left"><span class="b">待确认</span>PRD 提到生成入口「可选补充要求 ≤300 字透传 prompt」，但<strong>该输入放在何处</strong>（本空态 / 生成弹窗 / 面板常驻）未说明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>09 工具栏「研判报告」→ 首次打开</div>
+        <div><b>可操作：</b>「生成第一版」</div>
+        <div><b>→ 进入：</b>44 生成中 ／ 41（LLM 关闭时按钮禁用）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">44</span><span class="nm">报告生成中（202 任务）</span><span class="tg">RC-304 generating</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判报告</div>
+          <div class="body">
+            <div class="box gray">生成中 v1…　［进度条占位］</div>
+            <div class="sk w80"></div>
+            <div class="muted" style="font-size:10.5px">先创建不可变快照 → 以快照组装上下文 → LLM 生成 → 202 任务轮询终态</div>
+            <div class="qmark"><span class="b">待确认</span>生成中是否允许<strong>关闭面板并在后台继续</strong>（关闭后进度如何回看）未说明。状态机仅定义 generating/ready/failed。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>43 → 点击生成后的等待态</div>
+        <div><b>可操作：</b>等待（可查看进度）</div>
+        <div><b>→ 进入：</b>45 报告阅读（ready）／ 46 生成失败</div>
+      </div>
+    </div>
+
+    <div class="frame wide">
+      <div class="fhead"><span class="no">45</span><span class="nm">报告阅读（8 章 + 引用角标可点）</span><span class="tg">RC-304/305</span></div>
+      <div class="fwire">
+        <div class="win">
+          <div class="titlebar">研判报告　<span style="margin-left:auto"><span class="btn sm">复制 Markdown</span><span class="btn sm">导出 Word</span></span></div>
+          <div class="body" style="display:flex;gap:8px">
+            <div class="box gray" style="width:130px;flex:none"><span class="lbl">版本列表</span>
+              <div class="node sel"><span class="k">v2</span>09-13 15:30 · ready</div>
+              <div class="node"><span class="k">v1</span>09-13 11:02 · ready</div>
+              <div class="muted" style="font-size:10px">每次生成递增且不可变；报告与快照一一关联</div>
+            </div>
+            <div class="box" style="flex:1">
+              <div class="lbl">正文（业务语言，禁止技术术语）</div>
+              <div><b>一、线索概况</b>　……</div>
+              <div><b>二、命中规则与判据</b>　中标公示日前后 N 天内出现同额资金往来<span class="cite">1</span></div>
+              <div><b>三、事实与依据</b>
+                <div style="margin:3px 0 3px 14px">· 张卫国于 2022-05-01 中标前后发生 10 万元资金往来<span class="cite">2</span></div>
+                <div style="margin:3px 0 3px 14px">· 华清越同期存在同额资金<span class="cite">3</span></div>
+              </div>
+              <div><b>四、研判推断</b>　已有证据支持：……｜分析推测：……</div>
+              <div><b>五、待核实事项</b>　（关联 verify-item 状态；无据内容强制归位到此段）</div>
+              <div><b>六、书证清单</b>　……　<b>七、数据源清单</b>　银行流水.parquet / 1,204 行 / 2026-09-01</div>
+              <div><b>附录：引用索引</b>　［1］规则 R1　［2］行#1023　［3］行#1088</div>
+              <div class="hr"></div>
+              <div class="banner">N 条表述因缺乏依据已转入待核实（warning 随响应返回）</div>
+              <div class="muted" style="font-size:10.5px">hover 角标显示「数据源名 + 行摘要」；点击跳转画布定位并高亮节点、打开溯源抽屉</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>44 成功（ready）</div>
+        <div><b>可操作：</b>切换版本阅读、点角标跳转到画布、复制 Markdown、导出 Word</div>
+        <div><b>→ 进入：</b>09（跳转定位）／ 47 历史版本快照视图 ／ 48 导出失败</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">46</span><span class="nm">报告生成失败（可重新生成）</span><span class="tg">RC-304 failed</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判报告</div>
+          <div class="body">
+            <div class="box gray">v3 · failed</div>
+            <div class="err">生成失败：任务 FAILED（原因：模型调用超时）</div>
+            <div class="center" style="margin-top:6px"><span class="btn dark">重新生成</span></div>
+            <div class="muted" style="font-size:10.5px">失败不产生 ready 版本；已建快照保留可独立查看</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>44 的失败分支（异常恢复）</div>
+        <div><b>可操作：</b>「重新生成」；查看已建快照</div>
+        <div><b>→ 进入：</b>44 重新生成中 ／ 34 快照条</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">47</span><span class="nm">历史版本快照只读视图</span><span class="tg">RC-305</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判画布（临时载入 v1 快照 · 只读）</div>
+          <div class="body">
+            <div class="banner">正在查看 v1 快照，返回当前画布</div>
+            <div class="ph sm"></div>
+            <div class="muted" style="font-size:10.5px">进入/退出快照视图不改动当前画布（退出后当前文档字节一致）</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>45 → 点击历史版本角标跳转后</div>
+        <div><b>可操作：</b>只读查看该快照；点「返回当前画布」</div>
+        <div><b>→ 进入：</b>09 当前画布（不被修改）</div>
+      </div>
+    </div>
+
+    <div class="frame">
+      <div class="fhead"><span class="no">48</span><span class="nm">导出 Word 失败（MD 兜底）</span><span class="tg">RC-306 异常</span></div>
+      <div class="fwire">
+        <div class="win"><div class="titlebar">研判报告</div>
+          <div class="body">
+            <div class="toast">导出失败：请改用「复制 Markdown」</div>
+            <div class="hr"></div>
+            <div class="center"><span class="btn dark">复制 Markdown</span></div>
+            <div class="muted" style="font-size:10.5px">成功时下载《研判报告_线索标题_vN_日期.docx》，含引用附录；导出行为写审计</div>
+            <div class="qmark"><span class="b">待确认</span>文件名含「线索标题」时的<strong>超长标题截断/非法字符规则</strong>未说明；无权限角色下载被拒，但拒绝对话样式未说明。</div>
+          </div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>45 →「导出 Word」失败分支</div>
+        <div><b>可操作：</b>改用复制 Markdown 兜底</div>
+        <div><b>→ 进入：</b>回到 45</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ 阶段 10 ============ -->
+  <div class="phase" id="p10"><h2>阶段 10 · 通用异常与治理（RC-401 / RC-402）</h2>
+    <div class="d">全画布统一文案与治理约束；所有写操作（编辑/查询/快照/回滚/报告/导出/proposal）均写审计链。</div></div>
+  <div class="grid">
+
+    <div class="frame wide">
+      <div class="fhead"><span class="no">49</span><span class="nm">通用状态文案汇总</span><span class="tg">通用约定</span></div>
+      <div class="fwire">
+        <table class="tb">
+          <tr><th>场景</th><th>文案</th><th>出现位置（本图对应屏）</th></tr>
+          <tr><td>操作成功（轻量）</td><td>已保存 / 操作成功（toast，2s 自动消失）</td><td>10</td></tr>
+          <tr><td>权限不足</td><td>当前角色无此操作权限；如需开通请联系案件管理员</td><td>12 / 33</td></tr>
+          <tr><td>网络异常</td><td>网络异常，操作未完成，请检查连接后重试</td><td>05 / 11</td></tr>
+          <tr><td>操作超时</td><td>操作超时，请重试（长任务可在任务记录中查看进度）</td><td>40 / 44</td></tr>
+          <tr><td>登录失效</td><td>登录已过期，请重新登录（走既有 401 全局钩子）</td><td>全局</td></tr>
+          <tr><td>服务异常</td><td>服务暂时不可用，请稍后重试；多次失败请联系管理员</td><td>04 / 46</td></tr>
+        </table>
+        <div class="hr"></div>
+        <div class="box"><span class="lbl">写审计动作清单（RC-401）</span>
+          <div style="font-size:10.5px">画布创建 · 人工节点增删改 · 人工边增删改 · Function 查询 · 快照创建/回滚 · proposal 提交 · 报告生成 · Word 导出
+          —— 记录 operator / 动作 / 对象 / clue_id / 时间 / 关键参数（不记录 denied 明文）</div>
+        </div>
+        <div class="box"><span class="lbl">治理约束（RC-402）</span>
+          <div style="font-size:10.5px">AccessContext 贯穿（operator 必填，system 旁路仅限本机既有约定）· PolicyEngine 判定字段可见性 ·
+          LLM 受 llm_enabled / network / allowed_models 约束且 fail-closed · 无 operator 会话调用写端点 401/403 · 只读角色写端点 403</div>
+        </div>
+      </div>
+      <div class="ffoot">
+        <div><b>流程位置：</b>贯穿全部阶段</div>
+        <div><b>可操作：</b>按文案提示重试 / 联系管理员 / 重新登录</div>
+        <div><b>→ 进入：</b>对应重试成功后的页面</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footnote">
+    说明：本图严格依据 PRD V1.0.0 绘制，未擅自增加功能。所有 PRD 未明确之处均以 ［待确认］ 单独标注，共 10 处，需产品确认后回填。<br>
+    待确认清单：①首次使用是否有新手指引 ②可编辑角色枚举与只读拖拽实现方式 ③版本冲突提示 UI 形态 ④白名单 Function 具体清单 ⑤对象展开跳数与数量上限 ⑥未登记数据源标注位置 ⑦快照差异摘要字段粒度 ⑧权限申请入口/流程是否存在 ⑨报告「补充要求」输入位置 ⑩报告生成中可否关闭面板后台继续、docx 文件名截断规则。
+  </div>
+
+</div>
+</body>
+</html>

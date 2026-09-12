@@ -167,6 +167,10 @@ _CANDIDATE_FIELDS: dict[str, set[str]] = {
     "alignment_review": {"merge_risk", "support", "conflict",
                          "question_for_operator"},
     "explanation": {"sentences", "evidence_map"},
+    # REQ-V-014：核查类提案（建议信封，审批通过后由 server 桥接 TASK_VERIFY）
+    "verify_item": {"text", "kind", "clue_id"},
+    "verify_request": {"target", "material", "legal_instrument", "handler",
+                       "due_date", "note", "clue_id", "item_id"},
 }
 
 # 任何 kind 都不允许出现在候选里的字段（状态变更/写回/提权）

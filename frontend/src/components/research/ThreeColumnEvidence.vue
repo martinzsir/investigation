@@ -29,6 +29,12 @@ function verifyStatusOf(text: string): string {
   return props.itemStatusByText?.get(text) ?? ''
 }
 
+// 方案 A 降级卡（id 前缀 a）：案件级聚合留痕，非可裁决任务——
+// 不挂点击核查（provision 侧也不成核查项）；方案 B 补齐行集后该卡不再产出。
+function isActionable(it: EvidenceItem): boolean {
+  return !it.id.startsWith('a')
+}
+
 function badgeStyle(status: string): Record<string, string> {
   const m = verifyStatusMeta(status)
   return { color: m.text, borderColor: m.border, background: m.bg }
@@ -93,23 +99,26 @@ function emitVerify(text: string): void {
           v-for="it in col.pending"
           :key="it.id"
           class="ev-item ev-item--pending"
-          :class="{ 'ev-item--link': interactive }"
-          :role="interactive ? 'button' : undefined"
-          :tabindex="interactive ? 0 : undefined"
-          :aria-label="interactive ? `跳转核查：${it.text}` : undefined"
-          @click="emitVerify(it.text)"
-          @keydown.enter.exact.prevent="emitVerify(it.text)"
-          @keydown.space.exact.prevent="emitVerify(it.text)"
+          :class="{ 'ev-item--link': interactive && isActionable(it) }"
+          :role="interactive && isActionable(it) ? 'button' : undefined"
+          :tabindex="interactive && isActionable(it) ? 0 : undefined"
+          :aria-label="interactive && isActionable(it) ? `跳转核查：${it.text}` : undefined"
+          @click="isActionable(it) && emitVerify(it.text)"
+          @keydown.enter.exact.prevent="isActionable(it) && emitVerify(it.text)"
+          @keydown.space.exact.prevent="isActionable(it) && emitVerify(it.text)"
         >
           <p>{{ it.text }}</p>
           <div v-if="interactive" class="ev-verify-foot">
-            <span
-              v-if="verifyStatusOf(it.text)"
-              class="ev-verify-badge"
-              :style="badgeStyle(verifyStatusOf(it.text))"
-              data-testid="ev-verify-badge"
-            >{{ verifyStatusOf(it.text) }}</span>
-            <span v-else class="ev-verify-go">点击核查 →</span>
+            <template v-if="isActionable(it)">
+              <span
+                v-if="verifyStatusOf(it.text)"
+                class="ev-verify-badge"
+                :style="badgeStyle(verifyStatusOf(it.text))"
+                data-testid="ev-verify-badge"
+              >{{ verifyStatusOf(it.text) }}</span>
+              <span v-else class="ev-verify-go">点击核查 →</span>
+            </template>
+            <span v-else class="ev-verify-go ev-verify-go--static">聚合留痕 · 非核查任务</span>
           </div>
         </li>
         <li v-if="!col.pending.length" class="ev-empty">暂无待核实事项</li>
@@ -287,5 +296,10 @@ function emitVerify(text: string): void {
 .ev-item--link:hover .ev-verify-go,
 .ev-item--link:focus-visible .ev-verify-go {
   color: var(--sun-border-active);
+}
+/* a 前缀聚合留痕卡：静态标记，不可点 */
+.ev-verify-go--static {
+  cursor: default;
+  opacity: 0.8;
 }
 </style>

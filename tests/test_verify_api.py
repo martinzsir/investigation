@@ -10,10 +10,14 @@ AC 对应（实施方案 REQ-V-005 验收标准）：
   AC-5 相同 idem_key 重复提交不产生重复任务行。
 另含：人工添加/空文本 400、采纳建议项改写文本、非法迁移/缺结论/不存在
 item 在 Worker 兜底失败（VERIFY_REJECTED/CONCLUSION_REQUIRED/ITEM_NOT_FOUND）、
-响应字段投影（external 往返、内部列不外泄）、审计链签名。
+响应字段投影（external 往返、内部列不外泄）、审计链签名、
+REQ-V-011 书证挂接、REQ-V-014 提案审批桥接（approve→TASK_VERIFY，
+operator=审批人；reject 无任务；agent 不得审批）、
+REQ-V-015 固证结论结构化汇总落链（confirm_summary 快照与不可变性）。
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -25,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from fastapi.testclient import TestClient
 
+from core.proposal import ProposalStore
 from core.registry import ClueStatus, LineageClue
 
 from server.app.cases import CaseService
@@ -265,11 +270,12 @@ class VerifyApiTest(unittest.TestCase):
             "falsification": "有合法对价则证伪"}])
         data = self._get_items().json()["data"]
         it = data["items"][0]
-        # 方案契约字段齐全
+        # 方案契约字段齐全（REQ-V-011 起新增 evidence 回显键）
         self.assertEqual(set(it), {
             "item_id", "kind", "text", "origin", "status", "conclusion",
             "operator", "updated_at", "channel", "ref_function",
-            "external", "falsification"})
+            "external", "falsification", "evidence"})
+        self.assertEqual(it["evidence"], [])  # 未挂接书证 → 空列表
         # 内部列不外泄
         self.assertNotIn("item_key", it)
         self.assertNotIn("case_id", it)
@@ -620,6 +626,491 @@ class VerifyApiTest(unittest.TestCase):
         self.assertEqual(t.status, TASK_SUCCEEDED,
                          f"{t.error_code} {t.error_message}")
         self.assertEqual(self._clue_disposal_status(), ClueStatus.PENDING)
+
+    # ------------------------------------------------------------------
+    # REQ-V-015：固证结论结构化汇总落链（confirm_summary）
+    # ------------------------------------------------------------------
+    def _confirm_ok(self, note: str = "证据固定") -> None:
+        self._start_verifying()
+        r = self._post_action({"action": "confirm", "note": note})
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_dispose_task(r)
+        self.assertEqual(t.status, TASK_SUCCEEDED,
+                         f"{t.error_code} {t.error_message}")
+
+    def _confirm_summary_events(self, case_id: str = "c1") -> list[dict]:
+        state = self._state(case_id)
+        try:
+            rows = state.conn.execute(
+                "SELECT after_state FROM audit_chain "
+                "WHERE json_extract(after_state,'$.event')="
+                "'confirm_summary' ORDER BY seq").fetchall()
+            return [json.loads(r["after_state"]) for r in rows]
+        finally:
+            state.close()
+
+    def test_confirm_summary_items_match_state(self):
+        """AC-1：confirm 成功后 audit_chain 追加 confirm_summary，
+        items 与 state 逐项一致（建议/已忽略旁路态如实留痕），全链可验。"""
+        self.make_case()
+        self._seed_items([
+            {"kind": "manual", "text": "事项甲", "origin": "manual",
+             "status": "已证实", "conclusion": "流水与中标时间耦合"},
+            {"kind": "manual", "text": "事项乙", "origin": "manual",
+             "status": "已查否", "conclusion": "有合法合同对价"},
+            {"kind": "manual", "text": "事项丙", "origin": "manual",
+             "status": "无法核实", "conclusion": ""},
+            {"kind": "suggested", "text": "建议丁", "origin": "suggested",
+             "status": "建议"},
+        ])
+        self._confirm_ok()
+        events = self._confirm_summary_events()
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev["clue_id"], "clue-1")
+        self.assertEqual(ev["operator"], "王检察官")
+        # 展示序：已证实→已查否→无法核实→建议（list_verify_items 同源）
+        self.assertEqual(ev["items"], [
+            {"text": "事项甲", "status": "已证实",
+             "conclusion": "流水与中标时间耦合"},
+            {"text": "事项乙", "status": "已查否",
+             "conclusion": "有合法合同对价"},
+            {"text": "事项丙", "status": "无法核实", "conclusion": ""},
+            {"text": "建议丁", "status": "建议", "conclusion": ""},
+        ])
+        state = self._state()
+        try:
+            self.assertTrue(state.chain_verify())
+        finally:
+            state.close()
+
+    def test_confirm_summary_snapshot_immutable_after_reopen(self):
+        """AC-2：快照是副本——固证后重开核查项并改结论，历史事件不被篡改。"""
+        self.make_case()
+        self._seed_items([
+            {"kind": "manual", "text": "事项甲", "origin": "manual",
+             "status": "已证实", "conclusion": "原始结论"},
+        ])
+        self._confirm_ok()
+        before = self._confirm_summary_events()[0]["items"]
+        self.assertEqual(before, [
+            {"text": "事项甲", "status": "已证实", "conclusion": "原始结论"}])
+        # 重开：已证实 → 核查中 → 已查否（改写结论）
+        state = self._state()
+        try:
+            item_id = state.list_verify_items("clue-1")[0]["item_id"]
+        finally:
+            state.close()
+        r = self._post_transition(item_id, {"next_status": "核查中"})
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        r = self._post_transition(
+            item_id, {"next_status": "已查否", "conclusion": "翻案新结论"})
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        self.assertEqual(self._latest_verify_task(r).status, TASK_SUCCEEDED)
+        # 历史快照逐字节不变；当前 state 已是新结论
+        self.assertEqual(self._confirm_summary_events()[0]["items"], before)
+        state = self._state()
+        try:
+            self.assertTrue(state.chain_verify())
+        finally:
+            state.close()
+
+    def test_confirm_summary_zero_items(self):
+        """total=0 固证也落一条 items=[] 的事件（标记固证时无未结核查）。"""
+        self.make_case()
+        self._confirm_ok(note="无核查项固证")
+        events = self._confirm_summary_events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["items"], [])
+
+    def test_exclude_and_verify_no_summary(self):
+        """汇总只随固证（confirm）落链：exclude/verify 不产生该事件。"""
+        self.make_case()
+        self._seed_items([
+            {"kind": "manual", "text": "事项甲", "origin": "manual",
+             "status": "已证实", "conclusion": "c"},
+        ])
+        self._start_verifying()
+        r = self._post_action({"action": "exclude", "reason": "排除"})
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_dispose_task(r)
+        self.assertEqual(t.status, TASK_SUCCEEDED,
+                         f"{t.error_code} {t.error_message}")
+        self.assertEqual(self._confirm_summary_events(), [])
+
+    # ------------------------------------------------------------------
+    # REQ-V-011：书证挂接核查项（link/unlink）
+    # ------------------------------------------------------------------
+    def _upload_ev(self, name: str = "回执.pdf",
+                   content: bytes = b"receipt bytes") -> dict:
+        """走 REQ-V-010 上传通道造材料，返回元数据 dict。"""
+        r = self.client.post(
+            "/api/v1/cases/c1/clues/clue-1/evidence",
+            headers=self.auth_h,
+            files={"file": (name, content)},
+            data={"material_type": "付款凭证", "note": "银行回执"})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["data"]
+
+    def _post_link(self, item_id: str, material_id: str,
+                   headers: dict | None = None):
+        return self.client.post(
+            "/api/v1/cases/c1/clues/clue-1/verify-items/"
+            f"{item_id}/evidence",
+            headers=headers or self.auth_h,
+            json={"material_id": material_id})
+
+    def _delete_link(self, material_id: str, headers: dict | None = None):
+        return self.client.delete(
+            "/api/v1/cases/c1/clues/clue-1/evidence/"
+            f"{material_id}/link",
+            headers=headers or self.auth_h)
+
+    def _item_from_detail(self, item_id: str) -> dict:
+        r = self._get_items()
+        self.assertEqual(r.status_code, 200, r.text)
+        items = r.json()["data"]["items"]
+        return next(it for it in items if it["item_id"] == item_id)
+
+    def test_evidence_link_unlink_roundtrip(self):
+        """AC-1/2：link 回填 item_id 并进详情；unlink 置 NULL、行保留。"""
+        self.make_case()
+        item_id = self._seed_one()
+        mid = self._upload_ev()["material_id"]
+
+        r = self._post_link(item_id, mid)
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_verify_task(r)
+        self.assertEqual(t.status, TASK_SUCCEEDED,
+                         f"{t.error_code} {t.error_message}")
+
+        state = self._state()
+        try:
+            row = state.get_evidence(mid)
+            self.assertEqual(row["item_id"], item_id)  # item_id 回填
+            self.assertEqual(state.list_evidence("clue-1", item_id)[0]
+                             ["material_id"], mid)
+        finally:
+            state.close()
+        detail = self._item_from_detail(item_id)
+        self.assertEqual([e["material_id"] for e in detail["evidence"]], [mid])
+        self.assertEqual(detail["evidence"][0]["orig_name"], "回执.pdf")
+
+        # unlink：置 NULL、行保留、详情不再回显
+        r = self._delete_link(mid)
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_verify_task(r)
+        self.assertEqual(t.status, TASK_SUCCEEDED,
+                         f"{t.error_code} {t.error_message}")
+        state = self._state()
+        try:
+            row = state.get_evidence(mid)
+            self.assertIsNotNone(row)  # 行保留
+            self.assertIsNone(row["item_id"])  # item_id 置 NULL
+        finally:
+            state.close()
+        self.assertEqual(self._item_from_detail(item_id)["evidence"], [])
+
+    def test_evidence_link_agent_forbidden(self):
+        """AC-3：agent:* 挂接/解除 → 403（书证挂接是人的判断）。"""
+        self.make_case()
+        item_id = self._seed_one()
+        mid = self._upload_ev()["material_id"]
+        salt, h = hash_password("pw-agent")
+        self.repo.create_user(User(operator="agent:sunzi", password_hash=h,
+                                   salt=salt, role="正兵", clearance=1,
+                                   tenant_id="t1"))
+        auth_a = self._login("agent:sunzi", "pw-agent")
+        self.assertEqual(self._post_link(item_id, mid, headers=auth_a)
+                         .status_code, 403)
+        self.assertEqual(self._delete_link(mid, headers=auth_a).status_code,
+                         403)
+        # 拒绝在前：未入队任务
+        self.assertEqual([t for t in self._verify_tasks()
+                          if t.status == "PENDING"], [])
+
+    def test_evidence_link_missing_material_failed(self):
+        """AC-4：material_id 不存在 → 任务 FAILED MATERIAL_NOT_FOUND。"""
+        self.make_case()
+        item_id = self._seed_one()
+        r = self._post_link(item_id, "ev_missing000000")
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_verify_task(r)
+        self.assertEqual(t.status, TASK_FAILED)
+        self.assertEqual(t.error_code, "MATERIAL_NOT_FOUND")
+
+    def test_evidence_link_item_not_found(self):
+        """item 不存在/不属于本线索 → FAILED ITEM_NOT_FOUND。"""
+        self.make_case()
+        mid = self._upload_ev()["material_id"]
+        r = self._post_link("vi_missing0000", mid)
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_verify_task(r)
+        self.assertEqual(t.status, TASK_FAILED)
+        self.assertEqual(t.error_code, "ITEM_NOT_FOUND")
+
+    def test_evidence_link_terminal_item_allowed(self):
+        """已终态核查项允许挂接（案卷补充不影响已固定结论）。"""
+        self.make_case()
+        item_id = self._seed_one()
+        r = self._post_transition(item_id, {"next_status": "已证实",
+                                            "conclusion": "流水佐证"})
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        self.assertEqual(self._latest_verify_task(r).status, TASK_SUCCEEDED)
+        mid = self._upload_ev()["material_id"]
+        r = self._post_link(item_id, mid)
+        self.assertEqual(r.status_code, 202, r.text)
+        self._drain()
+        t = self._latest_verify_task(r)
+        self.assertEqual(t.status, TASK_SUCCEEDED,
+                         f"{t.error_code} {t.error_message}")
+        self.assertEqual(
+            self._item_from_detail(item_id)["evidence"][0]["material_id"], mid)
+
+
+# ----------------------------------------------------------------------
+# REQ-V-014 Agent 提案接入：审批 → TASK_VERIFY 单向桥接
+# 提交侧 MCP 工具面由 scripts/mcp_client_test 端到端覆盖；
+# 此处以 ProposalStore.submit 直拟 agent 提交产物（同一提案库/同一校验）。
+# ----------------------------------------------------------------------
+class ProposalBridgeTest(unittest.TestCase):
+    def setUp(self):
+        import duckdb
+        import uuid
+
+        self._duckdb = duckdb
+        self._uuid = uuid
+        self.tmp = Path(tempfile.mkdtemp())
+        self.repo = SqliteMetaRepo(self.tmp / "meta.db")
+        self.factory = StoreFactory(cases_root=self.tmp / "cases",
+                                    meta=self.repo)
+        self.svc = CaseService(self.repo, self.factory,
+                               cases_root=self.tmp / "cases")
+        self.ctx = WebContext(repo=self.repo, factory=self.factory,
+                              cases=self.svc, session_ttl_hours=1,
+                              proposals_db=str(self.tmp / "proposals.duckdb"))
+        self.client = TestClient(create_app(self.ctx))
+        for operator, role, pw in (("王检察官", "human", "pw-pro"),
+                                   ("agent:sunzi", "正兵", "pw-agent")):
+            salt, h = hash_password("pw")
+            self.repo.create_user(User(operator=operator, password_hash=h,
+                                       salt=salt, role=role, clearance=4,
+                                       tenant_id="t1"))
+        self.pool = WorkerPool(
+            self.repo,
+            {"factory": self.factory,
+             "snapshot_base_for": self.svc.snapshot_ontology_root},
+            max_workers=1, poll_interval=0.02, backoff_base=0.02)
+        self.auth_h = self._login("王检察官", "pw")
+        self.auth_a = self._login("agent:sunzi", "pw")
+        self.make_case()
+
+    def tearDown(self):
+        self.pool.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    # 辅助
+    # ------------------------------------------------------------------
+    def _login(self, operator: str, password: str) -> dict:
+        r = self.client.post("/api/v1/auth/login",
+                             json={"operator": operator, "password": password})
+        self.assertEqual(r.status_code, 200, r.text)
+        return {"Authorization": f"Bearer {r.json()['data']['token']}"}
+
+    def make_case(self) -> None:
+        r = self.client.post("/api/v1/cases", headers=self.auth_h,
+                             json={"case_id": "c1", "name": "测试案"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.repo.set_version("c1", 1, "test")
+        save_case_clues(self.factory.case_dir("c1"), 1, [_clue()])
+
+    def _drain(self) -> None:
+        self.pool.run_until_drained(max_idle_rounds=5)
+
+    def _submit(self, kind: str, candidate: dict,
+                case_id: str = "c1") -> str:
+        """直拟 MCP review.submit_proposal 产物：同一提案库、同一七校验。"""
+        conn = self._duckdb.connect(self.ctx.proposals_db)
+        try:
+            ps = ProposalStore(conn)
+            return ps.submit({
+                "proposal_id": "pp-" + self._uuid.uuid4().hex[:12],
+                "kind": kind,
+                "case_id": case_id,
+                "author": "agent:sunzi",
+                "candidate": candidate,
+            }, actor="agent:sunzi")
+        finally:
+            conn.close()
+
+    def _decide(self, pid: str, decision: str, reason: str = "",
+                headers: dict | None = None):
+        return self.client.post(
+            f"/api/v1/cases/c1/proposals/{pid}/decide",
+            headers=headers or self.auth_h,
+            json={"decision": decision, "reason": reason})
+
+    def _state(self) -> StateStore:
+        return StateStore("c1", self.factory.case_dir("c1") / "state.sqlite")
+
+    # ------------------------------------------------------------------
+    # AC-1：提案落库待审，state.sqlite 无任何变更
+    # ------------------------------------------------------------------
+    def test_submit_leaves_state_untouched(self):
+        pid = self._submit("verify_item", {
+            "text": "核查张某 2025-06 大额进账对手方",
+            "kind": "资金往来", "clue_id": "clue-1"})
+        self.assertTrue(pid.startswith("pp-"))
+        st = self._state()
+        try:
+            self.assertEqual(st.list_verify_items("clue-1"), [])
+        finally:
+            st.close()
+        # 审批前无任务产生
+        self.assertEqual(self.repo.list_tasks(case_id="c1"), [])
+
+    # ------------------------------------------------------------------
+    # AC-2：审批通过 → TASK_VERIFY 任务且 operator=审批人（非 agent）
+    # ------------------------------------------------------------------
+    def test_approve_bridges_verify_item(self):
+        pid = self._submit("verify_item", {
+            "text": "核查张某 2025-06 大额进账对手方", "clue_id": "clue-1"})
+        r = self._decide(pid, "approve", reason="线索有价值，进核查队列")
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertEqual(d["status"], "approved")
+        self.assertEqual(d["decided_by"], "王检察官")
+        task = self.repo.get_task(d["task"]["id"])
+        self.assertIsNotNone(task)
+        self.assertEqual(task.task_type, "VERIFY")
+        self.assertEqual(task.params["op"], "add_manual")
+        self.assertEqual(task.params["operator"], "王检察官")  # 审批人，非 agent
+        # 幂等键绑定提案（提案专属域，不与人工通道互吞）
+        self.assertEqual(
+            task.idem_key, f"verify-proposal:{pid}:verify_item")
+        self._drain()
+        st = self._state()
+        try:
+            items = st.list_verify_items("clue-1")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["text"],
+                             "核查张某 2025-06 大额进账对手方")
+            self.assertEqual(items[0]["kind"], "manual")
+        finally:
+            st.close()
+
+    def test_approve_bridges_verify_request(self):
+        pid = self._submit("verify_request", {
+            "target": "海州银行营业部",
+            "material": "2025 年 1-6 月账户流水",
+            "legal_instrument": "调取函（2026）12 号",
+            "due_date": "2099-01-01", "clue_id": "clue-1"})
+        r = self._decide(pid, "approve")
+        self.assertEqual(r.status_code, 200, r.text)
+        task = self.repo.get_task(r.json()["data"]["task"]["id"])
+        self.assertEqual(task.params["op"], "add_request")
+        self.assertEqual(task.params["operator"], "王检察官")
+        self._drain()
+        st = self._state()
+        try:
+            rows = st.list_verify_requests("clue-1")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["target"], "海州银行营业部")
+            self.assertEqual(rows[0]["created_by"], "王检察官")
+        finally:
+            st.close()
+
+    # ------------------------------------------------------------------
+    # AC-3：驳回 → 无任务产生
+    # ------------------------------------------------------------------
+    def test_reject_no_task(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        r = self._decide(pid, "reject", reason="证据不足，不予核查")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["data"]["status"], "rejected")
+        self.assertIsNone(r.json()["data"]["task"])
+        self.assertEqual(self.repo.list_tasks(case_id="c1"), [])
+
+    def test_reject_requires_reason(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        self.assertEqual(self._decide(pid, "reject").status_code, 400)
+
+    # ------------------------------------------------------------------
+    # 红线：agent 会话不得审批；未知/跨案件提案 404；重复 decide 409
+    # ------------------------------------------------------------------
+    def test_agent_decide_forbidden(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        r = self._decide(pid, "approve", headers=self.auth_a)
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertEqual(self.repo.list_tasks(case_id="c1"), [])
+
+    def test_unknown_and_cross_case_404(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        # 未知提案
+        self.assertEqual(
+            self._decide("pp_missing00001", "approve").status_code, 404)
+        # 跨案件：提案属 c1，对 c2 审批 → 404（不泄露存在性）
+        r = self.client.post("/api/v1/cases", headers=self.auth_h,
+                             json={"case_id": "c2", "name": "另案"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.client.post(
+            "/api/v1/cases/c2/proposals/%s/decide" % pid,
+            headers=self.auth_h,
+            json={"decision": "approve"}).status_code, 404)
+
+    def test_double_decide_conflict(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        self.assertEqual(self._decide(pid, "approve").status_code, 200)
+        r = self._decide(pid, "reject", reason="补一次决定")
+        self.assertEqual(r.status_code, 409, r.text)
+
+    # ------------------------------------------------------------------
+    # AC8 形状校验：缺必填/白名单外字段/期限形状 → 提案入库被拒
+    # ------------------------------------------------------------------
+    def test_shape_validation(self):
+        from core.proposal import ProposalValidationError
+
+        with self.assertRaises(ProposalValidationError) as cm:
+            self._submit("verify_item", {"clue_id": "clue-1"})  # 缺 text
+        self.assertTrue(any("text" in e for e in cm.exception.errors))
+        with self.assertRaises(ProposalValidationError):
+            self._submit("verify_request", {"target": "x"})  # 缺 material
+        with self.assertRaises(ProposalValidationError):
+            self._submit("verify_item", {
+                "text": "x", "clue_id": "clue-1", "evil": "writeback"})
+        with self.assertRaises(ProposalValidationError):
+            self._submit("verify_request", {
+                "target": "x", "material": "y",
+                "due_date": "2099/01/01"})  # 期限形状
+
+    # ------------------------------------------------------------------
+    # AC-4：pp- 前缀与只读路由不回退（action.status 语义由 MCP 组覆盖，
+    # 此处验证提案库幂等键/ID 不受桥接影响——重复审批被状态机挡）
+    # ------------------------------------------------------------------
+    def test_pp_prefix_and_no_duplicate_task(self):
+        pid = self._submit("verify_item", {
+            "text": "建议核查……", "clue_id": "clue-1"})
+        self.assertTrue(pid.startswith("pp-"))
+        self._decide(pid, "approve")
+        self._decide(pid, "approve")  # 409
+        tasks = [t for t in self.repo.list_tasks(case_id="c1")
+                 if t.task_type == "VERIFY"]
+        self.assertEqual(len(tasks), 1)
 
 
 if __name__ == "__main__":

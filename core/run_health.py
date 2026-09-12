@@ -119,7 +119,7 @@ class RunHealth:
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 [self.run_id, seq, kind, severity, source, reason,
                  json.dumps(detail, ensure_ascii=False, default=str),
-                 datetime.now().isoformat(timespec="seconds")])
+                 datetime.now().isoformat(timespec="milliseconds")])
         except Exception as e:  # 诊断层自身故障：不阻断侦查，但留内存痕迹
             self._dropped.append({"kind": kind, "error": str(e)})
 
@@ -141,7 +141,7 @@ class RunHealth:
         try:
             row = conn.execute(
                 "SELECT run_id FROM run_diagnostic "
-                "ORDER BY created_at DESC, seq DESC LIMIT 1").fetchone()
+                "ORDER BY created_at DESC, seq DESC, rowid DESC LIMIT 1").fetchone()
             obj.run_id = row[0] if row else ""
         except Exception:
             obj.run_id = ""

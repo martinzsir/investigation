@@ -377,6 +377,16 @@ class TestFunctionLayer(unittest.TestCase):
         jian_rows = {x["间"]: x for x in r2["result"]["rows"]}
         self.assertTrue(jian_rows["内间"]["命中"], "举报材料接入后内间应命中")
         self.assertEqual(jian_rows["内间"]["缺口"], [], "内间缺口列表应为空")
+        # 方案 B：命中行带结构化命中明细（source/table/obj_name/n）
+        details = jian_rows["内间"]["命中明细"]
+        self.assertTrue(details)
+        d0 = details[0]
+        self.assertEqual(d0["source"], "举报材料")
+        self.assertEqual(d0["table"], "obj_tipoff")
+        self.assertGreaterEqual(d0["n"], 1)
+        self.assertEqual(
+            sum(len(x["命中明细"]) for x in r2["result"]["rows"]
+                if not x["命中"]), 0)
         # 新增：tipoff 交叉 & call_pair_coverage 冒烟
         r3 = self.fx.invoke("tipoff_cross_reference")
         self.assertIn("summary", r3["result"])
@@ -767,6 +777,40 @@ class TestRulebook(unittest.TestCase):
         ruled = [c for c in clues if c.detail.get("rule_id")]
         self.assertTrue(ruled)
         self.assertTrue(all(len(c.detail["rule_text"]) >= 30 for c in ruled))
+
+    def test_用间线索挂表级汇总行(self):
+        """方案 B：yong_jian adapter 把命中明细挂成表级汇总行集。"""
+        from types import SimpleNamespace
+        from skills.registry_bootstrap import (
+            _aggregate_rows_from_cross_row,
+            _clue_from_yong_jian,
+        )
+        # 单元：结构化明细 → 表级汇总行
+        rows = _aggregate_rows_from_cross_row({
+            "命中明细": [{"source": "举报材料", "table": "obj_tipoff",
+                         "obj_name": "tipoff", "n": 13}],
+            "依据": ["举报材料→obj_tipoff(13行)"],
+        })
+        self.assertEqual(rows, [{
+            "数据源": "举报材料", "语义表": "obj_tipoff",
+            "对象类型": "tipoff", "行数": 13, "粒度": "表级汇总"}])
+        # 旧版 Function 输出回落：解析依据字符串
+        legacy = _aggregate_rows_from_cross_row(
+            {"依据": ["举报材料→obj_tipoff(13行)"]})
+        self.assertEqual(legacy[0]["语义表"], "obj_tipoff")
+        self.assertEqual(legacy[0]["行数"], 13)
+        self.assertEqual(legacy[0]["粒度"], "表级汇总")
+        # 端到端：Function 结果 → adapter 线索
+        r = self.fx.invoke("jian_cross_level")["result"]
+        clues = _clue_from_yong_jian(
+            SimpleNamespace(skill_id="yong_jian"), {"用间交叉": r})
+        neijian = [c for c in clues if "内间" in c.jian_types]
+        self.assertTrue(neijian)
+        c = neijian[0]
+        self.assertTrue(c.source_rows)
+        self.assertEqual(c.source_rows[0]["粒度"], "表级汇总")
+        self.assertEqual(c.source_rows[0]["语义表"], "obj_tipoff")
+        self.assertEqual(c.detail["行集口径"], "表级汇总")
 
     # ---- loader 硬失败（临时包）----
     @staticmethod

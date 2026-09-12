@@ -125,13 +125,19 @@ class TestIntegerCastInfGuard(unittest.TestCase):
         """R1/R2/R6 声明 SQL 不准回退裸 CAST（防回归声明级守卫）。"""
         data = json.loads(
             Path("ontology/default/functions.json").read_text(encoding="utf-8"))
-        funcs = {f["name"]: f["sql"] for f in data["functions"]}
+        # 仅 impl=sql 的函数有 sql 字段；py 函数跳过（不适用 CAST 守卫）
+        funcs = {f["name"]: f["sql"] for f in data["functions"]
+                 if f.get("impl") == "sql" and "sql" in f}
         for name in ("quarter_end_integer_deposits",
                      "integer_transfer_aggregates",
                      "time_window_collision"):
             sql = funcs[name]
-            self.assertNotIn("CAST(amount AS BIGINT)", sql)
-            self.assertNotIn("CAST(l.amount AS BIGINT)", sql)
+            # 裸 CAST(... AS BIGINT) 越界会抛异常，必须用 TRY_CAST；
+            # 排除 TRY_CAST 前缀后再检查裸 CAST。
+            self.assertNotIn("CAST(amount AS BIGINT)",
+                             sql.replace("TRY_CAST(amount AS BIGINT)", ""))
+            self.assertNotIn("CAST(l.amount AS BIGINT)",
+                             sql.replace("TRY_CAST(l.amount AS BIGINT)", ""))
             self.assertIn("TRY_CAST", sql)
 
 

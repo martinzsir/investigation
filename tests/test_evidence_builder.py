@@ -85,11 +85,14 @@ class TestEvidenceBuilder(unittest.TestCase):
         self.assertEqual(len(inf["source_rows"]), 2)
 
     def test_inference_without_source_rows_dropped(self):
-        """推断无 source_rows → 前端 partitionEvidence 丢弃（模拟）。"""
+        """规则线索推断无 source_rows → 仍产出推断卡，前端 partitionEvidence 丢弃（模拟）。
+
+        规则产物缺行是真数据缺陷，必须经 droppedInferences 暴露，不许静默降级。
+        """
         raw = {
             "clue_id": "c4",
             "source_rows": [],
-            "detail": {"依据": "无数据的推断"},
+            "detail": {"rule_id": "R1", "依据": "无数据的推断"},
         }
         items = build_evidence(raw_clue=raw, pack_id="default")
         inf = next(i for i in items if i["kind"] == "inference")
@@ -100,6 +103,77 @@ class TestEvidenceBuilder(unittest.TestCase):
         if not inf.get("source_rows"):
             dropped += 1
         self.assertEqual(dropped, 1)
+
+    def test_aggregate_basis_without_rows_becomes_pending(self):
+        """方案 A：非规则聚合线索（用间交叉等）无行级溯源 → 不出推断卡，
+        降级为待核实聚合卡（前端不再 dropped 警告，也不供核查项）。"""
+        raw = {
+            "clue_id": "c4b",
+            "title": "内间命中（举报材料）",
+            "source_rows": [],
+            "detail": {"依据": "举报材料", "数据源": ["举报材料"]},
+        }
+        items = build_evidence(raw_clue=raw, pack_id="default")
+        self.assertEqual(
+            [i["kind"] for i in items if i["kind"] == "inference"], [])
+        agg = [i for i in items if i["kind"] == "pending"
+               and "无行级溯源" in i["text"]]
+        self.assertEqual(len(agg), 1)
+        self.assertEqual(agg[0]["id"], "ac4b")
+        self.assertIn("举报材料", agg[0]["text"])
+        # id 前缀 a 不映射核查项（provision 侧断言见 test_verify_item）
+        self.assertEqual(agg[0]["source_rows"], [])
+
+    def test_aggregate_with_table_summary_rows_back_to_inference(self):
+        """方案 B：聚合线索挂表级汇总行 → 推断回推断栏，事实栏明示汇总粒度。"""
+        raw = {
+            "clue_id": "c4c",
+            "skill_id": "yong_jian",
+            "title": "内间命中（举报材料）",
+            "source_rows": [{
+                "数据源": "举报材料", "语义表": "obj_tipoff",
+                "对象类型": "tipoff", "行数": 13, "粒度": "表级汇总",
+            }],
+            "detail": {"依据": "举报材料", "数据源": ["举报材料"]},
+        }
+        items = build_evidence(raw_clue=raw, pack_id="default")
+        # 事实卡：表级汇总专用文本
+        facts = [i for i in items if i["kind"] == "fact"]
+        self.assertEqual(len(facts), 1)
+        self.assertIn("表级汇总", facts[0]["text"])
+        self.assertIn("obj_tipoff", facts[0]["text"])
+        self.assertIn("13", facts[0]["text"])
+        # 推断卡回栏且挂汇总行溯源
+        infs = [i for i in items if i["kind"] == "inference"]
+        self.assertEqual(len(infs), 1)
+        self.assertEqual(infs[0]["text"], "举报材料")
+        self.assertEqual(len(infs[0]["source_rows"]), 1)
+        ref = infs[0]["source_rows"][0]
+        self.assertEqual(ref["source"], "举报材料")
+        self.assertIn("#table/", ref["row_uri"])
+        # 不再产出 a 卡
+        self.assertFalse([i for i in items
+                          if i["kind"] == "pending" and "无行级溯源" in i["text"]])
+
+    def test_aggregate_table_rows_no_false_hypothesis_fanjian(self):
+        """方案 B：反间「银行流水(过桥)」补表级行后不得误配 H4 假设卡。"""
+        raw = {
+            "clue_id": "c4d",
+            "skill_id": "yong_jian",
+            "title": "反间命中（银行流水(过桥)）",
+            "source_rows": [{
+                "数据源": "银行流水(过桥)", "语义表": "lnk_time_window",
+                "对象类型": "time_window", "行数": 44, "粒度": "表级汇总",
+            }],
+            "detail": {"依据": "银行流水(过桥)",
+                       "数据源": ["银行流水(过桥)"]},
+        }
+        items = build_evidence(raw_clue=raw, pack_id="default")
+        self.assertTrue([i for i in items if i["kind"] == "inference"])
+        self.assertFalse([
+            i for i in items
+            if i["kind"] == "pending" and i["text"].startswith("待验证假设：")
+        ])
 
     # ---- 待核实栏 ----
     def test_degraded_produces_pending(self):

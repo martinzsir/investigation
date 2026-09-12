@@ -18,6 +18,15 @@ core/verify_machine.py
 
 注：「建议/已忽略」是手册建议项生命周期（REQ-V-018），采纳前不是正式
 核查任务，不进固证门禁 pending 计数。
+
+调取清单请求状态机（REQ-V-012，verify_request）：
+    待发起 → 已发起（发起）
+    已发起 → 材料已回（回执登记）| 关闭
+    材料已回 → 关闭
+    关闭（终态）
+
+注：「超期」不是存储状态——due_date 已过且 status=已发起 由读面派生
+overdue 徽标（state_store.list_verify_requests），不改库、免定时任务。
 """
 from __future__ import annotations
 
@@ -106,3 +115,40 @@ def validate_conclusion(nxt: str, conclusion: str | None) -> None:
 def legal_targets(cur: str) -> tuple[str, ...]:
     """当前状态的合法目标元组（未知状态返回空元组，不抛异常）。"""
     return VERIFY_TRANSITIONS.get(cur, ())
+
+
+# ======================================================================
+# REQ-V-012：调取清单请求状态机（verify_request；与核查项同纪律）
+# ======================================================================
+R_DRAFT = "待发起"
+R_SENT = "已发起"
+R_RETURNED = "材料已回"
+R_CLOSED = "关闭"
+
+REQUEST_STATUSES: tuple[str, ...] = (R_DRAFT, R_SENT, R_RETURNED, R_CLOSED)
+
+REQUEST_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    R_DRAFT: (R_SENT,),
+    R_SENT: (R_RETURNED, R_CLOSED),  # 超期仅读面徽标，关闭走 已发起→关闭
+    R_RETURNED: (R_CLOSED,),
+}
+
+
+def can_request_transition(cur: str, nxt: str) -> bool:
+    """请求转移是否合法（未知状态一律 False）。"""
+    return nxt in REQUEST_TRANSITIONS.get(cur, ())
+
+
+def validate_request_transition(cur: str, nxt: str) -> None:
+    """校验请求单步转移；非法/未知 raise VerifyTransitionError。"""
+    if cur not in REQUEST_STATUSES:
+        raise VerifyTransitionError(
+            ERR_UNKNOWN_STATUS, f"未知调取请求状态：{cur!r}")
+    if nxt not in REQUEST_STATUSES:
+        raise VerifyTransitionError(
+            ERR_UNKNOWN_STATUS, f"未知调取请求目标状态：{nxt!r}")
+    if not can_request_transition(cur, nxt):
+        raise VerifyTransitionError(
+            ERR_INVALID_TRANSITION,
+            f"非法调取请求状态迁移：{cur} → {nxt}（允许："
+            f"{'/'.join(REQUEST_TRANSITIONS.get(cur, ())) or '无'}）")

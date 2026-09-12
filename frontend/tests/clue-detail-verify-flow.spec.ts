@@ -43,6 +43,7 @@ function verifyPage(items: ItemSeed[]): VerifyItemsPage {
       ref_function: '',
       external: null,
       falsification: '',
+      replay: null,
     })),
     progress: {
       total: items.length,

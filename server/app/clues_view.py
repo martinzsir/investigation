@@ -155,13 +155,16 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
                     clue_id: str, state_map: dict[str, dict],
                     decisions: list[dict] | None = None,
                     access=None, pack_id: str = "default",
-                    base_dir=None, state_store=None) -> dict | None:
+                    base_dir=None, state_store=None,
+                    cross_rows: list[dict] | None = None) -> dict | None:
     """线索详情：五间/溯源 source_rows/合并来源/状态/决策/evidence/source_row_details。
 
     access（AccessContext）非空时产出 evidence 三栏 + source_row_details 字段表。
     state_store（StateStore）非空时执行 REQ-V-002 惰性供给：evidence 三栏映射为
     auto 核查项 upsert（INSERT OR IGNORE，只补缺），响应附加 verify={items,progress}；
     state.sqlite 不存在（state_store=None）时供给跳过、响应无 verify 键。
+    cross_rows（方案 B）：jian_cross_level Function rows（路由持只读连接执行后
+    注入），旧版聚合线索（用间交叉）产物无行集时回填表级汇总行；本模块不开库。
     无此线索返回 None。
     """
     raws, art_ver = _load_raw(Path(case_dir), version)
@@ -185,20 +188,27 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
         from server.app.evidence_builder import build_evidence
         from server.app.source_row_dto import resolve_source_rows
         from server.app.verify_provision import (
+            backfill_aggregate_rows,
             backfill_rule_fields,
             provision_from_evidence,
             render_suggested,
         )
         # REQ-V-002 方案 b：合并线索回填规则字段（只渲染、不回写 artifact）；
+        # 方案 B：聚合线索回填表级汇总行（cross_rows 由路由注入）；
         # 三栏证据与核查项供给同源一次构建（文本逐字一致）
         raw_for_view = backfill_rule_fields(
             raw, pack_id=pack_id, base_dir=base_dir)
+        raw_for_view = backfill_aggregate_rows(raw_for_view, cross_rows)
+        view_rows = raw_for_view.get("source_rows") or []
+        if view_rows and view_rows != source_rows:
+            # 回填行只在响应视图层生效（artifact 不可变），溯源面板/三栏同源
+            item["source_rows"] = view_rows
         evidence = build_evidence(
             raw_clue=raw_for_view, conn=None, pack_id=pack_id,
             base_dir=base_dir, access=access)
         item["evidence"] = evidence
         item["source_row_details"] = resolve_source_rows(
-            source_rows=source_rows, conn=None, pack_id=pack_id,
+            source_rows=view_rows, conn=None, pack_id=pack_id,
             base_dir=base_dir, access=access)
         # REQ-V-002：state.sqlite 存在才供给落库（读面顺带、只补缺）
         if state_store is not None:

@@ -217,7 +217,8 @@ class TestPrecheckValues(unittest.TestCase):
 
     def test_enum_and_checks_filter(self):
         """enum 违规；checks 只开 format 时 enum 不检（与 resolve 同口径）。"""
-        el = {"name": "性别", "type": "string", "enum": ["男", "女"]}
+        el = {"name": "性别", "type": "string", "enum": ["男", "女"],
+              "format": r".+"}
         out = compliance.precheck_values(["男", "X"], el)
         self.assertEqual(out, {"checked": 2,
                                "violations": {"enum_unknown": 1}})

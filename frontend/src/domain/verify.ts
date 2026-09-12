@@ -161,6 +161,74 @@ export interface VerifyItem {
   ref_function: string
   external: { target?: string; material?: string } | null
   falsification: string
+  /** REQ-V-017 一键复跑结果（replay_json 投影；未复跑=null） */
+  replay: VerifyReplay | null
+  /** REQ-V-011 已挂接书证（verify-items 清单行内投影；可能缺省为空数组） */
+  evidence?: EvidenceMaterial[]
+}
+
+/**
+ * REQ-V-017 复跑结果（Worker op=replay 回填 replay_json 的投影契约；
+ * server/app/worker/verify.py _replay 落盘结构）。status/conclusion 等裁决
+ * 四列不在其中——复跑是 AI 辅助推演，永不改写人工裁决。
+ */
+export interface VerifyReplay {
+  /** 实际执行的 Function（主跑成功=映射主函数；备选接管=fallback_function） */
+  function: string
+  /** 主跑失败、备选 Function 接管 */
+  fallback_used: boolean
+  /** playbook=手册映射 / fallback=维度关键词兜底 */
+  mapping_source: string
+  params_used: Record<string, unknown>
+  output_type: string | null
+  /** SQL Function 为行数组 / py Function 为标量或对象（前端只做行数摘要） */
+  result: unknown
+  /** 结构降级（如空库缺 obj_* 表）：任务成功但无业务结果 */
+  degraded: boolean
+  degraded_reason: string | null
+  /** 复跑时的语义层版本（v{N}） */
+  version: string
+  source_row_ids: string[]
+  operator: string
+  replayed_at: string
+}
+
+// ---------- REQ-V-010/011 书证材料（clue_evidence 读面投影） ----------
+
+/** 书证大小上限（与后端 evidence_store.py MAX_EVIDENCE_SIZE 对齐：20MB） */
+export const EVIDENCE_MAX_SIZE = 20 * 1024 * 1024
+
+/** 书证类型白名单（与后端 routers/evidence.py MATERIAL_TYPES 逐字对齐） */
+export const EVIDENCE_MATERIAL_TYPES = [
+  '缴款单', '监控截图', '合同', '付款凭证', '审批文件', '其他',
+] as const
+
+/**
+ * 书证元数据（GET evidence 清单与 verify-items 行内挂接投影同形状；
+ * 行内投影是子集，未回填字段在展示侧容错为空串）。
+ */
+export interface EvidenceMaterial {
+  material_id: string
+  /** 已挂接的核查项；未挂接为空串 */
+  item_id: string
+  material_type: string
+  /** 落盘文件名（material_id + 安全化原名） */
+  filename: string
+  /** 用户上传时的原始文件名（下载/展示用） */
+  orig_name: string
+  sha256: string
+  size: number
+  note: string
+  uploaded_by: string
+  uploaded_at: string
+}
+
+/** 字节大小人类可读（B/KB/MB，整数 KB、1 位小数 MB） */
+export function evidenceSizeLabel(size: number): string {
+  const n = Number(size) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 export interface VerifyProgress {
@@ -176,6 +244,58 @@ export interface VerifyItemsPage {
   items: VerifyItem[]
   progress: VerifyProgress
   /** state.sqlite 不存在（工作区未初始化）时 false */
+  available: boolean
+}
+
+// ---------- REQ-V-013 调取清单（core/verify_machine.py 请求状态机镜像） ----------
+
+/** 调取请求四态（与 core REQUEST_STATUSES 逐字对齐；「超期」是读面派生非存储态） */
+export const REQUEST_STATUS = {
+  DRAFT: '待发起',
+  SENT: '已发起',
+  RETURNED: '材料已回',
+  CLOSED: '关闭',
+} as const
+
+export type RequestStatus = (typeof REQUEST_STATUS)[keyof typeof REQUEST_STATUS]
+
+/** 白名单（镜像 core REQUEST_TRANSITIONS；未列出即非法，按钮不渲染） */
+export const REQUEST_TRANSITIONS: Record<string, RequestStatus[]> = {
+  待发起: [REQUEST_STATUS.SENT],
+  已发起: [REQUEST_STATUS.RETURNED, REQUEST_STATUS.CLOSED],
+  材料已回: [REQUEST_STATUS.CLOSED],
+}
+
+export function canRequestTransition(cur: string, nxt: string): boolean {
+  return REQUEST_TRANSITIONS[cur]?.includes(nxt as RequestStatus) ?? false
+}
+
+/** 当前状态的合法目标态（未知状态返回空数组，不抛异常） */
+export function legalRequestTargets(cur: string): string[] {
+  return REQUEST_TRANSITIONS[cur] ? [...REQUEST_TRANSITIONS[cur]] : []
+}
+
+/** 台账行（GET verify-requests 契约；overdue 为服务端读面派生） */
+export interface VerifyRequestRow {
+  request_id: string
+  clue_id: string
+  item_id: string | null
+  target: string
+  material: string
+  legal_instrument: string
+  handler: string
+  due_date: string
+  status: string
+  note: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  /** due_date 已过且 status=已发起（服务端派生，存储状态不变） */
+  overdue: boolean
+}
+
+export interface VerifyRequestsPage {
+  items: VerifyRequestRow[]
   available: boolean
 }
 
@@ -198,6 +318,57 @@ export function verifyKindLabel(kind: string): string {
 /** 是否需要「人工」角标（origin=manual；suggested/auto 各自另有样式） */
 export function isManualOrigin(origin: string): boolean {
   return origin === 'manual'
+}
+
+// ---------- REQ-V-019 LLM 核查方向草案（档位提示 + AI 草案徽标） ----------
+
+/** 草案部署档（与后端 draft 端点响应 mode 对齐；off=能力关闭/无交集） */
+export type DraftMode = 'local' | 'cloud' | 'off'
+
+/** 草案提案（后端 draft 端点 proposals 元素；落提案队列待人审） */
+export interface VerifyDraftProposal {
+  proposal_id: string
+  text: string
+  dimension: string
+  channel: string
+  ref_function: string
+  author: string
+}
+
+/** AI 草案徽标判据（origin=ai_draft：LLM 草案经人审批通过成项） */
+export function isAiDraftOrigin(origin: string): boolean {
+  return origin === 'ai_draft'
+}
+
+/**
+ * 档位状态提示（ADR-V-8）：off=置灰原因；local=数据不出机；cloud=数据将出网。
+ * 前端不预判会话档位（服务端会话∩策略交集唯一裁决），按调用结果展示。
+ */
+export function draftModeHint(mode: DraftMode): string {
+  if (mode === 'local') return '本地模型（数据不出机）'
+  if (mode === 'cloud') return '公网模型（数据将出网）'
+  return '内核隔离模式，LLM 能力关闭'
+}
+
+/** 草案结果提示语：N 条待审批；去重/无效候选附带过滤说明 */
+export function draftResultSummary(
+  mode: DraftMode,
+  n: number,
+  duplicates = 0,
+  dropped = 0,
+): string {
+  if (n <= 0) {
+    const parts: string[] = ['本次未产出新的 AI 草案']
+    if (duplicates > 0) parts.push(`${duplicates} 条与已有草案重复`)
+    if (dropped > 0) parts.push(`${dropped} 条未通过确定性校验已过滤`)
+    return `${parts.join('，')}（mode=${mode}）`
+  }
+  const parts: string[] = [
+    `已生成 ${n} 条 AI 草案（mode=${mode}），待审批`,
+  ]
+  if (duplicates > 0) parts.push(`另有 ${duplicates} 条重复未提交`)
+  if (dropped > 0) parts.push(`${dropped} 条无效候选已过滤`)
+  return `${parts.join('；')}。审批通过后才会成为正式核查项`
 }
 
 // ---------- REQ-V-018 结构化构造器（确定性拼装，组件薄调用） ----------
@@ -292,4 +463,61 @@ export function isVerifySideStatus(status: string): boolean {
 export function verifyProgressPercent(p: VerifyProgress | null | undefined): number {
   if (!p || p.total <= 0) return 0
   return Math.round((p.concluded / p.total) * 100)
+}
+
+// ---------- REQ-V-017 一键复跑回填（结果卡片展示纯函数） ----------
+
+/** mapping_source → 中文标签（未知来源原样透出，不吞新枚举） */
+const REPLAY_SOURCE_LABEL: Record<string, string> = {
+  playbook: '手册映射',
+  fallback: '关键词兜底',
+}
+
+export function replaySourceLabel(source: string): string {
+  return REPLAY_SOURCE_LABEL[source] ?? source
+}
+
+/**
+ * 复跑结果摘要（结果卡片正文）：行数组报行数、标量原样透出、对象不展开。
+ * 前端只做形状摘要、不解释业务语义——判读结论由人下，与"不下定性结论"纪律一致。
+ * 对（方案A）：对象/行数组可经 replayResultExpandable 折叠查看原始 JSON，
+ * 摘要不再指引"详见导出"。
+ */
+export function replayResultSummary(replay: VerifyReplay): string {
+  const r = replay.result
+  if (Array.isArray(r)) return `返回 ${r.length} 行结果`
+  if (r == null || r === '') {
+    return replay.degraded
+      ? '无结果（结构降级，见降级原因）'
+      : '无结果'
+  }
+  if (typeof r === 'object') {
+    return replay.degraded
+      ? '计算完成（对象结果，结构降级）'
+      : '计算完成（对象结果）'
+  }
+  return String(r)
+}
+
+/**
+ * 原始结果是否可展开：仅对象/非空行数组有明细可看；
+ * 空结果（null/''）与标量（摘要行已原样透出）不渲染折叠入口。
+ */
+export function replayResultExpandable(replay: VerifyReplay): boolean {
+  const r: unknown = replay.result
+  if (r === null || typeof r !== 'object') return false
+  if (Array.isArray(r)) return r.length > 0
+  return Object.keys(r as Record<string, unknown>).length > 0
+}
+
+/**
+ * 原始结果 JSON 文本（折叠区只读展示，缩进 2 空格）。
+ * 结果来自内核回填的可序列化 JSON，循环引用仅理论可能——异常回落 String 兜底。
+ */
+export function replayResultJson(replay: VerifyReplay): string {
+  try {
+    return JSON.stringify(replay.result, null, 2)
+  } catch {
+    return String(replay.result)
+  }
 }

@@ -56,7 +56,7 @@ def save_views(case_id: str, body: ViewsIn,
                ctx: WebContext = Depends(get_ctx)):
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     # AC-5：引用列必须已声明（base_object + properties 属于该对象属性）
     obj_data = json.loads((snap_dir / "objects.json").read_text(
@@ -86,6 +86,10 @@ def save_views(case_id: str, body: ViewsIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         atomic_write_json(tmp_root / pack_id / "views.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)

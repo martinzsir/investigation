@@ -61,7 +61,7 @@ def save_knowledge(case_id: str, body: KnowledgeIn,
                    ctx: WebContext = Depends(get_ctx)):
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     for a in body.relation_assertions:
         if not all(k in a for k in ("from", "to", "type")):
@@ -77,6 +77,10 @@ def save_knowledge(case_id: str, body: KnowledgeIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         atomic_write_json(tmp_root / pack_id / "case_knowledge.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)
@@ -102,7 +106,7 @@ def add_knowledge(case_id: str, body: KnowledgeIn,
     """POST=追加断言（合并到现有列表），其余同 PUT。"""
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     path = snap_dir / "case_knowledge.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -121,6 +125,10 @@ def add_knowledge(case_id: str, body: KnowledgeIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         atomic_write_json(tmp_root / pack_id / "case_knowledge.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)

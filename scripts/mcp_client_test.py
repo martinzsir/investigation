@@ -389,6 +389,25 @@ def main() -> int:
                   and d.get("author") == "agent:e2e-01",
                   str(pp_id))
 
+            # REQ-V-014：核查类提案（verify_item）走同一写通道
+            d = payload(ag.request("tools/call", {"name": "review.submit_proposal", "arguments": {
+                "agent_id": "e2e-01", "kind": "verify_item",
+                "candidate": {"text": "端到端冒烟：核查该线索对手方账户开户行",
+                              "clue_id": first_id}}}))
+            check("REQ-V-014 verify_item 提案入库（AC8 形状通过，仅 draft）",
+                  d.get("ok") is True and d.get("kind") == "verify_item"
+                  and d.get("status") == "draft"
+                  and str(d.get("proposal_id", "")).startswith("pp-"),
+                  str(d.get("proposal_id"))[:30])
+
+            d = payload(ag.request("tools/call", {"name": "review.submit_proposal", "arguments": {
+                "agent_id": "e2e-01", "kind": "verify_item",
+                "candidate": {"clue_id": first_id}}}))
+            check("REQ-V-014 缺 text 的 verify_item 被 AC8 拒（不入库）",
+                  d.get("ok") is False
+                  and any("text" in e for e in d.get("validation_errors", [])),
+                  str(d.get("validation_errors"))[:60])
+
             d = payload(ag.request("tools/call", {"name": "review.submit_proposal", "arguments": {
                 "agent_id": "e2e-01", "kind": "explanation",
                 "candidate": {"sentences": [

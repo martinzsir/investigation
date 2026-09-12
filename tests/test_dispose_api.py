@@ -163,7 +163,7 @@ class DisposeApiTest(unittest.TestCase):
                          f"file 应成功：{t.error_code} {t.error_message}")
         state = self._state("c1")
         try:
-            self.assertEqual(state.event_count(), 4)  # AC-6: lifecycle + verify + confirm + file
+            self.assertEqual(state.event_count(), 5)  # AC-6: lifecycle + verify + confirm + confirm_summary(REQ-V-015) + file
             self.assertTrue(state.chain_verify())
             # AC-7：状态真值=已立案；决策副作用落 review_decision
             row = state.conn.execute(

@@ -55,6 +55,11 @@ def validate_snapshot(snap_dir: Path, pack_id: str,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元，
+        # 缺 _shared 则 load_pack 因数据元未注册硬失败。
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         load_pack(pack_id, base_dir=tmp_root)
 
 

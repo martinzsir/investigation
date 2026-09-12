@@ -216,9 +216,9 @@ class M6InsightTest(unittest.TestCase):
         rest = {r["clue_id"]: r for r in d["restricted"]}
         self.assertIn("c3", rest)
         self.assertEqual(rest["c3"]["reason"], "内间线索·权限不足")
-        # 候补池：未处置 + priority 降序，且不含升格字段
+        # 候补池：未处置，按等级主序（观察 rank=0 < 确认未声明 rank=999）→ priority 降序
         cands = d["candidates"]
-        self.assertEqual([c["clue_id"] for c in cands][:2], ["c1", "c2"])
+        self.assertEqual([c["clue_id"] for c in cands][:2], ["c2", "c1"])
         for c in cands:
             self.assertNotIn("upgrade", c)
             self.assertNotIn("cross_level", c)

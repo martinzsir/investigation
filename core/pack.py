@@ -94,6 +94,9 @@ class PackManager:
                     b.pop("source")                    # 移除旧结构化源
                     b.pop("source_table", None)         # 清旧 table 溯源
                     b.pop("optional_columns", None)     # 结构化源专属，占位 SQL 不适用
+                    # transform 仅支持结构化源（source）绑定，手写 source_sql
+                    # 的变换请在上游 SQL 内完成，故同步移除 transform。
+                    b.pop("transform", None)
                     # 占位 SQL：loader 视为已声明 source_sql，build_ontology
                     # 时会被 optional 跳过或硬失败提示，提示用户填入真实数据源
                     b.setdefault("source_sql", _INIT_PACK_PLACEHOLDER_SQL)

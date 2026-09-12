@@ -34,6 +34,11 @@ class TestREQ044PackIsolation(unittest.TestCase):
         dst = self.base / "default"
         import shutil
         shutil.copytree(src, dst)
+        # 同时复制 _shared 全域层：default/objects.json 引用 DE_IDCARD 等
+        # 全域数据元，缺 _shared 则 load_pack 因数据元未注册硬失败。
+        shared_src = ROOT / "ontology" / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, self.base / "_shared")
         self.pm = PackManager(base_dir=self.base)
 
     def tearDown(self):

@@ -245,7 +245,7 @@ class M6BoardTest(unittest.TestCase):
         up = self._upload()
         r = self.client.post(
             f"/api/v1/cases/c1/sources/{up['upload_id']}/analyze",
-            headers=self.auth_h, json={})
+            headers=self.auth_h, json={"target_table": "工商信息"})
         self.assertEqual(r.status_code, 200, r.text)
         d = r.json()["data"]
         self.assertEqual(d["upload_id"], up["upload_id"])

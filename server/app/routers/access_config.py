@@ -75,7 +75,7 @@ def save_policies(case_id: str, body: PoliciesIn,
                   ctx: WebContext = Depends(get_ctx)):
     _get_owned_case(case_id, p, ctx.cases)
     require_analyst(p)
-    pack_id, snap_dir, _ = snapshot_paths(ctx, case_id)
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
 
     for pp in body.property_policies:
         _check_property_policy(pp)
@@ -89,6 +89,10 @@ def save_policies(case_id: str, body: PoliciesIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
+        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        shared_src = base_dir / "_shared"
+        if shared_src.is_dir():
+            shutil.copytree(shared_src, tmp_root / "_shared")
         atomic_write_json(tmp_root / pack_id / "policies.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)
