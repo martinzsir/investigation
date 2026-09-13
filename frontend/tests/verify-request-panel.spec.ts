@@ -11,7 +11,6 @@ import {
   type VerifyItem,
   type VerifyItemsPage,
   type VerifyRequestRow,
-  type VerifyRequestsPage,
 } from '../src/domain/verify'
 
 // REQ-V-013 调取清单台账（VerifyWorkbench 子面板）：
@@ -272,7 +271,7 @@ describe('REQ-V-013 台账子面板', () => {
       },
     })
     await flushPromises()
-    expect(wrapper!.find('[data-testid="vw-req-new"]').element.disabled).toBe(true)
+    expect((wrapper!.find('[data-testid="vw-req-new"]').element as HTMLButtonElement).disabled).toBe(true)
     const act = wrapper!.findAll('.vw-req-item')[0]
       .findAll('button')
       .find((b) => b.text().trim() === '发起')

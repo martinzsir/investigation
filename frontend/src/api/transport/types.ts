@@ -1,4 +1,4 @@
-export type RequestMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+export type RequestMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 /** 超时分层（FE-I-004）：普通 15s / 上传 120s / 跨案 60s */
 export type TimeoutKind = 'default' | 'upload' | 'cross'

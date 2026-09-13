@@ -3,7 +3,7 @@
 // 演示路径：仪表盘 → 点线索 → 三栏（青/琥珀/灰虚线）→ 溯源抽屉 → 处置确认 → 审计回执。
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NSpin, NButton, NDrawer, NDrawerContent, NAlert, NIcon, useMessage } from 'naive-ui'
+import { NSpin, NButton, NDrawer, NDrawerContent, NAlert, NIcon, NTabs, NTabPane, useMessage } from 'naive-ui'
 import { ArrowBackOutline, DocumentTextOutline, LockClosedOutline } from '@vicons/ionicons5'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -28,6 +28,7 @@ import ThreeColumnEvidence from '../components/research/ThreeColumnEvidence.vue'
 import TraceabilityPanel from '../components/research/TraceabilityPanel.vue'
 import ClueStatusMachine from '../components/research/ClueStatusMachine.vue'
 import VerifyWorkbench from '../components/research/VerifyWorkbench.vue'
+import ResearchCanvas from '../components/research/ResearchCanvas.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -58,6 +59,20 @@ const verifyStatusByText = computed(() => {
   return m
 })
 const verifyPendingCount = computed(() => verifyProgress.value?.pending ?? 0)
+
+// 研判画布成图回传（节点/关系量级在头部可见，画布内另有状态栏）
+const canvasInfo = ref<{
+  version: number
+  nodeCount: number
+  edgeCount: number
+} | null>(null)
+function onCanvasLoaded(p: {
+  version: number
+  nodeCount: number
+  edgeCount: number
+}): void {
+  canvasInfo.value = p
+}
 
 function onVerifyLoaded(page: VerifyItemsPage): void {
   verifyItems.value = page.items ?? []
@@ -385,6 +400,9 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
             </div>
           </div>
 
+          <!-- 研判画布为新增 Tab（display-directive=if：首次点开才惰性 GET seed） -->
+          <NTabs type="line" class="detail-tabs" default-value="overview">
+            <NTabPane name="overview" tab="研判概览">
           <!-- 处置状态机（含立案四重门禁；降级态写禁用） -->
           <section class="panel">
             <header class="panel-head"><h3>处置</h3></header>
@@ -480,6 +498,19 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
               <RouterLink :to="`/c/audit-chain?clue_id=${encodeURIComponent(detail.clue_id)}`">查看本线索审计链 →</RouterLink>
             </p>
           </section>
+            </NTabPane>
+            <NTabPane
+              name="canvas"
+              :tab="canvasInfo ? `研判画布（${canvasInfo.nodeCount} 节点）` : '研判画布'"
+              display-directive="if"
+            >
+              <ResearchCanvas
+                :case-id="cs.currentCaseId"
+                :clue-id="detail.clue_id"
+                @loaded="onCanvasLoaded"
+              />
+            </NTabPane>
+          </NTabs>
         </template>
       </NSpin>
 
@@ -499,6 +530,15 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
   flex-direction: column;
   gap: 12px;
 }
+.detail-tabs {
+  margin-top: 4px;
+}
+.detail-tabs :deep(.n-tab-pane) {
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .detail-head {
   display: flex;
   flex-direction: column;
@@ -509,20 +549,22 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
 }
 .clue-title {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   color: var(--sun-text-primary);
 }
 .badges {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: 2px;
 }
 .meta-line {
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
   font-size: 12px;
-  color: var(--sun-text-tertiary);
+  /* 三级色 #5A7484 对底色仅 3.8:1，不达 AA：改用二级色（≈9:1） */
+  color: var(--sun-text-secondary);
 }
 .cid {
   font-family: var(--sun-font-mono);

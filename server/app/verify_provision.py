@@ -152,6 +152,72 @@ def backfill_rule_fields(raw_clue: dict[str, Any], *,
     return new_raw
 
 
+def stamp_row_datasets(raw_clue: dict[str, Any], *,
+                       pack_id: str = "default",
+                       base_dir=None) -> dict[str, Any]:
+    """数据源图章读侧回填（历史产物兼容；只渲染、不回写 artifact）。
+
+    历史产物的规则聚合行不带「数据源」（如 q/cnt/amt、主体/对端/次数 等
+    Function 短列名行），展示与「查看所属文件」无法命中 ingest 登记件。
+    本回填按声明链补图章：rule_id → Function.inputs → bindings.source_table
+    （ingest 登记表名），与 core.rules.run_rules 生成期图章同源——
+    新产物生成期已带图章，此处为空操作。
+
+    行级归属：声明 subject_column 且该列在行内 → 该规则的登记源
+    （R6=资金主体/R2=from_raw/R4=person_1，与 backfill_rule_fields 同语义）；
+    其余行按规则声明序取首个有声明源的规则。无规则可依（用间表级汇总行
+    自带数据源）原样返回。
+    """
+    det = raw_clue.get("detail") or {}
+    rule_ids: list[str] = []
+    if det.get("rule_id"):
+        rule_ids.append(str(det["rule_id"]))
+    for r in det.get("rules") or []:
+        if isinstance(r, dict) and r.get("rule_id") \
+                and str(r["rule_id"]) not in rule_ids:
+            rule_ids.append(str(r["rule_id"]))
+    rows = raw_clue.get("source_rows")
+    if not rule_ids or not isinstance(rows, list) or not rows:
+        return raw_clue
+
+    spec = load_pack(pack_id, base_dir=base_dir)
+    datasets_by_rule: dict[str, list[str]] = {}
+    ordered: list[list[str]] = []
+    for rid in rule_ids:
+        rule = spec.rules.get(rid)
+        if rule is None:
+            continue
+        from core.rules import declared_datasets
+        ds = declared_datasets(spec, rule.function)
+        if ds:
+            datasets_by_rule[rid] = ds
+            ordered.append(ds)
+    if not ordered:
+        return raw_clue
+    fallback = ordered[0]
+
+    changed = False
+    new_rows = []
+    for sr in rows:
+        if not isinstance(sr, dict) or str(sr.get("数据源") or "").strip():
+            new_rows.append(sr)
+            continue
+        stamp = fallback
+        for rid in rule_ids:
+            rule = spec.rules.get(rid)
+            sc = getattr(rule, "subject_column", "") if rule else ""
+            if sc and sc in sr and datasets_by_rule.get(rid):
+                stamp = datasets_by_rule[rid]
+                break
+        new_rows.append({**sr, "数据源": stamp[0]})
+        changed = True
+    if not changed:
+        return raw_clue
+    new_raw = dict(raw_clue)
+    new_raw["source_rows"] = new_rows
+    return new_raw
+
+
 def provision_from_evidence(
         evidence: list[dict[str, Any]] | None) -> list[dict[str, str]]:
     """build_evidence 三栏产出 → auto 核查项 [{kind, text}]。
@@ -195,6 +261,8 @@ def provision_for_clue(raw_clue: dict[str, Any], *,
     raw_for_view = backfill_rule_fields(
         raw_clue, pack_id=pack_id, base_dir=base_dir)
     raw_for_view = backfill_aggregate_rows(raw_for_view, cross_rows)
+    raw_for_view = stamp_row_datasets(raw_for_view, pack_id=pack_id,
+                                      base_dir=base_dir)
     evidence = build_evidence(
         raw_clue=raw_for_view, conn=None, pack_id=pack_id,
         base_dir=base_dir, access=access)
@@ -339,6 +407,9 @@ def render_suggested(raw_for_view: dict[str, Any],
             "channel": pb["channel"],
             "ref_function": pb["function"] or "",
             "falsification": pb["falsification"],
+            # 手册条目溯源（M4 RC-105：画布建议节点 ref=playbook_id 由此挂钩；
+            # upsert_verify_items 只读已知键，额外键对 state 零影响）
+            "playbook_id": pb["id"],
         }
         if pb["channel"] == "external" and pb.get("external"):
             item["external"] = pb["external"]

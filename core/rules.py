@@ -15,7 +15,33 @@ REQ-027：每条 finding 附 threshold_method / threshold_value / is_degraded。
 """
 from __future__ import annotations
 
+import re
+
 from core.ontology_loader import load_pack
+
+
+def declared_datasets(spec, function_name: str) -> list[str]:
+    """Function 声明输入（obj_*/lnk_*）→ ingest 登记数据源名列表（声明序去重）。
+
+    纯声明推导，无字段名硬编码：对象绑定的 source_table 即「溯源标注用
+    主源表」（= ingest 登记表名），链接按 build_sql 引用的 obj_* 出现序
+    展开。新增数据源只要 binding 声明了 source_table 即自动生效。
+    """
+    out: list[str] = []
+    for tbl in getattr(spec.functions.get(function_name), "inputs", None) or ():
+        if tbl.startswith("obj_"):
+            refs = [tbl]
+        elif tbl.startswith("lnk_"):
+            lb = spec.link_bindings.get(tbl[len("lnk_"):])
+            refs = re.findall(r"obj_\w+", getattr(lb, "build_sql", "") or "")
+        else:
+            continue
+        for ref in refs:
+            ob = spec.object_bindings.get(ref[len("obj_"):])
+            ds = (getattr(ob, "source_table", "") or "").strip() if ob else ""
+            if ds and ds not in out:
+                out.append(ds)
+    return out
 
 
 def catalog(pack: str = "default") -> list[dict]:
@@ -190,6 +216,16 @@ def run_rules(store, stage: str | None = "xu_shi", pack: str = "default",
                 scan_rows=scan_rows, matched_rows=len(source_rows or []),
                 dimension=r.dimension)
             continue
+        # 溯源图章：Function 声明输入 → bindings.source_table（ingest 登记表名）
+        # 写进每行「数据源」——「查看所属文件」直接命中登记原始件，
+        # 不靠字段名猜测（多输入函数取声明序首个主源，可审计）。
+        fspec = fspecs.get(r.function)
+        datasets = declared_datasets(spec, r.function) if fspec else []
+        if datasets:
+            for sr in source_rows:
+                if isinstance(sr, dict) \
+                        and not str(sr.get("数据源") or "").strip():
+                    sr["数据源"] = datasets[0]
         # 方案二·C：主体前缀 + 规则名
         title = f"{subject} · {r.title}" if subject else r.title
         findings.append({

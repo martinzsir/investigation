@@ -76,7 +76,7 @@ def resolve_source_row(
 
     # ---- 推断 dataset（用于 row_uri 和 source 标签）----
     if not dataset:
-        dataset = _dataset_of(row_data)
+        dataset = dataset_of_row(row_data, pack_id=pack_id, base_dir=base_dir)
 
     # ---- 生成 row_uri ----
     if existing_uri:
@@ -136,7 +136,7 @@ def resolve_source_rows(
 # ----------------------------------------------------------------------
 _INTERNAL_FIELDS = frozenset({
     "row_uri", "knowledge_sources", "knowledge_version",
-    "matched_person", "source_row_id",
+    "matched_person", "source_row_id", "数据源",
 })
 
 # 敏感字段名模式 → mask type（前端 MaskedField 按 type 选择遮蔽格式）
@@ -166,26 +166,28 @@ def _infer_mask_type(pe: PolicyEngine | None, obj_type: str | None,
     return "text"
 
 
-def _dataset_of(sr: dict[str, Any]) -> str:
-    """推断行所属数据源（用于 source 标签和 row_uri 前缀）。"""
+def dataset_of_row(sr: dict[str, Any], *, pack_id: str = "default",
+                   base_dir=None) -> str:
+    """行所属登记数据源（画布经 ingest 登记映射回上传的原始文件名）。
+
+    唯一声明链，无字段名推断——新增数据源只改声明（bindings.source_table
+    + Function.inputs），显示自动生效：
+      1) 行自带「数据源」图章：生成期 run_rules 与读侧 stamp_row_datasets
+         按 Function.inputs → bindings.source_table（ingest 登记表名）打图章；
+      2) knowledge_sources[0]（历史产物知识包溯源兼容）；
+      3) 「数据行」：无声明可依时诚实降级（画布按未登记数据源标注）。
+         不做字段名猜测：猜错比缺失更误导，且对新增数据源必然失效。
+    """
     if not isinstance(sr, dict):
         return "数据行"
+    ds = sr.get("数据源")
+    if isinstance(ds, str) and ds.strip():
+        return ds.strip()
     ks = sr.get("knowledge_sources")
     if isinstance(ks, list) and ks:
-        return ks[0]
-    fields = set(sr.keys())
-    if {"from_raw", "to_raw", "amount"} & fields:
-        return "银行流水"
-    if {"caller_raw", "callee_raw", "times"} & fields:
-        return "通话记录"
-    if {"person_raw", "location"} & fields:
-        return "轨迹出行"
-    if {"legal_rep", "relation"} & fields:
-        return "工商信息"
-    if {"content_raw", "reporter_raw"} & fields:
-        return "举报材料"
-    if {"项目", "资金主体", "金额", "中标公示日"} & fields:
-        return "招投标"
+        first = str(ks[0] or "").strip()
+        if first:
+            return first
     return "数据行"
 
 

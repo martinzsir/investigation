@@ -19,6 +19,7 @@ import json
 from typing import Any
 
 from core.hypotheses import MiaoSuan
+from server.app.source_row_dto import dataset_of_row
 
 
 def build_evidence(
@@ -46,7 +47,8 @@ def build_evidence(
 
     items: list[dict[str, Any]] = []
 
-    refs = [_make_source_ref(sr, idx, clue_id)
+    refs = [_make_source_ref(sr, idx, clue_id, pack_id=pack_id,
+                             base_dir=base_dir)
             for idx, sr in enumerate(source_rows)
             if isinstance(sr, dict)]
 
@@ -58,7 +60,9 @@ def build_evidence(
             "id": f"f{clue_id}-{idx}",
             "kind": "fact",
             "text": _fact_text(sr),
-            "source_rows": [_make_source_ref(sr, idx, clue_id)],
+            "source_rows": [_make_source_ref(sr, idx, clue_id,
+                                             pack_id=pack_id,
+                                             base_dir=base_dir)],
         })
 
     # ---- 规则解析：多规则合并线索 detail.rules（回填）优先；否则回落单规则 ----
@@ -225,7 +229,7 @@ def _fact_text(sr: dict[str, Any]) -> str:
                 f"（语义表 {sr.get('语义表') or '?'}，"
                 f"{sr.get('行数', '?')} 行非空支撑）")
     _INTERNAL = {"row_uri", "knowledge_sources", "knowledge_version",
-                 "matched_person", "source_row_id"}
+                 "matched_person", "source_row_id", "数据源"}
     parts = []
     for k, v in sr.items():
         if k in _INTERNAL:
@@ -239,55 +243,36 @@ def _fact_text(sr: dict[str, Any]) -> str:
 
 
 def _make_source_ref(sr: dict[str, Any], idx: int,
-                      clue_id: str) -> dict[str, str]:
+                      clue_id: str, *, pack_id: str = "default",
+                      base_dir=None) -> dict[str, str]:
     """把数据行转 SourceRef（含伪 row_uri）。
 
     当前 source_rows 是纯数据 dict 无 URI，用内容哈希生成稳定标识。
+    哈希排除「数据源」图章：图章是展示用溯源标注，不改行身份——
+    生成期/读侧补图章前后 URI 保持一致（画布节点不失效）。
     未来 BUILD 产 URI 后，如果 sr 含 row_uri 字段则直接用。
     """
     if isinstance(sr, dict) and sr.get("row_uri"):
-        return {"row_uri": sr["row_uri"], "source": _dataset_of(sr)}
+        return {"row_uri": sr["row_uri"],
+                "source": dataset_of_row(sr, pack_id=pack_id,
+                                         base_dir=base_dir)}
     # 表级汇总行（方案 B）：URI 明示 #table/ 段 + COUNT 快照，区别于行级 #row/
     if isinstance(sr, dict) and sr.get("粒度") == "表级汇总" \
             and sr.get("语义表"):
         return {
             "row_uri": f"{sr['语义表']}@local#table/n{sr.get('行数', 'x')}",
-            "source": _dataset_of(sr),
+            "source": dataset_of_row(sr, pack_id=pack_id, base_dir=base_dir),
         }
-    # 伪 URI：用内容哈希生成稳定 rowid
-    content = json.dumps(sr, sort_keys=True, ensure_ascii=False, default=str)
+    # 伪 URI：用内容哈希生成稳定 rowid（排除「数据源」图章）
+    content = json.dumps(
+        {k: v for k, v in sr.items() if k != "数据源"},
+        sort_keys=True, ensure_ascii=False, default=str)
     rowid = hashlib.md5(content.encode("utf-8")).hexdigest()[:16]
-    dataset = _dataset_of(sr)
+    dataset = dataset_of_row(sr, pack_id=pack_id, base_dir=base_dir)
     return {
         "row_uri": f"{dataset}@local#row/{rowid}",
         "source": dataset,
     }
-
-
-def _dataset_of(sr: dict[str, Any]) -> str:
-    """推断行所属数据源（用于 SourceRef.source 展示）。"""
-    if not isinstance(sr, dict):
-        return "未知数据源"
-    # 表级汇总行（方案 B）：行内自带数据源展示名
-    if isinstance(sr.get("数据源"), str) and sr["数据源"].strip():
-        return sr["数据源"].strip()
-    # 有 knowledge_sources 直接用
-    ks = sr.get("knowledge_sources")
-    if isinstance(ks, list) and ks:
-        return ks[0]
-    # 按字段名启发式推断
-    fields = set(sr.keys())
-    if {"from_raw", "to_raw", "amount"} & fields:
-        return "银行流水"
-    if {"caller_raw", "callee_raw", "times"} & fields:
-        return "通话记录"
-    if {"person_raw", "location"} & fields:
-        return "轨迹出行"
-    if {"legal_rep", "relation"} & fields:
-        return "工商信息"
-    if {"content_raw", "reporter_raw"} & fields:
-        return "举报材料"
-    return "数据行"
 
 
 def _match_hypothesis(rule_id: str, basis: str,

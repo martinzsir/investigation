@@ -219,6 +219,7 @@ GROUPS = {
     "verifyreq":    ("REQ-V-012 调取清单台账（verify_request CRUD/状态机/超期读面派生）", [sys.executable, "-m", "unittest", "tests.test_verify_request"]),
     "verifydraft":  ("REQ-V-019 LLM 核查方向草案（能力闸/端点闸/脱敏/护栏/幂等/影子/审批桥接）", [sys.executable, "-m", "unittest", "tests.test_verify_draft"]),
     "verifyreplay": ("REQ-V-016 核查方向→只读 Function 映射（playbook 唯一数据源/关键词兜底/fail-closed）+ REQ-V-017 一键复跑回填（replay_json 列/op=replay/审计留痕）", [sys.executable, "-m", "unittest", "tests.test_verify_replay"]),
+    "canvas":       ("线索研判画布 M1/M2/M3/M4/M5（RC-101 种子成图/RC-205 自动保存/RC-207 降级/RC-102 规则双视图/RC-103 逐层溯源/RC-104 字段遮蔽/RC-201 钉住布局/RC-202 人工节点/RC-203 连线矩阵/RC-206 快照回滚/RC-105 手册建议采纳与待核实生成/RC-204 白名单 Function 扩展查询/RC-302 引用强制校验/RC-301 画布只读问答）", [sys.executable, "-m", "unittest", "tests.test_canvas_seed", "tests.test_canvas_expand", "tests.test_canvas_edit", "tests.test_canvas_infer", "tests.test_canvas_api", "tests.test_canvas_citation_guard", "tests.test_canvas_chat"]),
 }
 
 

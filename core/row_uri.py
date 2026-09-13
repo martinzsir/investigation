@@ -293,3 +293,78 @@ def resolve_row_uri(conn, uri: str) -> dict:
         raise RowNotFoundError(f"归档内容损坏：{e}（uri={uri}）")
     return {"dataset": ref.dataset, "partition": member[0],
             "build_id": ref.version, "rowid": ref.rowid, "data": data}
+
+
+# ----------------------------------------------------------------------
+# 语义对象 locator 取回（obj_*.source_rows 列 → 归档行）
+# ----------------------------------------------------------------------
+def _norm_eq(a, b) -> bool:
+    """locator 值与归档值比对：去空白全等；数值形态归一（2 与 2.0）。"""
+    sa, sb = str(a).strip(), str(b).strip()
+    if sa == sb:
+        return True
+    try:
+        return float(sa) == float(sb)
+    except ValueError:
+        return False
+
+
+def resolve_object_locator(conn, *, dataset: str, pairs: list[tuple[str, str]],
+                           build_id: str) -> dict:
+    """obj_*.source_rows locator（"dataset:c=v,c=v"）→ 归档行内容取回。
+
+    画布 RC-103 逐层溯源专用：只读 row_archive/row_build_index（不触 Parquet）。
+    两条确定性路径：
+
+      1) 内容地址精确——locator 列序即物化投影列序（事件型/单列实体，
+         如 obj_transaction/obj_person），row_id_for 与归档快照同算法；
+      2) 内容 JSON 回退——实体投影列多于 locator（实体 locator 仅记
+         name_property，如 obj_org）或 pandas 字符串化差异（times: 2→2.0）
+         导致地址不一致时，按 dataset 行内容逐字段归一后比对。
+
+    无论哪条路径，返回前都校验该行属于 build_id 版本（跨版本不混，AC5）。
+    返回结构同 resolve_row_uri；未命中 → RowNotFoundError。
+    """
+    _ensure_archive(conn)
+
+    # ---- 路径 1：精确内容地址 ----
+    cols = [c for c, _ in pairs]
+    vals = [v for _, v in pairs]
+    rid = row_id_for(dataset, cols, vals)
+    member = conn.execute(
+        "SELECT partition FROM row_build_index "
+        "WHERE build_id=? AND dataset=? AND rowid=?",
+        [build_id, dataset, rid]).fetchone()
+    if member:
+        row = conn.execute(
+            "SELECT content FROM row_archive WHERE dataset=? AND rowid=?",
+            [dataset, rid]).fetchone()
+        if row:
+            return {"dataset": dataset, "partition": member[0],
+                    "build_id": build_id, "rowid": rid,
+                    "data": json.loads(row[0])}
+
+    # ---- 路径 2：dataset 内按行内容逐字段归一比对（上限防全表失控）----
+    candidates = conn.execute(
+        "SELECT rowid, content, partition FROM row_archive "
+        "WHERE dataset=? LIMIT 100000", [dataset]).fetchall()
+    for cand_rid, content, _part in candidates:
+        try:
+            data = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or not pairs:
+            continue
+        if all(k in data and _norm_eq(v, data[k]) for k, v in pairs):
+            belongs = conn.execute(
+                "SELECT 1 FROM row_build_index "
+                "WHERE build_id=? AND dataset=? AND rowid=?",
+                [build_id, dataset, cand_rid]).fetchone()
+            if not belongs:
+                continue  # 内容像但不属当前版本——跨版本不混
+            return {"dataset": dataset, "partition": _part,
+                    "build_id": build_id, "rowid": cand_rid, "data": data}
+
+    raise RowNotFoundError(
+        f"对象 locator 在版本 {build_id} 归档中无匹配行："
+        f"{dataset}:{','.join(f'{k}={v}' for k, v in pairs)}")

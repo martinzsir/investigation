@@ -32,6 +32,26 @@ from core.verify_machine import (
 
 _GENESIS_HASH = "0" * 64
 
+
+class CanvasNotFound(Exception):
+    """画布不存在（未惰性 seed 即 PATCH）。"""
+
+    def __init__(self, clue_id: str):
+        super().__init__(f"画布不存在：{clue_id}")
+        self.clue_id = clue_id
+
+
+class CanvasVersionConflict(Exception):
+    """RC-205 自动保存版本基准过期（前端确认后带新版本重试=后写覆盖）。"""
+
+    def __init__(self, clue_id: str, *, expected: int, current: int):
+        super().__init__(
+            f"画布版本冲突：clue={clue_id} 基准 v{expected} ≠ 服务端 v{current}")
+        self.clue_id = clue_id
+        self.expected = expected
+        self.current = current
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_chain (
     seq               INTEGER NOT NULL,
@@ -188,6 +208,65 @@ CREATE TABLE IF NOT EXISTS verify_request (
     updated_at       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_vr_clue ON verify_request(clue_id);
+
+-- ---- 线索研判画布（PRD 线索研判画布 V1.0.0；每线索单画布，惰性创建）----
+-- 画布主文档：doc_json = {nodes:[...], edges:[...]}，version 为自动保存版本戳
+CREATE TABLE IF NOT EXISTS clue_canvas (
+    canvas_id  TEXT PRIMARY KEY,           -- 1:1 线索，值 = clue_id
+    clue_id    TEXT UNIQUE NOT NULL,
+    doc_json   TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+-- 快照：不可变完整文档（手动 / 报告生成自动关联）
+CREATE TABLE IF NOT EXISTS clue_canvas_snapshot (
+    snapshot_id TEXT PRIMARY KEY,          -- snap- 前缀
+    clue_id     TEXT NOT NULL,
+    doc_json    TEXT NOT NULL,
+    label       TEXT NOT NULL DEFAULT '',
+    origin      TEXT NOT NULL DEFAULT 'manual',  -- manual | report
+    report_id   TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_csnap_clue ON clue_canvas_snapshot(clue_id);
+-- 研判报告：每线索 version_no 递增、内容不可变
+CREATE TABLE IF NOT EXISTS clue_canvas_report (
+    report_id     TEXT PRIMARY KEY,        -- rpt- 前缀
+    clue_id       TEXT NOT NULL,
+    version_no    INTEGER NOT NULL,
+    snapshot_id   TEXT NOT NULL,
+    content_md    TEXT NOT NULL DEFAULT '',
+    sections_json TEXT NOT NULL DEFAULT '{}',
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    model         TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    extra_request TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'generating',
+                  -- generating | ready | failed
+    task_id       TEXT NOT NULL DEFAULT '',
+    error         TEXT NOT NULL DEFAULT '',
+    created_by    TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    UNIQUE(clue_id, version_no)
+);
+CREATE INDEX IF NOT EXISTS idx_crpt_clue ON clue_canvas_report(clue_id);
+-- 画布问答消息留痕（只读问答；会话按线索）
+CREATE TABLE IF NOT EXISTS clue_canvas_chat (
+    message_id     TEXT PRIMARY KEY,
+    clue_id        TEXT NOT NULL,
+    role           TEXT NOT NULL,          -- user | assistant
+    content        TEXT NOT NULL DEFAULT '',
+    citations_json TEXT NOT NULL DEFAULT '[]',
+    warnings_json  TEXT NOT NULL DEFAULT '[]',
+    created_by     TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cchat_clue ON clue_canvas_chat(clue_id);
 """
 
 # 旧库幂等迁移：clue_verify_item 在 REQ-V-018 字段加入前可能已存在，
@@ -817,6 +896,163 @@ class StateStore:
                 due and d.get("status") == "已发起" and due < today)
             out.append(d)
         return out
+
+    # ==================================================================
+    # 线索研判画布（PRD 线索研判画布 V1.0.0；每线索单画布，惰性创建）
+    # doc_json = {"nodes":[...], "edges":[...]}；version 为自动保存版本戳。
+    # 本层只管存取与版本戳，系统节点不可变/连线矩阵等业务校验在
+    # server/app/canvas_seed.py（纯函数）与 routers/canvas.py 兜底。
+    # ==================================================================
+    def get_canvas(self, clue_id: str) -> dict | None:
+        """取画布（doc_json 反序列化为 doc）；不存在 → None。"""
+        import json as _json
+        row = self._conn.execute(
+            "SELECT * FROM clue_canvas WHERE clue_id=?",
+            [clue_id]).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        try:
+            d["doc"] = _json.loads(d.pop("doc_json") or "{}")
+        except _json.JSONDecodeError:
+            d["doc"] = {"nodes": [], "edges": []}
+        return d
+
+    def insert_canvas(self, *, clue_id: str, doc: dict,
+                      created_by: str, created_at: str) -> dict | None:
+        """惰性 seed 落库（INSERT OR IGNORE 保幂等）：并发/重复 GET 下只有
+        第一次 seed 生效，其余返回 None（调用方回读已存画布）。"""
+        import json as _json
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO clue_canvas "
+            "(canvas_id, clue_id, doc_json, version, updated_by, updated_at, "
+            " created_by, created_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
+            [clue_id, clue_id,
+             _json.dumps(doc, ensure_ascii=False, default=str),
+             created_by, created_at, created_by, created_at])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_canvas(clue_id)
+
+    def update_canvas_doc(self, clue_id: str, doc: dict, *,
+                          operator: str, updated_at: str,
+                          expected_version: int | None = None) -> dict:
+        """整文档自动保存：version+1。
+
+        expected_version 非 None 且与当前版本不一致 → CanvasVersionConflict
+        （RC-205：本版后写覆盖策略由前端提示后带新版本重试，服务端不静默
+        覆盖他人版本）；画布不存在 → CanvasNotFound。
+        """
+        import json as _json
+        cur_row = self._conn.execute(
+            "SELECT version FROM clue_canvas WHERE clue_id=?",
+            [clue_id]).fetchone()
+        if cur_row is None:
+            raise CanvasNotFound(clue_id)
+        current_version = int(cur_row["version"])
+        if expected_version is not None \
+                and int(expected_version) != current_version:
+            raise CanvasVersionConflict(
+                clue_id, expected=int(expected_version),
+                current=current_version)
+        cur = self._conn.execute(
+            "UPDATE clue_canvas SET doc_json=?, version=?, updated_by=?, "
+            "updated_at=? WHERE clue_id=?",
+            [_json.dumps(doc, ensure_ascii=False, default=str),
+             current_version + 1, operator, updated_at, clue_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise CanvasNotFound(clue_id)
+        return self.get_canvas(clue_id)  # type: ignore[return-value]
+
+    # ------------------------------------------------------------------
+    # RC-206：快照不可变（只提供 insert/get/list，不提供任何更新/删除
+    # 方法——应用层不可变保证；回滚 = 主表生成新版本，不动快照行）。
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _snapshot_row(d) -> dict:
+        import json as _json
+        d = dict(d)
+        try:
+            d["doc"] = _json.loads(d.pop("doc_json") or "{}")
+        except _json.JSONDecodeError:
+            d["doc"] = {"nodes": [], "edges": []}
+        return d
+
+    def insert_canvas_snapshot(self, *, clue_id: str, snapshot_id: str,
+                               doc: dict, label: str, origin: str,
+                               report_id: str, created_by: str,
+                               created_at: str) -> dict:
+        """创建不可变快照（手动 / 报告生成自动关联）。"""
+        import json as _json
+        self._conn.execute(
+            "INSERT INTO clue_canvas_snapshot "
+            "(snapshot_id, clue_id, doc_json, label, origin, report_id, "
+            " created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [snapshot_id, clue_id,
+             _json.dumps(doc, ensure_ascii=False, default=str),
+             label, origin, report_id, created_by, created_at])
+        self._conn.commit()
+        return self.get_canvas_snapshot(snapshot_id)  # type: ignore[return-value]
+
+    def get_canvas_snapshot(self, snapshot_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM clue_canvas_snapshot WHERE snapshot_id=?",
+            [snapshot_id]).fetchone()
+        return self._snapshot_row(row) if row is not None else None
+
+    def list_canvas_snapshots(self, clue_id: str) -> list[dict]:
+        """按创建时间倒序（同刻以 snapshot_id 倒序兜底）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM clue_canvas_snapshot WHERE clue_id=? "
+            "ORDER BY created_at DESC, snapshot_id DESC",
+            [clue_id]).fetchall()
+        return [self._snapshot_row(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # RC-301：画布问答消息留痕（只读问答；会话按线索，消息不可变）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _chat_row(d) -> dict:
+        import json as _json
+        d = dict(d)
+        for k in ("citations_json", "warnings_json"):
+            try:
+                d[k.replace("_json", "")] = _json.loads(d.pop(k) or "[]")
+            except _json.JSONDecodeError:
+                d[k.replace("_json", "")] = []
+        return d
+
+    def insert_canvas_chat(self, *, message_id: str, clue_id: str,
+                           role: str, content: str,
+                           citations: list, warnings: list,
+                           created_by: str, created_at: str) -> dict:
+        """追加一条问答消息（user 提问 / assistant 回答）。"""
+        import json as _json
+        self._conn.execute(
+            "INSERT INTO clue_canvas_chat "
+            "(message_id, clue_id, role, content, citations_json, "
+            " warnings_json, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [message_id, clue_id, role, content,
+             _json.dumps(citations or [], ensure_ascii=False),
+             _json.dumps(warnings or [], ensure_ascii=False),
+             created_by, created_at])
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM clue_canvas_chat WHERE message_id=?",
+            [message_id]).fetchone()
+        return self._chat_row(row)
+
+    def list_canvas_chat(self, clue_id: str,
+                         limit: int = 100) -> list[dict]:
+        """按创建时间正序取最近 N 条（会话回放用）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM clue_canvas_chat WHERE clue_id=? "
+            "ORDER BY created_at ASC, message_id ASC LIMIT ?",
+            [clue_id, limit]).fetchall()
+        return [self._chat_row(r) for r in rows]
 
     def __enter__(self) -> "StateStore":
         return self

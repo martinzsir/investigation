@@ -1913,7 +1913,10 @@ def _load_functions(path: Path, objects: list[ObjectType], links: list[LinkType]
     out: dict[str, FunctionSpec] = {}
     for i, f in enumerate(data.get("functions", [])):
         ctx = f"functions[{i}]"
-        _require(f, ("name", "output_type", "impl"), ctx)
+        # inputs 必填：溯源图章链（run_rules/stamp_row_datasets →
+        # declared_datasets）依赖它声明数据来源；漏声明会把显示
+        # 降级成「未登记数据源」，所以装载期硬失败而不是静默丢图章。
+        _require(f, ("name", "output_type", "impl", "inputs"), ctx)
         name = f["name"]
         if name in out:
             raise ValueError(f"{ctx} 函数名重复：{name}")

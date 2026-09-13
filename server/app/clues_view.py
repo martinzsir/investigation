@@ -151,18 +151,47 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
     return out
 
 
+def load_clue_raw(case_dir: str | Path, version: int | None,
+                  clue_id: str) -> dict | None:
+    """读取线索原始 artifact 行（M4 RC-105 画布建议渲染复用同一取数口径）。
+
+    无版本产物/无此线索返回 None。
+    """
+    raws, _ = _load_raw(Path(case_dir), version)
+    return next((r for r in raws if r.get("clue_id") == clue_id), None)
+
+
+def build_view_raw(raw: dict, *, cross_rows: list[dict] | None = None,
+                   pack_id: str = "default", base_dir=None) -> dict:
+    """线索视图行装配（只读、不改 artifact）：合并线索规则回填 +
+    方案 B 聚合行回填 + 数据源图章回填。assemble_detail 与 M4 画布
+    建议生成共用同一口径。"""
+    from server.app.verify_provision import (
+        backfill_aggregate_rows,
+        backfill_rule_fields,
+        stamp_row_datasets,
+    )
+    raw_for_view = backfill_rule_fields(
+        raw, pack_id=pack_id, base_dir=base_dir)
+    raw_for_view = backfill_aggregate_rows(raw_for_view, cross_rows)
+    return stamp_row_datasets(raw_for_view, pack_id=pack_id, base_dir=base_dir)
+
+
 def assemble_detail(*, case_dir: str | Path, version: int | None,
                     clue_id: str, state_map: dict[str, dict],
                     decisions: list[dict] | None = None,
                     access=None, pack_id: str = "default",
                     base_dir=None, state_store=None,
-                    cross_rows: list[dict] | None = None) -> dict | None:
+                    cross_rows: list[dict] | None = None,
+                    provision_suggested: bool = True) -> dict | None:
     """线索详情：五间/溯源 source_rows/合并来源/状态/决策/evidence/source_row_details。
 
     access（AccessContext）非空时产出 evidence 三栏 + source_row_details 字段表。
     state_store（StateStore）非空时执行 REQ-V-002 惰性供给：evidence 三栏映射为
     auto 核查项 upsert（INSERT OR IGNORE，只补缺），响应附加 verify={items,progress}；
     state.sqlite 不存在（state_store=None）时供给跳过、响应无 verify 键。
+    provision_suggested=False（M4 画布路径）：只供给 auto 项，手册建议项
+    （verify_playbooks.json）不落 state——未采纳建议仅画布存在（RC-105 AC2）。
     cross_rows（方案 B）：jian_cross_level Function rows（路由持只读连接执行后
     注入），旧版聚合线索（用间交叉）产物无行集时回填表级汇总行；本模块不开库。
     无此线索返回 None。
@@ -188,21 +217,24 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
         from server.app.evidence_builder import build_evidence
         from server.app.source_row_dto import resolve_source_rows
         from server.app.verify_provision import (
-            backfill_aggregate_rows,
-            backfill_rule_fields,
             provision_from_evidence,
             render_suggested,
         )
         # REQ-V-002 方案 b：合并线索回填规则字段（只渲染、不回写 artifact）；
         # 方案 B：聚合线索回填表级汇总行（cross_rows 由路由注入）；
         # 三栏证据与核查项供给同源一次构建（文本逐字一致）
-        raw_for_view = backfill_rule_fields(
-            raw, pack_id=pack_id, base_dir=base_dir)
-        raw_for_view = backfill_aggregate_rows(raw_for_view, cross_rows)
+        raw_for_view = build_view_raw(
+            raw, cross_rows=cross_rows, pack_id=pack_id, base_dir=base_dir)
         view_rows = raw_for_view.get("source_rows") or []
         if view_rows and view_rows != source_rows:
             # 回填行只在响应视图层生效（artifact 不可变），溯源面板/三栏同源
             item["source_rows"] = view_rows
+        # 合并线索规则回填同步进视图层 detail（REQ-V-002 口径：只渲染、
+        # 不回写 artifact）——画布规则节点/详情规则标签与三栏规则卡同源，
+        # 否则 seed 出「未关联规则（历史产物）」而 evidence 已是回填后规则
+        filled_det = raw_for_view.get("detail")
+        if isinstance(filled_det, dict) and filled_det is not det:
+            item["detail"] = filled_det
         evidence = build_evidence(
             raw_clue=raw_for_view, conn=None, pack_id=pack_id,
             base_dir=base_dir, access=access)
@@ -212,20 +244,24 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
             base_dir=base_dir, access=access)
         # REQ-V-002：state.sqlite 存在才供给落库（读面顺带、只补缺）
         if state_store is not None:
-            # REQ-V-018：手册建议项（origin=suggested/status=建议）与 auto 项
-            # 同批 upsert（INSERT OR IGNORE 只补缺，不覆盖已采纳/已忽略）；
-            # 建议不进固证门禁（verify_progress 独立计数）
-            suggested, skipped = render_suggested(
-                raw_for_view, evidence, pack_id=pack_id, base_dir=base_dir)
-            state_store.upsert_verify_items(
-                state_store.case_id, clue_id,
-                provision_from_evidence(evidence) + suggested)
-            # D3：读面无 run handle，skipped 以 logging 留痕（不写 run_diagnostic）
-            for sk in skipped:
-                logger.warning(
-                    "verify_suggest skipped case=%s clue=%s playbook=%s reason=%s",
-                    state_store.case_id, clue_id,
-                    sk.get("playbook_id"), sk.get("reason"))
+            # auto 项始终供给（INSERT OR IGNORE 只补缺）；
+            # REQ-V-018 手册建议项仅在 provision_suggested=True 时 upsert
+            # （M4 画布路径关闭：未采纳建议仅画布存在，不进核查工作台 AC-105-2）
+            provision = provision_from_evidence(evidence)
+            if provision_suggested:
+                suggested, skipped = render_suggested(
+                    raw_for_view, evidence, pack_id=pack_id,
+                    base_dir=base_dir)
+                provision = provision + suggested
+                # D3：读面无 run handle，skipped 以 logging 留痕（不写 run_diagnostic）
+                for sk in skipped:
+                    logger.warning(
+                        "verify_suggest skipped case=%s clue=%s playbook=%s reason=%s",
+                        state_store.case_id, clue_id,
+                        sk.get("playbook_id"), sk.get("reason"))
+            if provision:
+                state_store.upsert_verify_items(
+                    state_store.case_id, clue_id, provision)
             item["verify"] = {
                 "items": state_store.list_verify_items(clue_id),
                 "progress": state_store.verify_progress(clue_id),

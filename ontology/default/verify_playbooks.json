@@ -26,6 +26,25 @@
         "material": "中标项目招投标底档及资金审批联签单"
       },
       "text": "向住建局招标办调取 {subject} 关联中标项目招投标底档及资金审批联签单"
+    },
+    {
+      "id": "r1_quarter_end_deposit_rerun",
+      "channel": "function",
+      "match": {"rule_id": "R1"},
+      "function": "quarter_end_integer_deposits",
+      "fallback_function": "integer_transfer_aggregates",
+      "text": "复跑季度末整数现金存入核查：对季末边界（3/31、6/30、9/30、12/31 及其邻日）±15 天内 1 万元整数倍、对方摘要为“现金存入”的交易逐笔复核，确认存款人与账户主体的关系",
+      "falsification": "季末整数现金存入均有合理来源（工资奖金兑现、经营货款现金回收）且非集中时点突击存入"
+    },
+    {
+      "id": "r1_deposit_slip_archive",
+      "channel": "external",
+      "match": {"rule_id": "R1"},
+      "external": {
+        "target": "开户银行",
+        "material": "季末整数现金存入的存款凭证、柜台/ATM 影像及经手人信息"
+      },
+      "text": "向开户银行调取季末整数现金存入的存款凭证、柜台或 ATM 影像及经手人信息"
     }
   ]
 }

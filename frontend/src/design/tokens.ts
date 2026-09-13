@@ -103,6 +103,48 @@ export function jianRoomVar(room: string): string {
   return DIMENSION_ROOM_VARS[room] ?? 'var(--sun-text-tertiary)'
 }
 
+/**
+ * 研判画布专用色板（G6 绘制面不消费 CSS 变量，经本 TS 常量注入）。
+ * 纪律同 FE-D-011：组件/自定义节点内不得再出现硬编码色值。
+ * - kind.chip：卡片左侧类型图标圆底色；kind.ink：图标上的中文单字色
+ * - 系统溯源边高对比青灰（旧 #4a6b82 在 #051522 上对比度过低）
+ * - 人工节点/边维持暖色语义
+ */
+export const canvasTokens = {
+  surface: '#0A2233',
+  surfaceHover: '#0E2A40',
+  stroke: '#1C3D55',
+  strokeManual: '#B06A2E',
+  strokeSelected: '#6EDEE9',
+  title: '#E9F7FA',
+  subtitle: '#84A2B5',
+  staleOpacity: 0.38,
+  edgeSystem: '#6FB6CF',
+  edgeSystemFocus: '#9AD9E8',
+  edgeManual: '#FF9D4D',
+  /** 连线模式提示条深暖文字（浅橙底上的可读前景） */
+  hintInk: '#7A4A00',
+  edgeLabelFill: '#C5DCE8',
+  edgeLabelBg: 'rgba(3,12,22,0.82)',
+  toggleBg: '#123A52',
+  toggleInk: '#9AD9E8',
+  countBg: 'rgba(233,247,250,0.08)',
+  countText: '#9FB8C6',
+  dimOpacity: 0.18,
+  kind: {
+    rule: { chip: '#55B9DC', ink: '#062436' },
+    fact: { chip: '#4FC592', ink: '#063023' },
+    object: { chip: '#8FA3C7', ink: '#0E1B2E' },
+    source_row: { chip: '#9FB7D4', ink: '#10243A' },
+    source_file: { chip: '#7E94A8', ink: '#10202E' },
+    verify_item: { chip: '#F2C94C', ink: '#3A2B04' },
+    evidence: { chip: '#BD6FF5', ink: '#2A0D44' },
+    hypothesis: { chip: '#FF9D4D', ink: '#3D1F04' },
+    note: { chip: '#AAB6C2', ink: '#1C242C' },
+    function_result: { chip: '#6E87B5', ink: '#0E1B2E' },
+  },
+} as const
+
 /** FE-D-005：卡片 6px / 按钮 4px / 徽章 12px */
 export const radius = { card: '6px', button: '4px', badge: '12px' } as const
 
@@ -161,6 +203,9 @@ export const cssVariables: Record<string, string> = {
   '--sun-jian-behavior': colors.jian.behavior,
   '--sun-jian-relation': colors.jian.relation,
   '--sun-jian-time': colors.jian.time,
+  // 研判画布（G6 之外的 DOM 覆盖层）
+  '--sun-canvas-edge-manual': canvasTokens.edgeManual,
+  '--sun-canvas-hint-ink': canvasTokens.hintInk,
 }
 
 export const themeOverrides: GlobalThemeOverrides = {

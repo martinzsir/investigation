@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# Node（前端依赖；frontend/.gitignore 已忽略，根目录兜底）
+node_modules/
+
 .github/workflows/
 
 ## 产物与库文件（可由管线重新生成）

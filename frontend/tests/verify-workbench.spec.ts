@@ -833,7 +833,7 @@ describe('REQ-V-010 核查项卡片内已挂书证投影', () => {
 
 describe('REQ-V-010/011 EvidencePanel 集成：清单挂载与事件透传', () => {
   it('面板随工作台挂载，空清单渲染空态', async () => {
-    const { w } = mountWith(pageOf([item()]))
+    const { w } = mountWith(pageOf([item({})]))
     await flushPromises()
     const panel = w.findComponent(EvidencePanel)
     expect(panel.exists()).toBe(true)

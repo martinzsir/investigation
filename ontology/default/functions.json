@@ -33,7 +33,7 @@
       "title": "通话频次突增检测",
       "inputs": ["obj_call"],
       "requires": {"objects": ["call"], "props": {"call": ["caller_raw", "callee_raw"]}},
-      "parameters": {"absolute_threshold": {"type": "integer", "required": false, "default": 30}},
+      "parameters": {"absolute_threshold": {"type": "integer", "required": false, "default": 30, "description": "无对照对端时退化使用的绝对频次阈值（次）"}},
       "output_type": "report",
       "impl": "py",
       "impl_ref": "call_frequency_spike",
