@@ -99,6 +99,7 @@ import CanvasPathBar, { type PathSegment } from './CanvasPathBar.vue'
 import CanvasChatPanel from './CanvasChatPanel.vue'
 import FactDetailPopover from './FactDetailPopover.vue'
 import ManualNodeModal from './ManualNodeModal.vue'
+import ReportPanel from './ReportPanel.vue'
 import SnapshotDrawer from './SnapshotDrawer.vue'
 import EdgeCreatePopover from './EdgeCreatePopover.vue'
 import FunctionQueryModal from './FunctionQueryModal.vue'
@@ -1691,6 +1692,12 @@ const chatShow = ref(false)
 function openChat(): void {
   chatShow.value = true
 }
+
+// M6 RC-304：研判报告面板
+const reportShow = ref(false)
+function openReport(): void {
+  reportShow.value = true
+}
 /** RC-301：引用定位触发展开重绘后，render 完成再居中的目标节点 id */
 const pendingCiteFocus = ref<string | null>(null)
 
@@ -2479,6 +2486,7 @@ function nodeLabel(id: string): string {
         @open-snapshots="openSnapshots"
         @open-function-query="openFunctionQuery"
         @open-chat="openChat"
+        @open-report="openReport"
         @expand-all-details="onExpandAllDetails"
         @collapse-all-details="onCollapseAllDetails"
       />
@@ -2721,6 +2729,15 @@ function nodeLabel(id: string): string {
       :case-id="caseId"
       :clue-id="clueId"
       class="canvas-chat-drawer"
+      @cite-click="onCiteClick"
+    />
+
+    <!-- M6 RC-304 研判报告面板 -->
+    <ReportPanel
+      v-if="reportShow"
+      :case-id="caseId"
+      :clue-id="clueId"
+      @close="reportShow = false"
       @cite-click="onCiteClick"
     />
   </div>

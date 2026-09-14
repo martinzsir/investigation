@@ -17,6 +17,7 @@ import {
   MedalOutline,
   RemoveOutline,
   ScanOutline,
+  DocumentOutline,
 } from '@vicons/ionicons5'
 
 defineProps<{
@@ -43,6 +44,8 @@ const emit = defineEmits<{
   (e: 'open-function-query'): void
   /** M5 RC-301：打开画布问答侧栏 */
   (e: 'open-chat'): void
+  /** M6 RC-304：打开研判报告面板 */
+  (e: 'open-report'): void
   (e: 'toggle-collapse'): void
   /** P2：进出全局层聚合视图（列胶囊 + 主干边） */
   (e: 'toggle-overview'): void
@@ -294,6 +297,21 @@ const emit = defineEmits<{
         <NIcon :component="CameraOutline" />
         快照
       </NButton>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            size="small"
+            class="tb-btn"
+            data-testid="tb-report"
+            @click="emit('open-report')"
+          >
+            <NIcon :component="DocumentOutline" />
+            报告
+          </NButton>
+        </template>
+        生成/阅读/导出研判报告（RC-304）
+      </NTooltip>
     </div>
   </div>
 </template>

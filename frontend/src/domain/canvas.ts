@@ -669,3 +669,63 @@ export interface CanvasSuggestionEnvelope {
   message: string
 }
 
+// ------------------------------------------------------------------
+// M6 RC-304/305/306：研判报告（生成/列表/详情/导出）
+// ------------------------------------------------------------------
+
+/** 报告生成 202 响应 */
+export interface ReportGenerateEnvelope {
+  report_id: string
+  version_no: number
+  snapshot_id: string
+  task_id: string
+  status: string
+}
+
+/** 报告列表项 */
+export interface ReportListItem {
+  report_id: string
+  clue_id: string
+  version_no: number
+  snapshot_id: string
+  status: string
+  model: string
+  error: string
+  task_id: string
+  extra_request: string
+  warning_count: number
+  citation_count: number
+  created_by: string
+  created_at: string
+}
+
+/** 报告列表响应 */
+export interface ReportListEnvelope {
+  reports: ReportListItem[]
+}
+
+/** 报告详情 */
+export interface ReportDetail {
+  report_id: string
+  clue_id: string
+  version_no: number
+  snapshot_id: string
+  status: string
+  model: string
+  error: string
+  task_id: string
+  extra_request: string
+  content_md: string
+  sections: Record<string, string>
+  citations: Array<{ cite_id: number; ref: string; summary: string }>
+  warnings: string[]
+  created_by: string
+  created_at: string
+}
+
+/** 报告详情响应 */
+export interface ReportDetailEnvelope {
+  report: ReportDetail
+}
+
+

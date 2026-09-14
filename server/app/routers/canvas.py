@@ -16,6 +16,15 @@ M3 编辑（RC-202/203/206）：
   DELETE .../canvas/edges/{id}                人工连线删除（系统边锁定）
   GET/POST .../canvas/snapshots               快照列表/创建（立即、非防抖）
   POST   .../canvas/snapshots/{id}/rollback   回滚（先存恢复点，主表新版本）
+M5 智能（RC-301/302/303）：
+  POST   .../canvas/chat                   只读问答（30s）
+  POST   .../canvas/chat/suggestion        问答建议转提案（不直接落画布）
+M6 报告（RC-304/305/306）：
+  POST   .../canvas/reports                生成报告（先快照→202 异步任务）
+  GET    .../canvas/reports                版本列表（倒序）
+  GET    .../canvas/reports/{rid}          报告详情（sections + citations）
+  GET    .../canvas/reports/{rid}/export.md   Markdown 下载
+  GET    .../canvas/reports/{rid}/export.docx Word 下载
 
 纪律：
   - seed 是纯函数（server/app/canvas_seed.py），本层只组装 assemble_detail
@@ -39,9 +48,11 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from urllib.parse import quote as _url_quote
 
 import duckdb
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from core.access import can_see_jian_types
@@ -56,6 +67,7 @@ from server.app import (
     canvas_edit,
     canvas_expand,
     canvas_infer,
+    canvas_report,
     canvas_seed,
     clues_view,
     ontology_meta,
@@ -85,7 +97,7 @@ from server.app.store.state_store import (
     StateStore,
 )
 from server.app.verify_provision import render_suggested
-from server.app.worker.tasks import TASK_VERIFY, enqueue_task
+from server.app.worker.tasks import TASK_REPORT, TASK_VERIFY, enqueue_task
 
 router = APIRouter(tags=["canvas"])
 logger = logging.getLogger(__name__)
@@ -1484,3 +1496,228 @@ def canvas_chat_suggestion(case_id: str, clue_id: str,
         "status": "draft",
         "message": "已提交为核实建议，待审批后生效",
     }, data_version=ctx.repo.current_version(case_id))
+
+
+# ======================================================================
+# M6 RC-304/305/306：研判报告（生成/列表/详情/导出）
+# ======================================================================
+
+def _report_dto(r: dict) -> dict:
+    """报告 DTO（列表与详情共用；详情额外带 sections/citations/warnings）。"""
+    return {
+        "report_id": r["report_id"],
+        "clue_id": r["clue_id"],
+        "version_no": int(r["version_no"]),
+        "snapshot_id": r["snapshot_id"],
+        "status": r["status"],
+        "model": r.get("model", ""),
+        "error": r.get("error", ""),
+        "task_id": r.get("task_id", ""),
+        "extra_request": r.get("extra_request", ""),
+        "content_md": r.get("content_md", ""),
+        "sections": r.get("sections", {}),
+        "citations": r.get("citations", []),
+        "warnings": r.get("warnings", []),
+        "created_by": r.get("created_by", ""),
+        "created_at": r.get("created_at", ""),
+    }
+
+
+def _report_list_dto(r: dict) -> dict:
+    """列表项精简版（不含 content_md/sections 全文）。"""
+    d = _report_dto(r)
+    d.pop("content_md", None)
+    d.pop("sections", None)
+    d["warning_count"] = len(d.pop("warnings", []) or [])
+    d["citation_count"] = len(d.pop("citations", []) or [])
+    return d
+
+
+class ReportGenerateIn(BaseModel):
+    extra_request: str = ""
+    version: int | None = None
+
+
+@router.post(
+    "/cases/{case_id}/clues/{clue_id}/canvas/reports",
+    status_code=202)
+def generate_report(case_id: str, clue_id: str, body: ReportGenerateIn,
+                    p: Principal = Depends(get_principal),
+                    ctx: WebContext = Depends(get_ctx)):
+    """生成研判报告（RC-304）：先冻结不可变快照 → 入队 TASK_REPORT。
+
+    - 每次点击产生 version_no 递增的不可变版本；
+    - 报告与快照一一关联（origin=report, report_id=新报告 ID）；
+    - 202 异步任务（沿用任务池/终态轮询）；
+    - llm_enabled=false 时按钮应禁用；服务端仍兜底拒绝。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    version = ctx.repo.current_version(case_id)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        # 1. 读当前画布
+        current = _load_for_edit(state, clue_id, body.version)
+        # 2. 冻结快照（origin=report）
+        report_id = f"rpt_{uuid.uuid4().hex[:16]}"
+        snapshot_id = f"snap_{uuid.uuid4().hex[:16]}"
+        now = _now()
+        snap = state.insert_canvas_snapshot(
+            clue_id=clue_id, snapshot_id=snapshot_id,
+            doc=copy.deepcopy(current["doc"]), label=f"报告 {report_id}",
+            origin="report", report_id=report_id,
+            created_by=p.operator, created_at=now)
+        # 3. 计算 version_no = 已有最大版本 + 1
+        existing = state.list_canvas_reports(clue_id)
+        max_vn = max((int(r["version_no"]) for r in existing), default=0)
+        version_no = max_vn + 1
+        # 4. 插入 report 行（status=generating）
+        report = state.insert_canvas_report(
+            report_id=report_id, clue_id=clue_id,
+            version_no=version_no, snapshot_id=snapshot_id,
+            created_by=p.operator, created_at=now)
+        # 5. 入队 TASK_REPORT
+        case = ctx.repo.get_case(case_id)
+        extra = (body.extra_request or "").strip()
+        if len(extra) > 300:
+            raise APIError(ERR_VALIDATION,
+                           "补充要求不超过 300 字", 400)
+        task = enqueue_task(
+            ctx.repo, case_id=case_id, task_type=TASK_REPORT,
+            params={"report_id": report_id, "clue_id": clue_id,
+                    "operator": p.operator, "role": p.role,
+                    "clearance": p.clearance,
+                    "extra_request": extra},
+            idem_key=f"report:{clue_id}:{report_id}",
+            created_by=p.operator)
+        # 6. 回写 task_id
+        state.update_canvas_report_status(
+            report_id, status="generating", task_id=task.id)
+        # 7. 审计
+        _audit(state, case_id=case_id, version=version,
+               operator=p.operator, action="canvas.report_generate",
+               before=None,
+               after={"action": "canvas.report_generate",
+                      "clue_id": clue_id, "report_id": report_id,
+                      "snapshot_id": snapshot_id,
+                      "version_no": version_no,
+                      "task_id": task.id})
+        return ok({
+            "report_id": report_id,
+            "version_no": version_no,
+            "snapshot_id": snapshot_id,
+            "task_id": task.id,
+            "status": "generating",
+        }, data_version=version)
+    finally:
+        state.close()
+
+
+@router.get("/cases/{case_id}/clues/{clue_id}/canvas/reports")
+def list_reports(case_id: str, clue_id: str,
+                 p: Principal = Depends(get_principal),
+                 ctx: WebContext = Depends(get_ctx)):
+    """报告版本列表（倒序）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        reports = state.list_canvas_reports(clue_id)
+        return ok({"reports": [_report_list_dto(r) for r in reports]},
+                  data_version=ctx.repo.current_version(case_id))
+    finally:
+        state.close()
+
+
+@router.get(
+    "/cases/{case_id}/clues/{clue_id}/canvas/reports/{report_id}")
+def get_report(case_id: str, clue_id: str, report_id: str,
+               p: Principal = Depends(get_principal),
+               ctx: WebContext = Depends(get_ctx)):
+    """报告详情（sections + citations + warnings + content_md）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        r = state.get_canvas_report(report_id)
+        if r is None or r["clue_id"] != clue_id:
+            raise APIError(ERR_NOT_FOUND, f"报告不存在：{report_id}", 404)
+        return ok({"report": _report_dto(r)},
+                  data_version=ctx.repo.current_version(case_id))
+    finally:
+        state.close()
+
+
+@router.get(
+    "/cases/{case_id}/clues/{clue_id}/canvas/reports/{report_id}/export.md")
+def export_report_md(case_id: str, clue_id: str, report_id: str,
+                     p: Principal = Depends(get_principal),
+                     ctx: WebContext = Depends(get_ctx)):
+    """Markdown 导出（RC-306）：含附录引用索引。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    version = ctx.repo.current_version(case_id)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        r = state.get_canvas_report(report_id)
+        if r is None or r["clue_id"] != clue_id:
+            raise APIError(ERR_NOT_FOUND, f"报告不存在：{report_id}", 404)
+        if r["status"] != "ready":
+            raise APIError(ERR_CONFLICT,
+                           f"报告尚未就绪（当前状态：{r['status']}）", 409)
+        md = canvas_report.render_markdown(
+            r.get("sections", {}), r.get("citations", []))
+        _audit(state, case_id=case_id, version=version,
+               operator=p.operator, action="canvas.report_export_md",
+               before=None,
+               after={"action": "canvas.report_export_md",
+                      "clue_id": clue_id, "report_id": report_id,
+                      "version_no": r["version_no"]})
+        filename = f"研判报告_{clue_id}_v{r['version_no']}_{r['created_at'][:10]}.md"
+        return Response(
+            content=md,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition":
+                     f"attachment; filename=\"report_v{r['version_no']}.md\"; "
+                     f"filename*=UTF-8''{_url_quote(filename)}"})
+    finally:
+        state.close()
+
+
+@router.get(
+    "/cases/{case_id}/clues/{clue_id}/canvas/reports/{report_id}/export.docx")
+def export_report_docx(case_id: str, clue_id: str, report_id: str,
+                       p: Principal = Depends(get_principal),
+                       ctx: WebContext = Depends(get_ctx)):
+    """Word 导出（RC-306）：python-docx 生成，含引用附录表格。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    version = ctx.repo.current_version(case_id)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        r = state.get_canvas_report(report_id)
+        if r is None or r["clue_id"] != clue_id:
+            raise APIError(ERR_NOT_FOUND, f"报告不存在：{report_id}", 404)
+        if r["status"] != "ready":
+            raise APIError(ERR_CONFLICT,
+                           f"报告尚未就绪（当前状态：{r['status']}）", 409)
+        try:
+            docx_bytes = canvas_report.render_docx(
+                r.get("sections", {}), r.get("citations", []))
+        except ImportError:
+            raise APIError(
+                ERR_INTERNAL,
+                "Word 导出依赖 python-docx 未安装，请改用 Markdown 复制",
+                500)
+        _audit(state, case_id=case_id, version=version,
+               operator=p.operator, action="canvas.report_export_docx",
+               before=None,
+               after={"action": "canvas.report_export_docx",
+                      "clue_id": clue_id, "report_id": report_id,
+                      "version_no": r["version_no"]})
+        filename = f"研判报告_{clue_id}_v{r['version_no']}_{r['created_at'][:10]}.docx"
+        return Response(
+            content=docx_bytes,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"),
+            headers={"Content-Disposition":
+                     f"attachment; filename=\"report_v{r['version_no']}.docx\"; "
+                     f"filename*=UTF-8''{_url_quote(filename)}"})
+    finally:
+        state.close()

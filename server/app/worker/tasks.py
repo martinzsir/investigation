@@ -47,6 +47,7 @@ TASK_DIAGNOSE = "DIAGNOSE"            # 手动运行诊断：对当前版本落 
 TASK_DE_RECO = "DE_RECOMMEND"         # W-P-007：数据元智能推荐生成（读暂存件采样，落 state）
 TASK_DE_DECIDE = "DE_RECO_DECIDE"     # W-P-007：推荐采纳/驳回裁决（只记 state+审计，不改 bindings）
 TASK_VERIFY = "VERIFY"                # REQ-V-004：核查项写通道（裁决/采纳/忽略/人工添加，写 state 不产版本）
+TASK_REPORT = "REPORT"              # RC-304：研判报告生成（读快照→LLM→写回 report 行，写 state 不产版本）
 
 
 class TaskExecError(RuntimeError):
@@ -352,6 +353,12 @@ def _verify_handler(task, **kw):
     return handle_verify(task, **kw)
 
 
+def _report_handler(task, **kw):
+    # 惰性导入：report.py 引用本模块 TaskExecError，模块底导入避免循环
+    from server.app.worker.report import handle_report
+    return handle_report(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -367,4 +374,5 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_DE_RECO: _de_reco_handler,         # W-P-007 数据元推荐生成
     TASK_DE_DECIDE: _de_decide_handler,     # W-P-007 推荐裁决
     TASK_VERIFY: _verify_handler,           # REQ-V-004 核查项写通道
+    TASK_REPORT: _report_handler,           # RC-304 研判报告生成
 }

@@ -1054,6 +1054,76 @@ class StateStore:
             [clue_id, limit]).fetchall()
         return [self._chat_row(r) for r in rows]
 
+    # ------------------------------------------------------------------
+    # RC-304/305：研判报告（每线索 version_no 递增、内容不可变）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _report_row(d) -> dict:
+        import json as _json
+        d = dict(d)
+        for k in ("sections_json", "citations_json", "warnings_json"):
+            key = k.replace("_json", "")
+            try:
+                d[key] = _json.loads(d.pop(k) or ("{}" if "sections" in k else "[]"))
+            except _json.JSONDecodeError:
+                d[key] = {} if "sections" in k else []
+        return d
+
+    def insert_canvas_report(self, *, report_id: str, clue_id: str,
+                             version_no: int, snapshot_id: str,
+                             model: str = "", prompt_version: str = "",
+                             extra_request: str = "",
+                             created_by: str, created_at: str) -> dict:
+        """插入报告行（status=generating）；version_no 冲突抛 sqlite3.IntegrityError。"""
+        self._conn.execute(
+            "INSERT INTO clue_canvas_report "
+            "(report_id, clue_id, version_no, snapshot_id, "
+            " content_md, sections_json, citations_json, warnings_json, "
+            " model, prompt_version, extra_request, status, task_id, error, "
+            " created_by, created_at) VALUES "
+            "(?, ?, ?, ?, '', '{}', '[]', '[]', ?, ?, ?, 'generating', '', '', ?, ?)",
+            [report_id, clue_id, version_no, snapshot_id,
+             model, prompt_version, extra_request,
+             created_by, created_at])
+        self._conn.commit()
+        return self.get_canvas_report(report_id)  # type: ignore[return-value]
+
+    def update_canvas_report_status(self, report_id: str, *,
+                                    status: str,
+                                    content_md: str = "",
+                                    sections: dict | None = None,
+                                    citations: list | None = None,
+                                    warnings: list | None = None,
+                                    task_id: str = "",
+                                    error: str = "") -> dict | None:
+        """更新报告状态（generating→ready/failed）。"""
+        import json as _json
+        self._conn.execute(
+            "UPDATE clue_canvas_report SET status=?, content_md=?, "
+            "sections_json=?, citations_json=?, warnings_json=?, "
+            "task_id=?, error=? WHERE report_id=?",
+            [status, content_md,
+             _json.dumps(sections or {}, ensure_ascii=False),
+             _json.dumps(citations or [], ensure_ascii=False),
+             _json.dumps(warnings or [], ensure_ascii=False),
+             task_id, error, report_id])
+        self._conn.commit()
+        return self.get_canvas_report(report_id)
+
+    def get_canvas_report(self, report_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM clue_canvas_report WHERE report_id=?",
+            [report_id]).fetchone()
+        return self._report_row(row) if row is not None else None
+
+    def list_canvas_reports(self, clue_id: str) -> list[dict]:
+        """按版本号倒序（同刻以 report_id 倒序兜底）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM clue_canvas_report WHERE clue_id=? "
+            "ORDER BY version_no DESC, report_id DESC",
+            [clue_id]).fetchall()
+        return [self._report_row(r) for r in rows]
+
     def __enter__(self) -> "StateStore":
         return self
 

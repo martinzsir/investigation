@@ -15,6 +15,9 @@ import type {
   ManualNodeKind,
   NodeDeleteEnvelope,
   NodeMutateEnvelope,
+  ReportDetailEnvelope,
+  ReportGenerateEnvelope,
+  ReportListEnvelope,
   RollbackEnvelope,
   RuleAudit,
   SnapshotCreateEnvelope,
@@ -389,5 +392,69 @@ export const canvasApi = {
     )
     noteDataVersion(caseId, res.dataVersion)
     return res.data
+  },
+
+  // ------------------------------------------------------------------
+  // M6 RC-304/305/306：研判报告（生成/列表/详情/导出）
+  // ------------------------------------------------------------------
+  /** 生成报告 → 202 异步任务（先冻结快照，后 LLM 生成）。 */
+  async generateReport(
+    caseId: string,
+    clueId: string,
+    extraRequest?: string,
+  ): Promise<ReportGenerateEnvelope> {
+    const res = await api.post<ReportGenerateEnvelope>(
+      base(caseId, clueId) + '/reports',
+      { extra_request: extraRequest ?? '' },
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** 报告版本列表（倒序）。 */
+  async listReports(
+    caseId: string,
+    clueId: string,
+  ): Promise<ReportListEnvelope> {
+    const res = await api.get<ReportListEnvelope>(
+      base(caseId, clueId) + '/reports',
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** 报告详情（sections + citations + warnings + content_md）。 */
+  async getReport(
+    caseId: string,
+    clueId: string,
+    reportId: string,
+  ): Promise<ReportDetailEnvelope> {
+    const res = await api.get<ReportDetailEnvelope>(
+      `${base(caseId, clueId)}/reports/${encodeURIComponent(reportId)}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** Markdown 下载（含附录引用索引）。 */
+  async exportReportMd(
+    caseId: string,
+    clueId: string,
+    reportId: string,
+  ): Promise<Blob> {
+    return api.getBlob(
+      `${base(caseId, clueId)}/reports/${encodeURIComponent(reportId)}/export.md`,
+    )
+  },
+
+  /** Word 下载（python-docx 生成）。 */
+  async exportReportDocx(
+    caseId: string,
+    clueId: string,
+    reportId: string,
+  ): Promise<Blob> {
+    return api.getBlob(
+      `${base(caseId, clueId)}/reports/${encodeURIComponent(reportId)}/export.docx`,
+    )
   },
 }
