@@ -3,7 +3,7 @@
 // functions.json 无写路由（D7/E4-1）：只读展示参数/返回类型/依赖，不显示编辑控件；
 // sql 实现文本后端不外曝（已 pop），前端也不展示。改为锁函数需走代码 + 测试，不在此页。
 import { computed, ref, watch } from 'vue'
-import { NInput, NSpin, NTag } from 'naive-ui'
+import { NButton, NInput, NSpin, NTag } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import {
   functionsApi,
@@ -11,6 +11,7 @@ import {
   type FunctionParam,
 } from '../api/endpoints/functions'
 import { presentError, isApiError } from '../api/errors'
+import EmptyState from '../components/common/EmptyState.vue'
 
 const cs = useCaseStore()
 
@@ -90,8 +91,23 @@ function defaultValue(v: unknown): string {
     </div>
 
     <NSpin v-if="loading" class="fn-spin" size="medium" />
-    <div v-else-if="errorText" class="fn-error">{{ errorText }}</div>
-    <div v-else-if="!functions.length" class="fn-empty">当前案件包没有函数声明。</div>
+    <!-- 失败/空态收敛到 EmptyState：与全站同形，且保留 forbidden 语义位 -->
+    <EmptyState
+      v-else-if="errorText"
+      type="error"
+      title="函数目录加载失败"
+      :desc="errorText"
+    >
+      <template #action>
+        <NButton size="small" type="primary" @click="load">重试</NButton>
+      </template>
+    </EmptyState>
+    <EmptyState
+      v-else-if="!functions.length"
+      type="empty"
+      title="当前案件包没有函数声明"
+      desc="Function 是只读计算（SELECT/WITH 白名单 + 模板参数），须在 functions.json 声明并注册实现"
+    />
 
     <div v-else class="fn-body">
       <!-- 左：函数目录（搜索过滤） -->

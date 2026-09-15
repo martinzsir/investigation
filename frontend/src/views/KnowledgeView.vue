@@ -18,6 +18,8 @@ const auth = useAuthStore()
 const message = useMessage()
 
 const loading = ref(false)
+/** 加载失败态：与「暂无断言」严格区分，失败不得留一张空表（会被读成「确实没有」） */
+const errorMsg = ref('')
 const assertions = ref<RelationAssertion[]>([])
 const aliases = ref<Record<string, string[]>>({})
 
@@ -53,15 +55,21 @@ async function load(): Promise<void> {
   if (!cs.currentCaseId) {
     assertions.value = []
     aliases.value = {}
+    errorMsg.value = ''
     return
   }
   loading.value = true
+  errorMsg.value = ''
   try {
     const doc = await knowledgeApi.list(cs.currentCaseId)
     assertions.value = doc.relation_assertions ?? []
     aliases.value = doc.subject_aliases ?? {}
   } catch (e) {
-    message.error(isApiError(e) ? e.message : presentError(e).title)
+    // 失败不能只 toast 后留空表——「加载失败」与「确实没有断言」处置完全不同，
+    // 前者要重试，后者要补录；混同会让用户以为关系断言无需维护。
+    assertions.value = []
+    aliases.value = {}
+    errorMsg.value = isApiError(e) ? e.message : presentError(e).title
   } finally {
     loading.value = false
   }
@@ -165,7 +173,24 @@ const expiredCount = computed(() => assertions.value.length - activeCount.value)
             关系断言（{{ activeCount }} 有效 / {{ expiredCount }} 过期）
           </div>
           <div class="grid-wrap">
-            <table class="grid">
+            <!-- 失败态优先于空态（EmptyState 红线） -->
+            <EmptyState
+              v-if="errorMsg"
+              type="error"
+              title="知识包加载失败"
+              :desc="errorMsg"
+            >
+              <template #action>
+                <NButton size="small" type="primary" @click="load">重试</NButton>
+              </template>
+            </EmptyState>
+            <EmptyState
+              v-else-if="!loading && !assertions.length"
+              type="empty"
+              title="暂无关系断言"
+              desc="关系断言是 R5 工商利益关联的唯一事实源；未录入时相关规则不会命中"
+            />
+            <table v-else class="grid">
               <thead>
                 <tr><th>主体</th><th>关联方</th><th>关系</th><th>来源</th><th>有效期</th></tr>
               </thead>
@@ -179,9 +204,6 @@ const expiredCount = computed(() => assertions.value.length - activeCount.value)
                     {{ a.valid_until ?? '长期' }}
                     <span v-if="isExpired(a)" class="expired-tag">已过期·扫描排除</span>
                   </td>
-                </tr>
-                <tr v-if="!assertions.length">
-                  <td colspan="5" class="dim empty-row">暂无关系断言</td>
                 </tr>
               </tbody>
             </table>

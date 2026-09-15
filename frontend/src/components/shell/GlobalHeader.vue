@@ -34,8 +34,17 @@ const versionText = computed(() => {
   return c.pack_snapshot_at ? `${c.pack_id} · ${c.pack_snapshot_at.slice(0, 10)}` : c.pack_id
 })
 
-/** 全局检索：MVP-0 仅交互壳（可输入/清除），检索结果页随 MVP-1 门户落地 */
+/**
+ * 全局检索：落到线索列表 ?q=（后端 subject 对「线索标题 + 详情全文」子串匹配）。
+ * 只承诺已建成的能力——案件/人员/证据检索尚未实现，placeholder 绝不能写。
+ */
 const keyword = ref('')
+
+function onSearch(): void {
+  const kw = keyword.value.trim()
+  if (!kw) return
+  void router.push({ path: '/c/clues', query: { q: kw } })
+}
 
 const userOptions = [
   { label: `密级 ${auth.clearance} · ${auth.role === 'human' ? '检察官' : auth.role}`, key: 'role', disabled: true },
@@ -91,7 +100,9 @@ async function onUserAction(key: string | number): Promise<void> {
           v-model="keyword"
           class="gs-input"
           type="text"
-          placeholder="搜索案件、线索、人员或证据"
+          aria-label="检索线索"
+          placeholder="搜索线索标题或详情关键词，回车执行"
+          @keyup.enter="onSearch"
         />
         <button v-if="keyword" type="button" class="gs-clear" title="清空" @click="keyword = ''">
           <NIcon :component="CloseOutline" />

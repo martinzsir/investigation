@@ -7,7 +7,7 @@
 // 安全门禁在服务端（governance.py），本页危险确认只是 UX，不假装前端可兜底。
 import { computed, ref, watch } from 'vue'
 import {
-  NButton, NCheckbox, NInput, NSelect, NSpin, NTag,
+  NButton, NCheckbox, NInput, NPopconfirm, NSelect, NSpin, NTag,
 } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -254,13 +254,18 @@ async function doSave(): Promise<void> {
             placeholder="动作 name（小写+下划线）"
           />
           <NTag v-if="isExisting(selected.name)" size="tiny" :bordered="false">🔒 name 不可改</NTag>
-          <NButton
+          <!-- 删除动作需二次确认（与保存同受危险确认约束，避免误删后重建） -->
+          <NPopconfirm
             v-if="canWrite"
-            size="tiny"
-            quaternary
-            type="error"
-            @click="removeAction(selected)"
-          >删除动作</NButton>
+            positive-text="删除"
+            negative-text="取消"
+            @positive-click="removeAction(selected)"
+          >
+            <template #trigger>
+              <NButton size="tiny" quaternary type="error">删除动作</NButton>
+            </template>
+            确认删除动作「{{ selected.title || selected.name }}」？删除在保存后生效。
+          </NPopconfirm>
         </div>
 
         <div class="ac-grid">

@@ -36,6 +36,7 @@ import {
 } from '../domain/impact'
 import SchemaNode from '../components/om/SchemaNode.vue'
 import ImpactPanel from '../components/om/ImpactPanel.vue'
+import EmptyState from '../components/common/EmptyState.vue'
 
 const route = useRoute()
 const cs = useCaseStore()
@@ -211,7 +212,17 @@ const fileTitle = computed(() => FILE_LABELS[fileName.value] ?? fileName.value)
     </div>
 
     <NSpin v-if="loading" size="medium" class="gcv-spin" />
-    <NAlert v-else-if="loadError" type="error" :show-icon="false">加载失败：{{ loadError }}</NAlert>
+    <!-- 失败态带重试：否则一次网络抖动就是死页，只能刷新整个应用 -->
+    <EmptyState
+      v-else-if="loadError"
+      type="error"
+      title="本体文件加载失败"
+      :desc="loadError"
+    >
+      <template #action>
+        <NButton size="small" type="primary" @click="load">重试</NButton>
+      </template>
+    </EmptyState>
 
     <template v-else-if="dto">
       <!-- R6：llm_policy 永不生成表单，只读 JSON 展示（UC-S5-7） -->

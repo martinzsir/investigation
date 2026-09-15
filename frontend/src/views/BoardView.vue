@@ -3,7 +3,7 @@
 // 演示路径：看板看超期 → 卡片迁移 → 审计链有记录（写操作唯一通道 ActionExecutor，
 // 前端走 cluesApi.action + 状态机确认弹窗）。
 import { computed, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NSpin, NButton, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -22,6 +22,7 @@ const cs = useCaseStore()
 const auth = useAuthStore()
 const health = useHealthStore()
 const router = useRouter()
+const route = useRoute()
 const message = useMessage()
 const { config: ontologyCfg } = useCaseOntologyConfig()
 
@@ -110,8 +111,12 @@ async function onSubmit(clueId: string, payload: { action: ClueAction; note?: st
   }
 }
 
+/** 带 ?from= 进入详情：返回时回看板，而不是被甩到线索列表 */
 function openClue(clueId: string): void {
-  void router.push(`/c/clue/${encodeURIComponent(clueId)}`)
+  void router.push({
+    path: `/c/clue/${encodeURIComponent(clueId)}`,
+    query: { from: route.path },
+  })
 }
 
 const busy = computed(() => busyId.value !== '')

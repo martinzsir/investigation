@@ -549,7 +549,16 @@ function reset(): void {
         <div class="panel">
           <!-- 步骤 0：上传 -->
           <div v-if="step === 0" class="step-body">
-            <div class="upload-zone" @click="pickFile">
+            <!-- 键盘可达：上传是接入流程主入口，不能只能鼠标点 -->
+            <div
+              class="upload-zone"
+              role="button"
+              tabindex="0"
+              aria-label="选择数据文件"
+              @click="pickFile"
+              @keydown.enter.prevent="pickFile"
+              @keydown.space.prevent="pickFile"
+            >
               <div class="upload-icon">⬆</div>
               <p class="upload-title">点击选择数据文件</p>
               <p class="upload-hint dim">支持 CSV / Excel / Parquet / JSON / SQLite；上传后自动生成指纹与列画像</p>
@@ -848,6 +857,11 @@ function reset(): void {
   transition: border-color 0.15s;
 }
 .upload-zone:hover { border-color: var(--sun-info-border, var(--sun-ok-border)); }
+.upload-zone:focus-visible {
+  outline: 2px solid var(--sun-border-active);
+  outline-offset: 2px;
+  border-color: var(--sun-border-active);
+}
 .upload-icon { font-size: 34px; color: var(--sun-text-tertiary); }
 .upload-title { font-size: 14px; font-weight: 600; margin: 10px 0 4px; }
 .upload-hint { font-size: 12px; }

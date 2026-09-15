@@ -4,7 +4,7 @@
 // 不携带/不回写任何交叉等级升格字段；restricted 内间线索只露 id + 原因。
 import { computed, ref, watch } from 'vue'
 import { NSpin, NTag, useMessage } from 'naive-ui'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { researchApi, type HypothesesDto } from '../api/endpoints/research'
 import { useCaseStore } from '../stores/case'
 import { presentError, isApiError } from '../api/errors'
@@ -15,6 +15,7 @@ import EmptyState from '../components/common/EmptyState.vue'
 
 const cs = useCaseStore()
 const router = useRouter()
+const route = useRoute()
 const message = useMessage()
 
 const loading = ref(false)
@@ -40,8 +41,12 @@ async function load(): Promise<void> {
 
 watch(() => cs.currentCaseId, () => void load(), { immediate: true })
 
+/** 带 ?from= 进入详情：返回时回庙算工作台，而不是被甩到线索列表 */
 function openClue(clueId: string): void {
-  void router.push(`/c/clue/${encodeURIComponent(clueId)}`)
+  void router.push({
+    path: `/c/clue/${encodeURIComponent(clueId)}`,
+    query: { from: route.path },
+  })
 }
 </script>
 

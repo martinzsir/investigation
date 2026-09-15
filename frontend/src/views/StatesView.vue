@@ -6,7 +6,7 @@
 // 取消终态标记走危险确认 + 理由必填（§8.4）。
 import { computed, ref, watch } from 'vue'
 import {
-  NButton, NCheckbox, NInput, NInputNumber, NSelect, NSpin, NTag,
+  NButton, NCheckbox, NInput, NInputNumber, NPopconfirm, NSelect, NSpin, NTag,
 } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -210,13 +210,18 @@ async function doSave(): Promise<void> {
               placeholder="状态名（如：已起诉）"
             />
             <NTag v-if="isExisting(selected.name)" size="tiny" :bordered="false">🔒 name 不可改</NTag>
-            <NButton
+            <!-- 删除状态连带清理迁移表，需二次确认（E3-2 被引用时保存仍会被拦） -->
+            <NPopconfirm
               v-if="canWrite"
-              size="tiny"
-              quaternary
-              type="error"
-              @click="removeState(selected)"
-            >删除状态</NButton>
+              positive-text="删除"
+              negative-text="取消"
+              @positive-click="removeState(selected)"
+            >
+              <template #trigger>
+                <NButton size="tiny" quaternary type="error">删除状态</NButton>
+              </template>
+              确认删除状态「{{ selected.title || selected.name }}」？将连带清理其迁移关系（保存后生效）。
+            </NPopconfirm>
           </div>
 
           <div v-if="(referencedBy[selected.name] ?? []).length" class="st-ref">

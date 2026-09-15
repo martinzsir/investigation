@@ -278,7 +278,15 @@ function fmtCell(v: unknown): string {
                 </thead>
                 <tbody>
                   <template v-for="g in columnGroups" :key="g.object">
-                    <tr class="group-row" @click="toggleGroup(g.object)">
+                    <tr
+                      class="group-row"
+                      tabindex="0"
+                      role="button"
+                      :aria-expanded="!collapsedObjects.has(g.object)"
+                      @click="toggleGroup(g.object)"
+                      @keydown.enter.prevent="toggleGroup(g.object)"
+                      @keydown.space.prevent="toggleGroup(g.object)"
+                    >
                       <td colspan="14">
                         <span class="grp-arrow">{{ collapsedObjects.has(g.object) ? '▶' : '▼' }}</span>
                         <span class="mono grp-name">{{ g.object }}</span>
@@ -463,6 +471,10 @@ function fmtCell(v: unknown): string {
 .grp-link:hover { text-decoration: underline; }
 .group-row { cursor: pointer; background: var(--sun-input-bg); user-select: none; }
 .group-row:hover { background: var(--sun-hover-bg, rgba(64, 158, 255, 0.08)); }
+.group-row:focus-visible {
+  outline: 2px solid var(--sun-border-active);
+  outline-offset: -2px;
+}
 .group-row td { padding: 8px; border-bottom: 1px solid var(--sun-border); }
 .grp-arrow {
   display: inline-block; width: 16px; font-size: 10px;

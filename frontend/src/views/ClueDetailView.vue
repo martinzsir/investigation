@@ -32,6 +32,22 @@ import ResearchCanvas from '../components/research/ResearchCanvas.vue'
 
 const route = useRoute()
 const router = useRouter()
+
+/**
+ * 返回目标：优先回来源页（?from=），否则回落线索列表。
+ * 只接受站内以 / 开头的路径，且排除 // 与 \ —— from 来自 URL 查询参数，
+ * 不校验会被用来做开放重定向。
+ */
+const backTo = computed(() => {
+  const f = route.query.from
+  if (typeof f !== 'string') return '/c/clues'
+  if (!f.startsWith('/') || f.startsWith('//') || f.includes('\\')) return '/c/clues'
+  return f
+})
+const backLabel = computed(() => (route.query.from ? '返回' : '返回列表'))
+function goBack(): void {
+  void router.push(backTo.value)
+}
 const message = useMessage()
 const cs = useCaseStore()
 const auth = useAuthStore()
@@ -382,8 +398,8 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
         <template v-else-if="detail">
           <!-- 头部 -->
           <div class="detail-head">
-            <NButton text size="small" class="back" @click="router.push('/c/clues')">
-              <NIcon :component="ArrowBackOutline" /> 返回列表
+            <NButton text size="small" class="back" @click="goBack">
+              <NIcon :component="ArrowBackOutline" /> {{ backLabel }}
             </NButton>
             <h2 class="clue-title">{{ detail.title }}</h2>
             <div class="badges">

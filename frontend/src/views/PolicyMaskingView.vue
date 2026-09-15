@@ -8,7 +8,7 @@
 //   权限变更改变全队可见面 → 🔴 危险确认 + 理由必填，保存即生效。
 import { computed, ref, watch } from 'vue'
 import {
-  NButton, NCheckbox, NSelect, NSpin, NTabPane, NTabs, useMessage,
+  NButton, NCheckbox, NPopconfirm, NSelect, NSpin, NTabPane, NTabs, useMessage,
 } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
@@ -338,7 +338,20 @@ async function doSave(): Promise<void> {
                           @update:value="(v: number) => { l.min_clearance = v }"
                         />
                       </td>
-                      <td><NButton v-if="canWrite" size="tiny" quaternary type="error" @click="removeLinkPolicy(i)">删除</NButton></td>
+                      <td>
+                        <!-- 删除需二次确认：策略改动影响全队可见面，误删后需重新配置 -->
+                        <NPopconfirm
+                          v-if="canWrite"
+                          positive-text="删除"
+                          negative-text="取消"
+                          @positive-click="removeLinkPolicy(i)"
+                        >
+                          <template #trigger>
+                            <NButton size="tiny" quaternary type="error">删除</NButton>
+                          </template>
+                          确认删除该链接策略？删除在保存后生效，将改变该链接的可见范围。
+                        </NPopconfirm>
+                      </td>
                     </tr>
                     <tr v-if="!linkPolicies.length"><td colspan="4" class="dim">暂无链接策略</td></tr>
                   </tbody>
@@ -403,7 +416,20 @@ async function doSave(): Promise<void> {
                         />
                       </td>
                       <td class="mono preview">{{ previewValue('13901231234', p.mask) }}</td>
-                      <td><NButton v-if="canWrite" size="tiny" quaternary type="error" @click="removePropertyPolicy(i)">删除</NButton></td>
+                      <td>
+                        <!-- 属性遮蔽删除 = 解除遮蔽，属敏感变更，必须二次确认 -->
+                        <NPopconfirm
+                          v-if="canWrite"
+                          positive-text="删除"
+                          negative-text="取消"
+                          @positive-click="removePropertyPolicy(i)"
+                        >
+                          <template #trigger>
+                            <NButton size="tiny" quaternary type="error">删除</NButton>
+                          </template>
+                          确认删除该属性策略？删除后该属性将不再被遮蔽（保存后生效）。
+                        </NPopconfirm>
+                      </td>
                     </tr>
                     <tr v-if="!propertyPolicies.length"><td colspan="7" class="dim">暂无属性遮蔽策略</td></tr>
                   </tbody>

@@ -2,7 +2,7 @@
 // FE-P-001 治理仪表盘（MVP-1）：健康度第一块（零记录 warn，禁止「一切正常」）
 // + 待办/诊断指标 + 五间雷达 + 高优先级线索列表。无选中案件时不发案件请求。
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NSpin, NAlert, NButton, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { dashboardApi, type DashboardDto } from '../api/endpoints/dashboard'
@@ -21,6 +21,7 @@ import JianRadar from '../components/research/JianRadar.vue'
 
 const cs = useCaseStore()
 const router = useRouter()
+const route = useRoute()
 const message = useMessage()
 const { config: ontologyCfg } = useCaseOntologyConfig()
 
@@ -138,8 +139,12 @@ async function load(): Promise<void> {
 
 watch(() => cs.currentCaseId, load, { immediate: true })
 
+/** 带 ?from= 进入详情：返回时回仪表盘，而不是被甩到线索列表 */
 function openClue(id: string): void {
-  void router.push(`/c/clue/${encodeURIComponent(id)}`)
+  void router.push({
+    path: `/c/clue/${encodeURIComponent(id)}`,
+    query: { from: route.path },
+  })
 }
 </script>
 
@@ -234,7 +239,16 @@ function openClue(id: string): void {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="c in topClues" :key="c.clue_id" class="clue-row" @click="openClue(c.clue_id)">
+                  <tr
+                    v-for="c in topClues"
+                    :key="c.clue_id"
+                    class="clue-row"
+                    tabindex="0"
+                    role="button"
+                    @click="openClue(c.clue_id)"
+                    @keydown.enter.prevent="openClue(c.clue_id)"
+                    @keydown.space.prevent="openClue(c.clue_id)"
+                  >
                     <td class="rank">{{ c.priority_rank ?? '—' }}</td>
                     <td class="title-cell">
                       <span class="title">{{ c.title }}</span>
@@ -293,17 +307,14 @@ function openClue(id: string): void {
   flex: none;
   white-space: nowrap;
 }
+/* 卡片数由 states.json 声明动态决定（1 固定 + N 状态 + 1 严重诊断），
+   列数不可写死 6 —— 声明 7 个状态就会错位换行。改 auto-fit 自适应。 */
 .metric-row {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   padding-top:10px;
   padding-bottom:10px;
-}
-@media (max-width: 1200px) {
-  .metric-row {
-    grid-template-columns: repeat(3, 1fr);
-  }
 }
 .panels {
   display: grid;
@@ -361,6 +372,10 @@ function openClue(id: string): void {
 }
 .clue-row {
   cursor: pointer;
+}
+.clue-row:focus-visible {
+  outline: 2px solid var(--sun-border-active);
+  outline-offset: -2px;
 }
 .clue-row:hover td {
   background: rgba(110, 222, 233, 0.05);

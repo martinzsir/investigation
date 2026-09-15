@@ -15,13 +15,25 @@ const cs = useCaseStore()
 const message = useMessage()
 
 const targetTable = ref('银行流水')
-/** 映射行：源列 → 目标属性 */
-const rows = ref<Array<{ col: string; prop: string }>>([
-  { col: '付款方名称', prop: 'from_raw' },
-  { col: '收款方名称', prop: 'to_raw' },
-  { col: '交易金额', prop: 'amount' },
-  { col: '交易日期', prop: 'date' },
-])
+/**
+ * 映射行：源列 → 目标属性。
+ * 初始为空——预填 4 行会被误当作「本案件的真实映射配置」，
+ * 而它们只是通用银行流水的示例值，与当前案件本体无关（误导预检结论）。
+ */
+const rows = ref<Array<{ col: string; prop: string }>>([])
+/** 是否由「载入示例」生成：载入后须显式警示其来源，用户不能以为它是配置读出来的 */
+const usingSample = ref(false)
+
+function loadSample(): void {
+  rows.value = [
+    { col: '付款方名称', prop: 'from_raw' },
+    { col: '收款方名称', prop: 'to_raw' },
+    { col: '交易金额', prop: 'amount' },
+    { col: '交易日期', prop: 'date' },
+  ]
+  usingSample.value = true
+  result.value = null
+}
 
 const validating = ref(false)
 const result = ref<ValidateResult | null>(null)
@@ -37,6 +49,7 @@ function addRow(): void {
 function removeRow(i: number): void {
   rows.value.splice(i, 1)
   result.value = null
+  if (!rows.value.length) usingSample.value = false
 }
 
 async function runValidate(): Promise<void> {
@@ -110,6 +123,10 @@ const KIND_LABEL: Record<string, string> = {
           <span class="dim">目标源表：</span>
           <NInput v-model:value="targetTable" size="small" class="target-input" placeholder="如：银行流水" />
         </div>
+        <div v-if="usingSample" class="sample-bar">
+          ⚠ 当前映射来自「载入示例」，源列名取自通用银行流水表，<b>与本案本体配置无关</b>；
+          请按实际源列逐行核对后再预检，否则预检结论不成立。
+        </div>
         <div class="grid-wrap">
           <table class="grid">
             <thead><tr><th>源列</th><th></th><th>目标属性（obj.属性）</th><th></th></tr></thead>
@@ -120,11 +137,15 @@ const KIND_LABEL: Record<string, string> = {
                 <td><NInput v-model:value="r.prop" size="small" placeholder="属性名，如：amount" @update:value="result = null" /></td>
                 <td><NButton size="tiny" quaternary type="error" @click="removeRow(i)">删</NButton></td>
               </tr>
+              <tr v-if="!rows.length">
+                <td colspan="4" class="dim">暂无映射行。点「+ 加一行」手工录入，或「载入示例映射」查看格式（示例与本案无关）。</td>
+              </tr>
             </tbody>
           </table>
         </div>
         <div class="actions">
           <NButton size="small" dashed @click="addRow">+ 加一行</NButton>
+          <NButton v-if="!rows.length" size="small" quaternary @click="loadSample">载入示例映射</NButton>
           <NButton type="primary" size="small" :loading="validating" @click="runValidate">预检</NButton>
         </div>
 
@@ -182,6 +203,10 @@ const KIND_LABEL: Record<string, string> = {
 .notice-bar {
   background: var(--sun-warn-bg); border: 1px solid var(--sun-warn-border);
   color: var(--sun-warn-text); border-radius: 6px; padding: 8px 12px; font-size: 12px;
+}
+.sample-bar {
+  background: var(--sun-info-bg); border: 1px solid var(--sun-info-border);
+  color: var(--sun-info-text); border-radius: 6px; padding: 8px 12px; font-size: 12px;
 }
 .card {
   background: var(--sun-bg-card); border: 1px solid var(--sun-border);

@@ -3,7 +3,7 @@
 // ?page= 可分享（URL query 同步）、跳页输入框；默认服务端时间倒序。
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NSpin, NSelect, NButton } from 'naive-ui'
+import { NSpin, NSelect, NInput, NButton } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { cluesApi, type ClueListPage, type ClueListItem } from '../api/endpoints/clues'
 import { CLUE_STATUS } from '../domain/clue'
@@ -21,6 +21,12 @@ const errorMsg = ref('')
 const page = ref<ClueListPage | null>(null)
 const statusFilter = ref<string | null>(null)
 const levelFilter = ref<string | null>(null)
+/**
+ * 关键词（?q= 可分享）：顶部全局检索框深链落到本页。
+ * 后端 subject 参数对「线索标题 + detail 全文」做子串匹配，故语义是
+ * 「线索关键词检索」，不是全网搜索——placeholder 不得承诺搜案件/人员/证据。
+ */
+const qFilter = ref(String(route.query.q ?? ''))
 
 const statusOptions = [
   { label: '全部状态', value: '' },
@@ -61,6 +67,7 @@ async function load(): Promise<void> {
       page_size: PAGE_SIZE_DEFAULT,
       status: statusFilter.value ?? undefined,
       level: levelFilter.value ?? undefined,
+      subject: qFilter.value.trim() || undefined,
     })
     // URL ?page= 超出范围（可分享链接场景）：钳制回合法页并同步 URL
     if (res.items.length === 0 && res.total > 0 && curPage.value > 1) {
@@ -83,6 +90,16 @@ watch(
     if (cs.currentCaseId) void load()
   },
 )
+// 外部深链（顶部全局检索）改 ?q= 时同步并重载；本页自己改的不重复加载
+watch(
+  () => route.query.q,
+  (v) => {
+    const next = String(v ?? '')
+    if (next === qFilter.value) return
+    qFilter.value = next
+    if (cs.currentCaseId) void load()
+  },
+)
 
 /** 翻页：同步 URL（?page= 可分享），不刷筛选 */
 function onPageChange(p: number): void {
@@ -92,20 +109,33 @@ function onPageChange(p: number): void {
   })
 }
 
-/** 筛选变化：回第 1 页并清 URL page */
+/** 筛选变化：回第 1 页并清 URL page；关键词同步进 ?q= 保持可分享 */
 function query(): void {
-  if (curPage.value !== 1) {
-    void router.replace({ query: { ...route.query, page: undefined } })
-  }
+  void router.replace({
+    query: { ...route.query, page: undefined, q: qFilter.value.trim() || undefined },
+  })
   void load()
 }
 
+/** 带 ?from=（含 ?page= / ?q=）进入详情：返回时回到原分页与关键词，不必重筛 */
 function openClue(item: ClueListItem): void {
-  void router.push(`/c/clue/${encodeURIComponent(item.clue_id)}`)
+  void router.push({
+    path: `/c/clue/${encodeURIComponent(item.clue_id)}`,
+    query: { from: route.fullPath },
+  })
 }
+/** 空态说明按是否带关键词分支：关键词无匹配 ≠ 零命中，两者处置完全不同 */
+const emptyDesc = computed(() => {
+  const kw = qFilter.value.trim()
+  if (kw) {
+    return `关键词「${kw}」在已产出线索中无匹配。检索范围是线索标题与详情全文；案件、人员、证据另有专门入口。`
+  }
+  return '可能原因：案件尚未运行分析（BUILD/RESCAN），或规则零命中——零命中诊断请回仪表盘查看'
+})
 function reset(): void {
   statusFilter.value = null
   levelFilter.value = null
+  qFilter.value = ''
   void router.replace({ query: {} })
   void load()
 }
@@ -128,6 +158,14 @@ function reset(): void {
       <div class="filters">
         <NSelect v-model:value="statusFilter" :options="statusOptions" placeholder="全部状态" class="filter-select" />
         <NSelect v-model:value="levelFilter" :options="levelOptions" placeholder="全部级别" class="filter-select" />
+        <NInput
+          v-model:value="qFilter"
+          size="small"
+          class="filter-keyword"
+          placeholder="关键词（线索标题 / 详情）"
+          clearable
+          @keyup.enter="query"
+        />
         <NButton size="small" type="primary" @click="query">查询</NButton>
         <NButton size="small" @click="reset">重置</NButton>
       </div>
@@ -140,7 +178,7 @@ function reset(): void {
           v-else-if="!loading && !items.length"
           type="empty"
           title="当前筛选下无线索"
-          desc="可能原因：案件尚未运行分析（BUILD/RESCAN），或规则零命中——零命中诊断请回仪表盘查看"
+          :desc="emptyDesc"
         />
         <DataTable
           v-else
@@ -220,6 +258,9 @@ function reset(): void {
 }
 .filter-select {
   width: 200px;
+}
+.filter-keyword {
+  width: 240px;
 }
 .rank {
   font-family: var(--sun-font-mono);

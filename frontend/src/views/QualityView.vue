@@ -23,6 +23,8 @@ const message = useMessage()
 const loading = ref(false)
 const running = ref(false)
 const report = ref<QualityReport | null>(null)
+/** 加载失败态：与「尚未运行」严格区分（EmptyState 红线：失败不得伪装成空态） */
+const errorMsg = ref('')
 
 const canRun = computed(() => canWriteConfig(auth.clearance))
 const available = computed(() => report.value?.available === true)
@@ -37,13 +39,18 @@ const rep = computed(() =>
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
     report.value = null
+    errorMsg.value = ''
     return
   }
   loading.value = true
+  errorMsg.value = ''
   try {
     report.value = await qualityApi.latest(cs.currentCaseId)
   } catch (e) {
-    message.error(isApiError(e) ? e.message : presentError(e).title)
+    // 失败必须落到 error 态，不能让 report 保持 null 而显示「尚未运行质量检查」：
+    // 接口故障与从未运行是两回事，混淆会让用户以为质量检查非必做而继续推进。
+    report.value = null
+    errorMsg.value = isApiError(e) ? e.message : presentError(e).title
   } finally {
     loading.value = false
   }
@@ -104,8 +111,20 @@ function sevColor(sev: string): string {
       </div>
 
       <NSpin :show="loading">
+        <!-- 失败态优先于空态：接口故障 ≠ 从未运行（EmptyState 红线，防误判为「不必做」） -->
         <EmptyState
-          v-if="!loading && !available"
+          v-if="!loading && errorMsg"
+          type="error"
+          title="质量报告加载失败"
+          :desc="errorMsg"
+        >
+          <template #action>
+            <NButton size="small" type="primary" @click="load">重试</NButton>
+          </template>
+        </EmptyState>
+
+        <EmptyState
+          v-else-if="!loading && !available"
           type="empty"
           title="尚未运行质量检查"
           desc="点击「运行四扫描」；检查覆盖语义层全部对象/属性，结果随报告留痕"

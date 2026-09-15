@@ -2,7 +2,7 @@
 // ★ FE-C-003 DataTable：分页表（非虚拟滚动）——?page= 可分享（URL 同步在页面层）、
 // 跳页输入框、page_size=50、默认时间倒序（服务端排序）。列遮蔽由调用方经
 // cell 插槽挂 MaskedField，组件不感知字段策略。
-import { computed, ref } from 'vue'
+import { computed, ref, useAttrs } from 'vue'
 import { NButton, NInput } from 'naive-ui'
 import { clampPage, jumpPageError, totalPages } from '../../domain/pagination'
 
@@ -30,6 +30,16 @@ const emit = defineEmits<{
   'update:page': [page: number]
   'row-click': [item: T]
 }>()
+
+const attrs = useAttrs()
+/**
+ * 仅当外部监听了 row-click 才让行进 Tab 序列并响应回车/空格。
+ * 不可点击的行加 tabindex 只会制造键盘噪声，拖慢高强度办案。
+ */
+const rowClickable = computed(() => typeof attrs.onRowClick === 'function')
+function activate(item: T): void {
+  if (rowClickable.value) emit('row-click', item)
+}
 
 const pages = computed(() => totalPages(props.total, props.pageSize))
 const curPage = computed(() => clampPage(props.page, props.total, props.pageSize))
@@ -82,7 +92,12 @@ function keyOf(item: T, idx: number): string {
             v-else
             :key="keyOf(item, idx)"
             class="dt-row"
-            @click="emit('row-click', item)"
+            :class="{ 'dt-row--clickable': rowClickable }"
+            :tabindex="rowClickable ? 0 : undefined"
+            :role="rowClickable ? 'button' : undefined"
+            @click="activate(item)"
+            @keydown.enter.prevent="activate(item)"
+            @keydown.space.prevent="activate(item)"
           >
             <td v-for="col in columns" :key="col.key" :class="{ mono: col.mono }">
               <slot :name="`cell-${col.key}`" :item="item" :value="cellText(item, col.key)">
@@ -155,6 +170,10 @@ function keyOf(item: T, idx: number): string {
 }
 .dt-row {
   cursor: pointer;
+}
+.dt-row--clickable:focus-visible {
+  outline: 2px solid var(--sun-border-active);
+  outline-offset: -2px;
 }
 .dt-row:hover td {
   background: rgba(110, 222, 233, 0.05);
