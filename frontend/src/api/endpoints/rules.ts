@@ -4,7 +4,8 @@ import type { TaskRow } from '../../domain/task'
 
 // 规则工坊（server/app/routers/rule_workshop.py 契约）。
 // GET  /cases/{cid}/rules        规则列表 + function_catalog（函数目录无独立端点）
-// PUT  /cases/{cid}/rules/{rid}  🔒 仅 rule_text/params/enabled 三字段可改；reason 落审计链
+// GET  /cases/{cid}/functions    函数声明只读目录（S3-F4；见 endpoints/functions.ts）
+// PUT  /cases/{cid}/rules/{rid}  🔒 仅 rule_text/params/enabled/jian_types 可改；reason 落审计链
 // POST /cases/{cid}/rules/draft  🔒 LLM 守卫层（默认 503 LLM_DISABLED / 无通道 503）
 
 /** 规则声明（rules.json；function/stage/hit_when 等结构字段只读） */
@@ -29,19 +30,21 @@ export interface RuleListResult {
   pack: string
 }
 
-/** PUT 可改字段（结构字段提交即 400） */
+/** PUT 可改字段（结构字段提交即 400；jian_types S3-F3 解锁为五勾选） */
 export interface RuleEditBody {
   rule_text?: string
   params?: Record<string, unknown>
   enabled?: boolean
-  /** 变更理由（FE-T-012：params/enabled 危险项必填，落审计链 note） */
+  /** 间类（S3-F3 解锁：表单勾选限定五间，loader 白名单兜底；[] = 全不标） */
+  jian_types?: string[]
+  /** 变更理由（FE-T-012：params/enabled/jian_types 危险项必填，落审计链 note） */
   reason?: string
 }
 
 export interface RuleEditResult {
   rule_id: string
-  changed: Array<'rule_text' | 'params' | 'enabled'>
-  /** params/enabled 变更自动入队 RESCAN；纯 rule_text 修订为 null */
+  changed: Array<'rule_text' | 'params' | 'enabled' | 'jian_types'>
+  /** params/enabled/jian_types 变更自动入队 RESCAN；纯 rule_text 修订为 null */
   rescan_task: TaskRow | null
 }
 

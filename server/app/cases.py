@@ -11,6 +11,7 @@ server/app/cases.py
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ from server.app.meta.models import (
     CASE_CLOSED,
     CaseRecord,
     PackSnapshot,
+    PackSnapshotHistory,
 )
 from server.app.meta.repo import MetaRepo
 from server.app.store import StoreFactory
@@ -31,7 +33,10 @@ from server.app.store import StoreFactory
 _FINGERPRINT_FILES = (
     "objects.json", "links.json", "bindings.json", "rules.json",
     "actions.json", "functions.json", "policies.json", "views.json",
+    "data_elements.json",  # S0-3 F3.3：Web 可写，不纳入则改了版本纹丝不动
 )
+# S0-3 F3.3：上游层数据元目录（全域/行业层变了，所有案件版本都应变化）
+_FINGERPRINT_LAYER_DIRS = ("_shared", "_industry")
 
 
 class CaseAlreadyExists(ValueError):
@@ -64,14 +69,38 @@ class CaseService:
 
     @staticmethod
     def fingerprint(snapshot_dir: Path) -> str:
-        """声明指纹（sha1 前 12 位）：快照内容的版本凭据。"""
+        """声明指纹（sha1 前 12 位）：快照内容的版本凭据。
+
+        S0-3 F3.3 扩容：data_elements.json + _shared/_industry 上游层目录
+        （相对路径 + 内容，排序保证确定性）一并纳入。
+        """
         h = hashlib.sha1()
         for name in _FINGERPRINT_FILES:
             p = snapshot_dir / name
             if p.exists():
                 h.update(name.encode())
                 h.update(p.read_bytes())
+        ontology_root = snapshot_dir.parent
+        for layer in _FINGERPRINT_LAYER_DIRS:
+            layer_dir = ontology_root / layer
+            if not layer_dir.is_dir():
+                continue
+            for f in sorted(layer_dir.rglob("*")):
+                if f.is_file():
+                    h.update(f.relative_to(ontology_root).as_posix().encode())
+                    h.update(f.read_bytes())
         return h.hexdigest()[:12]
+
+    def archive_snapshot(self, case_id: str, version: str) -> Path:
+        """完整快照归档（S0-3 R2）：ontology 根整目录拷到
+        cases/<cid>/ontology_history/<version>/，同版本幂等跳过。
+        版本沿革举证时「改前是什么」= 上一版本的归档。"""
+        dest = self.case_dir(case_id) / "ontology_history" / version
+        if dest.exists():
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.snapshot_ontology_root(case_id), dest)
+        return dest
 
     # ---- 生命周期 ----
     def create_case(self, *, case_id: str, name: str, tenant_id: str = "default",
@@ -94,6 +123,20 @@ class CaseService:
             if shared_dst.exists():
                 shutil.rmtree(shared_dst)
             shutil.copytree(shared_src, shared_dst)
+        # 复制行业叠加层（S0-1）：由模板包 pack_meta.json industry 决定
+        meta_path = src / "pack_meta.json"
+        if meta_path.exists():
+            industry = (json.loads(
+                meta_path.read_text(encoding="utf-8")).get("industry"))
+            if industry:
+                ind_src = self.ontology_root / "_industry" / industry
+                if ind_src.exists():
+                    ind_dst = (self.snapshot_ontology_root(case_id)
+                               / "_industry" / industry)
+                    if ind_dst.exists():
+                        shutil.rmtree(ind_dst.parent)
+                    ind_dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(ind_src, ind_dst)
         version = self.fingerprint(dst)
 
         locked_at = datetime.now().isoformat(timespec="seconds")
@@ -104,6 +147,13 @@ class CaseService:
                           created_by=created_by)
         self.repo.create_case(case)
         self.repo.create_pack_snapshot(snap)
+        # S0-3 F3.2：建案快照入版本历史（首条，prev_version 空，
+        # reason 固定「建案快照」与人工变更理由区分）+ 完整快照归档（R2）
+        ref = self.archive_snapshot(case_id, version)
+        self.repo.append_pack_snapshot_history(PackSnapshotHistory(
+            case_id=case_id, version=version, prev_version="",
+            operator=created_by, reason="建案快照",
+            changed_files=[], snapshot_ref=str(ref), created_at=locked_at))
         got = self.repo.get_case(case_id)
         assert got is not None
         return got

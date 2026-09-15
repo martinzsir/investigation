@@ -8,7 +8,7 @@ import { errEnvelope, FakeTransport, okEnvelope } from './helpers'
 import {
   LOCKED_KEYS, EDITABLE_FIELDS, sanitizeEditBody, containsLockedKey,
   isDangerousChange, triggersRescan, canEditMachineBehavior, validateRuleEdit,
-  diffRule, ruleTextError,
+  diffRule, ruleTextError, jianTypesError,
 } from '../src/domain/ruleEdit'
 import {
   objectCell, matrixCoverage, propertyVisibility, viewVisible, canWriteConfig,
@@ -52,32 +52,38 @@ const baseRule: Rule = {
 
 // ---------------------------------------------------------------- FE-T-011
 describe('FE-T-011 红线常量不可被配置覆盖', () => {
-  it('L0 锁定键恰好 12 条，且与可编辑字段不相交', () => {
-    expect(LOCKED_KEYS).toHaveLength(12)
+  it('L0 锁定键恰好 11 条，且与可编辑字段不相交', () => {
+    expect(LOCKED_KEYS).toHaveLength(11)
     for (const k of LOCKED_KEYS) {
       expect((EDITABLE_FIELDS as readonly string[]).includes(k)).toBe(false)
     }
   })
 
-  it('sanitizeEditBody：12 条 L0 键注入全部被剥离，只留白名单四字段', () => {
+  it('sanitizeEditBody：11 条 L0 键注入全部被剥离；jian_types S3-F3 已解锁保留', () => {
     const dirty: Record<string, unknown> = {
       id: 'R6', rule_id: 'R6', function: 'steal', function_catalog: ['x'],
-      stage: 'nei_jian', hit_when: '1=1', jian_types: ['死间'], dimension: ['资金'],
+      stage: 'nei_jian', hit_when: '1=1', dimension: ['资金'],
       title: '被篡改标题', pack: 'evil', sql: 'DROP TABLE obj_transaction', action: 'file',
       rule_text: '合法的判据文本修订，二十字以上应该可以通过校验。',
       params: { window_minutes: 30 },
       enabled: false,
+      jian_types: ['生间', '反间'],
       reason: '基线复核收紧窗口',
     }
-    expect(containsLockedKey(dirty)).toHaveLength(12)
+    expect(containsLockedKey(dirty)).toHaveLength(11)
     const out = sanitizeEditBody(dirty)
-    expect(Object.keys(out).sort()).toEqual(['enabled', 'params', 'reason', 'rule_text'])
+    expect(Object.keys(out).sort()).toEqual(
+      ['enabled', 'jian_types', 'params', 'reason', 'rule_text'],
+    )
     expect(containsLockedKey(out as Record<string, unknown>)).toEqual([])
     const outRaw = out as Record<string, unknown>
     expect(outRaw.function).toBeUndefined()
     expect(outRaw.sql).toBeUndefined()
     expect(outRaw.action).toBeUndefined()
     expect(out.params).toEqual({ window_minutes: 30 })
+    // S3-F3 解锁：间类勾选（字符串数组）随白名单出网；非字符串项被过滤
+    expect(out.jian_types).toEqual(['生间', '反间'])
+    expect(sanitizeEditBody({ jian_types: ['生间', 42, null] }).jian_types).toEqual(['生间'])
   })
 
   it('sanitizeEditBody：类型不符的白名单字段同样忽略（不裸传出网）', () => {
@@ -93,6 +99,14 @@ describe('FE-T-011 红线常量不可被配置覆盖', () => {
     expect(out.reason).toBe('r')
   })
 
+  it('jianTypesError：五间之外的勾选值兜底拒绝（loader 强校验前置）', () => {
+    expect(jianTypesError(['生间', '外间'])).toContain('外间')
+    expect(jianTypesError(['生间', '反间'])).toBe('')
+    expect(jianTypesError('生间')).toContain('数组')
+    expect(validateRuleEdit(baseRule, { jian_types: ['死间', '外间'], reason: 'r' }, 3))
+      .toContain('外间')
+  })
+
   it('传输契约：PUT 注入 function 键 → 后端白名单拒绝 400（不落盘）', async () => {
     setTransport(
       new FakeTransport([
@@ -101,7 +115,7 @@ describe('FE-T-011 红线常量不可被配置覆盖', () => {
           respond: (r) => {
             const body = (r.body ?? {}) as Record<string, unknown>
             const structural = Object.keys(body).filter(
-              (k) => !['rule_text', 'params', 'enabled', 'reason'].includes(k),
+              (k) => !['rule_text', 'params', 'enabled', 'jian_types', 'reason'].includes(k),
             )
             if (structural.length) {
               return errEnvelope(400, 'VALIDATION', `结构字段只读不可改：${structural.join(',')}`)
@@ -129,12 +143,14 @@ describe('FE-T-011 红线常量不可被配置覆盖', () => {
 
 // ---------------------------------------------------------------- FE-T-012
 describe('FE-T-012 配置变更写入审计链：危险确认 + 理由必填', () => {
-  it('params/enabled 变更 = 危险项；纯 rule_text 修订 = 普通项', () => {
+  it('params/enabled/jian_types 变更 = 危险项；纯 rule_text 修订 = 普通项', () => {
     expect(isDangerousChange(['params'])).toBe(true)
     expect(isDangerousChange(['enabled'])).toBe(true)
+    expect(isDangerousChange(['jian_types'])).toBe(true)
     expect(isDangerousChange(['params', 'rule_text'])).toBe(true)
     expect(isDangerousChange(['rule_text'])).toBe(false)
     expect(triggersRescan(['enabled'])).toBe(true)
+    expect(triggersRescan(['jian_types'])).toBe(true)
     expect(triggersRescan(['rule_text'])).toBe(false)
   })
 
@@ -197,6 +213,10 @@ describe('FE-T-012 配置变更写入审计链：危险确认 + 理由必填', (
     expect(vue).toContain(':disabled="reasonMissing"')
     expect(vue).toContain('确认变更并留痕')
     expect(vue).toContain('必填')
+    // S0-4 修「假承诺」：默认文案不承诺「自动触发 RESCAN」——
+    // 仅 RuleWorkshop 危险变更真入队（经 rescanEnqueued 显式声明），其余页面说真话
+    expect(vue).not.toContain('自动触发 RESCAN')
+    expect(vue).toContain('rescanEnqueued')
   })
 
   it('结构断言：六个配置写端点 body 均带 reason（审计链可查的前端侧保证）', () => {

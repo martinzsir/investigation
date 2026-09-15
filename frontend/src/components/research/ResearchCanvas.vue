@@ -438,6 +438,63 @@ const perspective = ref<Perspective>('process')
 /** 图例收起态（避免遮挡右侧数据源列） */
 const legendCollapsed = ref<boolean>(initialPref.legendCollapsed)
 
+/** G6 布局模式：
+ *  - preset：自定义 barycenter 分层（默认，确定性 + 钉住 + 同口径）
+ *  - dagre / force / radial / concentric：G6 v5 内置布局（演示对比用） */
+type G6LayoutMode = 'preset' | 'dagre' | 'force' | 'radial' | 'concentric'
+const g6LayoutMode = ref<G6LayoutMode>('preset')
+
+/** G6 内置布局配置表
+ *  渲染节点为 186×50 矩形，而 @antv/layout 各布局默认 nodeSize 只有 10~30
+ *  （G6 不会自动把 style.size 注入布局），必须显式传 nodeSize 防碰撞。
+ *  参数语义均对照 @antv/layout@2 源码：
+ *  - concentric/radial 的 preventOverlap 默认 false，且 concentric 关闭时
+ *    会把整图压缩进画布 bbox —— 节点越多缩得越小，视觉上就是挤成一团；
+ *  - concentric 的间距参数叫 nodeSpacing（无 minNodeSpacing）；
+ *  - force 的碰撞直径 = max(nodeSize)+nodeSpacing，linkDistance 必须大于它，
+ *    否则相连节点会被边簧拉到重叠（collideRadius 是 d3-force 的参数，对 force 无效）；
+ *  - antv-dagre 在 LR 下把节点盒子扩成 w+2·nodesep / h+2·ranksep，
+ *    dagre 自身再加同名 gap，故同列竖直净距 = 2·ranksep + nodesep，
+ *    列间水平净距 = 2·nodesep + ranksep。 */
+const NODE_SIZE: [number, number] = [186, 50]
+const G6_LAYOUT_CONFIGS: Record<Exclude<G6LayoutMode, 'preset'>, unknown> = {
+  dagre: {
+    type: 'antv-dagre',
+    rankdir: 'LR',
+    nodesep: 16, // LR：同列节点间额外 gap（竖直净距 2·8+16=32）
+    ranksep: 8, // 相邻列额外 gap（水平净距 2·16+8=40）
+    nodeSize: NODE_SIZE,
+    animation: false,
+  },
+  force: {
+    type: 'force',
+    preventOverlap: true,
+    nodeSize: NODE_SIZE,
+    nodeSpacing: 24, // 碰撞直径 max(186,50)+24=210
+    collideStrength: 1,
+    linkDistance: 220, // ≥ 碰撞直径，避免相连节点被拉重叠
+    animation: false,
+  },
+  radial: {
+    type: 'radial',
+    unitRadius: 160,
+    linkDistance: 100,
+    preventOverlap: true,
+    strictRadial: true, // 允许节点偏离所在环避让（默认值，显式声明）
+    nodeSize: NODE_SIZE,
+    nodeSpacing: 20,
+    animation: false,
+  },
+  concentric: {
+    type: 'concentric',
+    preventOverlap: true, // 关键：不开则整图被压缩进画布
+    nodeSize: NODE_SIZE,
+    nodeSpacing: 24, // 相邻节点净距（参数名不是 minNodeSpacing）
+    maxLevelDiff: 2,
+    animation: false,
+  },
+}
+
 function onLegendCollapse(collapsed: boolean): void {
   legendCollapsed.value = collapsed
   persistViewPref()
@@ -1320,6 +1377,27 @@ function onTogglePerspective(): void {
   pendingRefit = true
 }
 
+/** 切换 G6 布局模式：preset（自定义 barycenter）或 G6 内置布局。
+ *  切换时销毁当前 Graph 实例并重建。 */
+async function onLayoutModeChange(mode: G6LayoutMode): Promise<void> {
+  if (g6LayoutMode.value === mode) return
+  g6LayoutMode.value = mode
+  // 非 preset 模式下禁用 tier 视角（G6 内置布局不感知 tier 分带）
+  if (mode !== 'preset' && perspective.value === 'tier') {
+    perspective.value = 'process'
+  }
+  // 销毁旧实例，等 DOM 更新后重建
+  try {
+    inst?.destroy?.()
+  } catch {
+    // ignore
+  }
+  inst = null
+  graphFailed.value = false
+  await nextTick()
+  await mountGraph()
+}
+
 /** 视口尺寸（G6 画布尺寸优先，拿不到回落容器尺寸，再兜默认） */
 function viewportSize(): [number, number] {
   const s = inst?.getSize?.()
@@ -1407,13 +1485,23 @@ function syncMinimap(): void {
 }
 
 function syncZoomPct(): void {
-  zoomPct.value = zoomPercent(inst?.getZoom?.() ?? 1)
+  if (!inst) return
+  try {
+    zoomPct.value = zoomPercent(inst.getZoom?.() ?? 1)
+  } catch {
+    // G6 v5 内部状态未就绪时 getZoom 可能抛错，忽略
+  }
 }
 
 /** 缩放/拖拽/重绘后统一同步（状态栏百分比 + 缩略图视口框） */
 function syncViewport(): void {
-  syncZoomPct()
-  syncMinimap()
+  if (!inst) return
+  try {
+    syncZoomPct()
+    syncMinimap()
+  } catch {
+    // G6 transform 回调期间内部状态可能不一致，忽略
+  }
 }
 
 /** 点缩略图：把该画布点平移到视口中心 */
@@ -1710,7 +1798,15 @@ const pendingCiteFocus = ref<string | null>(null)
  */
 async function onCiteClick(ref: string): Promise<void> {
   if (!doc.value) return
-  const node = doc.value.nodes.find((n) => n.ref === ref)
+  // 支持多种引用格式匹配节点：
+  //   R1 / row:bank_001 / fact:clue_1:0  → 直接匹配 n.ref
+  //   @local#row/bank_001                 → 转换为 row:bank_001 再匹配
+  //   vi_hex                              → 直接匹配 n.ref
+  let lookupRef = ref
+  if (ref.startsWith('@local#row/')) {
+    lookupRef = 'row:' + ref.slice('@local#row/'.length)
+  }
+  const node = doc.value.nodes.find((n) => n.ref === lookupRef)
   if (!node) {
     message.warning('引用对应的节点不在当前画布（可能已删除或尚未展开）')
     return
@@ -1731,10 +1827,11 @@ async function onCiteClick(ref: string): Promise<void> {
   selectedNodeId.value = node.id
   pushTrail(node.id)
   applyFocus(node.id)
-  try {
-    await inst?.focusElement?.(node.id, true)
-  } catch {
-    // 节点尚在重绘：pendingCiteFocus 于 render 完成后补聚焦
+  // G6 v5 focusElement 在节点未渲染时抛 Uncaught(in promise)，
+  // 用 Promise.resolve 包裹 + .catch 防止未捕获拒绝
+  if (!hidden) {
+    Promise.resolve(inst?.focusElement?.(node.id, true))
+      .catch(() => { /* 节点尚在重绘：pendingCiteFocus 于 render 完成后补聚焦 */ })
   }
 }
 
@@ -2155,7 +2252,9 @@ async function mountGraph(): Promise<void> {
   }
   try {
     ensureResearchCardNode()
-    inst = new GraphCtor({
+    // G6 内置布局模式：非 preset 时交给 G6 引擎算坐标
+    const useG6Layout = g6LayoutMode.value !== 'preset'
+    const graphConfig: Record<string, unknown> = {
       container: containerEl.value,
       autoResize: true,
       // 不用 autoFit：它按「全部元素 bbox」缩放，会把 10 个泳道伪节点算进去，
@@ -2306,7 +2405,14 @@ async function mountGraph(): Promise<void> {
           onCreate: (draft: unknown) => handleOnCreate(draft),
         },
       ],
-    })
+    }
+    // G6 内置布局模式：交给 G6 引擎算坐标
+    if (useG6Layout) {
+      graphConfig.layout =
+        G6_LAYOUT_CONFIGS[g6LayoutMode.value as Exclude<G6LayoutMode, 'preset'>]
+      graphConfig.autoFit = 'view'
+    }
+    inst = new GraphCtor(graphConfig)
     // RC-103：节点点击 → 溯源抽屉（G6 v5 事件对象 target.id / id 两兼容）
     inst.on?.('node:click', (ev: unknown) => {
       const e = ev as G6Event
@@ -2383,11 +2489,8 @@ function pushGraphData(opts: { refit?: boolean } = {}): void {
       const citeId = pendingCiteFocus.value
       if (citeId) {
         pendingCiteFocus.value = null
-        try {
-          await inst?.focusElement?.(citeId, true)
-        } catch {
-          // 目标仍未进入渲染（懒加载缺失）：保留选中高亮，不打断
-        }
+        Promise.resolve(inst?.focusElement?.(citeId, true))
+          .catch(() => { /* 目标仍未进入渲染：保留选中高亮，不打断 */ })
       }
     })
   } catch {
@@ -2472,6 +2575,7 @@ function nodeLabel(id: string): string {
         :chain-collapsed="passThroughCollapsed"
         :overview="overviewMode"
         :perspective="perspective"
+        :g6-layout-mode="g6LayoutMode"
         :busy="busy"
         @add-hypothesis="openCreateNode('hypothesis')"
         @add-note="openCreateNode('note')"
@@ -2479,6 +2583,7 @@ function nodeLabel(id: string): string {
         @toggle-collapse="onToggleCollapse"
         @toggle-overview="setOverviewMode(!overviewMode)"
         @toggle-perspective="onTogglePerspective"
+        @layout-mode-change="(mode: string) => onLayoutModeChange(mode as G6LayoutMode)"
         @fit="onFit"
         @zoom-in="onZoom(1.2)"
         @zoom-out="onZoom(1 / 1.2)"

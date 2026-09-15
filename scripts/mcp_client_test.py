@@ -4,13 +4,14 @@ MCP server 端到端冒烟测试：手写 JSON-RPC 客户端，走完整生命�
 
 覆盖：
   1. initialize 握手（协议版本、capabilities、serverInfo）
-  2. tools/list（13 个工具，schema 必填项齐全）
-  3. tools/call —— 只读工具（含 function_list/function_invoke/rule_list）
+  2. tools/list（15 个工具，schema 必填项齐全）
+  3. tools/call —— 只读工具（含 function_list/function_invoke/rule_list/report.*）
   4. 红线：clue_transition 用 operator="system" 必须被拒
   5. 红线：置"已立案"不带 legal_basis 必须被拒
   6. 红线：operator 具名 + 带 legal_basis → 允许
   7. 协议：未知方法 → -32601；坏 JSON → -32700
   8. 通知（notifications/initialized）不回响应
+  9. sunzi-report 桥接：report.gather_evidence / report.render 端到端
 
 用法：
     python -m scripts.mcp_client_test
@@ -134,7 +135,7 @@ def main() -> int:
         r = c.request("tools/list")
         tools = r["result"]["tools"]
         names = [t["name"] for t in tools]
-        check(f"返回 13 个工具（{len(tools)}）", len(tools) == 13, str(names))
+        check(f"返回 15 个工具（{len(tools)}）", len(tools) == 15, str(names))
         for t in tools:
             sch = t.get("inputSchema", {})
             check(f"  {t['name']} 有 description + inputSchema",
@@ -190,6 +191,138 @@ def main() -> int:
                                              "arguments": {"stage": "xu_shi"}}))
         check("rule_list 支持 stage 过滤（xu_shi=5 条）", d.get("count") == 5,
               str(d.get("count")))
+
+        # ---- sunzi-report skill 桥接工具 ----
+        print("\n[4c] sunzi-report skill 桥接工具（report.gather_evidence / report.render）")
+        # tools/list schema 校验
+        rpt_tools = {t["name"]: t for t in tools}
+        check("tools/list 含 report.gather_evidence",
+              "report.gather_evidence" in rpt_tools
+              and rpt_tools["report.gather_evidence"]["annotations"].get("readOnlyHint") is True,
+              str(rpt_tools.get("report.gather_evidence", {}).get("annotations")))
+        check("tools/list 含 report.render",
+              "report.render" in rpt_tools
+              and rpt_tools["report.render"]["annotations"].get("readOnlyHint") is True,
+              str(rpt_tools.get("report.render", {}).get("annotations")))
+        check("report.gather_evidence 必填 case_id",
+              "case_id" in rpt_tools["report.gather_evidence"]["inputSchema"].get("required", []))
+        check("report.render 必填 sections（evidence 已改为可选）",
+              "sections" in rpt_tools["report.render"]["inputSchema"].get("required", [])
+              and "evidence" not in rpt_tools["report.render"]["inputSchema"].get("required", []),
+              str(rpt_tools["report.render"]["inputSchema"].get("required", [])))
+        check("report.render schema 含 case_id（缓存取 evidence）",
+              "case_id" in rpt_tools["report.render"]["inputSchema"].get("properties", {}))
+
+        # 缺 case_id 必填校验
+        d = payload(c.request("tools/call", {"name": "report.gather_evidence",
+                                             "arguments": {}}))
+        check("report.gather_evidence 缺 case_id 报错（不崩）",
+              d.get("ok") is False and "case_id" in str(d.get("error", "")),
+              str(d.get("error"))[:60])
+
+        # demo 模式采集（不依赖案件库）
+        d = payload(c.request("tools/call", {"name": "report.gather_evidence", "arguments": {
+            "case_id": "demoW", "demo": True}}))
+        ev = d.get("evidence") or {}
+        check("report.gather_evidence 返回 evidence 结构（确定性块齐全）",
+              d.get("ok") is True and d.get("readonly") is True
+              and "确定性块" in ev and "证据充分性" in ev.get("确定性块", {})
+              and "关联核验" in ev.get("确定性块", {}),
+              str(d.get("error"))[:60])
+        check("report.gather_evidence 五间声明齐全",
+              len(ev.get("确定性块", {}).get("证据充分性", {})
+                  .get("五间声明", [])) == 5,
+              str(ev.get("确定性块", {}).get("证据充分性", {}).get("五间声明", []))[:60])
+        src_block = ev.get("确定性块", {}).get("数据源清单", {})
+        check("report.gather_evidence 第九段数据源清单已采集",
+              isinstance(src_block, dict)
+              and "登记数据源" in src_block
+              and any((r or {}).get("filename") == "招投标档案.parquet"
+                      for r in src_block.get("登记数据源") or [])
+              and src_block.get("数据版本") is not None,
+              str(src_block)[:120])
+        check("report.gather_evidence 挂脱敏标记",
+              ev.get("脱敏") is True and ev.get("生成方式", "").startswith("deterministic"))
+        check("report.gather_evidence 挂定性_policy（不替人定性）",
+              "定性_policy" in d and d.get("needs_human_review") is True)
+
+        # 渲染：用上面拿到的 evidence + 最简 sections（sources 禁止由 LLM 写）
+        sections = {
+            "overview": "端到端测试：本线索关注 demoW 的招投标异常。",
+            "facts": "- 测试路改造A 项目存在张卫国名下整数资金交易 [cite:9f5b55e5d111]",
+            "inferences": "**有据推断**\n- 测试 [cite:R6]\n\n**推测**（未经核实）\n- 测试",
+            "pending": "- 待核实项测试 [cite:vi_test]",
+            "evidence": "测试书证清单",
+        }
+        d = payload(c.request("tools/call", {"name": "report.render", "arguments": {
+            "evidence": ev, "sections": sections, "type": "A", "format": "md"}}))
+        md = d.get("md", "")
+        check("report.render 返回 md（十段齐全）",
+              d.get("ok") is True and d.get("readonly") is True
+              and "# 研判报告" in md
+              and "## 一、线索概况" in md and "## 二、证据充分性" in md
+              and "## 五、关联核验" in md and "## 九、数据源清单" in md
+              and "## 附录：引用索引" in md,
+              str(d.get("error"))[:60] or f"md_len={len(md)}")
+        check("report.render 确定性段由 evidence 渲染（不取 sections）",
+              "可立案依据候选" in md and "单源=观察" in md,
+              "确定性数字未渲染进报告")
+        check("report.render 第九段由数据源登记确定性渲染",
+              "已导入数据源批次" in md and "招投标档案.parquet" in md
+              and "up_df0e5f093842" in md
+              and "## 九、数据源清单\n\n（本段无内容）" not in md,
+              "第九段未渲染 ingest 登记" if "招投标档案.parquet" not in md
+              else f"md_len={len(md)}")
+        check("report.render 挂定性_policy（不替人定性）",
+              "定性_policy" in d and d.get("needs_human_review") is True)
+
+        # 红规：sections 试图改写确定性段必须被忽略并提示
+        d = payload(c.request("tools/call", {"name": "report.render", "arguments": {
+            "evidence": ev,
+            "sections": {**sections,
+                         "sufficiency": "LLM 试图改写的数字",
+                         "correlation": "LLM 试图改写的过桥",
+                         "sources": "LLM 试图拼凑的数据源"},
+            "type": "A", "format": "md"}}))
+        check("report.render 拦截 sections 改写确定性段",
+              d.get("ok") is True
+              and set(d.get("overridden_sections", []))
+              == {"sufficiency", "correlation", "sources"}
+              and "已忽略" in str(d.get("overridden_note", ""))
+              and "LLM 试图拼凑的数据源" not in d.get("md", ""),
+              str(d.get("overridden_sections"))[:60])
+
+        # 缺 evidence/sections 必填校验
+        d = payload(c.request("tools/call", {"name": "report.render",
+                                             "arguments": {"evidence": {}, "sections": {}}}))
+        check("report.render 缺 sections 内容不崩（渲染空段）",
+              d.get("ok") is True and "## 一、线索概况" in d.get("md", ""),
+              str(d.get("error"))[:60])
+        d = payload(c.request("tools/call", {"name": "report.render",
+                                             "arguments": {"sections": {"overview": "x"}}}))
+        check("report.render 缺 evidence+case_id 报错（不崩）",
+              d.get("ok") is False and "evidence" in str(d.get("error", "")),
+              str(d.get("error"))[:60])
+
+        # 缓存路径：gather 后用 case_id 调 render（免传 evidence 大对象）
+        d = payload(c.request("tools/call", {"name": "report.render", "arguments": {
+            "case_id": "demoW", "sections": sections, "type": "A", "format": "md"}}))
+        check("report.render 用 case_id 从缓存取 evidence 成功",
+              d.get("ok") is True and "## 二、证据充分性" in d.get("md", ""),
+              str(d.get("error"))[:60] or f"md_len={len(d.get('md', ''))}")
+
+        # 写盘路径（md 文件）
+        import tempfile, os
+        tmp_md = os.path.join(tempfile.gettempdir(), "_mcp_test_report.md")
+        d = payload(c.request("tools/call", {"name": "report.render", "arguments": {
+            "evidence": ev, "sections": sections, "type": "A", "format": "md",
+            "out_path": tmp_md}}))
+        check("report.render 写盘成功（md）",
+              d.get("ok") is True and d.get("out_path") == tmp_md
+              and os.path.exists(tmp_md) and os.path.getsize(tmp_md) > 100,
+              str(d.get("error"))[:60])
+        if os.path.exists(tmp_md):
+            os.remove(tmp_md)
 
         # ---- REQ-021 读轨：人审工作台 + 两阶段动作可见性 ----
         print("\n[4b] REQ-021 读轨工具")

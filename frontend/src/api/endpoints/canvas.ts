@@ -1,4 +1,6 @@
 import { api } from '../client'
+import { getTransport } from '../transport'
+import type { StreamHandle } from '../transport/types'
 import { noteDataVersion } from '../query-keys'
 import type {
   AdoptEnvelope,
@@ -41,6 +43,22 @@ export interface CanvasSaveResult {
   envelope: CanvasEnvelope
   /** true=服务端版本已前进（409 冲突后确认覆盖），调用方应以返回文档替换本地 */
   conflicted: boolean
+}
+
+/** 流式问答事件回调（SSE） */
+export interface ChatStreamHandlers {
+  onStart?: (model: string) => void
+  onDelta: (text: string) => void
+  /** ReAct 模式专属：思考过程增量（reasoning_content） */
+  onThinking?: (text: string) => void
+  /** ReAct 模式专属：工具调用开始 {name, id} */
+  onToolCall?: (name: string, id: string) => void
+  /** ReAct 模式专属：工具调用结束 {name, id, state} */
+  onToolResult?: (name: string, id: string, state: string) => void
+  onDone?: (result: CanvasChatEnvelope) => void
+  onErrorEvent?: (error: string, message: string) => void
+  onTransportError?: (err: unknown) => void
+  onClose?: () => void
 }
 
 export const canvasApi = {
@@ -361,20 +379,89 @@ export const canvasApi = {
   // ------------------------------------------------------------------
   // M5 RC-301：画布只读问答（RC-302 引用校验串联）
   // ------------------------------------------------------------------
-  /** 就当刻画布提问，返回带引用回答（facts 有据 / pending 待核实）。 */
+  /** 就当刻画布提问，返回带引用回答（facts 有据 / pending 待核实）。
+   *
+   * mode：双模式开关
+   *  - "direct"（默认）：LLMClient 单轮问答
+   *  - "react"：AgentScope ReAct + MCP 只读工具多轮推理
+   *  - undefined：用 llm_policy.canvas_chat_mode 默认值
+   */
   async chat(
     caseId: string,
     clueId: string,
     question: string,
+    mode?: 'direct' | 'react',
   ): Promise<CanvasChatEnvelope> {
     const res = await api.post<CanvasChatEnvelope>(
       base(caseId, clueId) + '/chat',
-      { question },
-      // LLM 推理常 >15s（实测约 17s），走跨案长超时档 60s
+      mode ? { question, mode } : { question },
+      // LLM 推理常 >15s（实测约 17s），react 多轮推理更长（实测 25-30s），走跨案长超时档 60s
       { timeoutKind: 'cross' },
     )
     noteDataVersion(caseId, res.dataVersion)
     return res.data
+  },
+
+  /**
+   * 流式问答（SSE）：逐 token 返回回答。
+   *
+   * 事件类型：
+   *  - start：{model} 流式开始
+   *  - delta：{text} 增量文本块（direct/react 共有）
+   *  - thinking：{text} 思考过程增量（react 模式专属）
+   *  - tool_call：{name, id} 工具调用开始（react 模式专属）
+   *  - tool_result：{name, id, state} 工具调用结束（react 模式专属）
+   *  - done：CanvasChatEnvelope 完整结果
+   *  - error：{error, message} 业务错误
+   *
+   * @returns StreamHandle（close() 可提前中断）
+   */
+  chatStream(
+    caseId: string,
+    clueId: string,
+    question: string,
+    mode: 'direct' | 'react',
+    handlers: ChatStreamHandlers,
+  ): StreamHandle {
+    return getTransport().stream({
+      path: base(caseId, clueId) + '/chat/stream',
+      method: 'POST',
+      body: { question, mode },
+      handlers: {
+        onEvent: (msg) => {
+          try {
+            const d = JSON.parse(msg.data)
+            switch (msg.event) {
+              case 'start':
+                handlers.onStart?.(d.model)
+                break
+              case 'delta':
+                handlers.onDelta(d.text)
+                break
+              case 'thinking':
+                handlers.onThinking?.(d.text)
+                break
+              case 'tool_call':
+                handlers.onToolCall?.(d.name, d.id)
+                break
+              case 'tool_result':
+                handlers.onToolResult?.(d.name, d.id, d.state)
+                break
+              case 'done':
+                handlers.onDone?.(d as CanvasChatEnvelope)
+                break
+              case 'error':
+                handlers.onErrorEvent?.(d.error, d.message)
+                break
+            }
+          } catch {
+            // 非 JSON 事件帧（心跳等）忽略
+          }
+        },
+        onError: handlers.onTransportError,
+        onClose: handlers.onClose,
+      },
+    })
   },
 
   /**

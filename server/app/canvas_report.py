@@ -41,22 +41,23 @@ REPORT_SECTIONS = [
 ]
 
 SYSTEM_PROMPT = (
-    "你是线索研判报告撰写助手。基于当前画布快照的业务视图，"
+    "你是线索研判报告撰写助手。基于当前画布快照的业务视图与确定性证据，"
     "生成一份结构化研判报告。\n"
     "严格约束：\n"
-    "1. 报告分八段输出，每段用 ## 标题开头：\n"
+    "1. 报告分十段，其中「二、证据充分性」和「五、关联核验」"
+    "由确定性脚本产出，你不需要撰写这两段。\n"
+    "你只负责撰写以下七段，每段用 ## 标题开头：\n"
     "   一、线索概况\n"
-    "   二、命中规则与判据\n"
-    "   三、事实与依据\n"
-    "   四、研判推断\n"
-    "   五、待核实事项\n"
-    "   六、书证清单\n"
-    "   七、数据源清单\n"
-    "   附录：引用索引\n"
-    "2. 「三、事实与依据」段中每条事实性陈述必须紧跟引用标记 [cite:<ref>]，"
+    "   三、命中规则与判据\n"
+    "   四、事实与依据\n"
+    "   六、研判推断\n"
+    "   七、待核实事项\n"
+    "   八、书证清单\n"
+    "   九、数据源清单\n"
+    "2. 「四、事实与依据」段中每条事实性陈述必须紧跟引用标记 [cite:<ref>]，"
     "ref 取自下方「可用引用」清单；不得编造引用。\n"
-    "3. 无法从画布证据支撑的表述归入「五、待核实事项」段，不得伪装成事实。\n"
-    "4. 「四、研判推断」段须区分「已有证据支持」与「分析推测」。\n"
+    "3. 无法从画布证据支撑的表述归入「七、待核实事项」段，不得伪装成事实。\n"
+    "4. 「六、研判推断」段须区分「已有证据支持」与「分析推测」。\n"
     "5. 全文用中文，事实句简洁，避免推测性语气。\n"
     "6. 不输出任何状态变更指令或写操作建议。"
 )
@@ -65,8 +66,15 @@ SYSTEM_PROMPT = (
 def build_report_prompt(
     doc: dict[str, Any],
     extra_request: str = "",
+    evidence: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """从快照 doc 构建报告生成 prompt。
+
+    Args:
+        doc: 画布快照 doc。
+        extra_request: 补充要求（透传）。
+        evidence: gather_evidence 产出的确定性证据（可选）。
+            传入时 LLM 可参考确定性块撰写叙述段。
 
     Returns:
         (system_prompt, user_prompt)
@@ -75,14 +83,86 @@ def build_report_prompt(
     user_payload = {
         "画布业务视图": context,
         "输出要求": (
-            "按八段结构生成报告；事实句必须带 [cite:<ref>]；"
-            "无据内容归入待核实段。"
+            "按十段结构生成报告，你只写七段叙述段"
+            "（确定性段已由脚本产出）；"
+            "事实句必须带 [cite:<ref>]；无据内容归入待核实段。"
         ),
     }
+    if evidence:
+        user_payload["确定性证据"] = evidence
     if extra_request:
         user_payload["补充要求"] = extra_request
     return SYSTEM_PROMPT, json.dumps(
         user_payload, ensure_ascii=False, indent=2)
+
+
+def parse_llm_to_sections(
+    llm_raw_text: str,
+    valid_refs: set[str] | frozenset[str],
+) -> dict[str, Any]:
+    """解析 LLM 输出为 sections dict（供 render_report 使用）+ 引用校验。
+
+    与 parse_report_sections 的区别：
+      - 返回的 sections 只含 LLM 撰写的叙述段（不含确定性段）；
+      - 不组装 content_md（由 render_report.build_markdown 完成）；
+      - citations 和 warnings 作为 sections 的附加键返回。
+
+    Returns:
+        {
+            "sections": {overview/rules/facts/inferences/pending/evidence/sources},
+            "citations": [{cite_id, ref, summary}],
+            "warnings": [str],
+        }
+    """
+    sections = _split_by_heading(llm_raw_text)
+
+    # 对"事实与依据"段做引用校验
+    facts_text = sections.get("facts", "")
+    guarded = validate_citations(facts_text, valid_refs)
+
+    # 重组事实段（有据句保留引用、无据句移入待核实段）
+    if guarded["facts"]:
+        fact_lines = []
+        for f in guarded["facts"]:
+            cites_str = "".join(
+                f"[cite:{c}]" for c in f["citations"])
+            fact_lines.append(f"{f['sentence']}{cites_str}")
+        sections["facts"] = "\n".join(fact_lines)
+
+    pending_extra = guarded["pending"]
+    if pending_extra:
+        existing_pending = sections.get("pending", "")
+        extra_text = "\n".join(
+            f"- {s}" for s in pending_extra)
+        if existing_pending:
+            sections["pending"] = (
+                f"{existing_pending}\n\n"
+                f"以下表述因缺乏引用已转入待核实：\n{extra_text}")
+        else:
+            sections["pending"] = (
+                f"以下表述因缺乏引用已转入待核实：\n{extra_text}")
+
+    # 组装 citations 索引
+    citations: list[dict[str, str]] = []
+    for i, f in enumerate(guarded["facts"], 1):
+        for ref in f["citations"]:
+            citations.append({
+                "cite_id": i,
+                "ref": ref,
+                "summary": f["sentence"][:80],
+            })
+
+    # 确保叙述段键存在（空段兜底）
+    for key in ("overview", "rules", "facts", "inferences",
+                "pending", "evidence", "sources"):
+        if key not in sections:
+            sections[key] = ""
+
+    return {
+        "sections": sections,
+        "citations": citations,
+        "warnings": guarded["warnings"],
+    }
 
 
 def parse_report_sections(
@@ -162,8 +242,10 @@ def parse_report_sections(
 # 标题→段键映射（中文标题 → 英文段键）
 _HEADING_MAP = {
     "线索概况": "overview",
+    "证据充分性": "sufficiency",
     "命中规则与判据": "rules",
     "事实与依据": "facts",
+    "关联核验": "correlation",
     "研判推断": "inferences",
     "待核实事项": "pending",
     "书证清单": "evidence",

@@ -335,17 +335,14 @@ def log_llm_call(conn, *, operator: str, network: str, model: str | None,
 # ----------------------------------------------------------------------
 # 调用闸门（LLM 唯一出口）
 # ----------------------------------------------------------------------
-def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
-             model: str, prompt: str, redacted_input: dict[str, Any],
-             fake_invoke: Callable | None = None) -> dict[str, Any]:
-    """LLM 调用唯一闸门。
+def _llm_gate_check(conn, ctx: AccessContext, policy: dict | None = None, *,
+                    model: str, prompt: str, redacted_input: dict[str, Any],
+                    has_invoke: bool) -> tuple[str | None, str | None, str]:
+    """LLM 闸门共享检查序列。
 
-    闸门序列：① require_llm_allowed（isolated 拒）；② model ∈ allowed_models；
-    ③ redacted_input 必须带 redaction_hash 且 PII 复扫零命中；
-    ④ 落 llm_call_log + AuditChain（允许/拒绝都落）；
-    ⑤ fake_invoke 注入点——生产无模型即拒（fallback=deterministic_only）。
-
-    拒绝时落日志后抛 LLMBlockedError；放行返回 {ok, model, log_id, result}。
+    返回 (blocked_reason, input_hash, log_id)：
+    blocked_reason=None 表示放行；log_id 为调用日志 ID（无论放拒都落）。
+    has_invoke: True=有注入函数（fake_invoke/streaming_invoke），False=无→确定性回退。
     """
     policy = policy or load_llm_policy()
     blocked: str | None = None
@@ -380,9 +377,9 @@ def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
                 if counts:
                     blocked = f"脱敏复扫仍检出 PII {counts}：禁止出网（REQ-038 AC2）"
 
-    # ⑤ 前置检查：生产无模型（fake_invoke 未注入）→ 确定性回退
-    if blocked is None and fake_invoke is None:
-        blocked = ("无可用模型：内核不内置模型且未注入 fake_invoke；"
+    # ⑤ 前置检查：生产无模型（注入未提供）→ 确定性回退
+    if blocked is None and not has_invoke:
+        blocked = ("无可用模型：内核不内置模型且未注入 invoke；"
                    f"fallback={policy.get('fallback', 'deterministic_only')}，"
                    "LLM 不可用时仅允许确定性计算")
 
@@ -395,9 +392,49 @@ def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
         input_redaction_hash=input_hash, tool_calls=[],
         blocked_reason=blocked)
 
+    return blocked, input_hash, log_id
+
+
+def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
+             model: str, prompt: str, redacted_input: dict[str, Any],
+             fake_invoke: Callable | None = None) -> dict[str, Any]:
+    """LLM 调用唯一闸门。
+
+    闸门序列：① require_llm_allowed（isolated 拒）；② model ∈ allowed_models；
+    ③ redacted_input 必须带 redaction_hash 且 PII 复扫零命中；
+    ④ 落 llm_call_log + AuditChain（允许/拒绝都落）；
+    ⑤ fake_invoke 注入点——生产无模型即拒（fallback=deterministic_only）。
+
+    拒绝时落日志后抛 LLMBlockedError；放行返回 {ok, model, log_id, result}。
+    """
+    blocked, input_hash, log_id = _llm_gate_check(
+        conn, ctx, policy, model=model, prompt=prompt,
+        redacted_input=redacted_input, has_invoke=fake_invoke is not None)
+
     if blocked:
         raise LLMBlockedError(blocked)
 
     result = fake_invoke(model=model, prompt=prompt,
                          redacted_input=redacted_input)
     return {"ok": True, "model": model, "log_id": log_id, "result": result}
+
+
+def call_llm_stream(conn, ctx: AccessContext, policy: dict | None = None, *,
+                    model: str, prompt: str, redacted_input: dict[str, Any],
+                    streaming_invoke: Callable | None = None):
+    """LLM 流式调用闸门（与 call_llm 同检查序列，返回生成器）。
+
+    闸门检查（网络/模型白名单/脱敏复扫/日志/审计链）通过后，
+    返回 streaming_invoke 生成器（调用方逐块消费）。
+    拒绝时落日志后抛 LLMBlockedError（与 call_llm 一致）。
+    """
+    blocked, input_hash, log_id = _llm_gate_check(
+        conn, ctx, policy, model=model, prompt=prompt,
+        redacted_input=redacted_input,
+        has_invoke=streaming_invoke is not None)
+
+    if blocked:
+        raise LLMBlockedError(blocked)
+
+    return streaming_invoke(model=model, prompt=prompt,
+                            redacted_input=redacted_input)

@@ -29,6 +29,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    copy_layer_dirs,
     record_config_audit,
     require_analyst,
     snapshot_paths,
@@ -100,16 +101,56 @@ def _check_link_fields(link: dict, declared_objects: set[str]) -> None:
                        f"链接 {name} 的间类仅可选 {FIVE_JIAN}", 400)
 
 
+def _value_type(v) -> str | None:
+    """属性值归一为类型字符串（string 或映射 {type|composite|data_element}）。"""
+    if isinstance(v, dict):
+        return v.get("type")
+    return v
+
+
+def _diff_objects_level(old: list[dict], new: list[dict]) -> str:
+    """S0-3 F4.2 分级：structural（新增/删除对象、改 pk、属性增删或改 type）
+    > display（title/描述等展示字段）> none。判据与 PRD §8.2 一致。"""
+    old_map = {o.get("name"): o for o in old}
+    new_map = {o.get("name"): o for o in new}
+    if set(old_map) != set(new_map):
+        return "structural"
+    for name, o in new_map.items():
+        prev = old_map[name]
+        if prev.get("pk") != o.get("pk"):
+            return "structural"
+        prev_props = prev.get("properties") or {}
+        new_props = o.get("properties") or {}
+        if set(prev_props) != set(new_props):
+            return "structural"
+        for prop, t in new_props.items():
+            if _value_type(prev_props[prop]) != _value_type(t):
+                return "structural"
+    return "display" if old != new else "none"
+
+
+def _diff_links_level(old: list[dict], new: list[dict]) -> str:
+    """链接分级：新增/删除/改 from_obj|to_obj → structural；其余 → display。"""
+    old_map = {l.get("name"): l for l in old}
+    new_map = {l.get("name"): l for l in new}
+    if set(old_map) != set(new_map):
+        return "structural"
+    for name, l in new_map.items():
+        prev = old_map[name]
+        if (prev.get("from_obj"), prev.get("to_obj")) != \
+                (l.get("from_obj"), l.get("to_obj")):
+            return "structural"
+    return "display" if old != new else "none"
+
+
 def _validate_in_temp(snap_dir: Path, pack_id: str, base_dir: Path,
                       filename: str, data: dict) -> None:
     """临时副本整包过 load_pack，不合法抛异常（不落盘）。"""
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
-        shared_src = base_dir / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
         atomic_write_json(tmp_root / pack_id / filename, data)
         load_pack(pack_id, base_dir=tmp_root)
 
@@ -137,7 +178,9 @@ def save_objects(case_id: str, body: ObjectsIn,
         _check_object_fields(obj)
     path = snap_dir / "objects.json"
     data = json.loads(path.read_text(encoding="utf-8"))
+    old_objects = data.get("objects", [])
     data["objects"] = body.objects
+    change_level = _diff_objects_level(old_objects, body.objects)
     try:
         _validate_in_temp(snap_dir, pack_id, base_dir, "objects.json", data)
     except Exception as e:
@@ -148,8 +191,9 @@ def save_objects(case_id: str, body: ObjectsIn,
                         {"count": len(body.objects), "by": p.operator})
     record_config_audit(ctx, case_id, p, "model_objects_save",
                         filename="objects.json", reason=body.reason,
-                        summary={"count": len(body.objects)})
-    return ok({"saved": len(body.objects)},
+                        summary={"count": len(body.objects),
+                                 "change_level": change_level})
+    return ok({"saved": len(body.objects), "change_level": change_level},
               data_version=ctx.repo.current_version(case_id))
 
 
@@ -180,7 +224,9 @@ def save_links(case_id: str, body: LinksIn,
 
     path = snap_dir / "links.json"
     data = json.loads(path.read_text(encoding="utf-8"))
+    old_links = data.get("links", [])
     data["links"] = body.links
+    change_level = _diff_links_level(old_links, body.links)
     try:
         _validate_in_temp(snap_dir, pack_id, base_dir, "links.json", data)
     except Exception as e:
@@ -191,8 +237,9 @@ def save_links(case_id: str, body: LinksIn,
                         {"count": len(body.links), "by": p.operator})
     record_config_audit(ctx, case_id, p, "model_links_save",
                         filename="links.json", reason=body.reason,
-                        summary={"count": len(body.links)})
-    return ok({"saved": len(body.links)},
+                        summary={"count": len(body.links),
+                                 "change_level": change_level})
+    return ok({"saved": len(body.links), "change_level": change_level},
               data_version=ctx.repo.current_version(case_id))
 
 

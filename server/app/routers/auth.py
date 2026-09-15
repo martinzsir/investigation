@@ -18,6 +18,7 @@ from server.app.meta.models import USER_ACTIVE
 from server.app.security import (
     Principal,
     new_token,
+    ontology_admin_flag,
     platform_admin_flag,
     verify_password,
 )
@@ -60,6 +61,9 @@ def login(body: LoginIn, request: Request,
         "tenant_id": user.tenant_id,
         # 平台管理员标志（W-024；前端管理面据此渲染，不靠 403 探测）
         "is_admin": platform_admin_flag(user.is_admin, user.role),
+        # 本体管理员能力位（S0-2；标准域写双条件门禁之一，与 is_admin 独立）
+        "is_ontology_admin": ontology_admin_flag(user.is_ontology_admin,
+                                                 user.role),
     })
 
 
@@ -82,4 +86,6 @@ def me(p: Principal = Depends(get_principal)):
         "tenant_id": p.tenant_id,
         # 平台管理员标志（W-024；与 login 同口径）
         "is_admin": platform_admin_flag(p.is_admin, p.role),
+        # 本体管理员能力位（S0-2；与 login 同口径）
+        "is_ontology_admin": ontology_admin_flag(p.is_ontology_admin, p.role),
     })

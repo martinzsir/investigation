@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // 对象模型设计器（MVP-4，/c/designer）。
-// objects/links 类型层整包编辑：值类型仅 string/integer/decimal/date/boolean；
+// objects/links 类型层整包编辑：值类型 9 种（VALUE_TYPES，与 core.ontology TYPE_NAMES 一致）；
+// 属性值可为 string 或映射 {type|composite|data_element}（REQ-D-013/016）；
 // 结构变更 = 改变机器语义 → 🔴 危险确认 + 理由必填；保存前可整包校验（load_pack 不写盘）。
 import { computed, ref, watch } from 'vue'
-import { NSpin, NButton, NInput, NTag, useMessage } from 'naive-ui'
+import { NSpin, NButton, NInput, NTag, NAlert, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
-import { modelApi, VALUE_TYPES, type ObjectType, type LinkType } from '../api/endpoints/model'
+import { modelApi, VALUE_TYPES, type PropertySpec, type ObjectType, type LinkType } from '../api/endpoints/model'
 import { presentError, isApiError } from '../api/errors'
 import { canWriteConfig } from '../domain/policyMatrix'
 import EmptyState from '../components/common/EmptyState.vue'
@@ -68,6 +69,8 @@ function cancelEdit(): void {
 const confirmOpen = ref(false)
 const confirmReason = ref('')
 const confirmSaving = ref(false)
+// S0-3 F4.2：结构变更保存后的强提示条（关闭或换页前常驻）
+const structuralSaved = ref(false)
 
 function askSave(): void {
   const parsed = parseEdit()
@@ -97,13 +100,42 @@ function parseEdit(): unknown | null {
   }
 }
 
+// 与 core/ontology_loader._load_objects 同口径（REQ-D-013/016）：
+// string ∈ VALUE_TYPES，或映射 {type|composite|data_element}（未知键 fail-closed）。
+// 数据元注册/冲突、pk/name_property、enum_values 白名单等深校验不在前端——
+// 由「整包校验」按钮与保存时 load_pack 400 错误原文兜底。
 function validateObjects(list: ObjectType[]): string {
   for (const o of list) {
     if (!o.name) return '存在缺少 name 的对象'
     if (o.kind !== 'entity' && o.kind !== 'event') return `${o.name}：kind 必须是 entity|event`
-    for (const [prop, t] of Object.entries(o.properties ?? {})) {
-      if (!(VALUE_TYPES as readonly string[]).includes(t)) {
-        return `${o.name}.${prop}：值类型 "${t}" 非法（仅 ${VALUE_TYPES.join('/')}）`
+    for (const [prop, v] of Object.entries(o.properties ?? {})) {
+      const label = `${o.name}.${prop}`
+      if (typeof v === 'string') {
+        if (!(VALUE_TYPES as readonly string[]).includes(v)) {
+          return `${label}：值类型 "${v}" 非法（仅 ${VALUE_TYPES.join('/')}）`
+        }
+        continue
+      }
+      if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+        return `${label}：属性值必须是类型字符串或 {type/composite/data_element} 映射`
+      }
+      const spec = v as PropertySpec
+      const unknown = Object.keys(spec).filter(k => k !== 'type' && k !== 'composite' && k !== 'data_element')
+      if (unknown.length) {
+        return `${label}：映射含未知键 ${unknown.join('/')}（允许 type/composite/data_element）`
+      }
+      if (spec.type !== undefined && !(VALUE_TYPES as readonly string[]).includes(spec.type as string)) {
+        return `${label}：值类型 "${String(spec.type)}" 非法（仅 ${VALUE_TYPES.join('/')}）`
+      }
+      if (spec.data_element !== undefined
+        && (typeof spec.data_element !== 'string' || !spec.data_element.trim())) {
+        return `${label}：data_element 必须是非空元素 ID（是否已注册由整包校验核对）`
+      }
+      if (spec.type === undefined && spec.data_element === undefined) {
+        return `${label}：映射必须包含 type 或 data_element`
+      }
+      if (spec.composite && spec.type !== undefined && spec.type !== 'string') {
+        return `${label}：composite 降级仅支持 string 类型（当前 ${String(spec.type)}）`
       }
     }
   }
@@ -116,12 +148,24 @@ async function doSave(): Promise<void> {
   if (parsed === null) return
   confirmSaving.value = true
   try {
+    let level = ''
     if (tab.value === 'objects') {
-      await modelApi.saveObjects(cs.currentCaseId, parsed as ObjectType[], confirmReason.value)
+      const r = await modelApi.saveObjects(cs.currentCaseId, parsed as ObjectType[], confirmReason.value)
+      level = r.change_level ?? ''
     } else {
-      await modelApi.saveLinks(cs.currentCaseId, parsed as LinkType[], confirmReason.value)
+      const r = await modelApi.saveLinks(cs.currentCaseId, parsed as LinkType[], confirmReason.value)
+      level = r.change_level ?? ''
     }
-    message.success('模型声明已保存并留痕；如需重跑请在任务中心触发 RESCAN')
+    // S0-3 F4.2 分级提示（PRD §8.2）：结构变更强提示 + 前往任务中心；
+    // 展示变更轻提示；其余中性确认。绝不承诺自动触发 RESCAN（R3）。
+    structuralSaved.value = level === 'structural'
+    if (level === 'structural') {
+      message.warning('本体已保存。需重跑 BUILD 才生效，详见顶部提示')
+    } else if (level === 'display') {
+      message.success('本体已保存，下次 BUILD 生效。')
+    } else {
+      message.success('本体已保存。')
+    }
     confirmOpen.value = false
     editing.value = false
     await load()
@@ -165,8 +209,21 @@ function propCount(o: ObjectType): number {
     <EmptyState v-if="!cs.currentCaseId" type="empty" title="请先选择案件" desc="模型声明按案件快照归属" />
 
     <template v-else>
+      <NAlert
+        v-if="structuralSaved"
+        type="warning"
+        closable
+        class="structural-alert"
+        @close="structuralSaved = false"
+      >
+        本体已保存。<b>需重跑 BUILD 才生效</b> —— 新增对象类型不重跑会导致
+        <span class="mono">obj_*</span> 表不存在。
+        <router-link class="om-link" :to="{ path: '/tasks' }">前往任务中心</router-link>
+      </NAlert>
+
       <div class="notice-bar">
         ⚠ 类型层只声明结构；数据从哪来、怎么清洗在 ETL 管道（bindings）配置。改结构后需 RESCAN 才生效。
+        <router-link class="om-link" :to="{ path: '/c/omodel' }">切换到可视化建模器 →</router-link>
       </div>
 
       <NSpin :show="loading">
@@ -252,10 +309,12 @@ function propCount(o: ObjectType): number {
 .page { display: flex; flex-direction: column; gap: 12px; }
 .page-head h2 { margin: 0; font-size: 18px; }
 .hint { font-size: 12px; margin: 4px 0 0; }
+.structural-alert { font-size: 13px; }
 .notice-bar {
   background: var(--sun-warn-bg); border: 1px solid var(--sun-warn-border);
   color: var(--sun-warn-text); border-radius: 6px; padding: 8px 12px; font-size: 12px;
 }
+.om-link { margin-left: 10px; color: var(--sun-info-text); white-space: nowrap; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; }
 .tabs { display: flex; gap: 4px; }
 .tab {

@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "dimensions.schema.json",
+  "title": "Ontology Dimensions (schema_version=2)",
+  "description": "REQ-G-011 侦查维度声明（庙算五维覆盖度模型）；rules.json 的 dimension 必须在此声明",
+  "type": "object",
+  "required": ["schema_version", "dimensions"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "dimensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "note": {"type": "string"},
+          "source_object_types": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

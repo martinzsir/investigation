@@ -211,6 +211,13 @@ GROUPS = {
     "scoringdecl":("R7/R12/R13 计分声明化 scoring.json+score_basis", [sys.executable, "-m", "unittest", "tests.test_scoring_decl"]),
     "scoringv3":  ("P1-3/P0-1/P1-0c 计分 v3（对数曲线+等级主序+0 间类兜底）", [sys.executable, "-m", "unittest", "tests.test_scoring_v3"]),
     "pollution":  ("包缓存污染防护（多源 UNION 裁剪/缺列降级不写回 binding）", [sys.executable, "-m", "unittest", "tests.test_spec_pollution"]),
+    "s0_industry": ("S0-1 行业叠加层（三层合并/override/建案拷贝/temp 补拷）", [sys.executable, "-m", "unittest", "tests.test_s0_industry"]),
+    "s0_admin":   ("S0-2 本体管理员能力位（五件套/双条件门禁/授权端点）", [sys.executable, "-m", "unittest", "tests.test_s0_admin"]),
+    "s0_version": ("S0-3 版本机制（指纹扩容/重算/版本历史只追加/归档）", [sys.executable, "-m", "unittest", "tests.test_s0_version"]),
+    "s1_overview": ("S1 本体管理器总览 API（19 项七字段/静态映射/三层标注/局部降级）", [sys.executable, "-m", "unittest", "tests.test_s1_overview"]),
+    "s3_modeling": ("S3 数据元与规则建模（函数只读目录/规则 jian_types+params 置空/数据元枚举引用/全域行业层写门禁）", [sys.executable, "-m", "unittest", "tests.test_s3_elements_rules"]),
+    "s4_governance": ("S4 治理建模（Action Type 编辑器危险字段理由门禁/状态机终态保护+引用删除拦截/R5 悬空引用/loader 兜底/llm_policy 不开放）", [sys.executable, "-m", "unittest", "tests.test_s4_governance"]),
+    "s5_impact":   ("S5 通用表单+影响面+轻量提案（11 schema 覆盖/五类影响面/已固证/不确定/D10 部分失败/草稿→影响面→人工发布门禁/F5 未知字段保留）", [sys.executable, "-m", "unittest", "tests.test_s5_impact"]),
     "etldraft":     ("v1.3 Phase 4 ETL 处置草稿三分类+预演+双表分离", [sys.executable, "-m", "unittest", "tests.test_etl_drafts"]),
     "verifyitem":   ("REQ-V-001~004 核查工作区 state 三表/CRUD/稳定键/状态机/Worker 写通道", [sys.executable, "-m", "unittest", "tests.test_verify_item"]),
     "verifyapi":    ("REQ-V-005 核查项 API（读同步/写 202 入队/幂等/跨租户）+ REQ-V-008 固证/排除核查门禁", [sys.executable, "-m", "unittest", "tests.test_verify_api"]),
@@ -220,6 +227,7 @@ GROUPS = {
     "verifydraft":  ("REQ-V-019 LLM 核查方向草案（能力闸/端点闸/脱敏/护栏/幂等/影子/审批桥接）", [sys.executable, "-m", "unittest", "tests.test_verify_draft"]),
     "verifyreplay": ("REQ-V-016 核查方向→只读 Function 映射（playbook 唯一数据源/关键词兜底/fail-closed）+ REQ-V-017 一键复跑回填（replay_json 列/op=replay/审计留痕）", [sys.executable, "-m", "unittest", "tests.test_verify_replay"]),
     "canvas":       ("线索研判画布 M1/M2/M3/M4/M5/M6（RC-101 种子成图/RC-205 自动保存/RC-207 降级/RC-102 规则双视图/RC-103 逐层溯源/RC-104 字段遮蔽/RC-201 钉住布局/RC-202 人工节点/RC-203 连线矩阵/RC-206 快照回滚/RC-105 手册建议采纳与待核实生成/RC-204 白名单 Function 扩展查询/RC-302 引用强制校验/RC-301 画布只读问答/RC-304 报告生成/RC-305 报告阅读/RC-306 MD/Word 导出）", [sys.executable, "-m", "unittest", "tests.test_canvas_seed", "tests.test_canvas_expand", "tests.test_canvas_edit", "tests.test_canvas_infer", "tests.test_canvas_api", "tests.test_canvas_citation_guard", "tests.test_canvas_chat", "tests.test_canvas_report"]),
+    "sunzireport":  ("sunzi-report skill 十段报告（第九段数据源清单确定性采集/渲染，sections 越界忽略）", [sys.executable, "-m", "unittest", "tests.test_sunzi_report_skill"]),
 }
 
 

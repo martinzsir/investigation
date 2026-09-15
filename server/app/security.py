@@ -43,6 +43,8 @@ class Principal:
     tenant_id: str
     token: str
     is_admin: int = 0  # 0/1：平台管理员标志（W-024；role=system 视同管理员）
+    # 0/1：本体管理员能力位（S0-2；标准域写双条件门禁之一，与 rank 正交）
+    is_ontology_admin: int = 0
 
 
 def platform_admin_flag(is_admin: int, role: str) -> bool:
@@ -52,6 +54,15 @@ def platform_admin_flag(is_admin: int, role: str) -> bool:
     管理面（不靠 403 探测）。
     """
     return bool(is_admin) or role == "system"
+
+
+def ontology_admin_flag(is_ontology_admin: int, role: str) -> bool:
+    """本体管理员判定：is_ontology_admin=1 或 system 角色（S0-2）。
+
+    /auth/login 与 /auth/me 统一经此输出 is_ontology_admin 布尔；
+    与 platform_admin_flag 同构，但两旗各自独立（能力位 ≠ 管理面）。
+    """
+    return bool(is_ontology_admin) or role == "system"
 
 
 def bearer_token(authorization: str | None) -> str | None:

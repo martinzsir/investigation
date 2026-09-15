@@ -792,6 +792,11 @@ def _validate_element_spec(eid: str, spec, ctx: str) -> None:
     if spec["type"] not in TYPE_NAMES:
         raise ValueError(
             f"{ctx}['{eid}'] type='{spec['type']}' 非法，允许 {TYPE_NAMES}")
+    override = spec.get("override")
+    if override is not None and not isinstance(override, bool):
+        raise ValueError(
+            f"{ctx}['{eid}'] override 必须是 boolean"
+            "（显式声明覆盖上层同名数据元，v1.2 §3.0.7/P2-7）")
     checksum = spec.get("checksum")
     if checksum is not None and checksum not in CHECKSUM_ALGOS:
         raise ValueError(
@@ -871,12 +876,26 @@ def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> d
 
     - 各层 data_elements.json 缺失则跳过该层（向后兼容，DE-TC-09）；
     - **仅追加模式**（照搬 load_code_tables AC-4）：上层 ID 不被覆盖/删除，
-      案件层与上层 ID 冲突 → 硬失败（§3.0.7 允许覆盖须 ``override:true`` + 审计，P2-7）；
+      案件层与上层 ID 冲突 → 硬失败；**例外**：后层元素显式声明
+      ``override: true`` 时覆盖前层同名 ID 并记录覆盖关系（S0-1/E1-2，
+      v1.2 §3.0.7 允许覆盖须 override:true + 审计，P2-7）；
     - 行业层由 pack_meta.json industry 字段决定；缺失则跳过行业层（仅全域+案件）；
     - 校验（REQ-D-001）：schema_version/必填字段/type/checksum/clean_rule/format/range/enum。
 
     迁移后 default/reqd_case 的通用数据元（DE_IDCARD/DE_PHONE/...）由全域层提供，
     案件层仅保留案件特有声明（如 DE_CASE_TYPE 因案而异，DE-TC-07 无标准漂移）。
+    """
+    merged, _overrides = _load_data_elements_detailed(pack, base_dir)
+    return merged
+
+
+def _load_data_elements_detailed(
+        pack: str = "default", base_dir: Path | None = None,
+) -> tuple[dict, list[dict]]:
+    """load_data_elements 的 detailed 变体：额外返回覆盖关系清单（S0-1 E1-2）。
+
+    overrides 每条 {id, winner_layer, loser_layer}——同名 ID 被 override:true
+    显式覆盖时记录，供 S3-2 三层视图可视化覆盖链。
     """
     base = base_dir or PACK_ROOT
     industry = _load_pack_industry(pack, base_dir)
@@ -891,6 +910,8 @@ def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> d
     layer_paths.append((base / pack, f"案件追加({pack})"))
 
     merged: dict = {}
+    merged_layer: dict[str, str] = {}   # ID → 当前生效层名（覆盖关系定位用）
+    overrides: list[dict] = []
     for layer_path, layer_name in layer_paths:
         p = layer_path / "data_elements.json"
         if not p.exists():
@@ -898,12 +919,23 @@ def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> d
         elements = _load_one_data_elements_file(p, layer_name)
         for eid, spec in elements.items():
             if eid in merged:
+                if spec.get("override") is True:
+                    overrides.append({
+                        "id": eid,
+                        "winner_layer": layer_name,
+                        "loser_layer": merged_layer[eid],
+                    })
+                    merged[eid] = spec
+                    merged_layer[eid] = layer_name
+                    continue
                 raise ValueError(
-                    f"data_elements 数据元 ID '{eid}' 在 {layer_name} 与上层冲突"
-                    f"（仅追加模式，ID 冲突硬失败；案件层覆盖须 override:true + 审计，"
+                    f"data_elements 数据元 ID '{eid}' 在 {layer_name} 与"
+                    f" {merged_layer[eid]} 冲突"
+                    f"（仅追加模式，ID 冲突硬失败；覆盖须声明 override:true，"
                     f"见 v1.2 §3.0.7/P2-7）")
             merged[eid] = spec
-    return merged
+            merged_layer[eid] = layer_name
+    return merged, overrides
 
 
 # REQ-D-016：合规检查项（AC-6 可经 data_elements.json 顶层 compliance_checks 启停）

@@ -5,6 +5,7 @@ import { NAvatar, NButton, NDropdown, NIcon, NSelect, NTag } from 'naive-ui'
 import {
   CloseOutline,
   HomeOutline,
+  LayersOutline,
   PersonOutline,
   SearchOutline,
   SettingsOutline,
@@ -47,6 +48,11 @@ function onCaseChange(v: string): void {
   cs.selectCase(id)
   // “全部案件”（id 为空）回案件门户页（FE-C-025 门户语义兑现，平台页 /cases）
   if (!id) void router.push('/cases')
+}
+
+/** S1-F2.1 本体管理器入口（顶部导航，R1 不入侧栏）：从案件上下文进入，携带 case_id */
+function openOntologyManager(): void {
+  void router.push(cs.currentCaseId ? `/ontology-manager/${cs.currentCaseId}` : '/ontology-manager')
 }
 
 async function onUserAction(key: string | number): Promise<void> {
@@ -93,8 +99,11 @@ async function onUserAction(key: string | number): Promise<void> {
       </div>
     </div>
 
-    <!-- 右：门户/任务/设置 + 用户区（23b） -->
+    <!-- 右：本体管理器/门户/任务/设置 + 用户区（23b） -->
     <div class="right">
+      <NButton quaternary circle size="small" title="本体管理器" @click="openOntologyManager">
+        <NIcon :component="LayersOutline" />
+      </NButton>
       <NButton quaternary circle size="small" title="案件门户" @click="router.push('/cases')">
         <NIcon :component="HomeOutline" />
       </NButton>

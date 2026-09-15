@@ -371,6 +371,10 @@ def _apply_positions(nodes: list[dict[str, Any]]) -> None:
         "source_row": _X_ROW,
         "object": _X_FACT + 220,
         "source_file": 960,
+        # 补齐与前端 RANK_X 同口径（hypothesis/note/function_result 均在 480 列）
+        "hypothesis": _X_EVIDENCE,
+        "note": _X_EVIDENCE,
+        "function_result": _X_EVIDENCE,
     }
     counters: dict[str, int] = {}
     for n in nodes:

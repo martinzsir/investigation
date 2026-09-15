@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>可视化本体建模器（S2）— 核心交互流程低保真线框图</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: "PingFang SC", "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+    background: #f0f0f0; color: #111; line-height: 1.5;
+  }
+  .page { max-width: 1500px; margin: 0 auto; padding: 24px; }
+
+  /* ── 文档头 ── */
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: 1px; }
+  .sub { color: #555; font-size: 13px; margin-bottom: 18px; }
+  .meta-table { border-collapse: collapse; font-size: 12.5px; margin-bottom: 22px; background:#fff; }
+  .meta-table td { border: 1px solid #aaa; padding: 5px 10px; }
+  .meta-table td:first-child { background: #e8e8e8; font-weight: 600; width: 110px; }
+
+  /* ── 图例 ── */
+  .legend { border: 1px solid #888; background:#fff; padding: 12px 14px; margin-bottom: 26px; font-size: 12.5px; }
+  .legend h3 { margin: 0 0 8px; font-size: 14px; }
+  .legend-item { display: inline-block; margin-right: 18px; vertical-align: middle; }
+  .sw { display:inline-block; width: 22px; height: 12px; border: 1px solid #333; vertical-align: middle; margin-right: 5px; }
+  .sw-ph { background: repeating-linear-gradient(45deg, #ddd, #ddd 4px, #999 4px, #999 8px); }
+  .sw-w { background: #fff; }
+  .sw-lg { background: #d8d8d8; }
+  .sw-dk { background: #666; }
+  .sw-btn { background:#fff; border:1.5px solid #111; height:14px; width:34px; }
+
+  /* ── 分组 ── */
+  .group { margin-bottom: 34px; }
+  .group-head {
+    border-left: 6px solid #111; background: #111; color: #fff;
+    padding: 7px 12px; font-size: 16px; font-weight: 700; margin-bottom: 4px;
+  }
+  .group-note { font-size: 12.5px; color: #444; background:#e2e2e2; padding: 6px 12px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 16px; }
+
+  /* ── 单屏 ── */
+  .screen { border: 1.5px solid #111; background: #fff; display: flex; flex-direction: column; }
+  .screen-head { border-bottom: 1.5px solid #111; padding: 7px 10px; background: #f4f4f4; }
+  .sid {
+    display:inline-block; background:#111; color:#fff; font-size:11.5px; font-weight:700;
+    padding: 1px 7px; margin-right: 7px; vertical-align: 2px;
+  }
+  .sname { font-size: 14.5px; font-weight: 700; }
+  .sflow { display:block; font-size: 11.5px; color: #555; margin-top: 3px; }
+  .screen-body { padding: 10px; flex: 1; }
+  .screen-foot { border-top: 1px dashed #888; padding: 8px 10px; font-size: 12px; background: #fafafa; }
+  .screen-foot div { margin-bottom: 4px; }
+  .screen-foot div:last-child { margin-bottom: 0; }
+  .lb { font-weight: 700; background:#e0e0e0; padding: 0 4px; margin-right: 4px; font-size: 11.5px; }
+
+  /* ── 线框元件 ── */
+  .wf { border: 1.5px solid #111; background: #fff; }
+  .bar { border: 1.5px solid #111; background: #ececec; padding: 4px 7px; font-size: 11.5px; }
+  .bar.top { display:flex; justify-content: space-between; align-items:center; gap:6px; }
+  .crumb { font-size: 11px; color:#333; }
+  .tag { border:1px solid #555; background:#e6e6e6; font-size:10.5px; padding:0 5px; margin-left:4px; }
+  .tag.warn { background:#cfcfcf; border-color:#111; font-weight:600; }
+  .tag.gray { background:#f0f0f0; color:#666; }
+  .ph {
+    background: repeating-linear-gradient(45deg, #dedede, #dedede 5px, #9a9a9a 5px, #9a9a9a 10px);
+    border: 1.5px solid #111; display:flex; align-items:center; justify-content:center;
+    font-size: 11px; color:#222; text-align:center; padding: 6px;
+  }
+  .ph.sm { min-height: 26px; }
+  .btn { border:1.5px solid #111; background:#fff; font-size:11.5px; padding:2px 9px; display:inline-block; }
+  .btn.dark { background:#333; color:#fff; }
+  .btn.ghost { border-style: dashed; color:#555; }
+  .btn.dis { border-color:#999; color:#aaa; background:#f2f2f2; }
+  .btnrow { margin-top: 8px; display:flex; gap:6px; flex-wrap: wrap; align-items:center; }
+
+  .col3 { display:grid; grid-template-columns: 96px 1fr 108px; gap:5px; }
+  .col3 > div { border:1.5px solid #111; padding:4px; min-height: 130px; font-size:10.5px; }
+  .lbl { font-size: 10px; color:#666; border-bottom:1px dashed #aaa; margin-bottom:4px; padding-bottom:2px; }
+
+  .line { border-bottom: 1px dashed #bbb; padding: 2px 0; font-size: 11px; }
+  .ind { padding-left: 10px; }
+  .strike { text-decoration: line-through; color:#888; }
+  .hl { background:#d5d5d5; padding:0 3px; font-weight:600; }
+  .note { font-size: 10.5px; color:#555; font-style: normal; }
+  .red-note { border:1.5px solid #111; background:#d0d0d0; padding:5px 7px; font-size:11px; margin-top:6px; }
+  .dash-box { border:1.5px dashed #555; padding:6px; font-size:11px; margin-top:6px; }
+  .msg { border:1.5px solid #111; background:#e4e4e4; padding:6px 8px; font-size:11.5px; margin-top:7px; }
+  .msg.err { background:#c4c4c4; }
+  .center { text-align:center; }
+  .mini { font-size:10.5px; color:#666; }
+
+  /* 简单表格线框 */
+  .tbl { border:1.5px solid #111; width:100%; border-collapse: collapse; font-size:10.5px; }
+  .tbl th { border:1px solid #666; background:#e0e0e0; padding:2px 4px; font-weight:600; }
+  .tbl td { border:1px solid #aaa; padding:2px 4px; }
+  .tbl tr.dead td { color:#999; text-decoration: line-through; }
+  .tbl tr.new td { background:#e9e9e9; }
+  .sel { border:1.5px solid #111; background:#dcdcdc; padding:1px 4px; font-size:10.5px; display:inline-block; min-width:52px; text-align:center;}
+  .cb { border:1.5px solid #111; width:11px; height:11px; display:inline-block; vertical-align:-1px; }
+  .cb.on { background:#333; }
+  .inp { border:1.5px solid #111; padding:1px 4px; font-size:10.5px; display:inline-block; min-width:60px; background:#fff; }
+  .inp.dis { background:#ececec; border-color:#999; color:#888; }
+
+  /* 图节点 */
+  .gnode { border:1.5px solid #111; background:#e8e8e8; padding:2px 6px; font-size:10.5px; display:inline-block; }
+  .gnode.cur { background:#333; color:#fff; }
+
+  /* 待确认 */
+  .tbd { background: repeating-linear-gradient(45deg,#fff,#fff 6px,#c9c9c9 6px,#c9c9c9 12px);
+         border:1.5px dashed #111; color:#000; font-size:11px; padding:1px 4px; display:inline-block; }
+  .tbd-box { border:1.5px dashed #111; background:#f2f2f2; padding:8px 10px; font-size:11.5px; margin-top:8px; }
+
+  /* 汇总 */
+  .sum { border:1.5px solid #111; background:#fff; padding: 14px 18px; margin-top: 30px; }
+  .sum h2 { margin:0 0 10px; font-size:17px; border-bottom:2px solid #111; padding-bottom:5px; }
+  .sum table { border-collapse: collapse; width:100%; font-size:12.5px; }
+  .sum th, .sum td { border:1px solid #888; padding:5px 8px; text-align:left; vertical-align: top; }
+  .sum th { background:#e4e4e4; }
+  .sum code { background:#e8e8e8; padding:0 3px; font-size:11.5px; }
+  .flowline { font-size:12px; background:#f4f4f4; border:1px solid #aaa; padding:9px 11px; margin:10px 0; white-space:pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>可视化本体建模器（S2）— 核心交互流程线框图</h1>
+<div class="sub">低保真 · 仅表达信息层级 / 核心文案 / 按钮位置 / 页面状态 · 依据《可视化本体建模器_PRD.md v1.1》绘制</div>
+
+<table class="meta-table">
+  <tr><td>依据文档</td><td>可视化本体建模器（S2）落地版 PRD v1.1（474 行，14 章，按代码核查修订版）</td></tr>
+  <tr><td>本版同步</td><td>按 PRD v1.1 核查结论修订：属性表格列（删「显示名」列、增「复合」列、敏感改只读🔒回显）、对象名示例去 <code>obj_</code> 前缀（<code>obj_</code> 是物化表名前缀）、<code>label</code>→<code>title</code>、值类型 9 种、<code>properties</code> dict 落盘格式、JSON 编辑页两个 tab、新建对象含 kind 必选</td></tr>
+  <tr><td>范围</td><td>F1 对象与属性建模 / F2 数据元绑定 / F3 对象关系可视化 + 保存校验 + 渐进替换并存</td></tr>
+  <tr><td>屏数</td><td>7 组 · 31 屏（含正常流程、首次使用、权限、加载中、空态、失败、异常恢复）</td></tr>
+  <tr><td>不在本版</td><td>rules / policies / views 可视化、数据元本身编辑、影响面分析、提案评审（PRD §3.2）</td></tr>
+  <tr><td>阅读方式</td><td>按 A→G 顺序从头到尾检查；每屏底部标注「可操作」与「操作后进入」</td></tr>
+</table>
+
+<div class="legend">
+  <h3>图例</h3>
+  <span class="legend-item"><span class="sw sw-w"></span>可编辑区域</span>
+  <span class="legend-item"><span class="sw sw-ph"></span>占位块（图片 / 图表 / G6 画布）</span>
+  <span class="legend-item"><span class="sw sw-lg"></span>只读 / 提示区</span>
+  <span class="legend-item"><span class="sw sw-dk"></span>当前选中 / 主操作</span>
+  <span class="legend-item"><span class="sw sw-btn"></span>按钮</span>
+  <span class="legend-item"><span class="tbd">[待确认]</span>PRD 未说清，不自行补全</span>
+</div>
+
+<!-- ══════════ A 组 ══════════ -->
+<div class="group">
+  <div class="group-head">A 组 · 进入与权限（首次使用 / 加载中 / 空态 / 权限申请）</div>
+  <div class="group-note">用户真实起点：从本体管理器左树点击 <code>objects.json</code> 进入。PRD §5.1。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">A1</span><span class="sname">本体管理器 · 文件树</span>
+        <span class="sflow">流程位置：入口 · 第 1 屏</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>本体管理器（独立 App）</span><span class="mini">非侧栏组</span></div>
+        <div style="display:grid; grid-template-columns:150px 1fr; gap:5px; margin-top:5px;">
+          <div class="wf" style="padding:5px; font-size:10.5px;">
+            <div class="lbl">本体文件树（20 个）</div>
+            <div class="line">objects.json <span class="hl">◀ 选中</span></div>
+            <div class="line">links.json</div>
+            <div class="line">bindings.json</div>
+            <div class="line">rules.json</div>
+            <div class="line">policies.json</div>
+            <div class="line">data_elements.json</div>
+            <div class="line mini">…其余 14 个（只读）</div>
+          </div>
+          <div class="ph" style="min-height:120px;">右区占位<br><span class="mini">（选中 objects.json 后载入对象建模器 → A2/B1）</span></div>
+        </div>
+        <div class="note" style="margin-top:6px;">每文件标注「可写状态 + 来源层」（PRD §5.1）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>点击文件树条目；点击 <code>objects.json</code></div>
+        <div><span class="lb">进入</span>A2（loading）→ B1（ready）或 A4（empty）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">A2</span><span class="sname">加载中 loading</span>
+        <span class="sflow">流程位置：A1 → B1 之间 · 状态 <code>loading</code>（PRD §9.1）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">本体管理器 / objects.json</div>
+        <div class="col3" style="margin-top:6px;">
+          <div><div class="lbl">对象列表</div>
+            <div class="ph sm"></div><div class="ph sm" style="margin-top:3px"></div><div class="ph sm" style="margin-top:3px"></div>
+          </div>
+          <div><div class="lbl">属性表格</div>
+            <div class="ph" style="min-height:70px;"></div>
+          </div>
+          <div><div class="lbl">关系图</div><div class="ph" style="min-height:70px;"></div></div>
+        </div>
+        <div class="center mini" style="margin-top:6px;">三栏骨架屏（PRD §9.1：loading = 三栏骨架屏）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>无（等待载入）</div>
+        <div><span class="lb">进入</span>B1（有对象类型）/ A4（无对象类型）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">A3</span><span class="sname">权限不足 · 门禁拦截</span>
+        <span class="sflow">流程位置：A1 之后 · 门禁：<code>is_ontology_admin=1 且 rank ≥ 偏将</code>（PRD §11）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">本体管理器 / objects.json</div>
+        <div class="msg err" style="margin-top:8px;">
+          无编辑权限<br>
+          <span class="mini">保存结构性改动需：本体管理员 且 职级 ≥ 偏将</span>
+        </div>
+        <div class="dash-box">页面以只读方式打开：所有输入控件置灰，[保存] 按钮不可点</div>
+        <div class="btnrow"><span class="btn dis">保存</span><span class="btn">前往 JSON 编辑页</span>
+          <span class="btn ghost">申请本体管理员权限</span> <span class="tbd">[待确认]</span></div>
+        <div class="note" style="margin-top:6px;">双条件门禁（is_ontology_admin=1 且 rank ≥ 偏将）是 S2 <b>新建能力</b>：现状写门禁仅 <code>require_analyst</code>，账号字段尚不存在（PRD §11 核查修正）</div>
+        <div class="tbd-box"><b>[待确认]</b> PRD §11 只定义门禁条件，<b>未定义权限申请与审批流程</b>：
+          申请提交给谁 / 是否有审批流 / 审批期间能否临时授权 —— 不自行补全。</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>只读浏览；跳转 JSON 页；（申请权限 — 流程待确认）</div>
+        <div><span class="lb">进入</span>授权后重新进入 A1 → B1；未授权则停留只读态</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">A4</span><span class="sname">空态 empty（首次使用 / 无数据）</span>
+        <span class="sflow">流程位置：A2 之后 · 状态 <code>empty</code>（PRD §9.1）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>本体管理器 / objects.json</span><span class="tag gray">本案件层</span></div>
+        <div class="col3" style="margin-top:6px;">
+          <div><div class="lbl">对象列表</div>
+            <div class="center" style="padding:20px 0;"><span class="ph" style="min-height:40px;">空</span></div>
+          </div>
+          <div>
+            <div class="center" style="padding:26px 6px;">
+              <div style="border:1.5px dashed #555; padding:14px;">
+                <div style="font-size:12.5px; font-weight:600;">尚未定义对象类型</div>
+                <div class="mini" style="margin-top:4px;">对象类型对应一张 obj_* 物化表</div>
+                <div class="btnrow" style="justify-content:center;"><span class="btn dark">+ 新建对象</span></div>
+              </div>
+            </div>
+          </div>
+          <div><div class="lbl">关系图</div>
+            <div class="ph" style="min-height:96px;">空图占位</div></div>
+        </div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>点击 [新建对象]（文案取自 PRD §9.1）</div>
+        <div><span class="lb">进入</span>C1（新建对象）→ 保存后 B1（ready）</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ B 组 ══════════ -->
+<div class="group">
+  <div class="group-head">B 组 · 主界面骨架（三栏 + 顶部固定区）</div>
+  <div class="group-note">PRD §5.2 / §5.3。顶部固定区跨三栏，含面包屑、来源层标签、未知字段提示（R2）、脏标记。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">B1</span><span class="sname">对象建模器 · 三栏 ready</span>
+        <span class="sflow">流程位置：主界面 · 状态 <code>ready</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top">
+          <span class="crumb">本体管理器 / objects.json / <b>person</b></span>
+          <span><span class="tag warn">● 未保存</span><span class="tag">本案件层</span></span>
+        </div>
+        <div class="red-note">⚠ 本对象有 <b>N</b> 个界面未覆盖字段（如 metadata_props / 文件级 _note），已原样保留（可切 JSON 页编辑）</div>
+        <div class="col3" style="margin-top:6px;">
+          <div>
+            <div class="lbl">对象列表 (280px)</div>
+            <div class="line"><span class="hl">● person</span></div>
+            <div class="line">○ account</div>
+            <div class="line">○ transaction</div>
+            <div class="line">○ call</div>
+            <div style="margin-top:6px;"><span class="btn">+ 新建对象</span></div>
+          </div>
+          <div>
+            <div class="lbl">属性表格 (flex) ★</div>
+            <table class="tbl">
+              <tr><th>属性名</th><th>类型</th><th>数据元</th><th>复合</th><th>pk</th><th>敏感</th><th>×</th></tr>
+              <tr><td>raw_name</td><td><span class="sel">string</span></td><td>—</td><td><span class="cb"></span></td><td><span class="cb on"></span></td><td>—</td><td>×</td></tr>
+              <tr><td>id_card</td><td><span class="sel">string</span></td><td>DE_IDCARD</td><td><span class="cb"></span></td><td><span class="cb"></span></td><td>🔒</td><td>×</td></tr>
+              <tr><td>phone</td><td><span class="sel">string</span></td><td>DE_PHONE</td><td><span class="cb"></span></td><td><span class="cb"></span></td><td>🔒</td><td>×</td></tr>
+            </table>
+            <div class="btnrow"><span class="btn">+ 新增属性</span></div>
+            <div class="dash-box">折叠：对象元信息（title / kind / name_property / jian·jian_source / pk 下拉）</div>
+          </div>
+          <div>
+            <div class="lbl">对象关系图 (360px)</div>
+            <div class="ph" style="min-height:88px;">[G6 关系图占位]</div>
+            <div class="btnrow"><span class="btn">+ 新建关系</span></div>
+          </div>
+        </div>
+        <div class="btnrow" style="justify-content:flex-end;">
+          <span class="btn dark">保存</span><span class="btn">放弃更改</span>
+        </div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>选对象 / 编辑属性行 / 勾选 pk（单选）·复合 / 敏感列只读回显 / 新建对象 / 新建属性 / 新建关系 / 保存 / 放弃</div>
+        <div><span class="lb">进入</span>C2（编辑属性）· D1（数据元）· E1（关系）· F1（保存弹窗）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">B2</span><span class="sname">顶部固定区 · 四要素标注</span>
+        <span class="sflow">流程位置：B1 顶部 · PRD §5.3</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar" style="margin-bottom:6px;">① 面包屑：本体管理器 / objects.json / person</div>
+        <div class="bar" style="margin-bottom:6px;">② 来源层标签：本案件层 ｜ 金融行业层 ｜ 全域层（派生只读）</div>
+        <div class="bar" style="margin-bottom:6px;">③ 未知字段提示（N&gt;0 时显示）：本对象有 N 个界面未覆盖字段，已原样保留</div>
+        <div class="bar">④ 脏标记：有未保存更改时显示「● 未保存」</div>
+        <div class="tbd-box">
+          <b>[待确认]</b> PRD §5.3 来源层标签示例为「本案件层 / 金融行业层 / 全域层」，
+          但 §十四-1 提示 <b>S0-1（_industry 三层）未完成前只有全域层与案件层</b>。
+          行业层标签是否在当前阶段就显示 —— 不自行补全。
+        </div>
+        <div class="note" style="margin-top:6px;">R2 要求：未知字段原样回写 + UI 显式提示（PRD §7 R2）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>无（纯展示区）</div>
+        <div><span class="lb">进入</span>—</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ C 组 ══════════ -->
+<div class="group">
+  <div class="group-head">C 组 · F1 对象与属性可视化建模（含两条阻止型异常）</div>
+  <div class="group-note">PRD §6 F1。属性表格是最高价值区（P1/P2 痛点的解法）。红线 R1：<code>name</code> 新建后不可改。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C1</span><span class="sname">新建对象</span>
+        <span class="sflow">流程位置：B1 → [新建对象] · 对象级状态 <code>new</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">新建对象 <span class="tbd">[待确认]</span></div>
+        <div class="dash-box">
+          <div class="line">对象名 name <span class="inp">test_object</span> <span class="mini">必填 · 全局唯一 · 模式 ^[a-z_]+$</span></div>
+          <div class="line">显示名 title <span class="inp">（选填）</span> <span class="mini">字段名是 title，不存在 label</span></div>
+          <div class="line">kind　<span class="sel">entity ▾</span> <span class="mini">必选 · entity / event（决定代理键分配方式）</span></div>
+        </div>
+        <div class="tbd-box"><b>[待确认]</b> PRD §6 F1.1 只写「新建对象：输入框填 name（必填、全局唯一、^[a-z_]+$）、title 选填、kind 必选」，
+          <b>未明确是弹窗还是内联表单</b>。此处按最小假设画为内联区 —— 不自行补全交互形态。</div>
+        <div class="btnrow"><span class="btn dark">确定</span><span class="btn">取消</span></div>
+        <div class="note" style="margin-top:6px;">新建时 name 可输入；<b>保存后置灰</b>（R1）→ C3。<br>
+          pk / name_property 是 schema required，允许建后再补，<b>保存前必须齐备</b>（PRD §6 F1.1）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>填 name / title / kind；确定 / 取消</div>
+        <div><span class="lb">进入</span>B1（左栏出现「<span class="hl">新增</span>」徽标）· C4（name 重复时阻止）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C2</span><span class="sname">属性表格编辑（下拉 + 勾选）</span>
+        <span class="sflow">流程位置：B1 中栏 · 状态 <code>dirty</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>属性表格</span><span class="tag warn">● 未保存</span></div>
+        <table class="tbl" style="margin-top:6px;">
+          <tr><th>属性名</th><th>类型</th><th>数据元</th><th>复合</th><th>pk</th><th>敏感</th><th>×</th></tr>
+          <tr><td><span class="inp">txn_date</span></td>
+              <td><span class="sel">date ▾</span></td><td><span class="sel">（无）▾</span></td>
+              <td><span class="cb"></span></td><td><span class="cb"></span></td><td>—</td><td>×</td></tr>
+          <tr class="new"><td><span class="inp">amount</span></td>
+              <td><span class="sel">decimal ▾</span></td><td><span class="sel">DE_AMOUNT▾</span></td>
+              <td><span class="cb"></span></td><td><span class="cb"></span></td><td>🔒</td><td>×</td></tr>
+          <tr class="dead"><td>old_col</td><td><span class="sel">string</span></td><td>—</td>
+              <td><span class="cb"></span></td><td><span class="cb"></span></td><td>—</td><td>↺</td></tr>
+        </table>
+        <div class="note" style="margin-top:5px;">
+          类型 = 下拉（string / integer / decimal / date / boolean / timestamp / duration_days / enum / json，与 core.ontology TYPE_NAMES 一致）；
+          复合 = 勾选框（composite 整列降级，仅 string）；pk = 单选勾选框（同对象仅一个，与对象元信息联动）；
+          敏感 = <b>只读 🔒 回显</b>（绑定 sensitive 数据元时），编辑走数据元层与 policies.json（PRD §6 F1.2 / UC-01-6）<br>
+          灰底行 = <code>new</code> 新增；删除线行 = <code>deleted</code>（保存时移除，PRD §9.2）
+        </div>
+        <div class="btnrow"><span class="btn">+ 新增属性</span><span class="btn dark">保存</span><span class="btn">放弃更改</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>改属性名、选类型、选数据元、勾复合、勾 pk、查看敏感回显、删行、新增属性</div>
+        <div><span class="lb">进入</span>D1（数据元下拉）· F1（保存·结构性）· C4/C5（异常阻止）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C3</span><span class="sname">★ 红线 R1：name 置灰不可改</span>
+        <span class="sflow">流程位置：C1 保存后再次编辑 · PRD §7 R1</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">编辑对象 · person（已保存）</div>
+        <div class="dash-box">
+          <div class="line">对象名 name <span class="inp dis">person（不可修改）</span> 🔒</div>
+          <div class="mini ind">tooltip：对象名被 bindings / links 引用，不可修改。如需改名请新建对象并迁移数据。</div>
+          <div class="line">显示名 title <span class="inp">人员</span> <span class="mini">可编辑</span></div>
+        </div>
+        <div class="red-note">R1 依据（核查实测）：name 被 bindings.json（列映射）、pk、links.json（端点）引用。<br>
+          允许改名 = <b>隐式断链且不报错</b> —— 取证系统中最危险的一类缺陷。</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>仅能改 title（对象级显示名，实际数据无 label / description 字段）；改 name 需「新建对象并迁移数据」</div>
+        <div><span class="lb">进入</span>B1（保存后 name 仍置灰）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C4</span><span class="sname">异常 E1-1 / E1-3：重名阻止</span>
+        <span class="sflow">流程位置：C1 / C2 保存前 · PRD §10</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>属性表格</span><span class="tag warn">● 未保存</span></div>
+        <table class="tbl" style="margin-top:6px;">
+          <tr><th>属性名</th><th>类型</th><th>…</th></tr>
+          <tr><td><span class="inp" style="border-color:#000;background:#d5d5d5;">phone</span></td><td>…</td><td>×</td></tr>
+          <tr><td><span class="inp" style="border-color:#000;background:#d5d5d5;">phone</span> ◀ 定位</td><td>…</td><td>×</td></tr>
+        </table>
+        <div class="msg err">属性名 <b>phone</b> 重复，请修改</div>
+        <div class="note" style="margin-top:5px;">E1-3 对象名重复同构：「对象名 <b>{name}</b> 已存在」（PRD §10）</div>
+        <div class="btnrow"><span class="btn dis">保存</span><span class="btn">放弃更改</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>修改重名项后重试；放弃更改</div>
+        <div><span class="lb">进入</span>修正后 C2 → F1；状态回到 <code>dirty</code></div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C5</span><span class="sname">异常 E1-2：删除 pk 属性 → 阻止</span>
+        <span class="sflow">流程位置：C2 点删除按钮 · 阻止型（PRD §10，UC-01-3）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">属性表格</div>
+        <table class="tbl" style="margin-top:6px;">
+          <tr><th>属性名</th><th>pk</th><th>×</th></tr>
+          <tr><td>id_card</td><td><span class="cb on"></span></td><td><span class="hl">×</span></td></tr>
+        </table>
+        <div class="msg err">
+          <b>id_card</b> 是主键，不可删除。如需更换请先指定其他属性为主键
+        </div>
+        <div class="btnrow"><span class="btn dark">知道了</span></div>
+        <div class="note" style="margin-top:6px;">FAIL 判据（UC-01-3）：若删除成功即失败</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>确认提示；或先把 pk 改指其他属性再删</div>
+        <div><span class="lb">进入</span>C2（属性保留）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">C6</span><span class="sname">对象级状态标记（图例）</span>
+        <span class="sflow">流程位置：B1 左栏 · PRD §9.2</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">对象列表</div>
+        <div class="line">● person <span class="tag">无标记 · persisted</span></div>
+        <div class="line">● test_object <span class="tag warn">新增</span> <span class="mini">new</span></div>
+        <div class="line">● org <span class="tag warn">已改</span> <span class="mini">modified</span></div>
+        <div class="line"><span class="strike">○ old_object</span> <span class="mini">deleted：灰显 + 删除线，保存时移除</span></div>
+        <div class="red-note">切换对象时若有未保存更改：提示先保存或放弃（PRD §6 F1.1）<br>
+          <span class="tbd">[待确认]</span> 提示的具体形式（弹窗 / 内联条）PRD 未定义</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>切换对象（触发未保存提示）</div>
+        <div><span class="lb">进入</span>目标对象的 B1</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ D 组 ══════════ -->
+<div class="group">
+  <div class="group-head">D 组 · F2 数据元绑定（下拉选择 + 自动继承）</div>
+  <div class="group-note">PRD §6 F2。痛点 P2：不用再手记 <code>DE_IDCARD</code> 这类 key 名。数据元本身的新增/编辑<b>不在本版</b>（§3.2）。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">D1</span><span class="sname">数据元下拉 · 按来源层分组</span>
+        <span class="sflow">流程位置：C2 属性行「数据元」列 · PRD §6 F2</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">选择数据元</div>
+        <div class="wf" style="margin-top:6px; padding:6px; font-size:11px;">
+          <div class="lbl">全域层</div>
+          <div class="line">DE_IDCARD　<span class="mini">身份证</span></div>
+          <div class="line">DE_PHONE　<span class="mini">手机号</span></div>
+          <div class="lbl" style="margin-top:5px;">金融行业层</div>
+          <div class="line">DE_BANK_NO　<span class="mini">银行卡号</span></div>
+          <div class="lbl" style="margin-top:5px;">本案件层</div>
+          <div class="line">DE_CASE_X　<span class="mini">自定义</span></div>
+          <div class="line" style="border-top:1px solid #666; margin-top:4px; padding-top:4px;">（无）　<span class="mini">取消绑定</span></div>
+        </div>
+        <div class="note" style="margin-top:6px;">分组顺序：全域层 → 行业层 → 本案件层（PRD §6 F2 交互 2）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>选中某一数据元 / 选「（无）」取消绑定</div>
+        <div><span class="lb">进入</span>D2（继承回显）· 取消则清除 <code>data_element</code> 键（UC-02-3）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">D2</span><span class="sname">自动继承回显（只读）</span>
+        <span class="sflow">流程位置：D1 选中后 · UC-02-2</span>
+      </div>
+      <div class="screen-body">
+        <table class="tbl">
+          <tr><th>属性名</th><th>类型</th><th>数据元</th></tr>
+          <tr><td>id_card</td><td><span class="sel">string</span></td><td>DE_IDCARD</td></tr>
+        </table>
+        <div class="bar" style="margin-top:6px;">继承属性（只读，不可在此编辑）</div>
+        <div class="wf" style="padding:6px; font-size:11px;">
+          <div class="line">format　<span class="inp dis">^\d{17}[\dXx]$</span></div>
+          <div class="line">mask　　<span class="inp dis">partial</span></div>
+          <div class="line">clean_rule<span class="inp dis">trim / upper</span></div>
+        </div>
+        <div class="note" style="margin-top:6px;">落盘格式（UC-02-1，<code>properties</code> 为 dict）：<code>"id_card": {"data_element": "DE_IDCARD"}</code><br>
+          type 可省略（reqd_case 实测 9 处绑定均省略，列类型随数据元 type）；若同时给出，须为 TYPE_NAMES 合法值</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>仅查看；不可编辑继承值</div>
+        <div><span class="lb">进入</span>C2（表格行）→ F1 保存</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">D3</span><span class="sname">异常 E2-1：数据元不存在 → 降级</span>
+        <span class="sflow">流程位置：载入含失效绑定时 · 异常恢复（UC-02-4）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">属性表格</div>
+        <table class="tbl" style="margin-top:6px;">
+          <tr><th>属性名</th><th>类型</th><th>数据元</th></tr>
+          <tr><td>acct</td><td><span class="sel">string</span></td><td><span class="strike">DE_XXX</span></td></tr>
+        </table>
+        <div class="msg err">绑定的数据元 <b>DE_XXX</b> 不存在，已降级为普通类型，请重新选择</div>
+        <div class="btnrow"><span class="btn dark">重新选择</span></div>
+        <div class="note" style="margin-top:6px;">FAIL 判据（UC-02-4）：静默保存成功即失败</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>重新选择数据元 / 保持普通类型</div>
+        <div><span class="lb">进入</span>D1（下拉）或 C2（作为普通属性保存）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">D4</span><span class="sname">异常 E2-2：类型冲突 → 警告不阻止</span>
+        <span class="sflow">流程位置：D1 选中后 · PRD §10</span>
+      </div>
+      <div class="screen-body">
+        <table class="tbl">
+          <tr><th>属性名</th><th>类型</th><th>数据元</th></tr>
+          <tr><td>amount</td><td><span class="sel">string ▾</span></td><td>DE_AMOUNT</td></tr>
+        </table>
+        <div class="msg">⚠ 数据元 <b>DE_AMOUNT</b> 的推荐类型为 <b>decimal</b>，当前为 <b>string</b></div>
+        <div class="btnrow"><span class="btn dark">保存</span><span class="btn">改为推荐类型</span></div>
+        <div class="note" style="margin-top:6px;">不阻止保存（PRD §10 明确「警告，不阻止」）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>照原样保存 / 采纳推荐类型</div>
+        <div><span class="lb">进入</span>F1（保存流程）</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ E 组 ══════════ -->
+<div class="group">
+  <div class="group-head">E 组 · F3 对象关系可视化（G6 + 基数声明）</div>
+  <div class="group-note">PRD §6 F3。布局复用《画布布局技术评估》结论：<b>确定性布局，不用 force / dagre</b>（D6），保证每次打开位置一致。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">E1</span><span class="sname">对象关系图（右栏）</span>
+        <span class="sflow">流程位置：B1 右栏 (360px) · G6 v5 已装</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>对象关系图</span><span class="mini">确定性布局</span></div>
+        <div class="ph" style="min-height:130px; margin-top:6px;">
+          [G6 关系图占位]<br>
+          <span class="mini">固定分层 + 确定性排序（D6）</span>
+        </div>
+        <div style="margin-top:6px; font-size:10.5px;">
+          <span class="gnode cur">person</span> ──实线──&gt; <span class="gnode">org</span><br>
+          <span class="gnode">transaction</span> <span class="mini">╌虚线绿╌ new</span><br>
+          <span class="mini">╌虚线红删除线╌ deleted</span>
+        </div>
+        <div class="btnrow"><span class="btn">+ 新建关系</span><span class="btn">点击连线：编辑 / 删除</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>从节点拖出连线 / 点选已有连线编辑或删除 / [新建关系]</div>
+        <div><span class="lb">进入</span>E2（关系编辑弹窗）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">E2</span><span class="sname">新建/编辑关系 · 基数声明</span>
+        <span class="sflow">流程位置：E1 拖拽或 [新建关系] · UC-03-1</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">关系定义</div>
+        <div class="dash-box">
+          <div class="line">name　<span class="inp">works_for___</span> <span class="mini">必填</span></div>
+          <div class="line">title　<span class="inp">任职于</span> <span class="mini">link 显示名字段是 title，不存在 label</span></div>
+          <div class="line">起点　<span class="sel">person ▾</span>　终点 <span class="sel">org ▾</span></div>
+          <div class="line">基数　<span class="sel">one_to_many ▾</span></div>
+          <div class="mini ind">可选项：one_to_one ／ one_to_many ／ many_to_many ／（空）= 未声明，兼容历史数据</div>
+        </div>
+        <div class="btnrow"><span class="btn dark">确定</span><span class="btn">取消</span><span class="btn ghost">删除关系</span></div>
+        <div class="note" style="margin-top:6px;">FAIL 判据（UC-03-1）：缺失 cardinality 或 <code>links.schema.json</code> 未同步修订即失败。<br>
+          link 级 <code>jian</code> / <code>jian_source</code> 等未声明字段不在表单，保存时原样保留（R2）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>填 name/title、选两端点、选基数；确定 / 取消 / 删除</div>
+        <div><span class="lb">进入</span>E1（图更新，新连线虚线绿）· E3/E4（异常）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">E3</span><span class="sname">异常 E3-2：删除被引用对象 → 阻止</span>
+        <span class="sflow">流程位置：C1 左栏删除对象 · 阻止型（UC-03-2）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">删除对象 · person</div>
+        <div class="msg err">
+          对象 <b>person</b> 被 <b>2</b> 条关系引用，不可删除。<br>
+          引用关系：<b>works_for</b>、<b>owns_account</b>
+        </div>
+        <div class="btnrow"><span class="btn dark">知道了</span><span class="btn ghost">前往关系图处理</span></div>
+        <div class="note" style="margin-top:6px;">FAIL 判据（UC-03-2）：删除成功即失败</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>确认；或先到关系图删除相关 link 再删对象</div>
+        <div><span class="lb">进入</span>E1（关系图）→ 删 link → 回 C1 重试</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">E4</span><span class="sname">异常 E3-3：基数与数据冲突 → 警告</span>
+        <span class="sflow">流程位置：E2 确定后 / 保存时 · PRD §10</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">关系 · works_for（one_to_many）</div>
+        <div class="msg">⚠ 声明为 <b>one_to_many</b>，检测到 <b>3</b> 条数据不符合</div>
+        <div class="btnrow"><span class="btn dark">仍然保存</span><span class="btn">返回修改</span></div>
+        <div class="red-note">设计说明（PRD §10）：取证数据常脏，不该因声明不符就废掉整个本体 → <b>警告，不硬失败</b>（决策 D5）</div>
+        <div class="note" style="margin-top:6px;">FAIL 判据（UC-03-3）：硬失败即失败</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>仍然保存 / 返回修改基数</div>
+        <div><span class="lb">进入</span>F1（保存流程）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">E5</span><span class="sname">异常 E3-1：端点对象不存在</span>
+        <span class="sflow">流程位置：E2 确定时 · PRD §10</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">关系定义</div>
+        <div class="line">起点　<span class="sel">person ▾</span>　终点 <span class="sel" style="background:#d5d5d5;">ghost ▾</span></div>
+        <div class="msg err">端点对象 <b>ghost</b> 不存在</div>
+        <div class="btnrow"><span class="btn dis">确定</span><span class="btn">取消</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>改选存在的端点对象；取消</div>
+        <div><span class="lb">进入</span>E2（修正后重试）</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ F 组 ══════════ -->
+<div class="group">
+  <div class="group-head">F 组 · 保存与校验（分级提示 / 加载 / 成功 / 失败 / 冲突恢复）</div>
+  <div class="group-note">PRD §8。核心红线 R3：<b>绝不出现"自动触发 RESCAN"</b> 字样 —— 现有 7 个页面的假承诺不得复制到新界面。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F1</span><span class="sname">危险确认弹窗（结构性 / 关系性）</span>
+        <span class="sflow">流程位置：点 [保存] 且改动属结构性或关系性 · UC-01-5</span>
+      </div>
+      <div class="screen-body">
+        <div class="wf" style="padding:8px;">
+          <div class="bar">⚠ 结构性改动确认</div>
+          <div class="dash-box" style="margin-top:6px;">
+            本次改动：<br>
+            · 新增对象类型 test_object<br>
+            · 修改属性类型 amount: string → decimal<br>
+            <span class="mini">（结构性 = 新增/删除对象类型、改 pk / kind / name_property、改属性 type / composite）</span>
+          </div>
+          <div class="line" style="margin-top:6px;">改动理由 <span class="inp" style="min-width:150px;">（必填）</span></div>
+          <div class="btnrow" style="justify-content:flex-end;">
+            <span class="btn">取消</span><span class="btn dis">确认保存</span>
+            <span class="mini">理由为空时禁用</span>
+          </div>
+        </div>
+        <div class="note" style="margin-top:6px;">语义性改动（改 title / jian / jian_source / 数据元绑定）→ <b>无弹窗</b>，直接保存（PRD §8.2）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>填理由（必填）→ 确认保存；取消</div>
+        <div><span class="lb">进入</span>F2（validating → saving）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F2</span><span class="sname">校验中 / 保存中</span>
+        <span class="sflow">流程位置：F1 确认后 · 状态 <code>validating</code> → <code>saving</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>本体管理器 / objects.json</span><span class="tag warn">保存中…</span></div>
+        <div class="ph" style="min-height:80px; margin-top:8px;">[loading 占位]</div>
+        <div style="font-size:11px; margin-top:6px;">
+          ① 客户端校验：R1 唯一性 / 属性名唯一 / 必填 / 类型合法<br>
+          ② 服务端：<code>_validate_in_temp</code> —— 临时目录试写 + <code>load_pack</code> 校验<br>
+          ③ 通过才落盘 + re-fingerprint（本体版本 +1，追加版本历史）<br>
+          ④ 审计留痕：操作人 / 理由 / 变更文件 / 本体版本
+        </div>
+        <div class="btnrow"><span class="btn dis">保存</span><span class="btn dis">放弃更改</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>无（按钮禁用）</div>
+        <div><span class="lb">进入</span>F3/F4（saved）· F5（failed）· F6（conflict）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F3</span><span class="sname">保存成功 · 结构性 🔴</span>
+        <span class="sflow">流程位置：F2 之后 · 状态 <code>saved</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>objects.json</span><span class="tag">v12 → v13</span></div>
+        <div class="msg" style="border-width:2px;">
+          🔴 本体已保存。<b>需重跑 BUILD 才生效</b> —— 新增对象类型不重跑会导致 <code>obj_*</code> 表不存在，相关功能不可用。
+        </div>
+        <div class="btnrow"><span class="btn dark">前往任务中心重跑</span><span class="btn">稍后自行处理</span></div>
+        <div class="red-note">R3：此处<b>绝不出现</b>「已自动触发 RESCAN」。<br>
+          <span class="strike">保存后自动触发 RESCAN 重跑</span> ← 现有 ConfigConfirmDialog 的假承诺（仅 RuleWorkshop 真入队）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>[前往任务中心重跑] / [稍后自行处理]</div>
+        <div><span class="lb">进入</span>任务中心（PRD 未定义其界面）· 或停留在 B1（脏标记已清除）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F4</span><span class="sname">保存成功 · 语义性 🟡</span>
+        <span class="sflow">流程位置：F2 之后 · 状态 <code>saved</code></span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>objects.json</span><span class="tag">v13 → v14</span></div>
+        <div class="msg">🟡 已保存，下次 BUILD 后生效。</div>
+        <div class="btnrow"><span class="btn dark">知道了</span></div>
+        <div class="note" style="margin-top:6px;">语义性 = 改 title / jian / jian_source / 数据元绑定（PRD §8.2），无需危险确认、理由不必填。</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>关闭提示</div>
+        <div><span class="lb">进入</span>B1（脏标记清除，继续编辑）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F5</span><span class="sname">保存失败 failed</span>
+        <span class="sflow">流程位置：F2 服务端拒绝 · 状态 <code>failed</code>（PRD §9.1）</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar top"><span>objects.json</span><span class="tag warn">● 未保存</span></div>
+        <div class="msg err">保存失败：<code>_validate_in_temp</code> 校验未通过 —— {错误详情}</div>
+        <div class="ph sm" style="margin-top:6px;">[三栏内容保持用户原输入]</div>
+        <div class="btnrow"><span class="btn dark">重试保存</span><span class="btn">放弃更改</span></div>
+        <div class="note" style="margin-top:6px;">PRD §9.1：failed = 错误条 + <b>保留用户输入</b>（不得清空）</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>修正后重试保存；放弃更改（回到上次落盘状态）</div>
+        <div><span class="lb">进入</span>F2（重试）· B1（放弃后）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">F6</span><span class="sname">并发冲突 conflict · 异常恢复</span>
+        <span class="sflow">流程位置：F2 检测服务端 version ≠ 本地载入时 · E1-4</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">保存冲突</div>
+        <div class="msg err">
+          本体已被他人修改（当前版本 <b>v13</b>）。请重新载入后再编辑<br>
+          <span class="mini">本地更改<b>不覆盖</b>服务端</span>
+        </div>
+        <div class="btnrow">
+          <span class="btn dark">重新载入</span><span class="btn">在新窗口查看差异</span>
+        </div>
+        <div class="mini" style="margin-top:4px;">「重新载入」= 丢弃本地更改</div>
+        <div class="tbd-box"><b>[待确认]</b> PRD §10 E1-4 给出按钮文案，但<b>未定义「查看差异」的具体形式</b>
+          （逐字段 diff？JSON 并排？是否只读？）—— 不自行补全。</div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>[重新载入]（丢弃本地）/ [在新窗口查看差异]</div>
+        <div><span class="lb">进入</span>A2 → B1（重新载入）/ 差异视图（形式待确认）</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ G 组 ══════════ -->
+<div class="group">
+  <div class="group-head">G 组 · 渐进替换与校验（与 JSON 编辑页并存）</div>
+  <div class="group-note">PRD §3.3（用户已确认 D4）：保留 <code>ModelDesignerView.vue</code> 作为 JSON 编辑入口，两者读写同一份 <code>objects.json</code>，<b>不做双向实时同步</b>。</div>
+  <div class="grid">
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">G1</span><span class="sname">并存提示（常驻）</span>
+        <span class="sflow">流程位置：B1 页面顶部 · PRD §3.3</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">本体管理器 / objects.json / person</div>
+        <div class="red-note" style="background:#e8e8e8;">
+          此对象也可在 <b>模型设计器 → JSON 编辑</b> 中修改，两边数据一致，切换后请重新载入
+        </div>
+        <div class="ph" style="min-height:60px; margin-top:6px;">[三栏主界面]</div>
+        <div class="btnrow"><span class="btn ghost">切换到 JSON 编辑</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>点击切换到 JSON 编辑页</div>
+        <div><span class="lb">进入</span>G2</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">G2</span><span class="sname">ModelDesignerView（JSON 编辑，保留）</span>
+        <span class="sflow">流程位置：并存期另一侧入口 · 渐进替换 D4</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">模型设计器 · JSON 编辑（既有页面，不删除）</div>
+        <div class="wf" style="padding:5px; font-size:10.5px; margin-top:6px;">
+          <div class="line">[ objects ]　[ links ]　<span class="mini">两个 tab（现状实测，无 views）</span></div>
+        </div>
+        <div class="ph" style="min-height:96px; margin-top:5px;">[textarea：整份 objects.json]</div>
+        <div class="note" style="margin-top:6px;">现状实测：ModelDesignerView 280 行，主体为 objects / links 两个整包 textarea —— 本 PRD 正是为替代此处的「手敲 JSON」体验。</div>
+        <div class="btnrow"><span class="btn dark">保存</span><span class="btn ghost">返回可视化建模器</span></div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>编辑 JSON 文本；保存；返回</div>
+        <div><span class="lb">进入</span>G3（回到新界面需重新载入）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">G3</span><span class="sname">★ UC-S2-6：切换后需重新载入</span>
+        <span class="sflow">流程位置：G2 保存后回到新界面</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">对象建模器</div>
+        <div class="msg">检测到 objects.json 已在别处修改，需重新载入后才可见</div>
+        <div class="btnrow"><span class="btn dark">重新载入</span></div>
+        <div class="note" style="margin-top:6px;">
+          FAIL 判据（UC-S2-6）：数据不一致，或出现<b>双向实时同步</b> —— 两者均判失败。<br>
+          PRD §3.3 明确：任一边保存后，另一边需重新载入。
+        </div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>[重新载入]</div>
+        <div><span class="lb">进入</span>A2 → B1（数据一致）</div>
+      </div>
+    </div>
+
+    <div class="screen">
+      <div class="screen-head">
+        <span class="sid">G4</span><span class="sname">★ UC-S2-3：未覆盖字段不丢失</span>
+        <span class="sflow">流程位置：全流程贯穿 · 本 PRD 最重要用例</span>
+      </div>
+      <div class="screen-body">
+        <div class="bar">含 jian 的对象保存前后对比</div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; font-size:10.5px;">
+          <div class="wf" style="padding:6px;">
+            <div class="lbl">保存前</div>
+            name / title / properties<br>
+            <b>jian</b> / <b>jian_source</b> / metadata_props
+          </div>
+          <div class="wf" style="padding:6px;">
+            <div class="lbl">保存后（必须仍在）</div>
+            name / title / properties<br>
+            <b>jian</b> / <b>jian_source</b> / metadata_props
+          </div>
+        </div>
+        <div class="red-note">
+          R2：若按 objects.schema.json（仅声明 7 字段）严格序列化，<br>
+          用户用新界面保存一次，<b>jian（五间归属）就静默丢失</b>；<br>
+          属性值 dict 形式（<code>{data_element, composite}</code>）同理会被「纯字符串类型化模型」削掉。<br>
+          FAIL 判据（UC-S2-3）：对象级 / link 级 / 文件级 _note / 属性级 dict 键任一丢失 —— <b>本条不过，整个 S2 不应发布</b>。
+        </div>
+      </div>
+      <div class="screen-foot">
+        <div><span class="lb">可操作</span>保存含 jian 的对象并核对字段完整性</div>
+        <div><span class="lb">进入</span>F3 / F4（保存成功，且字段保留）</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════ 汇总 ══════════ -->
+<div class="sum">
+  <h2>一、主流程串线（正常路径）</h2>
+  <div class="flowline">A1 本体管理器文件树 → 点 objects.json
+   ↓
+A2 loading（三栏骨架屏）
+   ↓
+A4 empty（首次/无对象）─[新建对象]→ C1 ──┐
+   ↓（已有对象）                        │
+B1 三栏 ready ──┬─ C2 属性编辑 ─┬─ D1 数据元下拉 → D2 继承回显 ─┐
+                ├─ C1 新建对象 ─┘                              │
+                └─ E1 关系图 → E2 关系定义（含基数）──────────┤
+                                                              ↓
+                                                    F1 危险确认（结构性/关系性，理由必填）
+                                                              ↓
+                                                    F2 validating → saving
+                                                              ↓
+                                        ┌─────────────────────┼─────────────────────┐
+                                        ↓                     ↓                     ↓
+                                   F3 成功🔴                 F5 失败            F6 冲突
+                              （需重跑 BUILD）          （保留用户输入）      （重新载入/看差异）
+                                        ↓
+                              B1（脏标记清除，可继续编辑）
+                                        ↓
+                              G1/G2/G3 与 JSON 页并存切换（需重新载入）</div>
+
+  <h2 style="margin-top:22px;">二、状态覆盖检查</h2>
+  <table>
+    <tr><th style="width:130px;">状态类别</th><th>对应屏</th><th>PRD 依据</th></tr>
+    <tr><td>首次使用</td><td>A4 空态（尚未定义对象类型 + [新建对象]）</td><td>§9.1 empty</td></tr>
+    <tr><td>权限申请</td><td>A3 门禁拦截（双条件）＋ <span class="tbd">[待确认]</span>申请流程</td><td>§11</td></tr>
+    <tr><td>加载中</td><td>A2 三栏骨架屏；F2 校验/保存中</td><td>§9.1 loading / validating / saving</td></tr>
+    <tr><td>无数据</td><td>A4；E1 空关系图占位</td><td>§9.1 empty</td></tr>
+    <tr><td>失败</td><td>F5（错误条 + 保留用户输入）；C4/C5/E3/E5 阻止型</td><td>§9.1 failed；§10 E1-1/E1-2/E1-3/E3-1/E3-2</td></tr>
+    <tr><td>异常恢复</td><td>F6 冲突（重新载入 / 看差异）；D3 数据元降级重选；F5 重试</td><td>§10 E1-4 / E2-1；§9.1 conflict</td></tr>
+    <tr><td>警告不阻止</td><td>D4 类型冲突；E4 基数冲突</td><td>§10 E2-2 / E3-3（决策 D5）</td></tr>
+  </table>
+
+  <h2 style="margin-top:22px;">三、三条红线在界面上的落点</h2>
+  <table>
+    <tr><th style="width:60px;">红线</th><th style="width:180px;">界面落点</th><th>要求</th></tr>
+    <tr><td><b>R1</b></td><td>C3 name 置灰 + tooltip</td><td>name 被 bindings / pk / links 引用，改名 = 隐式断链<b>且不报错</b> → 定死不可改</td></tr>
+    <tr><td><b>R2</b></td><td>B1 顶部提示条 + G4 保存前后对比</td><td>未覆盖字段（对象级 / link 级 / 文件级 <code>_note</code> / 属性级 dict 键）<b>原样回写</b> + UI 显式提示</td></tr>
+    <tr><td><b>R3</b></td><td>F3 / F4 保存后文案</td><td><b>绝不出现「已自动触发 RESCAN」</b>；按结构/语义/关系三级给不同文案</td></tr>
+  </table>
+
+  <h2 style="margin-top:22px;">四、[待确认] 汇总（PRD 未说清或待实施前明确，未自行补全）</h2>
+  <table>
+    <tr><th style="width:50px;">#</th><th>事项</th><th>出现屏</th><th>PRD 依据 / 建议</th></tr>
+    <tr><td>1</td><td>权限不足时的<b>申请与审批流程</b>（提交给谁 / 审批流 / 临时授权）</td><td>A3</td><td>§11 仅定义门禁条件，未定义申请流程</td></tr>
+    <tr><td>2</td><td>冲突态「在新窗口查看差异」的<b>具体形式</b>（逐字段 diff / JSON 并排 / 是否只读）</td><td>F6</td><td>§10 E1-4 只给按钮文案</td></tr>
+    <tr><td>3</td><td>新建对象是<b>弹窗还是内联表单</b></td><td>C1</td><td>§6 F1.1 未明确形态</td></tr>
+    <tr><td>4</td><td>切换对象遇未保存更改时的<b>提示形式</b>（弹窗 / 内联条）</td><td>C6</td><td>§6 F1.1 只写「提示先保存或放弃」</td></tr>
+    <tr><td>5</td><td>行业层标签在当前阶段是否显示（S0-1 未完成前只有全域层与案件层）</td><td>B2 / D1</td><td>§十四-1：建议先完成 S0-1 再开 S2</td></tr>
+    <tr><td>6</td><td>属性表格是否支持拖拽排序</td><td>C2</td><td>§十四-2 建议不支持（properties 为 dict，键序无强语义）</td></tr>
+    <tr><td>7</td><td>是否需要批量导入属性（如从 CSV）</td><td>—</td><td>§十四-3 建议不做，属 S3</td></tr>
+    <tr><td>8</td><td>删除对象的<b>二次确认文案</b></td><td>C1/E3</td><td>§6 F1.1 只写「二次确认」，未给文案</td></tr>
+    <tr><td>9</td><td>敏感列只读回显后，是否在行内提供<b>跳转数据元页 / 权限遮蔽页</b>的快捷入口</td><td>B1 / C2</td><td>§十四-4 建议提供（替代 v1.0 误设的可编辑勾选）</td></tr>
+  </table>
+
+  <h2 style="margin-top:22px;">五、PRD 内部细节不一致（已在对应屏标注）</h2>
+  <table>
+    <tr><th style="width:200px;">位置</th><th>说明</th></tr>
+    <tr><td>v1.0 遗留 → v1.1 已修正</td><td>per-property「显示名 / 敏感」可编辑列已删除（实际数据无 <code>label</code> / <code>sensitive</code> 字段）；
+      敏感改为只读 🔒 回显（UC-01-6），<code>jian</code> / <code>jian_source</code> 编辑入口落在 F1.3 对象元信息折叠区（B1 / C2 / D2）</td></tr>
+    <tr><td>§9.2 deleted vs §6 F1.1</td><td>§9.2「deleted 保存时移除」与 §6 F1.1「删除对象二次确认」措辞接近，
+      易误解为可持久化撤销 —— 线框按「保存时移除、刷新即丢」绘制（C2 / C6）</td></tr>
+  </table>
+
+  <div style="margin-top:20px; font-size:12px; color:#444; border-top:1px solid #aaa; padding-top:10px;">
+    本线框图仅依据《可视化本体建模器_PRD.md v1.1》绘制（v1.0 版线框已按 v1.1 核查结论同步修订），未引入 PRD 之外的功能。
+    凡 PRD 未定义处均以 <span class="tbd">[待确认]</span> 标注并汇总于第四节。
+  </div>
+</div>
+
+</div>
+</body>
+</html>

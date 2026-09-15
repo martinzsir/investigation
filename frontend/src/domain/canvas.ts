@@ -653,6 +653,21 @@ export interface CanvasChatFact {
   citations: string[]
 }
 
+/**
+ * 工具确定性产物（ReAct 模式）。
+ * 由只读工具（当前仅 report.render）产出，服务端以产物原文作为答复，
+ * 绕过逐句引用分流；正文完整性由确定性管道保证。
+ */
+export interface CanvasChatArtifact {
+  artifact_type: 'sunzi-report' | string
+  tool: string
+  format: string
+  report_type: string
+  type_name: string
+  text: string
+  degraded: boolean
+}
+
 export interface CanvasChatEnvelope {
   answer: string
   facts: CanvasChatFact[]
@@ -660,6 +675,8 @@ export interface CanvasChatEnvelope {
   warnings: string[]
   citations: string[]
   model: string | null
+  /** 非 null 时 answer 即工具确定性产物原文（如十段式研判报告 md） */
+  artifact?: CanvasChatArtifact | null
 }
 
 /** RC-303：问答建议提交为提案的响应 */

@@ -335,6 +335,55 @@ def _tools() -> list[dict]:
             },
             "annotations": {"readOnlyHint": False},
         },
+        {
+            "name": "report.gather_evidence",
+            "description": (
+                "研判报告确定性采集（只读）：调用 sunzi-report skill 的 gather_evidence 脚本，"
+                "产出已脱敏的 evidence.json——含五间覆盖、交叉等级、覆盖缺口、过桥路径、规则手册，"
+                "以及第九段所需的数据源登记（数据文件/上传批次/行数/版本/本线索引用源）。"
+                "本工具是成文流程第一步：用户要报告/材料时，调完必须继续调 report.render 成文，"
+                "不得自行撰写或粘贴报告正文；结果中的「下一步协议」必须遵守。"
+                "红规：第二段/第五段/第九段由本工具确定性产出，Agent 不得改写、不得润色；"
+                "降级项非空时报告必须如实标注，不静默。LLM 不复述数字，只填原文。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "case_id": {"type": "string", "description": "案件 ID（必填）"},
+                    "clue_id": {"type": "string", "description": "线索 ID（可空=全案件）"},
+                    "pack": {"type": "string", "description": "本体包，默认 default"},
+                    "demo": {"type": "boolean", "description": "降级演示模式（无案件库也可跑）"},
+                    "project_root": {"type": "string", "description": "项目根路径（默认自动定位）"},
+                },
+                "required": ["case_id"],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
+        {
+            "name": "report.render",
+            "description": (
+                "研判报告渲染（只读）：把 evidence.json + sections.json 渲染成十段式 Markdown 或 docx。"
+                "推荐流程：先调用 report.gather_evidence（传 case_id），"
+                "然后调用本工具只传 case_id + sections 即可（evidence 自动从缓存取）。"
+                "红规：第二段（证据充分性）、第五段（关联核验）、第九段（数据源清单）"
+                "由 evidence 确定性渲染，sections.json 提供同名段会被忽略（防 LLM 改写数字）。"
+                "C 类（移送）剔除推断与待核实段，AI 不做定性。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "case_id": {"type": "string", "description": "案件 ID（与 gather_evidence 同 case_id 时自动取缓存 evidence，免传大对象）"},
+                    "clue_id": {"type": "string", "description": "线索 ID（可选，配合 case_id 取缓存）"},
+                    "evidence": {"type": "object", "description": "gather_evidence 产出的 evidence 对象（可选，传 case_id 时可省略）"},
+                    "sections": {"type": "object", "description": "Agent 撰写的叙述段 JSON（overview/rules/facts/inferences/pending/evidence/citations；禁止提供 sufficiency/correlation/sources——第二/五/九段由 evidence 确定性渲染）"},
+                    "type": {"type": "string", "enum": ["A", "B", "C"], "description": "受众类型，默认 A"},
+                    "format": {"type": "string", "enum": ["md", "docx"], "description": "输出格式，默认 md"},
+                    "out_path": {"type": "string", "description": "输出文件路径（可选，不填则只返回 md 内容不写盘）"},
+                },
+                "required": ["sections"],
+            },
+            "annotations": {"readOnlyHint": True},
+        },
     ]
 
 
@@ -937,6 +986,216 @@ def tool_review_submit_proposal(args: dict) -> dict:
     })
 
 
+# ----------------------------------------------------------------------
+# sunzi-report skill 桥接（惰性加载 .trae/skills/sunzi-report/scripts/）
+# 会话级 evidence 缓存：gather_evidence 产出后缓存，render 可免传大对象
+# （解决 ReAct 模式 LLM 生成大 JSON 参数偶发格式错误的问题）
+_EVIDENCE_CACHE: dict[str, dict] = {}
+
+# gather_evidence 工具链护栏：调用本工具几乎只服务成文，「调用动作」本身即
+# 最强意图信号——在工具结果返回的 ReAct 决策点下发下一步协议，由模型结合
+# 用户原话自行路由（出报告→必须 render；只问证据→直接答），服务端不做
+# 关键词/正则意图识别。
+_GATHER_NEXT_STEP_PROTOCOL = (
+    "下一步协议（在本决策点按用户原话选择，不要为走流程而渲染）：\n"
+    "1. evidence 已按 case_id:clue_id 缓存；随后 report.render 只传相同的 "
+    "case_id/clue_id + sections，禁止回传 evidence 大对象。\n"
+    "2. 若用户意图是出具研判报告/汇报材料/固证素材/任何成文交付：下一步"
+    "必须调用 report.render 成文，禁止在最终答复里自行撰写、复述或粘贴"
+    "报告正文——只有 report.render 返回的 md 会被系统作为报告产物呈现，"
+    "手写文本不算报告。sections 的 7 键契约与 facts 逐句挂引用等要求见 "
+    "sunzi-report 技能卡；尚未读取时先调 Skill 工具（skill=\"sunzi-report\"）"
+    "读正文，再撰写 sections。\n"
+    "3. 若用户只是询问证据内容或单个查证问题：直接依据 evidence 回答，"
+    "不要调用 render。"
+)
+
+# ----------------------------------------------------------------------
+# sunzi-report skill 桥接（惰性加载 .trae/skills/sunzi-report/scripts/）
+# ----------------------------------------------------------------------
+def _load_skill_module(script_name: str):
+    """惰性加载 sunzi-report skill 脚本为模块（不污染 sys.path）。"""
+    import importlib.util
+    path = ROOT / ".trae" / "skills" / "sunzi-report" / "scripts" / f"{script_name}.py"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"sunzi-report skill 脚本不存在：{path}（请确认 .trae/skills/sunzi-report/ 已安装）")
+    mod_name = f"_sunzi_skill_{script_name}"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法加载 skill 脚本：{path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def tool_report_gather_evidence(args: dict) -> dict:
+    """包 sunzi-report/scripts/gather_evidence.py：确定性采集 evidence.json。
+
+    红规：
+      - 第二/五/九段数字由脚本确定性产出，调用方（LLM）不得改写、不得润色；
+      - 降级项非空时报告必须如实标注；
+      - 输出已脱敏，调用方拿到的即是安全载荷。
+    """
+    case_id = str(args.get("case_id", "")).strip()
+    if not case_id:
+        return _redline({"ok": False, "error": "case_id 必填"})
+
+    clue_id = str(args.get("clue_id", "")).strip()
+    pack = str(args.get("pack", "default")).strip() or "default"
+    demo = bool(args.get("demo", False))
+    project_root = str(args.get("project_root", "")).strip() or None
+
+    try:
+        ge = _load_skill_module("gather_evidence")
+    except Exception as e:
+        return _redline({"ok": False, "error": f"加载 gather_evidence 脚本失败：{e}"})
+
+    try:
+        root = ge.find_project_root(project_root)
+    except SystemExit as e:
+        return _redline({"ok": False, "error": str(e)})
+
+    degraded: list[str] = []
+    # 案件数据版本（取不到则降级，不冒充 0）
+    version = None
+    case_dir = root / "cases" / case_id
+    if case_dir.exists():
+        vs = sorted(
+            (int(p.stem[1:]) for p in case_dir.glob("v*.duckdb")
+             if p.stem[1:].isdigit()),
+            reverse=True,
+        )
+        version = vs[0] if vs else None
+    else:
+        degraded.append(f"案件库不存在：{case_dir}（未 BUILD 或 case_id 有误）")
+
+    if version is None and not demo:
+        degraded.append("未解析到 data_version：报告将缺少数据版本锚点")
+
+    try:
+        evidence = {
+            "case_id": case_id,
+            "clue_id": clue_id,
+            "pack": pack,
+            "data_version": version,
+            "确定性块": {
+                "证据充分性": ge.collect_cross(root, pack, degraded),
+                "关联核验": {
+                    "过桥路径": ge.collect_overpass(root, degraded),
+                    "规则手册": ge.load_rules(root, pack),
+                },
+                "数据源清单": ge.collect_sources(
+                    root, case_id, clue_id, pack, version, degraded),
+            },
+            "降级": degraded,
+            "脱敏": True,
+            "生成方式": "deterministic（无 LLM 参与）",
+        }
+        safe = ge.redact(evidence)
+    except Exception as e:
+        return _redline({
+            "ok": False,
+            "error": f"采集失败：{type(e).__name__}: {e}",
+            "degraded": degraded,
+        })
+
+    # 缓存 evidence，供后续 report.render 免传大对象
+    cache_key = f"{case_id}:{clue_id or ''}"
+    _EVIDENCE_CACHE[cache_key] = safe
+
+    return _redline({
+        "ok": True,
+        "readonly": True,
+        "evidence": safe,
+        "降级项": len(degraded),
+        "note": ("evidence.确定性块 由脚本产出，调用方不得改写数字；"
+                 "降级项非空时报告必须如实标注"),
+        "下一步协议": _GATHER_NEXT_STEP_PROTOCOL,
+    })
+
+
+def tool_report_render(args: dict) -> dict:
+    """包 sunzi-report/scripts/render_report.py：渲染十段式报告（md/docx）。
+
+    红规：
+      - 第二段（证据充分性）、第五段（关联核验）、第九段（数据源清单）
+        由 evidence 确定性渲染；
+      - sections.json 提供同名段会被忽略（防 LLM 改写数字）；
+      - C 类（移送）剔除推断与待核实段，AI 不做定性。
+    """
+    evidence = args.get("evidence")
+    sections = args.get("sections")
+    rtype = str(args.get("type", "A")).strip() or "A"
+    fmt = str(args.get("format", "md")).strip() or "md"
+    out_path = str(args.get("out_path", "")).strip()
+
+    # evidence 缺失时从缓存取（ReAct 模式 LLM 可免传大对象）
+    if not isinstance(evidence, dict):
+        case_id = str(args.get("case_id", "")).strip()
+        clue_id = str(args.get("clue_id", "")).strip()
+        if case_id:
+            cache_key = f"{case_id}:{clue_id or ''}"
+            evidence = _EVIDENCE_CACHE.get(cache_key)
+            if not evidence:
+                # clue_id 缺失时尝试全案件匹配
+                evidence = _EVIDENCE_CACHE.get(f"{case_id}:")
+        if not isinstance(evidence, dict):
+            return _redline({
+                "ok": False,
+                "error": "evidence 缺失且缓存无匹配。"
+                         "请先调用 report.gather_evidence（传 case_id），"
+                         "或直接传 evidence 对象。",
+            })
+    if not isinstance(sections, dict):
+        return _redline({"ok": False, "error": "sections 必须是对象（Agent 撰写的叙述段）"})
+    if rtype not in ("A", "B", "C"):
+        return _redline({"ok": False, "error": f"type 必须是 A/B/C，得到 {rtype!r}"})
+    if fmt not in ("md", "docx"):
+        return _redline({"ok": False, "error": f"format 必须是 md/docx，得到 {fmt!r}"})
+
+    try:
+        rr = _load_skill_module("render_report")
+    except Exception as e:
+        return _redline({"ok": False, "error": f"加载 render_report 脚本失败：{e}"})
+
+    # 检测 sections 是否试图改写确定性段（红规：忽略 + 提示）
+    overridden = [k for k in rr.DETERMINISTIC if sections.get(k)]
+    try:
+        md = rr.build_markdown(evidence, sections, rtype)
+    except Exception as e:
+        return _redline({"ok": False, "error": f"渲染失败：{type(e).__name__}: {e}"})
+
+    written = None
+    if out_path:
+        try:
+            if fmt == "docx":
+                rr.build_docx(md, out_path)
+            else:
+                Path(out_path).write_text(md, encoding="utf-8")
+            written = out_path
+        except Exception as e:
+            return _redline({
+                "ok": False,
+                "error": f"写文件失败：{type(e).__name__}: {e}",
+                "md_preview": md[:500],
+            })
+
+    return _redline({
+        "ok": True,
+        "readonly": True,
+        "format": fmt,
+        "type": rtype,
+        "type_name": rr.TYPE_NAME.get(rtype, "研判报告"),
+        "md": md,
+        "out_path": written,
+        "overridden_sections": overridden,
+        "overridden_note": (f"{overridden} 为确定性段，已忽略 sections 中的同名内容"
+                            if overridden else None),
+        "降级声明": bool(evidence.get("降级")),
+    })
+
+
 _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "scan_anomaly": tool_scan_anomaly,
     "cross_jian": tool_cross_jian,
@@ -951,6 +1210,8 @@ _TOOL_IMPL: dict[str, Callable[[dict], dict]] = {
     "review.get_evidence": tool_review_get_evidence,
     "action.status": tool_action_status,
     "review.submit_proposal": tool_review_submit_proposal,
+    "report.gather_evidence": tool_report_gather_evidence,
+    "report.render": tool_report_render,
 }
 
 

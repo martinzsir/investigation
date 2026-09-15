@@ -6,6 +6,7 @@
   "allowed_models": ["text-embedding-v3", "qwen-plus"],
   "llm_enabled": true,
   "mode": "shadow",
+  "canvas_chat_mode": "direct",
   "pii_redaction": {
     "id_card": "redact",
     "phone": "redact",

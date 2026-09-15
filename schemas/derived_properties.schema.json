@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "derived_properties.schema.json",
+  "title": "Ontology Derived Properties (schema_version=2)",
+  "description": "REQ-R8 派生属性声明：name=obj_type.property，function 必须在 functions.json 声明，查询时派生",
+  "type": "object",
+  "required": ["schema_version", "properties"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "properties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "function"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z_]+\\.[a-z_]+$"
+          },
+          "function": {"type": "string", "pattern": "^[a-z_]+$"},
+          "inputs": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "cache_policy": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

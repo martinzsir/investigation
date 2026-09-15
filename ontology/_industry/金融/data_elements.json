@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "_note": "S0-1 金融行业标准数据元（UC-S0-1 验收：案件包 industry=金融 时本层自动并入装载面）。最小集起步，新增数据元须过 _validate_element_spec 校验。",
+  "elements": {
+    "DE_FIN_ACCT_NO": {
+      "name": "银行账号",
+      "type": "string",
+      "length": 19,
+      "format": "^\\d{9,25}$",
+      "clean_rule": ["despace"]
+    }
+  }
+}

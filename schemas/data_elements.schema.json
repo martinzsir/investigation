@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "data_elements.schema.json",
+  "title": "Ontology Data Elements (schema_version=2)",
+  "description": "数据元声明：全域/行业/案件三层合并；元素键为 DE_ 前缀 ID（从 default/_shared/reqd_case 实际 JSON 反推）",
+  "type": "object",
+  "required": ["schema_version", "elements"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "elements": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "type": {"enum": ["string", "integer", "decimal", "date", "boolean"]},
+          "length": {"type": "integer", "minimum": 0},
+          "format": {"type": "string"},
+          "checksum": {"type": "string"},
+          "sensitive": {"type": "boolean"},
+          "mask": {"type": "string"},
+          "clean_rule": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "enum": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "enum_space_dim": {"type": "string"},
+          "range": {
+            "type": "object",
+            "properties": {
+              "min": {"type": ["number", "string"]},
+              "max": {"type": ["number", "string"]}
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

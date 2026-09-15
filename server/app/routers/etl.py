@@ -23,6 +23,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from core import clean_ops
+from core.data_elements import CHECKSUM_ALGOS
+from core.ontology import CLEAN_RULE_NAMES, TYPE_NAMES
 from core.ontology_loader import load_pack
 
 from server.app import ingest_io
@@ -31,8 +33,11 @@ from server.app.envelope import ERR_NOT_FOUND, ERR_VALIDATION, ERR_CONFLICT, API
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
+    copy_layer_dirs,
     record_config_audit,
     require_analyst,
+    require_ontology_admin,
+    snapshot_industry,
     snapshot_paths,
 )
 
@@ -58,10 +63,8 @@ def _write_validated(*, ctx: WebContext, case_id: str, filename: str,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
-        shared_src = base_dir / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
         (tmp_root / pack_id / filename).write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
@@ -94,6 +97,48 @@ def get_data_elements(case_id: str,
     return ok(data, data_version=ctx.repo.current_version(case_id))
 
 
+@router.get("/cases/{case_id}/data-elements-shared")
+def get_shared_data_elements(case_id: str,
+                             p: Principal = Depends(get_principal),
+                             ctx: WebContext = Depends(get_ctx)):
+    """全域层数据元（快照根 _shared/data_elements.json）只读直出。
+
+    S2 对象建模器 F2：数据元下拉按来源层分组（全域层/案件层），
+    E2-1 失效绑定判定需全域层并集。缺文件回落空集（包未声明全域元）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    root = ctx.cases.snapshot_ontology_root(case_id)
+    path = root / "_shared" / "data_elements.json"
+    if not path.exists():
+        return ok({"elements": {}},
+                  data_version=ctx.repo.current_version(case_id))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+@router.get("/cases/{case_id}/data-elements-industry")
+def get_industry_data_elements(case_id: str,
+                               p: Principal = Depends(get_principal),
+                               ctx: WebContext = Depends(get_ctx)):
+    """行业层数据元（快照根 _industry/<行业>/data_elements.json）只读直出。
+
+    S2 对象建模器 F2 分组下拉第三层（S0-1 行业层落地后补齐）：
+    行业由案件快照 pack_meta.json 的 industry 决定，与 copy_layer_dirs
+    装载合并同源；无行业声明或层文件缺失回落空集（E3-1 不报错）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    _pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
+    industry = snapshot_industry(snap_dir)
+    path = (base_dir / "_industry" / industry / "data_elements.json"
+            if industry else None)
+    if not path or not path.exists():
+        return ok({"industry": industry, "elements": {}},
+                  data_version=ctx.repo.current_version(case_id))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return ok({**data, "industry": industry},
+              data_version=ctx.repo.current_version(case_id))
+
+
 @router.put("/cases/{case_id}/data-elements")
 def put_data_elements(case_id: str, body: dict,
                       p: Principal = Depends(get_principal),
@@ -107,6 +152,143 @@ def put_data_elements(case_id: str, body: dict,
     _write_validated(ctx=ctx, case_id=case_id, filename="data_elements.json",
                      data=data, op="data_elements_edit", p=p, reason=reason)
     return ok({"updated": True},
+              data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# S3-F1/F2 数据元编辑器：枚举/引用扫描/上游层写
+# ----------------------------------------------------------------------
+@router.get("/cases/{case_id}/data-elements/enums")
+def get_data_element_enums(case_id: str,
+                           p: Principal = Depends(get_principal),
+                           ctx: WebContext = Depends(get_ctx)):
+    """数据元表单枚举（S3-F1）：类型/校验算法/清洗 op/遮蔽，单一事实源。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    return ok({
+        "types": list(TYPE_NAMES),
+        "checksums": sorted(CHECKSUM_ALGOS),
+        "clean_rules": sorted(CLEAN_RULE_NAMES),
+        "masks": ["partial", "full"],
+    }, data_version=ctx.repo.current_version(case_id))
+
+
+@router.get("/cases/{case_id}/data-elements/references")
+def get_data_element_references(case_id: str,
+                                p: Principal = Depends(get_principal),
+                                ctx: WebContext = Depends(get_ctx)):
+    """数据元引用扫描（S3 E1-3/UC-S3-6）：objects.json 的 data_element 绑定。
+
+    删除被引用数据元时前端据此警告并列出引用位置（不硬阻止，D5）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    _pack_id, snap_dir, _base = snapshot_paths(ctx, case_id)
+    refs: list[dict] = []
+    objects_path = snap_dir / "objects.json"
+    if objects_path.is_file():
+        try:
+            data = json.loads(objects_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            data = {}  # E1-4 局部降级：引用扫描失败不阻断数据元页
+        for o in data.get("objects") or []:
+            if not isinstance(o, dict):
+                continue
+            for pname, pspec in (o.get("properties") or {}).items():
+                de = pspec.get("data_element") if isinstance(pspec, dict) else None
+                if isinstance(de, str) and de:
+                    refs.append({"object": o.get("name"), "property": pname,
+                                 "data_element": de})
+    by_element: dict[str, list[dict]] = {}
+    for r in refs:
+        by_element.setdefault(r["data_element"], []).append(
+            {"object": r["object"], "property": r["property"]})
+    return ok({"references": refs, "by_element": by_element},
+              data_version=ctx.repo.current_version(case_id))
+
+
+def _write_layer_validated(*, ctx: WebContext, case_id: str, target: Path,
+                           tmp_rel: Path, data, op: str, p: Principal,
+                           reason: str | None = None):
+    """上游层（_shared/_industry）写盘：与 _write_validated 同范式。
+
+    临时副本整包过 load_pack（覆盖写目标层文件后三层合并校验）→ 原子写
+    上游层 → ops + 审计链留痕。上游层纳入指纹扩容（S0-3 F3.3），
+    record_config_audit 统一收口版本沿革。
+    """
+    pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
+    with tempfile.TemporaryDirectory() as td:
+        tmp_root = Path(td)
+        shutil.copytree(snap_dir, tmp_root / pack_id)
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
+        (tmp_root / tmp_rel).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            load_pack(pack_id, base_dir=tmp_root)
+        except Exception as e:
+            raise APIError(ERR_VALIDATION, f"配置校验失败，未落盘：{e}", 400)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    os.replace(tmp, target)
+    rel = str(tmp_rel)
+    ctx.repo.record_ops(op, case_id, {"file": rel, "by": p.operator})
+    record_config_audit(ctx, case_id, p, op, filename=rel, reason=reason,
+                        summary={"file": rel})
+
+
+def _elements_body(body: dict) -> tuple[dict, str | None]:
+    """剥离 reason（审计留痕不落数据文件）并断言 elements 对象存在。"""
+    data = dict(body) if isinstance(body, dict) else {}
+    reason = data.pop("reason", None)
+    if not isinstance(data.get("elements"), dict):
+        raise APIError(ERR_VALIDATION, "body 需为 {elements: {...}}", 400)
+    return data, reason
+
+
+@router.put("/cases/{case_id}/data-elements-shared")
+def put_shared_data_elements(case_id: str, body: dict,
+                             p: Principal = Depends(get_principal),
+                             ctx: WebContext = Depends(get_ctx)):
+    """全域层（_shared）数据元整包更新（S3-F2.3：本体管理员双条件门禁）。
+
+    R3：全域层是标准层口径，前端必须展示「影响所有案件」警示后调用；
+    loader 三层合并校验失败 400 不落盘。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    require_ontology_admin(p)
+    data, reason = _elements_body(body)
+    _pack_id, _snap_dir, base_dir = snapshot_paths(ctx, case_id)
+    rel = Path("_shared") / "data_elements.json"
+    _write_layer_validated(ctx=ctx, case_id=case_id, target=base_dir / rel,
+                           tmp_rel=rel, data=data,
+                           op="data_elements_shared_edit", p=p, reason=reason)
+    return ok({"updated": True},
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.put("/cases/{case_id}/data-elements-industry")
+def put_industry_data_elements(case_id: str, body: dict,
+                               p: Principal = Depends(get_principal),
+                               ctx: WebContext = Depends(get_ctx)):
+    """行业层（_industry/<行业>）数据元整包更新（本体管理员；R3 同全域层）。
+
+    本案件未声明行业（pack_meta.json 无 industry）→ 400（无层可写，
+    E2-3 视图层降级不报错，写面显式拒绝）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    require_ontology_admin(p)
+    data, reason = _elements_body(body)
+    _pack_id, snap_dir, base_dir = snapshot_paths(ctx, case_id)
+    industry = snapshot_industry(snap_dir)
+    if not industry:
+        raise APIError(ERR_VALIDATION,
+                       "本案件未声明行业层（pack_meta.json 无 industry），"
+                       "无行业数据元可编辑", 400)
+    rel = Path("_industry") / industry / "data_elements.json"
+    _write_layer_validated(ctx=ctx, case_id=case_id, target=base_dir / rel,
+                           tmp_rel=rel, data=data,
+                           op="data_elements_industry_edit", p=p, reason=reason)
+    return ok({"updated": True, "industry": industry},
               data_version=ctx.repo.current_version(case_id))
 
 

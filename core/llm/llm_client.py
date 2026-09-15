@@ -105,6 +105,59 @@ class LLMClient:
         except Exception as e:
             return {"ok": False, "model": self.model, "error": str(e)}
 
+    def chat_stream(self, messages: list[dict], temperature: float = 0.3,
+                    max_tokens: int = 2048, **kwargs):
+        """流式调用 chat completions，逐 token 生成。
+
+        生成器产出 {"delta": "text"} 块；出错产出 {"error": "..."}。
+        使用 SSE 协议读取 DashScope OpenAI 兼容接口的流式响应。
+        """
+        if not self.api_key:
+            yield {"error": "DASHSCOPE_API_KEY 未设置"}
+            return
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        payload.update(kwargs)
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self.base_url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+
+        try:
+            resp = urllib.request.urlopen(req, timeout=90)
+            with resp:
+                for line in resp:
+                    line = line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = (chunk.get("choices", [{}])[0]
+                                 .get("delta", {}).get("content", ""))
+                        if delta:
+                            yield {"delta": delta}
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
+        except Exception as e:
+            yield {"error": str(e)}
+
     def chat_json(self, messages: list[dict], **kwargs) -> dict[str, Any]:
         """调用 chat 并解析 JSON 结果。
 

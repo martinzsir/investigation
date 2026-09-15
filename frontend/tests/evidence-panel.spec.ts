@@ -55,6 +55,7 @@ function vItem(over: Partial<VerifyItem> = {}): VerifyItem {
 const LIST_PATH = '/cases/c1/clues/clue-1/evidence'
 
 let wrapper: VueWrapper | null = null
+let rootWrapper: VueWrapper | null = null
 
 function mountPanel(
   materials: EvidenceMaterial[],
@@ -75,7 +76,7 @@ function mountPanel(
     ...(opts.routes ?? []),
   ])
   setTransport(transport)
-  const root = mount(NMessageProvider, {
+  rootWrapper = mount(NMessageProvider, {
     slots: {
       default: () => h(EvidencePanel, {
         caseId: 'c1',
@@ -86,8 +87,8 @@ function mountPanel(
       }),
     },
   })
-  wrapper = root.findComponent(EvidencePanel)
-  return { panel: wrapper!, root, transport, list }
+  wrapper = rootWrapper.findComponent(EvidencePanel)
+  return { panel: wrapper!, root: rootWrapper, transport, list }
 }
 
 /** 给 input[type=file] 塞文件并触发 change（happy-dom files 只读，defineProperty 兜底） */
@@ -109,7 +110,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  wrapper?.unmount()
+  rootWrapper?.unmount()
+  rootWrapper = null
   wrapper = null
   document.body.innerHTML = ''
   vi.unstubAllGlobals()
@@ -163,14 +165,14 @@ describe('REQ-V-010 书证面板：清单', () => {
         throw new Error('network down')
       },
     }]))
-    const root = mount(NMessageProvider, {
+    rootWrapper = mount(NMessageProvider, {
       slots: {
         default: () => h(EvidencePanel, {
           caseId: 'c1', clueId: 'clue-1', degraded: false, items: [vItem()],
         }),
       },
     })
-    wrapper = root.findComponent(EvidencePanel)
+    wrapper = rootWrapper.findComponent(EvidencePanel)
     await flushPromises()
     expect(wrapper.find('.ep-error').exists()).toBe(true)
     expect(wrapper.text()).toContain('书证清单加载失败')

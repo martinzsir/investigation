@@ -724,12 +724,13 @@ describe('REQ-V-017 复跑结果卡片渲染', () => {
     expect(toggle.exists()).toBe(true)
     expect(toggle.text()).toBe('查看原始结果')
     expect(detail.exists()).toBe(true)
-    expect(detail.isVisible()).toBe(false) // 默认收起
+    // happy-dom 下 isVisible() 不尊重 v-show 的 display:none，直接检查 inline style
+    expect((detail.element as HTMLElement).style.display).toBe('none') // 默认收起
 
     await toggle.trigger('click')
     await flushPromises()
     expect(toggle.text()).toBe('收起原始结果')
-    expect(detail.isVisible()).toBe(true)
+    expect((detail.element as HTMLElement).style.display).not.toBe('none')
     const json = detail.text()
     expect(json).toContain('"hit": true')
     expect(json).toContain('138****0001→139****0002 通话 12 次')
@@ -738,7 +739,7 @@ describe('REQ-V-017 复跑结果卡片渲染', () => {
     await toggle.trigger('click')
     await flushPromises()
     expect(toggle.text()).toBe('查看原始结果')
-    expect(detail.isVisible()).toBe(false)
+    expect((detail.element as HTMLElement).style.display).toBe('none')
   })
 
   it('行数组结果同样可展开；空数组/标量/空结果不渲染折叠入口', async () => {
@@ -925,15 +926,16 @@ describe('REQ-V-019 AI 建议核查方向（草案交互）', () => {
       dropped: [], duplicates: 0,
     })])
     await flushPromises()
-    expect(transport.calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+    // 初始加载触发多个 GET（verify-items + evidence + verify-requests + EvidencePanel onMounted）
+    const initialGets = transport.calls.filter((c) => c.method === 'GET').length
 
     await clickDraft()
     const note = wrapper!.find('[data-testid="vw-draft-note"]')
     expect(note.classes()).toContain('vw-draft-note--ok')
     expect(note.text()).toContain('已生成 2 条 AI 草案（mode=local）')
     expect(note.text()).toContain('待审批')
-    // shadow：草案只落提案队列，不 refresh 清单（GET 仍 1 次）
-    expect(transport.calls.filter((c) => c.method === 'GET')).toHaveLength(1)
+    // shadow：草案只落提案队列，不 refresh 清单（GET 次数不增加）
+    expect(transport.calls.filter((c) => c.method === 'GET')).toHaveLength(initialGets)
   })
 
   it('零草案 + 去重/过滤：黄条附过滤说明', async () => {

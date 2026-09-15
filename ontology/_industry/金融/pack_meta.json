@@ -1,0 +1,5 @@
+{
+  "schema_version": 2,
+  "industry": "金融",
+  "_note": "S0-1 行业叠加层（v1.2 §3.0.6）：金融行业标准数据元，由平台维护。加载顺序：_shared 全域 → 本层 → 案件追加（仅追加，同名 ID 须 override:true 显式覆盖）。行业包不参与建案，建案时按案件包 pack_meta.industry 拷贝本层进案件快照。"
+}

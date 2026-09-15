@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "jians.schema.json",
+  "title": "Ontology Jians (schema_version=2)",
+  "description": "REQ-R5 五间声明化：间类集合/default_clearance/cross_levels/source_independence",
+  "type": "object",
+  "required": ["schema_version", "jians", "cross_levels"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "jians": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "default_clearance", "weight"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "default_clearance": {"type": "integer", "minimum": 0},
+          "weight": {"type": "integer", "minimum": 0},
+          "source_object_types": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "cross_levels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["min_independent_sources", "name"],
+        "properties": {
+          "min_independent_sources": {"type": "integer", "minimum": 1},
+          "name": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "source_independence": {
+      "type": "object",
+      "properties": {
+        "related_pairs": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

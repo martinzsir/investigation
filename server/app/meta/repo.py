@@ -14,6 +14,7 @@ from server.app.meta.models import (
     CaseRecord,
     CaseVersion,
     PackSnapshot,
+    PackSnapshotHistory,
     Session,
     TaskRow,
     User,
@@ -30,6 +31,11 @@ class MetaRepo(ABC):
 
     @abstractmethod
     def set_user_status(self, operator: str, status: str) -> None: ...
+
+    @abstractmethod
+    def set_user_ontology_admin(self, operator: str,
+                                is_ontology_admin: bool) -> None:
+        """本体管理员能力位（S0-2：标准域写双条件门禁之一）。"""
 
     # ---- 会话 ----
     @abstractmethod
@@ -65,6 +71,18 @@ class MetaRepo(ABC):
 
     @abstractmethod
     def get_pack_snapshot(self, case_id: str) -> PackSnapshot | None: ...
+
+    @abstractmethod
+    def update_pack_snapshot_version(self, case_id: str, version: str) -> None:
+        """S0-3 F3.1：本体写落盘后重算指纹回写当前版本。"""
+
+    @abstractmethod
+    def append_pack_snapshot_history(self, row: PackSnapshotHistory) -> None:
+        """S0-3 F3.2：版本沿革只追加不覆盖（R2）。"""
+
+    @abstractmethod
+    def list_pack_snapshot_history(self, case_id: str) -> list[PackSnapshotHistory]:
+        """S0-3：按时间正序返回版本沿革（含建案首条）。"""
 
     # ---- 任务 ----
     @abstractmethod

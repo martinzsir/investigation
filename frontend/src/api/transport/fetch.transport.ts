@@ -88,9 +88,15 @@ export class FetchTransport implements HttpTransport {
   stream(req: StreamRequest): StreamHandle {
     const ctrl = new AbortController()
     let stop = false
+    const isPost = req.method === 'POST'
+    const headers = authHeaders(req.headers)
+    if (isPost && req.body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+    }
     void fetchEventSource(buildUrl(req.path), {
-      method: 'GET',
-      headers: authHeaders(req.headers),
+      method: req.method ?? 'GET',
+      headers,
+      body: isPost && req.body !== undefined ? JSON.stringify(req.body) : undefined,
       signal: ctrl.signal,
       // 后台标签页也保持连接（任务进度不丢）
       openWhenHidden: true,
@@ -108,10 +114,10 @@ export class FetchTransport implements HttpTransport {
           lastEventId: msg.id || undefined,
         })
       },
-      // 不抛出 = 交给库内指数退避重连（FE-I-006）；401 置 stop 后抛出终止
+      // 不抛出 = 交给库内指数退避重连（FE-I-006）；401 或 POST 流式不重连
       onerror: (err) => {
         req.handlers.onError?.(err)
-        if (stop) throw err
+        if (stop || isPost) throw err
       },
       onclose: () => {
         req.handlers.onClose?.()

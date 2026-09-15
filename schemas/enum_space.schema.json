@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "enum_space.schema.json",
+  "title": "Ontology Enum Space (schema_version=2)",
+  "description": "REQ-G-012 庙算枚举空间（笛卡尔积候选池）：维度名 → 抽象类别值数组，禁止手写具体人名/地名",
+  "type": "object",
+  "required": ["schema_version", "space"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "space": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

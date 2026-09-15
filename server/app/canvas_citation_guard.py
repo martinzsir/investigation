@@ -20,7 +20,17 @@ import re
 from typing import Any
 
 # 引用标记：[cite:ref_value]，ref 不含方括号
-_CITE_PATTERN = re.compile(r"\[cite:([^\[\]]+)\]")
+_CITE_PATTERN = re.compile(r"\[(?:cite|pb):([^\[\]]+)\]")
+
+# 额外引用格式（LLM 在 ReAct 模式可能输出非 [cite:...] 包裹的裸引用）
+# @local#row/hex — row URI（对应 row:hex 形态的节点 ref）
+# vi_hex       — verify item ref（vi_ 前缀 + 十六进制）
+# [vi_hex]     — 方括号包裹的 vi 引用
+_EXTRA_CITE_PATTERNS = [
+    re.compile(r"@local#row/([a-f0-9]+)"),
+    re.compile(r"\bvi_([a-f0-9]{8,})\b"),
+    re.compile(r"\[(vi_[a-f0-9]{8,})\]"),
+]
 
 # 句子切分：中文句号/问号/感叹号/分号 + 换行/段落
 # 保留分隔符在句尾（split 后拼接时还原）
@@ -35,13 +45,33 @@ def _split_sentences(text: str) -> list[str]:
 
 def _extract_cites(sentence: str,
                    pat: re.Pattern = _CITE_PATTERN) -> list[str]:
-    """提取句子中的所有引用 ref。"""
-    return [m.group(1).strip() for m in pat.finditer(sentence)]
+    """提取句子中的所有引用 ref。
+
+    支持逗号分隔的多 ref：[cite:a, b, c] → ["a", "b", "c"]。
+    同时检测额外的裸引用格式（@local#row/xxx、vi_xxx）。
+    """
+    cites: list[str] = []
+    # 标准 [cite:xxx] 格式（含逗号分隔多 ref）
+    for m in pat.finditer(sentence):
+        for ref in m.group(1).split(","):
+            ref = ref.strip()
+            if ref:
+                cites.append(ref)
+    # 额外裸引用格式
+    for extra_pat in _EXTRA_CITE_PATTERNS:
+        for m in extra_pat.finditer(sentence):
+            # @local#row/hex → 存完整形态 "@local#row/hex"
+            # vi_hex → 存完整形态 "vi_hex"
+            cites.append(m.group(0))
+    return cites
 
 
 def _strip_cites(sentence: str, pat: re.Pattern = _CITE_PATTERN) -> str:
     """剔除句子中的引用标记，返回干净文本。"""
-    return pat.sub("", sentence).strip()
+    result = pat.sub("", sentence)
+    for extra_pat in _EXTRA_CITE_PATTERNS:
+        result = extra_pat.sub("", result)
+    return result.strip()
 
 
 def validate_citations(
@@ -123,13 +153,15 @@ def build_valid_refs_from_doc(doc: dict[str, Any]) -> set[str]:
     """从画布文档提取所有有效引用（节点 ref + row_uri 形态）。
 
     用于问答时构建当刻文档的引用白名单。
+    同时生成 @local#row/xxx 别名（LLM ReAct 模式可能用此格式引用行节点）。
     """
     refs: set[str] = set()
     for node in doc.get("nodes", []) or []:
         ref = node.get("ref")
         if ref:
-            refs.add(str(ref))
-        # row_uri 形态的节点（source_row 类）也纳入
-        if isinstance(ref, str) and ref.startswith("row:"):
-            refs.add(ref)
+            ref_str = str(ref)
+            refs.add(ref_str)
+            # row:hex 形态 → 额外加 @local#row/hex 别名
+            if ref_str.startswith("row:"):
+                refs.add(f"@local#row/{ref_str[4:]}")
     return refs

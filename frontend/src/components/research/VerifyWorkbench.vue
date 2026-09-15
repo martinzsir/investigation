@@ -415,9 +415,11 @@ async function refreshRequests(): Promise<void> {
   }
 }
 
-/** 台账动作文案（材料已回 → 回执登记；其余用状态名本身） */
+/** 台账动作文案（已发起 → 发起；材料已回 → 回执登记；其余用状态名本身） */
 function requestActionLabel(nxt: string): string {
-  return nxt === '材料已回' ? '回执登记' : nxt
+  if (nxt === '已发起') return '发起'
+  if (nxt === '材料已回') return '回执登记'
+  return nxt
 }
 
 const reqCreateDisabled = computed(

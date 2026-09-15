@@ -30,6 +30,8 @@ export const router = createRouter({
         // MVP-3 任务中心（平台页，头部任务图标入口）
         { path: 'tasks', component: () => import('../views/TaskCenterView.vue'), meta: { title: '任务中心', mvp: 3, platform: true } },
         { path: 'settings', component: () => import('../views/SettingsView.vue'), meta: { title: '系统设置', mvp: 5, platform: true } },
+        // S1 本体管理器（独立 App，R1：不加侧栏第七组；经顶部导航进入，platform 不入侧栏）
+        { path: 'ontology-manager/:caseId?/:file?', component: () => import('../views/OntologyManagerView.vue'), meta: { title: '本体管理器', platform: true } },
         // MVP-1 业务页
         { path: 'c/overview', component: () => import('../views/DashboardView.vue'), meta: { title: '治理仪表盘', mvp: 1 } },
         { path: 'c/clues', component: () => import('../views/ClueListView.vue'), meta: { title: '线索列表', mvp: 1 } },
@@ -45,6 +47,8 @@ export const router = createRouter({
         // MVP-4 业务页（研判模型：规则工坊/模型设计器/知识包/权限遮蔽）
         { path: 'c/rules', component: () => import('../views/RuleWorkshopView.vue'), meta: { title: '规则工坊', mvp: 4 } },
         { path: 'c/designer', component: () => import('../views/ModelDesignerView.vue'), meta: { title: '模型设计器', mvp: 4 } },
+        // S2 可视化本体建模器（PRD §3.3 渐进替换：与 designer 并存，不入侧栏，经互链进入）
+        { path: 'c/omodel', component: () => import('../views/OntologyModelerView.vue'), meta: { title: '可视化本体建模器', mvp: 4 } },
         { path: 'c/knowledge', component: () => import('../views/KnowledgeView.vue'), meta: { title: '知识包', mvp: 4 } },
         { path: 'c/masking', component: () => import('../views/PolicyMaskingView.vue'), meta: { title: '权限与遮蔽', mvp: 4 } },
         // MVP-4 业务页（数据治理：数据元/ETL/映射校验/质量检查/隔离区）

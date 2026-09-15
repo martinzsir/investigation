@@ -20,6 +20,7 @@ from server.app.meta.models import (
     CaseVersion,
     IllegalTransition,
     PackSnapshot,
+    PackSnapshotHistory,
     ReaderLease,
     Session,
     TASK_PENDING,
@@ -48,7 +49,8 @@ CREATE TABLE IF NOT EXISTS meta_users (
     tenant_id     VARCHAR NOT NULL,
     status        VARCHAR NOT NULL DEFAULT 'active',
     created_at    VARCHAR NOT NULL,
-    is_admin      INTEGER NOT NULL DEFAULT 0
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    is_ontology_admin INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta_sessions (
     token      VARCHAR PRIMARY KEY,
@@ -76,6 +78,20 @@ CREATE TABLE IF NOT EXISTS case_pack_snapshots (
     snapshot_path VARCHAR NOT NULL,
     locked_at     VARCHAR NOT NULL
 );
+-- S0-3 F3.2：本体版本沿革（只追加不覆盖，R2）；snapshot_ref 指向
+-- 完整快照归档目录（cases/<cid>/ontology_history/<version>/）
+CREATE TABLE IF NOT EXISTS pack_snapshot_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id       VARCHAR NOT NULL,
+    version       VARCHAR NOT NULL,
+    prev_version  VARCHAR NOT NULL DEFAULT '',
+    operator      VARCHAR NOT NULL DEFAULT '',
+    reason        VARCHAR NOT NULL DEFAULT '',
+    changed_files TEXT NOT NULL DEFAULT '[]',
+    snapshot_ref  VARCHAR NOT NULL DEFAULT '',
+    created_at    VARCHAR NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_psh_case ON pack_snapshot_history(case_id, id);
 CREATE TABLE IF NOT EXISTS case_version (
     case_id    VARCHAR PRIMARY KEY,
     version    INTEGER NOT NULL,
@@ -205,11 +221,19 @@ class SqliteMetaRepo(MetaRepo):
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        """既有库的追加式迁移（M2）：meta_users 补 is_admin 列（W-024）。"""
+        """既有库的追加式迁移（M2）：meta_users 补 is_admin 列（W-024）。
+
+        S0-2：追加 is_ontology_admin 本体管理员能力位（只 ALTER 不重建，
+        R6：meta.db 是用户库，账号数据不得动）。
+        """
         cols = {r[1] for r in conn.execute("PRAGMA table_info(meta_users)")}
         if "is_admin" not in cols:
             conn.execute(
                 "ALTER TABLE meta_users ADD COLUMN is_admin INTEGER "
+                "NOT NULL DEFAULT 0")
+        if "is_ontology_admin" not in cols:
+            conn.execute(
+                "ALTER TABLE meta_users ADD COLUMN is_ontology_admin INTEGER "
                 "NOT NULL DEFAULT 0")
 
     # ---- 行映射 ----
@@ -218,7 +242,8 @@ class SqliteMetaRepo(MetaRepo):
         return User(operator=r["operator"], password_hash=r["password_hash"],
                     salt=r["salt"], role=r["role"], clearance=r["clearance"],
                     tenant_id=r["tenant_id"], status=r["status"],
-                    created_at=r["created_at"], is_admin=r["is_admin"])
+                    created_at=r["created_at"], is_admin=r["is_admin"],
+                    is_ontology_admin=r["is_ontology_admin"])
 
     @staticmethod
     def _lease(r: sqlite3.Row) -> ReaderLease:
@@ -255,6 +280,18 @@ class SqliteMetaRepo(MetaRepo):
                             locked_at=r["locked_at"])
 
     @staticmethod
+    def _pack_history(r: sqlite3.Row) -> PackSnapshotHistory:
+        try:
+            files = json.loads(r["changed_files"] or "[]")
+        except (ValueError, TypeError):
+            files = []
+        return PackSnapshotHistory(
+            case_id=r["case_id"], version=r["version"],
+            prev_version=r["prev_version"], operator=r["operator"],
+            reason=r["reason"], changed_files=files,
+            snapshot_ref=r["snapshot_ref"], created_at=r["created_at"])
+
+    @staticmethod
     def _task(r: sqlite3.Row) -> TaskRow:
         return TaskRow(
             id=r["id"], case_id=r["case_id"], task_type=r["task_type"],
@@ -274,11 +311,13 @@ class SqliteMetaRepo(MetaRepo):
         try:
             conn.execute(
                 "INSERT INTO meta_users (operator,password_hash,salt,role,"
-                "clearance,tenant_id,status,created_at,is_admin) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "clearance,tenant_id,status,created_at,is_admin,"
+                "is_ontology_admin) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (user.operator, user.password_hash, user.salt, user.role,
                  user.clearance, user.tenant_id, user.status,
-                 user.created_at or _now(), int(user.is_admin)))
+                 user.created_at or _now(), int(user.is_admin),
+                 int(user.is_ontology_admin)))
         finally:
             conn.close()
 
@@ -305,6 +344,17 @@ class SqliteMetaRepo(MetaRepo):
         try:
             conn.execute("UPDATE meta_users SET is_admin=? WHERE operator=?",
                          (int(is_admin), operator))
+        finally:
+            conn.close()
+
+    def set_user_ontology_admin(self, operator: str,
+                                is_ontology_admin: bool) -> None:
+        """本体管理员能力位（S0-2：标准域写端点双条件门禁之一，与 rank 正交）。"""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE meta_users SET is_ontology_admin=? WHERE operator=?",
+                (int(is_ontology_admin), operator))
         finally:
             conn.close()
 
@@ -427,6 +477,41 @@ class SqliteMetaRepo(MetaRepo):
                 "SELECT * FROM case_pack_snapshots WHERE case_id=?",
                 (case_id,)).fetchone()
             return self._snap(r) if r else None
+        finally:
+            conn.close()
+
+    def update_pack_snapshot_version(self, case_id: str, version: str) -> None:
+        """S0-3 F3.1：本体写落盘后重算指纹回写当前版本。"""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE case_pack_snapshots SET version=?, locked_at=? "
+                "WHERE case_id=?", (version, _now(), case_id))
+        finally:
+            conn.close()
+
+    def append_pack_snapshot_history(self, row: PackSnapshotHistory) -> None:
+        """S0-3 F3.2：版本沿革只追加（R2：不 UPDATE/DELETE）。"""
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO pack_snapshot_history (case_id,version,"
+                "prev_version,operator,reason,changed_files,snapshot_ref,"
+                "created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (row.case_id, row.version, row.prev_version, row.operator,
+                 row.reason,
+                 json.dumps(row.changed_files, ensure_ascii=False),
+                 row.snapshot_ref, row.created_at or _now()))
+        finally:
+            conn.close()
+
+    def list_pack_snapshot_history(self, case_id: str) -> list[PackSnapshotHistory]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM pack_snapshot_history WHERE case_id=? "
+                "ORDER BY id", (case_id,)).fetchall()
+            return [self._pack_history(r) for r in rows]
         finally:
             conn.close()
 

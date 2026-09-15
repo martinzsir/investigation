@@ -27,6 +27,8 @@ from typing import Any
 from core.ontology_loader import load_pack
 
 from server.app import ingest_io
+from server.app.cases import CaseService
+from server.app.snapshot_config import commit_ontology_version, copy_layer_dirs
 from server.app.worker.tasks import TaskExecError, TASK_BUILD, enqueue_task
 
 # 目标表名安全集（中文/字母/下划线/数字）；同时须在快照 bindings 声明内
@@ -106,11 +108,9 @@ def _apply_clean_to_bindings(snap_dir: Path, pack_id: str,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
         # （snap_dir = base_dir / pack_id，故 base_dir = snap_dir.parent）
-        shared_src = snap_dir.parent / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        copy_layer_dirs(snap_dir, snap_dir.parent, tmp_root)
         _atomic_write(tmp_root / pack_id / "bindings.json", data)
         load_pack(pack_id, base_dir=tmp_root)  # 校验失败抛 ValueError
     _atomic_write(bp, data)
@@ -207,6 +207,13 @@ def handle_import(task, *, repo, factory, snapshot_base_for, **_: Any) -> dict:
     repo.record_ops("data_import", task.case_id,
                     {"upload_id": upload_id, "table": target_table,
                      "rows": n_rows, "by": task.created_by})
+
+    # S0-3 F3.1：导入落 bindings 清洗声明后收口本体版本（失败不阻断导入）
+    commit_ontology_version(
+        repo=repo, cases=CaseService(repo, factory), case_id=task.case_id,
+        snap_dir=snap_dir, op="data_import", operator=task.created_by,
+        reason=f"数据导入落清洗声明：{target_table}",
+        changed_files=["bindings.json"])
 
     # B5：导入后补录审计链生命周期事件（失败只 ops 留痕，不回滚导入）
     try:

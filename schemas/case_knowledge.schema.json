@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "case_knowledge.schema.json",
+  "title": "Ontology Case Knowledge (schema_version=2)",
+  "description": "案件知识包：主体别名与关系断言（REQ-024 R5 参数化；valid_until 过期断言自动失效）",
+  "type": "object",
+  "required": ["schema_version", "subject_aliases", "relation_assertions"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "knowledge_version": {"type": "string"},
+    "pack": {"type": "string"},
+    "description": {"type": "string"},
+    "_note": {"type": "string"},
+    "subject_aliases": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    },
+    "relation_assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "type"],
+        "properties": {
+          "from": {"type": "string", "minLength": 1},
+          "to": {"type": "string", "minLength": 1},
+          "type": {"type": "string"},
+          "source": {"type": "string"},
+          "valid_until": {"type": ["string", "null"]}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

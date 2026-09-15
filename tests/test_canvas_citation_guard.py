@@ -109,7 +109,9 @@ class TestCitationGuard(unittest.TestCase):
             "edges": [],
         }
         refs = build_valid_refs_from_doc(doc)
-        self.assertEqual(refs, {"R1", "row:bank_001", "hyp_1"})
+        self.assertEqual(refs, {
+            "R1", "row:bank_001", "@local#row/bank_001", "hyp_1",
+        })
 
 
 if __name__ == "__main__":

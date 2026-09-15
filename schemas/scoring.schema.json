@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "scoring.schema.json",
+  "title": "Ontology Scoring (schema_version=2)",
+  "description": "REQ-R7 计分权重外置：维度权重（之和=1.0）+ assumption_confidence（必须含 _default）",
+  "type": "object",
+  "required": ["schema_version", "dimensions", "assumption_confidence"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "dimensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "weight", "source"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "weight": {"type": "number"},
+          "source": {"type": "string", "minLength": 1},
+          "normalize": {"type": "number"},
+          "cap": {"type": "number"},
+          "curve": {"type": "string"},
+          "note": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "assumption_confidence": {
+      "type": "object",
+      "required": ["_default"],
+      "additionalProperties": {"type": "number"}
+    }
+  },
+  "additionalProperties": false
+}

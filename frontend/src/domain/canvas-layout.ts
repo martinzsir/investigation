@@ -5,9 +5,11 @@
 //    规则 0 / 事实·待核实 260 / 实体·书证·假设·备注·查询结果 480 /
 //    数据行 720 / 数据源 960；
 //  - 钉住节点坐标原样保留，且其纵向槽位被保留，重排节点不会与它重叠；
-//  - 未钉住节点列内按（当前 y、连边度数、id）确定性排序后依次落槽。
+//  - 未钉住节点列内按 barycenter 交叉最小化位序落槽（Sugiyama 第②步），
+//    初始位序沿用 (y, 度数, id) 确定性规则，经中位数双向迭代优化；
 
 import type { CanvasEdge, CanvasNode, NodeKind } from './canvas'
+import { minimizeCrossings } from './canvas-layout-cross'
 
 export const RANK_X: Record<NodeKind, number> = {
   rule: 0,
@@ -26,15 +28,6 @@ export const RANK_Y_GAP = 104
 /** 钉住节点纵向保留半距（新槽位中心距钉住节点小于此值则顺延） */
 const PIN_CLEARANCE = RANK_Y_GAP / 2
 
-function degreeMap(edges: readonly CanvasEdge[]): Map<string, number> {
-  const m = new Map<string, number>()
-  for (const e of edges) {
-    m.set(e.source, (m.get(e.source) ?? 0) + 1)
-    m.set(e.target, (m.get(e.target) ?? 0) + 1)
-  }
-  return m
-}
-
 function nextFreeY(slot: number, pinnedYs: readonly number[]): number {
   let y = slot * RANK_Y_GAP
   const collides = () =>
@@ -49,7 +42,7 @@ function nextFreeY(slot: number, pinnedYs: readonly number[]): number {
  * 输出重排后的新节点数组（不改入参）。
  *
  * @param nodes     当前全部节点
- * @param edges     全部边（参与列内确定性排序：连边多的靠前）
+ * @param edges     全部边（参与交叉最小化的拓扑输入）
  * @param pinnedIds 钉住节点 id 集合——坐标不变且占位
  */
 export function layoutNodes(
@@ -57,7 +50,8 @@ export function layoutNodes(
   edges: readonly CanvasEdge[],
   pinnedIds: ReadonlySet<string>,
 ): CanvasNode[] {
-  const degrees = degreeMap(edges)
+  // barycenter 交叉最小化：对全图跑一次，拿到各列最优位序
+  const rankMap = minimizeCrossings(nodes, edges, pinnedIds)
   const pinnedYsByRank = new Map<number, number[]>()
   for (const n of nodes) {
     if (!pinnedIds.has(n.id)) continue
@@ -86,8 +80,7 @@ export function layoutNodes(
       .slice()
       .sort(
         (a, b) =>
-          a.y - b.y ||
-          (degrees.get(b.id) ?? 0) - (degrees.get(a.id) ?? 0) ||
+          (rankMap.get(a.id) ?? 0) - (rankMap.get(b.id) ?? 0) ||
           (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
       )
       .forEach((n, idx) => {

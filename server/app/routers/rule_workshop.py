@@ -3,11 +3,14 @@ server/app/routers/rule_workshop.py
 W-014 规则工坊 + W-025 LLM 边界守卫（M3）。
 
 读：GET /cases/{cid}/rules —— 案件快照 rules.json（建案锁定，多租户隔离）。
+    GET /cases/{cid}/functions —— 函数声明只读目录（S3-F4；无写路由，D7）。
 写：PUT /cases/{cid}/rules/{rid} —— 仅允许 rule_text（判据文本）/ params
-    （阈值调参）/ enabled（启停）；function 等结构字段不可改（绑定关系可审计
-    而不可偷换，AC-4）。写盘前在临时副本上过 core loader 全量强校验
+    （阈值调参）/ enabled（启停）/ jian_types（间类五勾选，S3-F3 解锁：
+    表单勾选限定五间，loader 按案件包 jians.json 白名单强校验）；
+    function 等结构字段不可改（绑定关系可审计而不可偷换，AC-4）。
+    写盘前在临时副本上过 core loader 全量强校验
     （function 白名单/参数 enum/类型/维度/间类/hit_when），不合法不落盘
-    （AC-1/2/3）；params/enabled 变更入队 RESCAN（AC-6）。
+    （AC-1/2/3）；params/enabled/jian_types 变更入队 RESCAN（AC-6）。
 草案：POST /cases/{cid}/rules/draft —— LLM 守卫层（M3 不接模型 SDK）：
     llm_enabled=false → 503；注入特征拒绝；PII 脱敏前置；模型输出只许
     rule_text 键（含 function/params/SQL/动作一律拦截，AC-1）；产物标
@@ -40,13 +43,14 @@ from server.app.envelope import (
 )
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
-from server.app.snapshot_config import record_config_audit
+from server.app.snapshot_config import copy_layer_dirs, record_config_audit
 from server.app.worker.tasks import TASK_RESCAN, enqueue_task
 
 router = APIRouter(tags=["rule-workshop"])
 
-# PUT 允许修改的字段（结构字段 function/id/stage/hit_when 等一律拒绝）
-_EDITABLE_FIELDS = {"rule_text", "params", "enabled"}
+# PUT 允许修改的字段（结构字段 function/id/stage/hit_when/title 等一律拒绝；
+# jian_types S3-F3 解锁：表单勾选限定五间，loader 按包 jians.json 强校验）
+_EDITABLE_FIELDS = {"rule_text", "params", "enabled", "jian_types"}
 # LLM 草案输出只许出现的键（W-025 AC-1：含机器挂钩/写动作一律拦截）
 _DRAFT_ALLOWED_KEYS = {"rule_text"}
 _DRAFT_FORBIDDEN_KEYS = (
@@ -70,6 +74,7 @@ class RuleEditIn(BaseModel):
     rule_text: str | None = None
     params: dict | None = None
     enabled: bool | None = None
+    jian_types: list[str] | None = None  # S3-F3：间类五勾选（表单限定，loader 白名单兜底）
     reason: str | None = None  # 变更理由（FE-T-012：危险项必填，落审计链 note）
 
 
@@ -119,6 +124,27 @@ def list_rules(case_id: str,
     }, data_version=ctx.repo.current_version(case_id))
 
 
+@router.get("/cases/{case_id}/functions")
+def list_functions(case_id: str,
+                   p: Principal = Depends(get_principal),
+                   ctx: WebContext = Depends(get_ctx)):
+    """函数声明只读目录（S3-F4）：参数声明/返回类型/依赖，无写路由（D7/E4-1）。
+
+    规则编辑器参数表按此渲染（名称/类型/默认值/enum）；
+    sql 实现文本不外曝（体量大且非表单字段）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    pack_id, _, base_dir = _snapshot_paths(ctx, case_id)
+    spec = load_pack(pack_id, base_dir=base_dir)
+    fns = []
+    for f in spec.functions.values():
+        d = f.to_dict()
+        d.pop("sql", None)
+        fns.append(d)
+    return ok({"functions": fns, "pack": pack_id},
+              data_version=ctx.repo.current_version(case_id))
+
+
 @router.put("/cases/{case_id}/rules/{rule_id}")
 def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
               p: Principal = Depends(get_principal),
@@ -148,12 +174,24 @@ def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
         if not isinstance(body.params, dict):
             raise APIError(ERR_VALIDATION, "params 必须是对象", 400)
         merged = dict(target.get("params") or {})
-        merged.update(body.params)
+        for k, v in body.params.items():
+            if v is None:
+                merged.pop(k, None)  # 显式 null = 删除该参数（回落函数声明默认值）
+            else:
+                merged[k] = v
         target["params"] = merged
         changes.append("params")
     if body.enabled is not None:
         target["enabled"] = bool(body.enabled)
         changes.append("enabled")
+    if body.jian_types is not None:
+        if not isinstance(body.jian_types, list) or not all(
+                isinstance(j, str) and j.strip() for j in body.jian_types):
+            raise APIError(ERR_VALIDATION,
+                           "jian_types 必须是非空字符串数组（表单五勾选）", 400)
+        # 去重保序；五间白名单由临时副本 loader 按包 jians.json 强校验
+        target["jian_types"] = list(dict.fromkeys(body.jian_types))
+        changes.append("jian_types")
     if not changes:
         raise APIError(ERR_VALIDATION,
                        f"未提供可修改字段（允许：{sorted(_EDITABLE_FIELDS)}）",
@@ -164,11 +202,8 @@ def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元，
-        # 缺 _shared 则 load_pack 因数据元未注册硬失败。
-        shared_src = base_dir / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
         _atomic_write_json(tmp_root / pack_id / "rules.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)
@@ -183,10 +218,10 @@ def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
                         filename="rules.json", reason=body.reason,
                         summary={"rule_id": rule_id, "changed": changes})
 
-    # params/enabled 变更影响机器结果 → 入队 RESCAN；纯 rule_text 文本修订
-    # 不改变确定性执行结果，不触发重跑
+    # params/enabled/jian_types 变更影响机器结果（阈值/启停/五间升格）
+    # → 入队 RESCAN；纯 rule_text 文本修订不改变确定性执行结果，不触发重跑
     task = None
-    if {"params", "enabled"} & set(changes):
+    if {"params", "enabled", "jian_types"} & set(changes):
         task = enqueue_task(
             ctx.repo, case_id=case_id, task_type=TASK_RESCAN,
             params={"rule_id": rule_id, "changed": changes},

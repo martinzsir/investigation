@@ -42,6 +42,9 @@ export interface StreamHandle {
 
 export interface StreamRequest {
   path: string
+  /** SSE 请求方法（默认 GET；POST 用于需要传 body 的流式端点如 chat/stream） */
+  method?: RequestMethod
+  body?: unknown
   headers?: Record<string, string>
   handlers: StreamHandlers
 }

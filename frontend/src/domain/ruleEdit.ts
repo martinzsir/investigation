@@ -1,9 +1,11 @@
 // 规则工坊领域逻辑（FE-P-003）：可编辑字段门禁、双层编辑、RESCAN 影响、危险项判定。
-// 纯函数、确定性可测；红线一：function/stage/hit_when 等结构字段只读，组件不得渲染编辑态。
+// 纯函数、确定性可测；红线一：function/stage/hit_when/title 等结构字段只读，
+// 组件不得渲染编辑态。S3-F3：jian_types 解锁（表单勾选限定五间，loader 白名单兜底）。
 import type { Rule, RuleEditBody } from '../api/endpoints/rules'
+import { FIVE_JIAN } from '../api/endpoints/model'
 
-/** PUT 允许修改的字段（与后端 _EDITABLE_FIELDS 一致） */
-export const EDITABLE_FIELDS = ['rule_text', 'params', 'enabled'] as const
+/** PUT 允许修改的字段（与后端 _EDITABLE_FIELDS 一致；jian_types S3-F3 解锁） */
+export const EDITABLE_FIELDS = ['rule_text', 'params', 'enabled', 'jian_types'] as const
 
 /** 结构字段（只读展示；提交即 400） */
 export const STRUCTURE_FIELDS = [
@@ -11,7 +13,6 @@ export const STRUCTURE_FIELDS = [
   'function',
   'stage',
   'hit_when',
-  'jian_types',
   'dimension',
   'title',
 ] as const
@@ -20,9 +21,10 @@ export const STRUCTURE_FIELDS = [
 export const RULE_TEXT_MIN = 20
 
 /**
- * L0 红线键（FE-T-011，共 12 条）：规则身份与机器挂钩字段，
+ * L0 红线键（FE-T-011，S3-F3 起 11 条）：规则身份与机器挂钩字段，
  * 是检测器/编译器的常量锚点——任何配置修改请求注入这些键都必须失败
  * （前端白名单摘取剥离 + 后端提交即 400 双保险），永远不可被配置覆盖。
+ * jian_types 原在本清单，S3-F3 经用户决策解锁（五勾选 + loader 白名单）。
  */
 export const LOCKED_KEYS = [
   'id',
@@ -31,7 +33,6 @@ export const LOCKED_KEYS = [
   'function_catalog',
   'stage',
   'hit_when',
-  'jian_types',
   'dimension',
   'title',
   'pack',
@@ -41,7 +42,8 @@ export const LOCKED_KEYS = [
 
 /**
  * 从任意脏输入中只摘取白名单字段（PUT /rules/{rid} 出网前最后一道）。
- * L0 锁定键一律剥离（不随请求出网）；类型不符的字段忽略。
+ * L0 锁定键一律剥离（不随请求出网）；类型不符的字段忽略；
+ * jian_types 仅接受字符串数组。
  */
 export function sanitizeEditBody(raw: Record<string, unknown>): RuleEditBody {
   const out: RuleEditBody = {}
@@ -50,6 +52,9 @@ export function sanitizeEditBody(raw: Record<string, unknown>): RuleEditBody {
     out.params = raw.params as Record<string, unknown>
   }
   if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled
+  if (Array.isArray(raw.jian_types)) {
+    out.jian_types = raw.jian_types.filter((v): v is string => typeof v === 'string')
+  }
   if (typeof raw.reason === 'string') out.reason = raw.reason
   return out
 }
@@ -64,7 +69,7 @@ export function isRuleTextEditable(): boolean {
   return true
 }
 
-/** 下区：机器行为（params/enabled）——偏将及以上可写（后端 clearance≥2） */
+/** 下区：机器行为（params/enabled/jian_types）——偏将及以上可写（后端 clearance≥2） */
 export function canEditMachineBehavior(clearance: number): boolean {
   return clearance >= 2
 }
@@ -84,9 +89,20 @@ export function ruleTextError(text: string): string {
   return ''
 }
 
+/** 间类校验（R6）：勾选值必须落在五间内（表单勾选限定，这里兜底） */
+export function jianTypesError(values: unknown): string {
+  if (!Array.isArray(values)) return '间类必须是字符串数组'
+  const bad = values.filter((v) => typeof v !== 'string' || !(FIVE_JIAN as readonly string[]).includes(v))
+  if (bad.length) return `间类含五间之外的值：${bad.join('、')}（仅 ${FIVE_JIAN.join('/')}）`
+  return ''
+}
+
 /** 计算本次提交实际变更的字段（与后端 changed 口径一致） */
-export function diffRule(rule: Rule, body: RuleEditBody): Array<'rule_text' | 'params' | 'enabled'> {
-  const changed: Array<'rule_text' | 'params' | 'enabled'> = []
+export function diffRule(
+  rule: Rule,
+  body: RuleEditBody,
+): Array<'rule_text' | 'params' | 'enabled' | 'jian_types'> {
+  const changed: Array<'rule_text' | 'params' | 'enabled' | 'jian_types'> = []
   if (body.rule_text !== undefined && body.rule_text.trim() !== (rule.rule_text ?? '').trim()) {
     changed.push('rule_text')
   }
@@ -94,19 +110,24 @@ export function diffRule(rule: Rule, body: RuleEditBody): Array<'rule_text' | 'p
   if (body.enabled !== undefined && Boolean(body.enabled) !== Boolean(rule.enabled)) {
     changed.push('enabled')
   }
+  if (body.jian_types !== undefined) {
+    const a = [...body.jian_types].sort().join('|')
+    const b = [...(rule.jian_types ?? [])].sort().join('|')
+    if (a !== b) changed.push('jian_types')
+  }
   return changed
 }
 
-/** 是否触发 RESCAN：params/enabled 变更影响机器结果；纯 rule_text 文本修订不重跑 */
-export function triggersRescan(changed: Array<'rule_text' | 'params' | 'enabled'>): boolean {
-  return changed.includes('params') || changed.includes('enabled')
+/** 是否触发 RESCAN：params/enabled/jian_types 变更影响机器结果；纯 rule_text 文本修订不重跑 */
+export function triggersRescan(changed: Array<'rule_text' | 'params' | 'enabled' | 'jian_types'>): boolean {
+  return changed.includes('params') || changed.includes('enabled') || changed.includes('jian_types')
 }
 
 /**
- * 危险项判定（FE-T-012）：params/enabled 改动改变机器行为 → 🔴 危险确认 + 理由必填；
- * 纯 rule_text 文本修订为普通确认。
+ * 危险项判定（FE-T-012）：params/enabled/jian_types 改动改变机器行为 →
+ * 🔴 危险确认 + 理由必填；纯 rule_text 文本修订为普通确认。
  */
-export function isDangerousChange(changed: Array<'rule_text' | 'params' | 'enabled'>): boolean {
+export function isDangerousChange(changed: Array<'rule_text' | 'params' | 'enabled' | 'jian_types'>): boolean {
   return triggersRescan(changed)
 }
 
@@ -116,14 +137,18 @@ export function validateRuleEdit(
   body: RuleEditBody,
   clearance: number,
 ): string {
-  if (body.rule_text === undefined && body.params === undefined && body.enabled === undefined) {
+  if (body.rule_text === undefined && body.params === undefined && body.enabled === undefined && body.jian_types === undefined) {
     return '未提供可修改字段'
   }
-  if ((body.params !== undefined || body.enabled !== undefined) && !canEditMachineBehavior(clearance)) {
-    return '阈值/启停变更需偏将及以上（clearance≥2）'
+  if ((body.params !== undefined || body.enabled !== undefined || body.jian_types !== undefined) && !canEditMachineBehavior(clearance)) {
+    return '阈值/启停/间类变更需偏将及以上（clearance≥2）'
   }
   if (body.rule_text !== undefined) {
     const err = ruleTextError(body.rule_text)
+    if (err) return err
+  }
+  if (body.jian_types !== undefined) {
+    const err = jianTypesError(body.jian_types)
     if (err) return err
   }
   const changed = diffRule(rule, body)

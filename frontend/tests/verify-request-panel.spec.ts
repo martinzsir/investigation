@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { h } from 'vue'
+import { NMessageProvider } from 'naive-ui'
 import { setTransport } from '../src/api/transport'
 import { FakeTransport, okEnvelope } from './helpers'
 import VerifyWorkbench from '../src/components/research/VerifyWorkbench.vue'
@@ -74,6 +76,7 @@ function pageOf(items: VerifyItem[]): VerifyItemsPage {
 }
 
 let wrapper: VueWrapper | null = null
+let rootWrapper: VueWrapper | null = null
 
 function mountWith(items: VerifyItem[], rows: VerifyRequestRow[]) {
   const transport = new FakeTransport([
@@ -88,13 +91,16 @@ function mountWith(items: VerifyItem[], rows: VerifyRequestRow[]) {
     },
   ])
   setTransport(transport)
-  wrapper = mount(VerifyWorkbench, {
-    props: {
-      caseId: 'c1', clueId: 'clue-1',
-      operator: '王检察官', role: 'human',
-      degraded: false, submitting: false,
+  rootWrapper = mount(NMessageProvider, {
+    slots: {
+      default: () => h(VerifyWorkbench, {
+        caseId: 'c1', clueId: 'clue-1',
+        operator: '王检察官', role: 'human',
+        degraded: false, submitting: false,
+      }),
     },
   })
+  wrapper = rootWrapper.findComponent(VerifyWorkbench)
   return { w: wrapper!, transport }
 }
 
@@ -125,7 +131,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  wrapper?.unmount()
+  rootWrapper?.unmount()
+  rootWrapper = null
   wrapper = null
   document.body.innerHTML = ''
 })
@@ -182,7 +189,8 @@ describe('REQ-V-013 台账子面板', () => {
     expect(wrapper!.find('[data-testid="vw-req-overdue"]').exists()).toBe(true)
     expect(wrapper!.find('[data-testid="vw-req-overdue"]').text()).toContain('超期')
     // 未超期行不渲染徽标
-    wrapper!.unmount()
+    rootWrapper!.unmount()
+    rootWrapper = null
     mountWith([], [req({ status: '已发起', overdue: false })])
     await flushPromises()
     expect(wrapper!.find('[data-testid="vw-req-overdue"]').exists()).toBe(false)
@@ -263,13 +271,16 @@ describe('REQ-V-013 台账子面板', () => {
       },
     ])
     setTransport(transport)
-    wrapper = mount(VerifyWorkbench, {
-      props: {
-        caseId: 'c1', clueId: 'clue-1',
-        operator: '王检察官', role: 'human',
-        degraded: true, submitting: false,
+    rootWrapper = mount(NMessageProvider, {
+      slots: {
+        default: () => h(VerifyWorkbench, {
+          caseId: 'c1', clueId: 'clue-1',
+          operator: '王检察官', role: 'human',
+          degraded: true, submitting: false,
+        }),
       },
     })
+    wrapper = rootWrapper.findComponent(VerifyWorkbench)
     await flushPromises()
     expect((wrapper!.find('[data-testid="vw-req-new"]').element as HTMLButtonElement).disabled).toBe(true)
     const act = wrapper!.findAll('.vw-req-item')[0]

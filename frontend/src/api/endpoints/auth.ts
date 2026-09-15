@@ -9,6 +9,8 @@ export interface SessionInfo {
   tenant_id: string
   /** 平台管理员（is_admin=1 或 system 角色；W-024，后端 A2 增量字段） */
   is_admin: boolean
+  /** 本体管理员能力位（S0-2；标准层写双条件门禁之一） */
+  is_ontology_admin: boolean
 }
 
 export interface MeInfo {
@@ -18,6 +20,8 @@ export interface MeInfo {
   tenant_id: string
   /** 平台管理员（与 login 同口径；设置页据此渲染锁定面板，不靠 403 探测） */
   is_admin: boolean
+  /** 本体管理员能力位（S0-2；S3 数据元标准层写门禁，与职级双条件） */
+  is_ontology_admin: boolean
 }
 
 /**

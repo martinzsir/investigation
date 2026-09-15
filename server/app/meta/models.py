@@ -58,7 +58,9 @@ class User:
     tenant_id: str
     status: str = USER_ACTIVE
     created_at: str = ""
-    is_admin: int = 0  # 0/1：平台审计事件查询等管理面门槛（W-024）
+    is_admin: int = 0  # 0/1：平台管理员标志（W-024）
+    # 0/1：本体管理员能力位（S0-2，与 rank 正交——rank 管办案，能力位管改标准）
+    is_ontology_admin: int = 0
 
 
 @dataclass
@@ -90,6 +92,23 @@ class PackSnapshot:
     version: str
     snapshot_path: str
     locked_at: str = ""
+
+
+@dataclass
+class PackSnapshotHistory:
+    """pack_snapshot_history 行（S0-3 F3.2）：本体版本沿革（只追加不覆盖，R2）。
+
+    snapshot_ref 指向完整快照归档目录（cases/<cid>/ontology_history/<version>/），
+    「改前是什么」= 上一版本的归档，举证时可整体取回。
+    """
+    case_id: str
+    version: str
+    prev_version: str = ""   # 首条（建案快照）为空串
+    operator: str = ""
+    reason: str = ""
+    changed_files: list[str] = field(default_factory=list)
+    snapshot_ref: str = ""
+    created_at: str = ""
 
 
 @dataclass

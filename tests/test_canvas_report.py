@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from server.app.canvas_report import (
     REPORT_SECTIONS,
     build_report_prompt,
+    parse_llm_to_sections,
     parse_report_sections,
     render_markdown,
     render_docx,
@@ -73,13 +74,13 @@ def _doc() -> dict:
 class TestBuildReportPrompt(unittest.TestCase):
     """RC-304 prompt 构建。"""
 
-    def test_prompt_contains_8_sections(self):
-        """系统提示词含 8 段结构说明。"""
-        system_prompt, user_prompt = build_report_prompt(_doc())
-        # 8 段标题在 system_prompt 中
-        for title in ("线索概况", "命中规则与判据", "事实与依据",
-                      "研判推断", "待核实事项", "书证清单",
-                      "数据源清单", "引用索引"):
+    def test_prompt_contains_10_sections(self):
+        """系统提示词含十段结构说明（含确定性段）。"""
+        system_prompt, _ = build_report_prompt(_doc())
+        # 十段标题在 system_prompt 中
+        for title in ("线索概况", "证据充分性", "命中规则与判据",
+                      "事实与依据", "关联核验", "研判推断",
+                      "待核实事项", "书证清单", "数据源清单"):
             self.assertIn(title, system_prompt)
 
     def test_prompt_contains_context(self):
@@ -95,6 +96,15 @@ class TestBuildReportPrompt(unittest.TestCase):
             _doc(), "重点关注资金流向")
         payload = json.loads(user_prompt)
         self.assertEqual(payload["补充要求"], "重点关注资金流向")
+
+    def test_evidence_passed_through(self):
+        """确定性证据透传到用户提示词。"""
+        evidence = {"case_id": "C001", "确定性块": {"证据充分性": {}}}
+        _, user_prompt = build_report_prompt(
+            _doc(), evidence=evidence)
+        payload = json.loads(user_prompt)
+        self.assertIn("确定性证据", payload)
+        self.assertEqual(payload["确定性证据"]["case_id"], "C001")
 
 
 class TestParseReportSections(unittest.TestCase):
@@ -172,6 +182,70 @@ class TestParseReportSections(unittest.TestCase):
                       "五、待核实事项", "六、书证清单",
                       "七、数据源清单", "附录：引用索引"):
             self.assertIn(title, result["content_md"])
+
+
+class TestParseLlmToSections(unittest.TestCase):
+    """parse_llm_to_sections：解析 LLM 输出为 sections dict（供 render_report）。"""
+
+    def test_returns_narrative_sections(self):
+        """返回七段叙述键，不含确定性段。"""
+        raw = (
+            "## 一、线索概况\n线索概况内容。\n"
+            "## 三、命中规则与判据\n规则 R1。\n"
+            "## 四、事实与依据\n某事实[cite:R1]。\n"
+            "## 六、研判推断\n某推断。\n"
+            "## 七、待核实事项\n待核实项。\n"
+            "## 八、书证清单\n书证。\n"
+            "## 九、数据源清单\n数据源。\n"
+        )
+        result = parse_llm_to_sections(raw, {"R1"})
+        for key in ("overview", "rules", "facts", "inferences",
+                    "pending", "evidence", "sources"):
+            self.assertIn(key, result["sections"])
+        # 不含 content_md（由 render_report 负责组装）
+        self.assertNotIn("content_md", result)
+
+    def test_citations_validated(self):
+        """引用校验：有据句保留，无据句转待核实。"""
+        raw = (
+            "## 四、事实与依据\n"
+            "张卫国转账5万元为整数万元[cite:R1]。\n"
+            "海州建材疑似壳公司。\n"
+        )
+        result = parse_llm_to_sections(raw, {"R1"})
+        self.assertIn("R1", result["sections"]["facts"])
+        self.assertIn("海州建材疑似壳公司",
+                      result["sections"]["pending"])
+        self.assertTrue(len(result["warnings"]) > 0)
+
+    def test_fake_citation_removed(self):
+        """假引用被剔除并记 warning。"""
+        raw = "## 四、事实与依据\n某陈述[cite:FAKE_REF]。\n"
+        result = parse_llm_to_sections(raw, set())
+        self.assertIn("某陈述", result["sections"]["pending"])
+        self.assertTrue(
+            any("FAKE_REF" in w for w in result["warnings"]))
+
+    def test_empty_input(self):
+        """空输入不抛异常，所有叙述段有兜底。"""
+        result = parse_llm_to_sections("", set())
+        for key in ("overview", "rules", "facts", "inferences",
+                    "pending", "evidence", "sources"):
+            self.assertIn(key, result["sections"])
+        self.assertEqual(result["citations"], [])
+
+    def test_citations_index_built(self):
+        """citations 列表正确构建。"""
+        raw = (
+            "## 四、事实与依据\n"
+            "事实一[cite:R1]。\n"
+            "事实二[cite:row:bank_001]。\n"
+        )
+        result = parse_llm_to_sections(
+            raw, {"R1", "row:bank_001"})
+        self.assertEqual(len(result["citations"]), 2)
+        self.assertEqual(result["citations"][0]["ref"], "R1")
+        self.assertEqual(result["citations"][1]["ref"], "row:bank_001")
 
 
 class TestRenderMarkdown(unittest.TestCase):

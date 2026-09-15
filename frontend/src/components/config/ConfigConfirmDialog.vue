@@ -4,6 +4,8 @@
 // - 危险变更（params/enabled/权限/模型结构等改变机器行为）：🔴 红框警示，
 //   变更理由必填（落案件审计链 note），未填禁用确认；
 // - 对话框只承载确认与理由采集；是否危险由 domain 纯函数判定后传入。
+// - S0-4 修「假承诺」：默认文案不承诺「自动触发 RESCAN」（后端仅 RuleWorkshop 危险变更
+//   真入队）；确会入队的页面经 rescanEnqueued 显式声明，其余页面说真话。
 import { computed } from 'vue'
 import { NModal, NButton, NInput } from 'naive-ui'
 
@@ -18,8 +20,10 @@ const props = withDefaults(
     loading?: boolean
     /** 危险项理由输入框占位提示 */
     reasonPlaceholder?: string
+    /** 保存后是否真的自动入队 RESCAN 重跑（仅 RuleWorkshop 危险变更=真入队；缺省 false=不承诺） */
+    rescanEnqueued?: boolean
   }>(),
-  { detail: '', loading: false, reasonPlaceholder: '' },
+  { detail: '', loading: false, reasonPlaceholder: '', rescanEnqueued: false },
 )
 
 const emit = defineEmits<{
@@ -50,8 +54,14 @@ function confirm(): void {
   >
     <div class="ccd-body" :class="{ 'ccd-body--danger': dangerous }">
       <div v-if="dangerous" class="ccd-warn">
-        ⚠ 本次变更将改变机器行为（阈值/启停/权限/模型结构），保存后自动触发 RESCAN 重跑，
-        且变更将记入案件审计链（谁/何时/改了什么/理由，不可删除）。
+        <template v-if="rescanEnqueued">
+          ⚠ 本次变更将改变机器行为（阈值/启停/权限/模型结构），保存后将自动入队 RESCAN 重跑，
+          且变更将记入案件审计链（谁/何时/改了什么/理由，不可删除）。
+        </template>
+        <template v-else>
+          ⚠ 本次变更将改变机器行为（阈值/启停/权限/模型结构），保存后不会自动触发重跑，
+          需重跑生效的配置请在任务中心触发 BUILD/RESCAN；变更将记入案件审计链（谁/何时/改了什么/理由，不可删除）。
+        </template>
       </div>
       <div v-else class="ccd-note">
         本次为说明性文本修订，不改变机器行为、不触发重跑；仍会记入审计链。

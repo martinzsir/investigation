@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "_note": "S0-1 医疗行业标准数据元。最小集起步，新增数据元须过 _validate_element_spec 校验。",
+  "elements": {
+    "DE_MED_RECORD_NO": {
+      "name": "病历号",
+      "type": "string",
+      "length": 12,
+      "format": "^MR\\d{8,12}$",
+      "clean_rule": ["despace"]
+    }
+  }
+}

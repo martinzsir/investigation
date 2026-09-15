@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "thresholds.schema.json",
+  "title": "Ontology Thresholds (schema_version=2)",
+  "description": "阈值策略对象（REQ-027）：规则阈值选择方法/样本要求/降级回落/夹紧范围 + 全局告警阈值",
+  "type": "object",
+  "required": ["schema_version", "thresholds"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "alerts": {
+      "type": "object",
+      "properties": {
+        "override_rate_max": {"type": "number", "minimum": 0, "maximum": 1},
+        "_note": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "profiler": {
+      "type": "object",
+      "properties": {
+        "window_days": {"type": "integer", "minimum": 0},
+        "draft_overlap_min_ratio": {"type": "number"},
+        "value_sample_limit": {"type": "integer", "minimum": 0},
+        "_note": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "thresholds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "method", "per"],
+        "properties": {
+          "rule": {"type": "string", "minLength": 1},
+          "method": {"enum": ["absolute", "relative_median"]},
+          "bound_param": {"type": ["string", "null"]},
+          "value": {},
+          "fallback": {},
+          "params": {
+            "type": "object",
+            "additionalProperties": {"type": ["number", "integer", "string"]}
+          },
+          "bounded_by": {
+            "type": ["object", "null"],
+            "properties": {
+              "min": {},
+              "max": {}
+            },
+            "additionalProperties": true
+          },
+          "per": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "_note": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

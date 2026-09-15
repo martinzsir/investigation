@@ -4,6 +4,10 @@ import {
   RANK_X,
   RANK_Y_GAP,
 } from '../src/domain/canvas-layout'
+import {
+  minimizeCrossings,
+  countCrossings,
+} from '../src/domain/canvas-layout-cross'
 import type { CanvasEdge, CanvasNode } from '../src/domain/canvas'
 
 // RC-201 分层布局：列 x 与种子/后端同口径；钉住节点坐标原样保留并占位；
@@ -103,5 +107,128 @@ describe('RC-201 layoutNodes', () => {
     ])
     // 同列三节点落 0/104/208
     expect(out.map((n) => n.y).sort((a, b) => a - b)).toEqual([0, 104, 208])
+  })
+})
+
+// --- barycenter 交叉最小化（L-TC-01 ~ L-TC-04）---
+
+/** 简单 LCG 伪随机数（确定性，复刻 POC 的随机命中模式） */
+function lcgNext(state: { s: number }): number {
+  state.s = (state.s * 1103515245 + 12345) & 0x7fffffff
+  return state.s
+}
+
+function seededShuffle(arr: number[], seed: number): number[] {
+  const result = [...arr]
+  const st = { s: seed }
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = lcgNext(st) % (i + 1)
+    ;[result[i], result[j]] = [result[j], result[i]]
+  }
+  return result
+}
+
+/** 构造典型交叉图：1 rule → N fact → M source_row → 1 source_file */
+function buildCrossCase(nFact = 4, nRow = 5): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+  const nodes: CanvasNode[] = [node('R1', 'rule', 0, 0)]
+  const edges: CanvasEdge[] = []
+  for (let i = 0; i < nFact; i++) {
+    nodes.push(node(`F${i}`, 'fact', 260, i * 100))
+    edges.push({ id: `eR${i}`, source: 'R1', target: `F${i}`, rel: '命中', system: true })
+  }
+  for (let j = 0; j < nRow; j++) {
+    nodes.push(node(`S${j}`, 'source_row', 720, j * 100))
+    edges.push({ id: `eS${j}`, source: `S${j}`, target: 'SF1', rel: '所属文件', system: true })
+  }
+  nodes.push(node('SF1', 'source_file', 960, 0))
+  // fact → source_row 命中边（确定性伪随机 shuffle，模拟真实命中关系）
+  let rows = Array.from({ length: nRow }, (_, i) => i)
+  for (let i = 0; i < nFact; i++) {
+    rows = seededShuffle(rows, 7)
+    for (const j of rows.slice(0, 2)) {
+      edges.push({ id: `eF${i}S${j}`, source: `F${i}`, target: `S${j}`, rel: '来源行', system: true })
+    }
+  }
+  return { nodes, edges }
+}
+
+describe('barycenter 交叉最小化', () => {
+  it('L-TC-01: 交叉数显著下降（≥60%）', () => {
+    const { nodes, edges } = buildCrossCase(8, 10)
+    // 现状排序（无 barycenter）：按 (y, -deg, id) 落槽
+    const naivePos = new Map<string, [number, number]>()
+    for (const n of nodes) {
+      naivePos.set(n.id, [RANK_X[n.kind], n.y])
+    }
+    const naiveCross = countCrossings(nodes, edges, naivePos)
+
+    // barycenter 优化后
+    const rankMap = minimizeCrossings(nodes, edges, new Set())
+    const bcPos = new Map<string, [number, number]>()
+    // 按 rank 重建 y 坐标
+    const byCol = new Map<number, string[]>()
+    for (const n of nodes) {
+      const x = RANK_X[n.kind]
+      if (!byCol.has(x)) byCol.set(x, [])
+      byCol.get(x)!.push(n.id)
+    }
+    for (const [x, ids] of byCol) {
+      ids.sort((a, b) => (rankMap.get(a) ?? 0) - (rankMap.get(b) ?? 0))
+      ids.forEach((id, i) => bcPos.set(id, [x, i * RANK_Y_GAP]))
+    }
+    const bcCross = countCrossings(nodes, edges, bcPos)
+
+    expect(naiveCross).toBeGreaterThan(0)
+    const reduction = naiveCross > 0 ? (naiveCross - bcCross) / naiveCross : 0
+    expect(reduction).toBeGreaterThanOrEqual(0.6)
+  })
+
+  it('L-TC-02: 确定性——同输入两次结果完全一致', () => {
+    const { nodes, edges } = buildCrossCase(6, 8)
+    const a = minimizeCrossings(nodes, edges, new Set())
+    const b = minimizeCrossings(nodes, edges, new Set())
+    expect(a).toEqual(b)
+  })
+
+  it('L-TC-03: 钉住节点坐标不变且不被覆盖', () => {
+    const { nodes, edges } = buildCrossCase(4, 5)
+    // 将 F0 钉住在 (260, 500)
+    const pinnedNodes = nodes.map((n) =>
+      n.id === 'F0' ? { ...n, pinned: true, x: 260, y: 500 } : n,
+    )
+    const pinnedSet = new Set(['F0'])
+    const out = layoutNodes(pinnedNodes, edges, pinnedSet)
+    const f0 = out.find((n) => n.id === 'F0')!
+    expect(f0.x).toBe(260)
+    expect(f0.y).toBe(500)
+    // 其他节点不与钉住节点重叠
+    const sameCol = out.filter((n) => n.x === 260 && n.id !== 'F0')
+    for (const n of sameCol) {
+      expect(Math.abs(n.y - 500)).toBeGreaterThanOrEqual(RANK_Y_GAP / 2)
+    }
+  })
+
+  it('L-TC-04: 收敛——iterations=4 与 =16 交叉数一致', () => {
+    const { nodes, edges } = buildCrossCase(8, 10)
+    // barycenter 可能存在多个等价最优排列（交叉数相同），故验证交叉数收敛
+    const buildPos = (rank: Map<string, number>) => {
+      const byCol = new Map<number, string[]>()
+      for (const n of nodes) {
+        const x = RANK_X[n.kind]
+        if (!byCol.has(x)) byCol.set(x, [])
+        byCol.get(x)!.push(n.id)
+      }
+      const pos = new Map<string, [number, number]>()
+      for (const [x, ids] of byCol) {
+        ids.sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0))
+        ids.forEach((id, i) => pos.set(id, [x, i * RANK_Y_GAP]))
+      }
+      return pos
+    }
+    const r4 = minimizeCrossings(nodes, edges, new Set(), 4)
+    const r16 = minimizeCrossings(nodes, edges, new Set(), 16)
+    const c4 = countCrossings(nodes, edges, buildPos(r4))
+    const c16 = countCrossings(nodes, edges, buildPos(r16))
+    expect(c4).toBe(c16)
   })
 })

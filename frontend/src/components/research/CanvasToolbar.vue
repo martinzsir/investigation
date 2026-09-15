@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // RC-201/202/206 画布工具栏：人工节点新增、分层重排（不动钉住节点）、
 // 视口、连线模式、快照。纯事件上抛，状态与请求都在 ResearchCanvas。
-import { NButton, NIcon, NTooltip } from 'naive-ui'
+import { NButton, NIcon, NSelect, NTooltip } from 'naive-ui'
 import {
   AddCircleOutline,
   AddOutline,
@@ -18,6 +18,7 @@ import {
   RemoveOutline,
   ScanOutline,
   DocumentOutline,
+  GitNetworkOutline,
 } from '@vicons/ionicons5'
 
 defineProps<{
@@ -29,6 +30,8 @@ defineProps<{
   overview?: boolean
   /** P3 研判视角：process（流程）/ tier（证据强度三层） */
   perspective?: 'process' | 'tier'
+  /** G6 布局模式：preset（自定义 barycenter）或 G6 内置布局 */
+  g6LayoutMode?: string
   busy?: boolean
 }>()
 
@@ -51,10 +54,21 @@ const emit = defineEmits<{
   (e: 'toggle-overview'): void
   /** P3：切换研判视角（流程 / 证据强度） */
   (e: 'toggle-perspective'): void
+  /** 切换 G6 布局模式 */
+  (e: 'layout-mode-change', mode: string): void
   /** UX P0：明细层一键展开/折叠（简洁视图） */
   (e: 'expand-all-details'): void
   (e: 'collapse-all-details'): void
 }>()
+
+/** G6 布局模式下拉选项 */
+const LAYOUT_OPTIONS = [
+  { label: '分层（barycenter）', value: 'preset' },
+  { label: 'Dagre 分层', value: 'dagre' },
+  { label: '力导向', value: 'force' },
+  { label: '径向', value: 'radial' },
+  { label: '同心圆', value: 'concentric' },
+]
 </script>
 
 <template>
@@ -102,14 +116,29 @@ const emit = defineEmits<{
           size="small"
           class="tb-btn"
           data-testid="tb-relayout"
+          :disabled="g6LayoutMode !== 'preset'"
           @click="emit('relayout')"
         >
           <NIcon :component="GridOutline" />
           重新排版
         </NButton>
       </template>
-      按链路重新分层；已钉住节点保持不动
+      按链路重新分层；已钉住节点保持不动（仅分层模式可用）
     </NTooltip>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NSelect
+            size="small"
+            :value="g6LayoutMode ?? 'preset'"
+            :options="LAYOUT_OPTIONS"
+            style="width: 150px"
+            data-testid="tb-layout-mode"
+            @update:value="(v: string) => emit('layout-mode-change', v)"
+          />
+        </template>
+        画布布局算法：分层（barycenter）/ Dagre / 力导向 / 径向 / 同心圆
+      </NTooltip>
 
       <NTooltip trigger="hover">
         <template #trigger>

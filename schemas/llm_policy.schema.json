@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "llm_policy.schema.json",
+  "title": "Ontology LLM Policy (schema_version=2)",
+  "description": "🔴 LLM 出网策略（REQ-038/040）：仅为声明完整性补 schema；永不生成编辑表单、无写路由（S4 R4 / S5 R6）",
+  "type": "object",
+  "required": ["schema_version", "network", "llm_enabled", "mode", "fallback"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "pack": {"type": "string"},
+    "description": {"type": "string"},
+    "_note": {"type": "string"},
+    "network": {"enum": ["isolated", "local", "web"]},
+    "allowed_models": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "llm_enabled": {"type": "boolean"},
+    "mode": {"enum": ["shadow", "direct"]},
+    "canvas_chat_mode": {"enum": ["direct", "shadow"]},
+    "pii_redaction": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "prompt_days": {"type": "integer", "minimum": 0},
+        "raw_context": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "fallback": {"type": "string"},
+    "deployments": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "base_url": {"type": "string"},
+          "allowed_models": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "redaction": {"type": "string"},
+          "require_clearance": {"type": "boolean"},
+          "min_clearance": {"type": "integer"},
+          "endpoints": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

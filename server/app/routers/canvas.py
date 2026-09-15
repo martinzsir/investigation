@@ -52,7 +52,7 @@ from urllib.parse import quote as _url_quote
 
 import duckdb
 from fastapi import APIRouter, Depends
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from core.access import can_see_jian_types
@@ -1338,6 +1338,7 @@ def canvas_function_query(case_id: str, clue_id: str, body: FunctionQueryIn,
 # ----------------------------------------------------------------------
 class CanvasChatIn(BaseModel):
     question: str
+    mode: str | None = None  # None=策略默认 / "direct" / "react"
 
 
 @router.post("/cases/{case_id}/clues/{clue_id}/canvas/chat")
@@ -1373,7 +1374,8 @@ def canvas_chat_endpoint(case_id: str, clue_id: str, body: CanvasChatIn,
         access = access_for(p, case_id=case_id, purpose="画布问答")
         result = canvas_chat.chat_on_canvas(
             conn=state.conn, ctx=access, doc=doc, question=q,
-            pack_id=case.pack_id, base_dir=base_dir)
+            pack_id=case.pack_id, base_dir=base_dir,
+            chat_mode=body.mode, case_id=case_id, clue_id=clue_id)
 
         # 消息留痕（user + assistant）
         now = _now()
@@ -1394,18 +1396,19 @@ def canvas_chat_endpoint(case_id: str, clue_id: str, body: CanvasChatIn,
                before=None,
                after={"action": "canvas.chat", "clue_id": clue_id,
                       "question_len": len(q), "model": result.get("model"),
+                      "chat_mode": body.mode or "policy_default",
                       "ok": result["ok"], "error": result.get("error")})
 
         if not result["ok"]:
-            # 业务错误（llm_disabled / blocked / error），非 500
+            # 业务错误（llm_disabled / blocked / react_unavailable / error），非 500
+            biz_errors = ("llm_disabled", "deployment_off", "llm_blocked",
+                          "react_unavailable")
             raise APIError(
-                ERR_FORBIDDEN if result.get("error") in (
-                    "llm_disabled", "deployment_off", "llm_blocked")
+                ERR_FORBIDDEN if result.get("error") in biz_errors
                 else ERR_INTERNAL,
                 result["warnings"][0] if result["warnings"]
                 else "智能问答不可用",
-                403 if result.get("error") in (
-                    "llm_disabled", "deployment_off", "llm_blocked")
+                403 if result.get("error") in biz_errors
                 else 500)
 
         return ok({
@@ -1418,6 +1421,88 @@ def canvas_chat_endpoint(case_id: str, clue_id: str, body: CanvasChatIn,
         }, data_version=version)
     finally:
         state.close()
+
+
+@router.post("/cases/{case_id}/clues/{clue_id}/canvas/chat/stream")
+def canvas_chat_stream_endpoint(case_id: str, clue_id: str,
+                                body: CanvasChatIn,
+                                p: Principal = Depends(get_principal),
+                                ctx: WebContext = Depends(get_ctx)):
+    """画布只读问答流式端点（SSE）。
+
+    返回 text/event-stream，事件类型：
+      start  — {model} 流式开始
+      delta  — {text} 增量文本块
+      done   — {answer, facts, pending, warnings, citations, model}
+      error  — {error, message}
+
+    与 /chat 同闸门（脱敏/白名单/审计）；消息留痕在流结束后写入。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    case = ctx.repo.get_case(case_id)
+    version = ctx.repo.current_version(case_id)
+    base_dir = ctx.cases.snapshot_ontology_root(case_id)
+
+    q = (body.question or "").strip()
+    if not q:
+        raise APIError(ERR_VALIDATION, "请输入问题", 400)
+    if len(q) > 500:
+        raise APIError(ERR_VALIDATION, "问题不超过 500 字", 400)
+
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        current = state.get_canvas(clue_id)
+        if current is None:
+            raise APIError(ERR_NOT_FOUND,
+                           f"画布不存在：{clue_id}（请先进入研判画布 Tab）", 404)
+        doc = current["doc"]
+
+        access = access_for(p, case_id=case_id, purpose="画布问答")
+    except APIError:
+        state.close()
+        raise
+
+    def event_stream():
+        try:
+            full_answer = ""
+            final_ok = False
+            for evt in canvas_chat.chat_on_canvas_stream(
+                    conn=state.conn, ctx=access, doc=doc, question=q,
+                    pack_id=case.pack_id, base_dir=base_dir,
+                    chat_mode=body.mode, case_id=case_id, clue_id=clue_id):
+                if evt["event"] == "done":
+                    full_answer = evt["data"].get("answer", "")
+                    final_ok = True
+                payload = json.dumps(evt["data"], ensure_ascii=False)
+                yield f"event: {evt['event']}\ndata: {payload}\n\n"
+
+            # 消息留痕 + 审计（流结束后写）
+            now = _now()
+            state.insert_canvas_chat(
+                message_id=canvas_chat.new_message_id(), clue_id=clue_id,
+                role="user", content=q, citations=[], warnings=[],
+                created_by=p.operator, created_at=now)
+            if final_ok:
+                state.insert_canvas_chat(
+                    message_id=canvas_chat.new_message_id(), clue_id=clue_id,
+                    role="assistant", content=full_answer,
+                    citations=[], warnings=[],
+                    created_by="system", created_at=now)
+
+            _audit(state, case_id=case_id, version=version,
+                   operator=p.operator, action="canvas.chat_stream",
+                   before=None,
+                   after={"action": "canvas.chat_stream", "clue_id": clue_id,
+                          "question_len": len(q),
+                          "chat_mode": body.mode or "policy_default",
+                          "ok": final_ok})
+        finally:
+            state.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ----------------------------------------------------------------------
@@ -1454,7 +1539,7 @@ def canvas_chat_suggestion(case_id: str, clue_id: str,
     pconn = duckdb.connect(ctx.proposals_db)
     try:
         store = ProposalStore(pconn, pack="default")
-        proposal_id = "pp_" + uuid.uuid4().hex[:16]
+        proposal_id = "pp-" + uuid.uuid4().hex[:16]
         proposal = {
             "proposal_id": proposal_id,
             "kind": "verify_item",

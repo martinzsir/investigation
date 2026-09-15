@@ -1,15 +1,28 @@
 <script setup lang="ts">
-// 数据元（MVP-4，/c/data-elements）。
-// data_elements.json 整包：编码/名称/值类型/长度/敏感标记/遮蔽/代码表枚举；
-// 数据元定义是 ETL 校验与映射的口径，变更影响装载行为 → 🔴 危险确认 + 理由必填。
-// reason 为审计留痕字段，由后端剥离、不落数据文件。
+// S3-F1/F2 数据元编辑器 + 三层视图（渐进替换整包 JSON 编辑；逃生舱 /c/escape 仍在）。
+// 三层：全域 🌐 / 行业 🏭 / 本案件 📁（E3-1 无行业层只显示两层，不报错）；
+// R1 已有项编码不可改（防对象属性 data_element 隐式断链）；
+// R2 format 正则非法阻止保存（后端 loader re.compile 兜底）；D2 合法不命中允许保存；
+// R3 编辑全域/行业层必须「影响所有案件」警示（本体管理员双条件门禁，后端 require_ontology_admin）；
+// R5 界面未覆盖字段原样保留 + 提示；E1-3 删除被引用数据元警告并列出引用（不硬阻止）。
 import { computed, ref, watch } from 'vue'
-import { NSpin, NButton, NInput, NTag, useMessage } from 'naive-ui'
+import {
+  NButton, NCheckbox, NInput, NInputNumber, NSelect, NSpin, NTabPane, NTabs,
+  NTag, NTooltip, useMessage,
+} from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import { useAuthStore } from '../stores/auth'
-import { dataElementsApi, type DataElementsDoc } from '../api/endpoints/dataElements'
+import {
+  dataElementsApi, type DataElementEnums, type DataElementRefLocation,
+  type DataElementsDoc, type IndustryDataElementsDoc,
+} from '../api/endpoints/dataElements'
 import { presentError, isApiError } from '../api/errors'
 import { canWriteConfig } from '../domain/policyMatrix'
+import {
+  deNameError, diffOverride, formatRegexError, formToSpec, isMultiCleanRule,
+  PRESET_SAMPLES, specToForm, testMatch, unknownFields, upsertElement,
+  type DataElementSpec, type ElementForm, type FieldDiff,
+} from '../domain/dataElementEdit'
 import EmptyState from '../components/common/EmptyState.vue'
 import ConfigConfirmDialog from '../components/config/ConfigConfirmDialog.vue'
 
@@ -17,46 +30,163 @@ const cs = useCaseStore()
 const auth = useAuthStore()
 const message = useMessage()
 
-const loading = ref(false)
-const doc = ref<DataElementsDoc | null>(null)
-
-const editing = ref(false)
-const editText = ref('')
-const editError = ref('')
-
-const canWrite = computed(() => canWriteConfig(auth.clearance))
-
-interface ElementRow {
-  code: string
-  name: string
-  type: string
-  length?: number
-  sensitive: boolean
-  mask?: string
-  enumCount: number
+type Layer = 'shared' | 'industry' | 'case'
+const LAYER_META: Record<Layer, { label: string; icon: string; file: string }> = {
+  shared: { label: '全域', icon: '🌐', file: '_shared/data_elements.json' },
+  industry: { label: '行业', icon: '🏭', file: '_industry/<行业>/data_elements.json' },
+  case: { label: '本案件', icon: '📁', file: 'data_elements.json' },
 }
 
-const rows = computed<ElementRow[]>(() => {
-  const elements = (doc.value?.elements ?? {}) as Record<string, Record<string, unknown>>
-  return Object.entries(elements).map(([code, e]) => ({
-    code,
-    name: String(e.name ?? ''),
-    type: String(e.type ?? ''),
-    length: typeof e.length === 'number' ? e.length : undefined,
-    sensitive: Boolean(e.sensitive),
-    mask: e.mask ? String(e.mask) : undefined,
-    enumCount: Array.isArray(e.enum) ? (e.enum as unknown[]).length : 0,
-  }))
+const loading = ref(false)
+const sharedDoc = ref<DataElementsDoc | null>(null)
+const industryDoc = ref<IndustryDataElementsDoc | null>(null)
+const caseDoc = ref<DataElementsDoc | null>(null)
+const enums = ref<DataElementEnums | null>(null)
+const refsByElement = ref<Record<string, DataElementRefLocation[]>>({})
+
+const activeLayer = ref<Layer>('case')
+
+// ---- 编辑态 ----
+const selectedKey = ref<string | null>(null)
+const isNew = ref(false)
+const form = ref<ElementForm | null>(null)
+const sample = ref('')
+
+// ---- 保存/删除确认 ----
+const confirmOpen = ref(false)
+const confirmReason = ref('')
+const confirmSaving = ref(false)
+const confirmDetail = ref('')
+const pendingIsDelete = ref(false)
+
+const industry = computed(() => industryDoc.value?.industry ?? null)
+
+const layerDocs = computed<Record<Layer, DataElementsDoc>>(() => ({
+  shared: sharedDoc.value ?? { elements: {} },
+  industry: industryDoc.value ?? { elements: {} },
+  case: caseDoc.value ?? { elements: {} },
+}))
+
+const counts = computed<Record<Layer, number>>(() => ({
+  shared: Object.keys(layerDocs.value.shared.elements).length,
+  industry: Object.keys(layerDocs.value.industry.elements).length,
+  case: Object.keys(layerDocs.value.case.elements).length,
+}))
+
+const layerRows = computed<Array<[string, DataElementSpec]>>(() =>
+  Object.entries(layerDocs.value[activeLayer.value].elements))
+
+/** 上层同名声明（industry 相对 shared；case 相对 industry+shared） */
+function upperSpec(key: string): DataElementSpec | undefined {
+  if (activeLayer.value === 'shared') return undefined
+  if (activeLayer.value === 'industry') {
+    return layerDocs.value.shared.elements[key]
+  }
+  return layerDocs.value.industry.elements[key] ?? layerDocs.value.shared.elements[key]
+}
+
+/** 本案件层覆盖标注（UC-S3-8）：active=shared/industry 时 case 是否同名覆盖 */
+const caseOverrides = computed<Record<string, boolean>>(() => {
+  const ce = layerDocs.value.case.elements
+  const out: Record<string, boolean> = {}
+  for (const k of Object.keys(ce)) {
+    if (activeLayer.value !== 'case' && (layerDocs.value[activeLayer.value].elements[k] !== undefined)) {
+      out[k] = true
+    }
+  }
+  return out
 })
+
+/** 编辑中的覆盖差异（§8.2）：本条相对上层的字段差异 */
+const overrideDiffs = computed<FieldDiff[]>(() => {
+  if (!selectedKey.value || !form.value) return []
+  const built = formToSpec(form.value, originalSpec.value)
+  return diffOverride(upperSpec(selectedKey.value), built)
+})
+
+const originalSpec = computed<DataElementSpec | null>(() => {
+  if (!selectedKey.value || isNew.value) return null
+  return layerDocs.value[activeLayer.value].elements[selectedKey.value] ?? null
+})
+
+const builtSpec = computed<DataElementSpec | null>(() =>
+  form.value ? formToSpec(form.value, originalSpec.value) : null)
+
+const dirty = computed<boolean>(() => {
+  if (!form.value) return false
+  return JSON.stringify(builtSpec.value) !== JSON.stringify(originalSpec.value ?? {})
+})
+
+/** 层写权限（F2.3）：案件层 偏将+；全域/行业层 本体管理员 且 偏将+（后端双条件门禁） */
+function canWriteLayer(layer: Layer): boolean {
+  if (layer === 'case') return canWriteConfig(auth.clearance)
+  return auth.isOntologyAdmin && auth.clearance >= 2
+}
+
+const canWriteActive = computed(() => canWriteLayer(activeLayer.value))
+
+/** 试匹配（F1.2）：null=未输入/非法 */
+const matchState = computed<boolean | null>(() =>
+  form.value ? testMatch(form.value.format, sample.value) : null)
+const formatError = computed<string>(() =>
+  form.value ? formatRegexError(form.value.format) : '')
+
+const unknownFieldNames = computed<string[]>(() => {
+  if (!selectedKey.value || isNew.value || !originalSpec.value) return []
+  return unknownFields(originalSpec.value)
+})
+
+const multiClean = computed<boolean>(() => Boolean(originalSpec.value && isMultiCleanRule(originalSpec.value)))
+
+/** 新建编码与上层同名 → 需 override（v1.2 §3.0.7/P2-7 仅追加模式） */
+const overrideNeeded = computed<boolean>(() =>
+  isNew.value && Boolean(form.value && upperSpec(form.value.key.trim())))
+
+const keyError = computed<string>(() => {
+  if (!form.value) return ''
+  const k = form.value.key.trim()
+  const err = deNameError(k)
+  if (err) return err
+  if (isNew.value && layerDocs.value[activeLayer.value].elements[k] !== undefined) {
+    return `编码 ${k} 在${LAYER_META[activeLayer.value].label}层已存在`
+  }
+  if (overrideNeeded.value && !form.value.override) {
+    return '该编码已存在于上层，需勾选 override 才能覆盖（仅追加模式）'
+  }
+  return ''
+})
+
+const saveBlocked = computed<boolean>(() => Boolean(keyError.value || formatError.value))
+
+// ---- 选项 ----
+const typeOptions = computed(() =>
+  (enums.value?.types ?? ['string', 'integer', 'decimal', 'date', 'boolean']).map((t) => ({ label: t, value: t })))
+const withEmpty = (list: string[], emptyLabel = '未声明') =>
+  [{ label: emptyLabel, value: '' }, ...list.map((v) => ({ label: v, value: v }))]
+const checksumOptions = computed(() => withEmpty(enums.value?.checksums ?? []))
+const cleanRuleOptions = computed(() => withEmpty(enums.value?.clean_rules ?? []))
+const maskOptions = computed(() => withEmpty(enums.value?.masks ?? []))
 
 async function load(): Promise<void> {
   if (!cs.currentCaseId) {
-    doc.value = null
+    sharedDoc.value = industryDoc.value = caseDoc.value = null
     return
   }
   loading.value = true
+  const cid = cs.currentCaseId
   try {
-    doc.value = await dataElementsApi.get(cs.currentCaseId)
+    const [sh, ind, cse, en, refs] = await Promise.all([
+      dataElementsApi.listShared(cid),
+      dataElementsApi.listIndustry(cid),
+      dataElementsApi.get(cid),
+      dataElementsApi.enums(cid),
+      dataElementsApi.references(cid),
+    ])
+    sharedDoc.value = sh
+    industryDoc.value = ind
+    caseDoc.value = cse
+    enums.value = en
+    refsByElement.value = refs.by_element ?? {}
   } catch (e) {
     message.error(isApiError(e) ? e.message : presentError(e).title)
   } finally {
@@ -65,47 +195,109 @@ async function load(): Promise<void> {
 }
 
 watch(() => cs.currentCaseId, load, { immediate: true })
+watch(activeLayer, () => {
+  selectedKey.value = null
+  form.value = null
+  isNew.value = false
+})
 
-function startEdit(): void {
-  editText.value = JSON.stringify(doc.value, null, 2)
-  editError.value = ''
-  editing.value = true
+function selectElement(key: string): void {
+  selectedKey.value = key
+  isNew.value = false
+  sample.value = ''
+  form.value = specToForm(key, layerDocs.value[activeLayer.value].elements[key] ?? {})
 }
 
-const confirmOpen = ref(false)
-const confirmReason = ref('')
-const confirmSaving = ref(false)
+function startNew(): void {
+  selectedKey.value = null
+  isNew.value = true
+  sample.value = ''
+  form.value = {
+    key: 'DE_', name: '', type: 'string', length: null, format: '',
+    checksum: '', sensitive: false, mask: '', cleanRule: '', override: false,
+  }
+}
 
-function askSave(): void {
-  try {
-    const parsed = JSON.parse(editText.value)
-    if (!parsed.elements || typeof parsed.elements !== 'object') {
-      editError.value = '必须包含 elements 对象（编码 → 数据元定义）'
-      return
-    }
-  } catch (e) {
-    editError.value = `JSON 格式错误：${(e as Error).message}`
+function refsOf(key: string): DataElementRefLocation[] {
+  return refsByElement.value[key] ?? []
+}
+
+/** 覆盖标注 tooltip（UC-S3-8）：上层值 → 本层值 */
+function overrideTooltip(key: string): string {
+  const own = layerDocs.value[activeLayer.value].elements[key]
+  const diffs = diffOverride(upperSpec(key), own ?? {})
+  if (!diffs.length) return '与上层声明一致'
+  const src = activeLayer.value === 'case' ? '本案件' : LAYER_META[activeLayer.value].label
+  return diffs.map((d) => `${d.field}：上层 ${d.upper} → ${src} ${d.lower}`).join('\n')
+}
+
+// ---- 保存 ----
+function buildDoc(): DataElementsDoc {
+  const doc = layerDocs.value[activeLayer.value]
+  const elements = upsertElement(doc, (form.value as ElementForm).key.trim(), pendingIsDelete.value ? null : builtSpec.value)
+  return { ...doc, elements }
+}
+
+function askSaveDelete(): void {
+  if (!form.value) return
+  const errs: string[] = []
+  if (keyError.value) errs.push(keyError.value)
+  if (formatError.value) errs.push(formatError.value)
+  if (errs.length) {
+    message.error(errs.join('；'))
     return
+  }
+  const layerLabel = LAYER_META[activeLayer.value].label
+  if (activeLayer.value === 'shared' || activeLayer.value === 'industry') {
+    confirmDetail.value = `⚠ ${layerLabel}层是标准层口径，改动将影响所有案件。`
+  } else {
+    confirmDetail.value = `${layerLabel}层 data_elements.json 变更（类型/长度/敏感/枚举口径），下次装载生效。`
+  }
+  if (pendingIsDelete.value) {
+    const refs = selectedKey.value ? refsOf(selectedKey.value) : []
+    if (refs.length) {
+      const locs = refs.map((r) => `${r.object}.${r.property}`).join('、')
+      confirmDetail.value += ` 🔴 该数据元仍被 ${refs.length} 处对象属性引用（${locs}），删除后装载将失败，确认继续？`
+    } else {
+      confirmDetail.value += ' 操作：删除该数据元。'
+    }
+  } else if (selectedKey.value) {
+    confirmDetail.value += ` 操作：更新 ${selectedKey.value}。`
+  } else {
+    confirmDetail.value += ` 操作：新建 ${(form.value as ElementForm).key.trim()}。`
   }
   confirmReason.value = ''
   confirmOpen.value = true
 }
 
+function askSave(): void {
+  pendingIsDelete.value = false
+  askSaveDelete()
+}
+
+function askDelete(): void {
+  pendingIsDelete.value = true
+  askSaveDelete()
+}
+
 async function doSave(): Promise<void> {
   if (!cs.currentCaseId) return
-  let parsed: DataElementsDoc
-  try {
-    parsed = JSON.parse(editText.value) as DataElementsDoc
-  } catch (e) {
-    editError.value = `JSON 格式错误：${(e as Error).message}`
-    return
-  }
+  const doc = buildDoc()
+  const cid = cs.currentCaseId
   confirmSaving.value = true
   try {
-    await dataElementsApi.save(cs.currentCaseId, parsed, confirmReason.value)
+    if (activeLayer.value === 'shared') {
+      await dataElementsApi.saveShared(cid, doc, confirmReason.value)
+    } else if (activeLayer.value === 'industry') {
+      await dataElementsApi.saveIndustry(cid, doc, confirmReason.value)
+    } else {
+      await dataElementsApi.save(cid, doc, confirmReason.value)
+    }
     message.success('数据元定义已保存并留痕；新口径在下次装载/RESCAN 生效')
     confirmOpen.value = false
-    editing.value = false
+    selectedKey.value = null
+    form.value = null
+    isNew.value = false
     await load()
   } catch (e) {
     message.error(isApiError(e) ? e.message : presentError(e).title)
@@ -132,42 +324,174 @@ async function doSave(): Promise<void> {
       </div>
 
       <NSpin :show="loading">
-        <div class="toolbar">
-          <span class="dim">共 {{ rows.length }} 个数据元</span>
-          <NButton v-if="!editing" type="primary" size="small" :disabled="!canWrite" @click="startEdit">
-            {{ canWrite ? '编辑整包 JSON' : '🔒 需偏将及以上' }}
-          </NButton>
+        <!-- F2.1 三层切换（E3-1：无行业层只显示两层，不报错） -->
+        <NTabs v-model:value="activeLayer" type="segment" size="small" class="layer-tabs">
+          <NTabPane name="shared">
+            <template #tab>🌐 全域 {{ counts.shared }}</template>
+          </NTabPane>
+          <NTabPane v-if="industry" name="industry">
+            <template #tab>🏭 行业·{{ industry }} {{ counts.industry }}</template>
+          </NTabPane>
+          <NTabPane name="case">
+            <template #tab>📁 本案件 {{ counts.case }}</template>
+          </NTabPane>
+        </NTabs>
+
+        <!-- F2.3 只读提示（§8.4） -->
+        <div v-if="!canWriteActive" class="hint-banner">
+          🔒 {{ LAYER_META[activeLayer].label }}层数据元{{ activeLayer === 'case' ? '需偏将及以上' : '仅本体管理员（且职级 ≥ 偏将）' }}可修改。你正在以只读方式查看。
         </div>
 
-        <div v-if="!editing" class="grid-wrap">
-          <table class="grid">
-            <thead>
-              <tr><th>编码</th><th>名称</th><th>类型</th><th>长度</th><th>敏感</th><th>遮蔽</th><th>枚举值</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in rows" :key="r.code">
-                <td class="mono">{{ r.code }}</td>
-                <td>{{ r.name }}</td>
-                <td><NTag size="tiny" :bordered="false">{{ r.type }}</NTag></td>
-                <td>{{ r.length ?? '—' }}</td>
-                <td>
-                  <NTag v-if="r.sensitive" size="tiny" type="error" :bordered="false">敏感</NTag>
-                  <span v-else class="dim">—</span>
-                </td>
-                <td>{{ r.mask ?? '—' }}</td>
-                <td>{{ r.enumCount ? `${r.enumCount} 项` : '—' }}</td>
-              </tr>
-              <tr v-if="!rows.length"><td colspan="7" class="dim empty-row">暂无数据元定义</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <div class="body-cols">
+          <!-- 左：条目列表 -->
+          <div class="list-col">
+            <div class="list-head">
+              <span class="dim">{{ LAYER_META[activeLayer].icon }} {{ LAYER_META[activeLayer].label }}层 · {{ layerRows.length }} 项</span>
+              <NButton
+                v-if="canWriteActive"
+                type="primary" size="tiny" secondary
+                :disabled="isNew"
+                @click="startNew"
+              >+ 新建</NButton>
+            </div>
+            <button
+              v-for="[key, spec] in layerRows" :key="key"
+              type="button" class="elem-item"
+              :class="{ active: selectedKey === key && !isNew }"
+              @click="selectElement(key)"
+            >
+              <span class="mono elem-key">{{ key }}</span>
+              <span class="elem-name dim">{{ String(spec.name ?? '') }}</span>
+              <NTooltip v-if="upperSpec(key) !== undefined" trigger="hover">
+                <template #trigger>
+                  <NTag size="tiny" type="warning" :bordered="false">覆盖上层</NTag>
+                </template>
+                <span style="white-space: pre-line">{{ overrideTooltip(key) }}</span>
+              </NTooltip>
+              <NTag v-if="caseOverrides[key]" size="tiny" :bordered="false">已被案件层覆盖</NTag>
+            </button>
+            <div v-if="!layerRows.length" class="dim empty-hint">该层暂无数据元声明</div>
+          </div>
 
-        <div v-else class="edit-wrap">
-          <NInput v-model:value="editText" type="textarea" :rows="20" class="mono edit-area" />
-          <div v-if="editError" class="field-error">{{ editError }}</div>
-          <div class="edit-actions">
-            <NButton size="small" @click="editing = false">取消</NButton>
-            <NButton type="primary" danger size="small" @click="askSave">校验并保存（危险变更）</NButton>
+          <!-- 右：编辑区（F1.1 字段表单） -->
+          <div class="editor-col">
+            <EmptyState
+              v-if="!form"
+              type="empty"
+              title="选择左侧数据元"
+              desc="或点击「+ 新建」在当前层新增数据元；全域/行业层仅本体管理员可改。"
+            />
+            <template v-else>
+              <div v-if="!canWriteActive" class="readonly-mask">
+                <div class="hint-banner" style="margin-bottom: 8px">
+                  🔒 只读查看：{{ LAYER_META[activeLayer].label }}层 {{ isNew ? '' : form.key }}
+                </div>
+              </div>
+
+              <!-- §8.2 覆盖关系提示 -->
+              <div v-if="overrideDiffs.length && !isNew" class="warn-banner">
+                本数据元在<span class="mono">{{ activeLayer === 'case' ? '全域/行业层' : '上层' }}</span>已定义，{{ LAYER_META[activeLayer].label }}层已覆盖其
+                {{ overrideDiffs.map((d) => d.field).join('、') }} 字段：
+                {{ overrideDiffs.map((d) => `上层 ${d.upper} → ${LAYER_META[activeLayer].label} ${d.lower}`).join('；') }}
+              </div>
+
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">编码 {{ isNew ? '' : '🔒' }}</span>
+                  <NInput
+                    v-model:value="form.key"
+                    size="small" class="mono"
+                    :disabled="!isNew || !canWriteActive"
+                    placeholder="DE_XXX"
+                  />
+                  <span v-if="keyError" class="field-error">{{ keyError }}</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">名称（显示名）</span>
+                  <NInput v-model:value="form.name" size="small" :disabled="!canWriteActive" placeholder="如：公民身份号码" />
+                </label>
+                <label class="field">
+                  <span class="field-label">类型</span>
+                  <NSelect v-model:value="form.type" size="small" :options="typeOptions" :disabled="!canWriteActive" />
+                </label>
+                <label class="field">
+                  <span class="field-label">长度</span>
+                  <NInputNumber v-model:value="form.length" size="small" :min="1" :precision="0" :disabled="!canWriteActive" placeholder="正整数，可空" class="w-full" />
+                </label>
+                <label class="field field-wide">
+                  <span class="field-label">format（正则）</span>
+                  <NInput
+                    v-model:value="form.format" size="small" class="mono"
+                    :disabled="!canWriteActive"
+                    :status="formatError ? 'error' : undefined"
+                    placeholder="如 ^1[3-9]\d{9}$；留空 = 不校验"
+                  />
+                  <span v-if="formatError" class="field-error">{{ formatError }}</span>
+                  <!-- F1.2 试匹配 -->
+                  <div class="match-row">
+                    <NInput v-model:value="sample" size="small" class="mono" placeholder="试匹配样例值" />
+                    <div class="preset-chips">
+                      <NTag
+                        v-for="p in PRESET_SAMPLES" :key="p.label"
+                        size="tiny" :bordered="false" class="preset-chip"
+                        @click="sample = p.value"
+                      >{{ p.label }}</NTag>
+                    </div>
+                    <span v-if="matchState === true" class="match-hit">✅ 命中</span>
+                    <span v-else-if="matchState === false" class="field-warn">❌ 未命中 —— 请检查正则或样例值</span>
+                    <span v-else class="dim match-idle">未输入</span>
+                  </div>
+                </label>
+                <label class="field">
+                  <span class="field-label">checksum（校验算法）</span>
+                  <NSelect v-model:value="form.checksum" size="small" :options="checksumOptions" :disabled="!canWriteActive" />
+                </label>
+                <label class="field">
+                  <span class="field-label">遮蔽 mask</span>
+                  <NSelect v-model:value="form.mask" size="small" :options="maskOptions" :disabled="!canWriteActive" />
+                </label>
+                <label class="field">
+                  <span class="field-label">clean_rule（清洗 op）</span>
+                  <NSelect
+                    v-model:value="form.cleanRule" size="small"
+                    :options="cleanRuleOptions" :disabled="!canWriteActive || multiClean"
+                  />
+                  <span v-if="multiClean" class="field-warn">
+                    多段清洗规则（{{ (originalSpec?.clean_rule as string[]).length }} 段）在表单中只读，保存时原样保留
+                  </span>
+                </label>
+                <label class="field">
+                  <span class="field-label">敏感</span>
+                  <NCheckbox v-model:checked="form.sensitive" :disabled="!canWriteActive">敏感数据元（需遮蔽口径）</NCheckbox>
+                </label>
+                <label v-if="overrideNeeded || form.override" class="field">
+                  <span class="field-label">覆盖声明</span>
+                  <NCheckbox v-model:checked="form.override" :disabled="!canWriteActive">
+                    override：显式覆盖上层同名数据元（记入审计）
+                  </NCheckbox>
+                </label>
+              </div>
+
+              <!-- R5/§8.6 未知字段保留提示 -->
+              <div v-if="unknownFieldNames.length" class="hint-banner">
+                本数据元有 {{ unknownFieldNames.length }} 个界面未覆盖字段（{{ unknownFieldNames.join('、') }}），已原样保留。
+              </div>
+
+              <div class="edit-actions">
+                <NButton
+                  v-if="!isNew && canWriteActive"
+                  size="small" type="warning" ghost
+                  @click="askDelete"
+                >删除</NButton>
+                <span class="spacer" />
+                <NButton size="small" @click="form = null; selectedKey = null; isNew = false">取消</NButton>
+                <NButton
+                  type="primary" danger size="small"
+                  :disabled="!canWriteActive || !dirty || saveBlocked"
+                  @click="askSave"
+                >{{ saveBlocked ? '校验未通过' : '校验并保存（危险变更）' }}</NButton>
+              </div>
+            </template>
           </div>
         </div>
       </NSpin>
@@ -177,7 +501,7 @@ async function doSave(): Promise<void> {
       v-model:show="confirmOpen"
       v-model:reason="confirmReason"
       :dangerous="true"
-      detail="data_elements.json 整包更新（类型/长度/敏感/枚举口径），下次装载生效"
+      :detail="confirmDetail"
       :loading="confirmSaving"
       title="数据元变更确认"
       @confirm="doSave"
@@ -193,16 +517,53 @@ async function doSave(): Promise<void> {
   background: var(--sun-warn-bg); border: 1px solid var(--sun-warn-border);
   color: var(--sun-warn-text); border-radius: 6px; padding: 8px 12px; font-size: 12px;
 }
-.toolbar { display: flex; justify-content: space-between; align-items: center; }
-.grid-wrap { border: 1px solid var(--sun-border); border-radius: 6px; background: var(--sun-bg-card); overflow: auto; }
-.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
-.grid th, .grid td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--sun-border); }
-.grid th { color: var(--sun-text-tertiary); font-weight: 500; font-size: 12px; white-space: nowrap; }
-.empty-row { text-align: center; padding: 16px; }
-.edit-wrap { display: flex; flex-direction: column; gap: 8px; }
-.edit-area { font-size: 12px; }
+.layer-tabs { max-width: 560px; }
+.hint-banner {
+  background: var(--sun-bg-card-hover); border: 1px dashed var(--sun-border);
+  border-radius: 6px; padding: 8px 12px; font-size: 12px; color: var(--sun-text-secondary);
+}
+.warn-banner {
+  background: var(--sun-warn-bg); border: 1px solid var(--sun-warn-border);
+  color: var(--sun-warn-text); border-radius: 6px; padding: 8px 12px; font-size: 12px;
+}
+.body-cols { display: flex; gap: 12px; align-items: flex-start; }
+.list-col {
+  flex: 0 0 300px; display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--sun-border); border-radius: 6px; background: var(--sun-bg-card);
+  padding: 10px; max-height: 60vh; overflow: auto;
+}
+.list-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; padding-bottom: 6px; }
+.elem-item {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  border: none; background: transparent; font: inherit; color: inherit;
+  border-radius: 6px; padding: 6px 8px; cursor: pointer;
+}
+.elem-item:hover { background: var(--sun-bg-card-hover); }
+.elem-item.active { background: var(--sun-input-bg); outline: 1px solid var(--sun-border-active); }
+.elem-key { font-size: 13px; font-weight: 500; }
+.elem-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-hint { font-size: 12px; padding: 12px 6px; }
+.editor-col {
+  flex: 1; min-width: 0; border: 1px solid var(--sun-border); border-radius: 6px;
+  background: var(--sun-bg-card); padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field-wide { grid-column: 1 / -1; }
+.field-label { font-size: 12px; color: var(--sun-text-secondary); }
 .field-error { font-size: 12px; color: var(--sun-error-text); }
-.edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.field-warn { font-size: 12px; color: var(--sun-warn-text); }
+.w-full { width: 100%; }
+.match-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+.match-row > :first-child { flex: 0 0 240px; }
+.preset-chips { display: flex; gap: 4px; }
+.preset-chip { cursor: pointer; }
+.match-hit { font-size: 12px; color: var(--sun-success-text, #2e7d32); }
+.match-idle { font-size: 12px; }
+.readonly-mask { font-size: 12px; }
+.edit-actions { display: flex; align-items: center; gap: 8px; }
+.spacer { flex: 1; }
 .mono { font-family: var(--sun-font-mono); }
 .dim { color: var(--sun-text-tertiary); }
 </style>

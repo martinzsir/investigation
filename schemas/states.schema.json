@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "states.schema.json",
+  "title": "Ontology Clue States (schema_version=2)",
+  "description": "REQ-R6 线索状态机声明化：状态集 + 合法迁移表；requires_role=human 的受控终态机器会话无权置位",
+  "type": "object",
+  "required": ["schema_version", "states", "transitions"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "_note": {"type": "string"},
+    "states": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "terminal", "requires_role"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "label": {"type": "string"},
+          "tone": {"enum": ["warning", "info", "muted", "success", "danger"]},
+          "terminal": {"type": "boolean"},
+          "requires_role": {"enum": ["any", "human"]},
+          "requires_basis": {"type": "boolean"},
+          "sla_days": {"type": "integer", "minimum": 0},
+          "outcome": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": {"type": "string", "minLength": 1},
+          "to": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

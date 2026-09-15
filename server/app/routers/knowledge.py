@@ -26,6 +26,7 @@ from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
+    copy_layer_dirs,
     record_config_audit,
     require_analyst,
     snapshot_paths,
@@ -77,10 +78,8 @@ def save_knowledge(case_id: str, body: KnowledgeIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
-        shared_src = base_dir / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
         atomic_write_json(tmp_root / pack_id / "case_knowledge.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)
@@ -125,10 +124,8 @@ def add_knowledge(case_id: str, body: KnowledgeIn,
     with tempfile.TemporaryDirectory() as td:
         tmp_root = Path(td)
         shutil.copytree(snap_dir, tmp_root / pack_id)
-        # 复制 _shared 全域层：objects.json 引用 DE_IDCARD 等全域数据元
-        shared_src = base_dir / "_shared"
-        if shared_src.is_dir():
-            shutil.copytree(shared_src, tmp_root / "_shared")
+        # 复制 _shared + _industry 上游层（数据元三层合并，S0-1）
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
         atomic_write_json(tmp_root / pack_id / "case_knowledge.json", data)
         try:
             load_pack(pack_id, base_dir=tmp_root)
