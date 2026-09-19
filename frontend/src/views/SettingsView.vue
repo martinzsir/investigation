@@ -3,7 +3,7 @@
 // 纪律（B2 fail-closed）：非 admin 不渲染管理面数值（后端 GET 同样 403，不靠 403 探测）；
 // 唯 health 登录可读。写操作 reason 必填（ConfigConfirmDialog 危险项）+ 键白名单/区间
 // 后端校验；红线键（llm_enabled/audit_immutable）永不可写，静态锁定行展示。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   NSpin, NButton, NInputNumber, NInput, NSelect, NTag, useMessage,
 } from 'naive-ui'
@@ -20,10 +20,30 @@ import {
   type KeyMeta,
 } from '../domain/settingsModel'
 import ConfigConfirmDialog from '../components/config/ConfigConfirmDialog.vue'
+import LensSwitchPanel from '../components/config/LensSwitchPanel.vue'
 import EmptyState from '../components/common/EmptyState.vue'
+import { useCaseStore } from '../stores/case'
 
 const auth = useAuthStore()
 const message = useMessage()
+
+// ---------- 案件级镜头启停（LensSwitchPanel 共用；案件下拉随案件列表） ----------
+const caseStore = useCaseStore()
+const lensCaseId = ref<string>('')
+const caseOptions = computed(() =>
+  caseStore.cases.map((c) => ({ label: c.name || c.id, value: c.id })),
+)
+
+// 默认选中全局当前案件（案件门户切换的那个）；无则空置由用户手选
+watch(
+  () => caseStore.cases.length,
+  () => {
+    if (!lensCaseId.value && caseStore.currentCaseId) {
+      lensCaseId.value = caseStore.currentCaseId
+    }
+  },
+  { immediate: true },
+)
 
 const isAdmin = computed(() => canViewAdminSettings(auth.isAdmin))
 
@@ -100,6 +120,8 @@ async function loadAdmin(): Promise<void> {
 onMounted(() => {
   void loadHealth()
   void loadAdmin()
+  // 镜头启停卡片下拉数据源（失败静默：卡片显示空下拉，不阻塞设置页）
+  if (caseStore.cases.length === 0) void caseStore.loadCases().catch(() => {})
 })
 
 function changedKeys(sec: typeof section.value): string[] {
@@ -219,6 +241,28 @@ const confirmDetail = computed(() => {
         </div>
         <p v-if="health" class="dim worker-note">{{ health.worker.note }}</p>
       </NSpin>
+    </div>
+
+    <!-- 案件级镜头启停：登录可读可见（启停写权限由后端 require_analyst 兜底） -->
+    <div class="card">
+      <div class="card-title">镜头启停（案件级）</div>
+      <div class="edit-row">
+        <span class="edit-label">选择案件</span>
+        <NSelect
+          v-model:value="lensCaseId"
+          :options="caseOptions"
+          size="small"
+          class="feature-select"
+          filterable
+          clearable
+          placeholder="选择案件后配置该案件的检测镜头"
+          data-testid="settings-lens-case"
+        />
+      </div>
+      <LensSwitchPanel v-if="lensCaseId" :case-id="lensCaseId" />
+      <p v-else class="dim note">
+        镜头启停是案件级配置（写该案件的 lenses.json，影响其 RESCAN 批量检测），非平台全局项。
+      </p>
     </div>
 
     <!-- 非管理员：fail-closed 锁定面板（不渲染任何管理数值） -->

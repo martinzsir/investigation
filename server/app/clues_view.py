@@ -25,9 +25,27 @@ from server.app import ontology_meta
 from server.app.clues_artifact import (
     artifact_path,
     latest_artifact_version,
+    load_lens_runs,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _with_lens_runs(case_dir: Path, version: int,
+                    raws: list[dict]) -> list[dict]:
+    """并入定向镜头运行线索（lens_runs/v{N}/*.json 补充产物）。
+
+    主产物随版本不可变（D-M3-2），定向调度（TASK_LENS_RUN）线索落独立
+    补充产物、挂产生它的版本：列表/详情/抑制读面统一在此并线；版本前进
+    （RESCAN）后随旧版本自然失效，按需重跑。损坏运行文件在
+    load_lens_runs 内跳过，不拖垮读面。
+    """
+    extra: list[dict] = []
+    for run in load_lens_runs(case_dir, version):
+        for c in run.get("clues") or []:
+            if isinstance(c, dict):
+                extra.append(c)
+    return [*raws, *extra] if extra else raws
 
 
 def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | None]:
@@ -36,12 +54,14 @@ def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | No
         p = artifact_path(case_dir, version)
         if p.exists():
             data = json.loads(p.read_text(encoding="utf-8"))
-            return data.get("clues", []), version
+            return (_with_lens_runs(case_dir, version,
+                                    data.get("clues", [])), version)
     latest = latest_artifact_version(case_dir)
     if latest is None:
         return [], None
     data = json.loads(artifact_path(case_dir, latest).read_text(encoding="utf-8"))
-    return data.get("clues", []), latest
+    return (_with_lens_runs(case_dir, latest,
+                            data.get("clues", [])), latest)
 
 
 def _status_of(raw: dict, state_map: dict[str, dict]) -> dict:

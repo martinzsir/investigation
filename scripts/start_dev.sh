@@ -108,7 +108,7 @@ usage_exit() {
 kill_pids() {
     local name="$1"; shift
     local pids alive
-    pids=$(printf '%s\n' "$@" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')
+    pids=$(printf '%s\n' "$@" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ' || true)
     [ -z "$pids" ] && return 0
     echo "[start_dev] 停止 $name (PID: $pids)"
     # shellcheck disable=SC2086
@@ -153,7 +153,7 @@ stop_api() {
     # --reload 模式下真正监听端口的是 multiprocessing spawn 子进程，
     # 其命令行不含 uvicorn，需按监听端口兜底定位
     seed="$seed $(ss -tlnp 2>/dev/null | grep ":$PORT[[:space:]]" | grep -oP 'pid=\K[0-9]+' || true)"
-    seed=$(printf '%s\n' $seed | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')
+    seed=$(printf '%s\n' $seed | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ' || true)
     if [ -z "$seed" ]; then
         echo "[start_dev] API 未在运行"
         return 0

@@ -315,6 +315,7 @@ async function previewFinding(key: string, imageUri: string): Promise<void> {
     message.error(presentError(e).title, { duration: 5000 })
   }
 }
+
 </script>
 
 <template>

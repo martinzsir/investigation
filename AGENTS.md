@@ -76,7 +76,7 @@ wsl -u root -- bash -c "cd /mnt/d/dev/inves_duckdb && /root/.venvs/inves/bin/pyt
 
 ## 验证
 
-改完代码跑 `python run_tests.py`。**138 个测试组**全绿才算完成。组名清单以 `run_tests.py` 的 `GROUPS` 注册表为准（新增测试组须同步注册；最近新增 `pollution` = 包缓存污染防护）。
+改完代码跑 `python run_tests.py`。**140 个测试组**全绿才算完成。组名清单以 `run_tests.py` 的 `GROUPS` 注册表为准（新增测试组须同步注册；最近新增 `lensrun` = 画布定向镜头带参调度，`lensswitch` = 案件级镜头启停）。
 改了 MCP 相关额外跑 `python -m scripts.mcp_client_test`。
 
 ## 已知坑

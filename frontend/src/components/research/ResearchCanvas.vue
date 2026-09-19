@@ -7,7 +7,7 @@
 // 「节点-关系列表」（禁空白）；结构写操作一律走专用端点（逐动作审计），
 // 坐标/钉住走防抖 PATCH 白名单；组件不直读数据层、不生成自由 SQL。
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { NAlert, NButton, NIcon, NSpin, useDialog, useMessage } from 'naive-ui'
+import { NAlert, NButton, NIcon, NModal, NSpin, useDialog, useMessage } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { canvasApi } from '../../api/endpoints/canvas'
 import { vlmApi, type VlmMaterialFindings } from '../../api/endpoints/vlm'
@@ -104,6 +104,9 @@ import ReportPanel from './ReportPanel.vue'
 import SnapshotDrawer from './SnapshotDrawer.vue'
 import EdgeCreatePopover from './EdgeCreatePopover.vue'
 import FunctionQueryModal from './FunctionQueryModal.vue'
+import LensRunModal from './LensRunModal.vue'
+import LensSwitchPanel from '../config/LensSwitchPanel.vue'
+import { lensesApi, type LensSpecItem } from '../../api/endpoints/lenses'
 import {
   RESEARCH_CARD_NODE,
   ensureResearchCardNode,
@@ -2234,6 +2237,69 @@ async function submitFunctionQuery(payload: {
   }
 }
 
+// ======================================================================
+// 定向镜头带参调度（镜头包 requires_params；画布选中主体预填参数）
+// ======================================================================
+const lrShow = ref(false)
+const lrLenses = ref<LensSpecItem[]>([])
+const lrBusy = ref(false)
+
+/** 选中主体标签预填同名参数（镜头按 raw_name/代理键解析） */
+const lrPrefill = computed<Record<string, unknown>>(() => {
+  const id = selectedNodeId.value
+  const label = id ? nodeLabel(id) : ''
+  return label ? { target_subject: label, subject_a: label, project: label } : {}
+})
+
+async function openLensRun(): Promise<void> {
+  lrBusy.value = false
+  try {
+    const r = await lensesApi.list(props.caseId)
+    // 仅确定性、包级与案件级均启用的定向镜头可带参调度
+    lrLenses.value = (r.lenses ?? []).filter(
+      (l) =>
+        l.requires_params &&
+        l.enabled &&
+        l.pack_enabled &&
+        l.mode === 'deterministic',
+    )
+  } catch (e) {
+    message.error(presentError(e).title)
+    lrLenses.value = []
+  }
+  lrShow.value = true
+}
+
+async function submitLensRun(payload: {
+  skill_id: string
+  params: Record<string, unknown>
+}): Promise<void> {
+  lrBusy.value = true
+  try {
+    const r = await lensesApi.run(props.caseId, payload.skill_id, {
+      params: payload.params,
+    })
+    lrShow.value = false
+    message.success(
+      `定向镜头已入队（任务 ${r.task.id}），运行完成后线索进线索列表`,
+      { duration: 5000 },
+    )
+  } catch (e) {
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    lrBusy.value = false
+  }
+}
+
+// ======================================================================
+// 案件级镜头启停（lenses.json；清单/开关在 LensSwitchPanel，案件切换自加载）
+// ======================================================================
+const lsShow = ref(false)
+
+function openLensSwitch(): void {
+  lsShow.value = true
+}
+
 async function load(): Promise<void> {
   state.value = 'loading'
   errorMsg.value = ''
@@ -2618,6 +2684,8 @@ function nodeLabel(id: string): string {
         @toggle-connect="toggleConnectMode"
         @open-snapshots="openSnapshots"
         @open-function-query="openFunctionQuery"
+        @open-lens-run="openLensRun"
+        @open-lens-switch="openLensSwitch"
         @open-chat="openChat"
         @open-report="openReport"
         @expand-all-details="onExpandAllDetails"
@@ -2838,6 +2906,26 @@ function nodeLabel(id: string): string {
       :busy="fqBusy"
       @submit="submitFunctionQuery"
     />
+
+    <!-- 定向镜头带参调度（requires_params 镜头；选中主体预填） -->
+    <LensRunModal
+      v-model:show="lrShow"
+      :lenses="lrLenses"
+      :busy="lrBusy"
+      :prefill="lrPrefill"
+      @submit="submitLensRun"
+    />
+
+    <!-- 案件级镜头启停（lenses.json；与设置页共用 LensSwitchPanel） -->
+    <NModal
+      v-model:show="lsShow"
+      preset="card"
+      title="镜头启停（本案件）"
+      class="lens-switch-modal"
+      data-testid="lens-switch-modal"
+    >
+      <LensSwitchPanel :case-id="props.caseId" />
+    </NModal>
 
     <!-- RC-202 人工节点表单 -->
     <ManualNodeModal

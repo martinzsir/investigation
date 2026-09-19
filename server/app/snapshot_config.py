@@ -83,6 +83,46 @@ def snapshot_industry(snap_dir: Path) -> str | None:
         return None
 
 
+# ----------------------------------------------------------------------
+# 案件级镜头启停（lenses.json，类比规则工坊）
+# ----------------------------------------------------------------------
+# 镜头是平台级插件（packs/* 自枚举），不属于本体声明——启停文件放
+# cases/<cid>/lenses.json（案件快照根，与 state.sqlite 同级），不进本体
+# 指纹/归档（改启停 ≠ 改本体版本）；detect 侧读取生效。
+
+LENSES_FILENAME = "lenses.json"
+
+
+def lens_overrides_path(case_dir: str | Path) -> Path:
+    """案件镜头启停文件路径：cases/<cid>/lenses.json。"""
+    return Path(case_dir) / LENSES_FILENAME
+
+
+def load_lens_overrides(case_dir: str | Path) -> dict[str, bool]:
+    """读案件镜头启停覆盖 → {skill_id: enabled}；缺失/损坏回落 {}。
+
+    schema：{"schema_version": 1, "lenses": {"<skill_id>": {"enabled": bool}}}
+    容错口径同快照 thresholds.json（缺失/非法回落默认）：文件损坏/条目
+    非法只忽略该条目，不让配置问题拖垮 BUILD；仅 enabled=false 语义为
+    停用（true 为显式确认，不复活包级停用——见 case_batch_lens_ids）。
+    """
+    path = lens_overrides_path(case_dir)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("lenses")
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, bool] = {}
+    for sid, entry in raw.items():
+        if isinstance(entry, dict) and isinstance(entry.get("enabled"), bool):
+            out[str(sid)] = entry["enabled"]
+    return out
+
+
 def copy_layer_dirs(snap_dir: Path, base_dir: Path, tmp_root: Path) -> None:
     """复制数据元上游层到临时校验副本（S0-1 三层合并）：
     _shared 全域层 + _industry/<行业> 行业叠加层。

@@ -18,6 +18,8 @@ import {
   RemoveOutline,
   ScanOutline,
   DocumentOutline,
+  TelescopeOutline,
+  SettingsOutline,
 } from '@vicons/ionicons5'
 
 defineProps<{
@@ -44,6 +46,10 @@ const emit = defineEmits<{
   (e: 'toggle-connect'): void
   (e: 'open-snapshots'): void
   (e: 'open-function-query'): void
+  /** 定向镜头带参调度（画布选中主体预填参数） */
+  (e: 'open-lens-run'): void
+  /** 案件级镜头启停（lenses.json，RESCAN 后对批量检测生效） */
+  (e: 'open-lens-switch'): void
   /** M5 RC-301：打开画布问答侧栏 */
   (e: 'open-chat'): void
   /** M6 RC-304：打开研判报告面板 */
@@ -298,6 +304,36 @@ const LAYOUT_OPTIONS = [
           </NButton>
         </template>
         对白名单只读 Function 发起扩展查询，结果作为节点挂到画布
+      </NTooltip>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            size="small"
+            class="tb-btn"
+            data-testid="tb-lens-run"
+            @click="emit('open-lens-run')"
+          >
+            <NIcon :component="TelescopeOutline" />
+            定向镜头
+          </NButton>
+        </template>
+        对选中主体定向运行带参镜头（关系圈层/事件序列/时间碰撞等），产出线索进线索列表
+      </NTooltip>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            size="small"
+            class="tb-btn"
+            data-testid="tb-lens-switch"
+            @click="emit('open-lens-switch')"
+          >
+            <NIcon :component="SettingsOutline" />
+            镜头启停
+          </NButton>
+        </template>
+        本案件批量检测镜头的启停配置（停用后 RESCAN 不再产出该镜头线索）
       </NTooltip>
 
       <NTooltip trigger="hover">

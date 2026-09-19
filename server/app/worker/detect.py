@@ -5,6 +5,8 @@ BUILD/RESCAN 成功后的线索检测编排（D-M3-2：线索报告随版本不�
   语义层新版本库 → 规则手册全量（案件快照 rules.json——规则工坊编辑/启停/
   调参对它生效，base_dir 指向案件快照）→ findings
   → LineageClue（复用 skills 注册适配层，转换逻辑单点维护）
+  → 案件级镜头启停过滤（案件快照 lenses.json——启停面板写入，detect 按它
+    过滤批量镜头；定向镜头缺必填参数仍跳过留痕）
   → 血缘去重/优先级（与 run_all 同路径）
   → cases/{cid}/artifacts/clues_v{N}.json。
 
@@ -17,11 +19,13 @@ from pathlib import Path
 from typing import Any
 
 from core import lineage
+from core.pack_loader import case_batch_lens_ids
 from core.registry import get_registry, skill_invoke
 from core.rules import run_rules
 from core.store import Store as CoreStore
 
 from server.app.clues_artifact import save_case_clues
+from server.app.snapshot_config import load_lens_overrides
 
 # 导入即注册五技能到 DEFAULT_REGISTRY（register_all 幂等）
 from skills import registry_bootstrap  # noqa: F401
@@ -57,6 +61,16 @@ def run_detection(*, version_file: Path, case_dir: Path, version: int,
         for sid in ("qi_zheng", "yong_jian"):
             all_clues.extend(skill_invoke(reg, sid, store=det, ctx={}))
 
+        # 2b) P4/P5 镜头包批量接线 + 案件级启停：无必填参数的确定性镜头
+        #     直接调度；定向镜头（target_subject/project 必填）跳过留痕——
+        #     skill_invoke 对必填缺失硬失败，无参调用会拖垮 BUILD；
+        #     案件启停（lenses.json，启停面板写）再过滤一轮，被停镜头
+        #     落 case_disabled 留痕；定向调度入口属画布定向后续批次
+        runnable, requires_params, case_disabled = case_batch_lens_ids(
+            reg, load_lens_overrides(case_dir))
+        for sid in runnable:
+            all_clues.extend(skill_invoke(reg, sid, store=det, ctx={}))
+
         # 3) 血缘去重 + 优先级排序（与 run_all 第 7-8 步同路径）
         merged = lineage.dedupe_and_merge(all_clues, threshold=0.5)
         merged = lineage.prioritize_clues(merged)
@@ -64,4 +78,5 @@ def run_detection(*, version_file: Path, case_dir: Path, version: int,
     finally:
         det.close()
     return {"clues": len(merged), "raw_findings": len(findings),
-            "artifact": str(artifact)}
+            "artifact": str(artifact), "lens_batch_skipped": requires_params,
+            "lens_case_disabled": case_disabled}

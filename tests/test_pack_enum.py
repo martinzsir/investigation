@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.pack_loader import discover
+from core.pack_loader import batch_lens_ids, case_batch_lens_ids, discover
 from core.registry import (
     LineageClue,
     SkillRegistry,
@@ -180,6 +180,137 @@ class PackEnumTests(unittest.TestCase):
             self.assertEqual(s.result_ttl_s, 0)
             self.assertEqual(s.params_schema, {})
             self.assertTrue(callable(s.handler))
+
+    # ------------------------------------------------------------------
+    # 批量调度口径 batch_lens_ids（detect.py / run_all.py 接线共用）
+    # ------------------------------------------------------------------
+
+    def _free_lens_pack(self) -> dict:
+        # deterministic 且无必填参数 → 批量可直接调度
+        return {
+            "pack_id": "free_pack",
+            "skills": [{
+                "skill_id": "free_lens",
+                "name": "无参镜头",
+                "stage": "用间",
+                "consumes_objects": ["org"],
+                "params_schema": {"depth": {"type": "integer"}},
+                "scope": {"reads": ["org"]},
+                "handler": "impl:circle",
+            }],
+        }
+
+    def _targeted_lens_pack(self) -> dict:
+        # deterministic 但有必填参数 → 批量跳过（定向镜头）
+        return {
+            "pack_id": "targeted_pack",
+            "skills": [{
+                "skill_id": "targeted_lens",
+                "name": "定向镜头",
+                "stage": "用间",
+                "consumes_objects": ["org"],
+                "params_schema": {
+                    "target_subject": {"type": "string", "required": True}},
+                "scope": {"reads": ["org"]},
+                "handler": "impl:circle",
+            }],
+        }
+
+    def _draft_lens_pack(self) -> dict:
+        return {
+            "pack_id": "draft_pack",
+            "skills": [{
+                "skill_id": "draft_lens",
+                "name": "草案镜头",
+                "stage": "用间",
+                "mode": "draft",
+                "consumes_objects": ["org"],
+                "external_services": ["vlm"],
+                "timeout_ms": 1000,
+                "result_ttl_s": 60,
+                "params_schema": {"depth": {"type": "integer"}},
+                "scope": {"reads": ["org"]},
+                "handler": "impl:circle",
+            }],
+        }
+
+    def test_batch_lens_ids_split_runnable_and_requires_params(self):
+        _write_pack(self.packs_dir, "free_pack", self._free_lens_pack())
+        _write_pack(self.packs_dir, "targeted_pack",
+                    self._targeted_lens_pack())
+        _write_pack(self.packs_dir, "draft_pack", self._draft_lens_pack())
+        self.reg.register(SkillSpec(
+            skill_id="builtin_marker", name="内置标记", stage="庙算",
+            handler=_marker_handler))
+        discover(self.reg, packs_dir=self.packs_dir)
+        runnable, requires = batch_lens_ids(self.reg)
+        # 无参确定性镜头进 runnable；定向镜头进 requires；draft 与内置两侧都不进
+        self.assertEqual(runnable, ["free_lens"])
+        self.assertEqual(requires, ["targeted_lens"])
+        self.assertNotIn("draft_lens", runnable + requires)
+        self.assertNotIn("builtin_marker", runnable + requires)
+
+    def test_batch_lens_ids_respects_enabled_switch(self):
+        _write_pack(self.packs_dir, "free_pack", self._free_lens_pack())
+        discover(self.reg, packs_dir=self.packs_dir)
+        spec = self.reg.skill("free_lens")
+        spec.enabled = False
+        runnable, requires = batch_lens_ids(self.reg)
+        self.assertEqual(runnable, [])
+        self.assertEqual(requires, [])
+
+    def test_batch_lens_ids_over_real_packs(self):
+        # 真实 packs/：当前 6 个 relation/timeline 镜头全部定向（required），
+        # vlm 为 draft 模式永不批量——两个清单的并集不含内置与 draft
+        from core.pack_loader import DEFAULT_PACKS_DIR
+        discover(self.reg, packs_dir=DEFAULT_PACKS_DIR)
+        runnable, requires = batch_lens_ids(self.reg)
+        for sid in (*runnable, *requires):
+            spec = self.reg.skill(sid)
+            self.assertNotEqual(spec.pack_id, "_builtin")
+            self.assertEqual(spec.mode, "deterministic")
+        for sid in ("xu_shi", "qi_zheng", "yong_jian", "vlm_inspect"):
+            self.assertNotIn(sid, runnable + requires)
+
+    # ------------------------------------------------------------------
+    # 案件级启停过滤 case_batch_lens_ids（detect.py lenses.json 口径）
+    # ------------------------------------------------------------------
+
+    def test_case_batch_lens_ids_disables_lens(self):
+        _write_pack(self.packs_dir, "free_pack", self._free_lens_pack())
+        _write_pack(self.packs_dir, "targeted_pack",
+                    self._targeted_lens_pack())
+        discover(self.reg, packs_dir=self.packs_dir)
+        runnable, requires, disabled = case_batch_lens_ids(
+            self.reg, {"free_lens": False})
+        # 被停镜头移出原清单、落 case_disabled 留痕；定向镜头不受牵连
+        self.assertEqual(runnable, [])
+        self.assertEqual(requires, ["targeted_lens"])
+        self.assertEqual(disabled, ["free_lens"])
+        # enabled=true / 未声明键 = 无操作
+        runnable, requires, disabled = case_batch_lens_ids(
+            self.reg, {"free_lens": True, "targeted_lens": False})
+        self.assertEqual(runnable, ["free_lens"])
+        self.assertEqual(requires, [])
+        self.assertEqual(disabled, ["targeted_lens"])
+
+    def test_case_batch_lens_ids_ignores_unknown_ids(self):
+        _write_pack(self.packs_dir, "free_pack", self._free_lens_pack())
+        discover(self.reg, packs_dir=self.packs_dir)
+        runnable, requires, disabled = case_batch_lens_ids(
+            self.reg, {"ghost_lens": False, "xu_shi": False})
+        # 未知 skill_id / 内置技能的覆盖键一律忽略
+        self.assertEqual(runnable, ["free_lens"])
+        self.assertEqual(disabled, [])
+
+    def test_case_batch_lens_ids_cannot_resurrect_pack_disabled(self):
+        _write_pack(self.packs_dir, "free_pack", self._free_lens_pack())
+        discover(self.reg, packs_dir=self.packs_dir)
+        self.reg.skill("free_lens").enabled = False  # 包级停用（灰度/吊销）
+        # 案件覆盖 true 不能复活平台停用的镜头（batch_lens_ids 就不产出）
+        runnable, requires, disabled = case_batch_lens_ids(
+            self.reg, {"free_lens": True})
+        self.assertEqual((runnable, requires, disabled), ([], [], []))
 
 
 if __name__ == "__main__":

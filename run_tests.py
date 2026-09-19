@@ -239,6 +239,10 @@ GROUPS = {
     "wujianopt":   ("P6 验收① 无五间包底座独立装载（关系/时间镜头可用/消费点降级）", [sys.executable, "-m", "unittest", "tests.test_wujian_optional"]),
     # ---- P8 多模态图像研判（VLM 草案通道，人验闭环） ----
     "vlmpack":     ("P8 多模态图像研判（纯字节 EXIF 剥离/敏感类别 block/草案不落生产/降级有痕/TTL stale/人验后入图入报告）", [sys.executable, "-m", "unittest", "tests.test_vlm_pack"]),
+    # ---- 案件级镜头启停（类比规则工坊，lenses.json + detect 过滤） ----
+    "lensswitch":  ("案件级镜头启停（lenses.json 读写/RESCAN/权限/detect 按快照过滤留痕）", [sys.executable, "-m", "unittest", "tests.test_lens_switch"]),
+    # ---- 画布定向镜头带参调度（LENS_RUN 补充产物 + 读面并线） ----
+    "lensrun":     ("画布定向镜头带参调度（202 入队/参数预检/权限边界/lens_runs 补充产物/线索读面并线）", [sys.executable, "-m", "unittest", "tests.test_lens_run"]),
 }
 
 

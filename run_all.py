@@ -60,7 +60,10 @@ def main():
     register_all()
     # P3/P6：自枚举挂载 packs/*——relation/timeline 镜头与 wujian 五间词汇
     # （间类/cross_levels/同源对）在此注册；拔出目录即对账注销。
-    from core.pack_loader import discover as discover_packs
+    from core.pack_loader import (
+        batch_lens_ids,
+        discover as discover_packs,
+    )
     discover_packs()
 
     # REQ-G-010：统一降级/健康度层。全管线"失败被表达成数据"的统一收口——
@@ -266,6 +269,20 @@ def main():
                              health=health)
         print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
         all_clues.extend(clues)
+
+    # P4/P5 镜头包批量接线：无必填参数的确定性镜头直接调度；定向镜头
+    # （target_subject/project 必填）跳过留痕——skill_invoke 对必填缺失
+    # 硬失败，无参调用会中断管线；案件级启停见 server 侧 lenses.json +
+    # case_batch_lens_ids（CLI 无案件上下文，按全局口径）；定向调度
+    # 入口属画布定向后续批次
+    runnable, requires_params = batch_lens_ids(registry)
+    for sid in runnable:
+        clues = skill_invoke(registry, sid, miao=miao, store=store, ctx=ctx,
+                             health=health)
+        print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
+        all_clues.extend(clues)
+    for sid in requires_params:
+        print(f"  [{sid}] 定向镜头缺必填参数，批量阶段跳过")
 
     merged = lineage.dedupe_and_merge(all_clues, threshold=0.5)
     print(f"  血缘去重：{len(all_clues)} → {len(merged)} 条")

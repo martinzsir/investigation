@@ -187,6 +187,64 @@ def _build_specs(decl: dict[str, Any], pack_dir: Path,
 
 
 # ----------------------------------------------------------------------
+# 批量调度口径（detect.py / run_all.py 共用）
+# ----------------------------------------------------------------------
+
+def batch_lens_ids(registry: SkillRegistry) -> tuple[list[str], list[str]]:
+    """批量检测可调度的镜头清单（非内置 + enabled + deterministic）。
+
+    返回 (runnable, requires_params)：
+      - runnable        无必填参数，可直接无参批量调度；
+      - requires_params 有必填参数（如 target_subject/project）的定向镜头，
+        批量阶段跳过——skill_invoke 对必填缺失硬失败（_validate_params），
+        无参调用会拖垮 BUILD；定向调度入口属案件级启停/画布定向批次。
+
+    mode="draft"（如 vlm）永不进入批量——草案须人验，不直入生产。
+    """
+    runnable: list[str] = []
+    requires_params: list[str] = []
+    for spec in registry.all_specs():
+        if spec.pack_id == BUILTIN_PACK_ID or not spec.enabled:
+            continue
+        if spec.mode != "deterministic":
+            continue
+        has_required = any(
+            p.get("required") for p in spec.params_schema.values())
+        if has_required:
+            requires_params.append(spec.skill_id)
+        else:
+            runnable.append(spec.skill_id)
+    return sorted(runnable), sorted(requires_params)
+
+
+def case_batch_lens_ids(
+        registry: SkillRegistry,
+        overrides: dict[str, bool] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """批量清单 + 案件级启停过滤（detect.py 案件快照 lenses.json 口径）。
+
+    在 batch_lens_ids 的全局口径（内置排除/包 enabled/deterministic/必填参数
+    分流）之上，叠加案件级镜头启停覆盖：
+
+      - overrides[sid] = False → 该镜头本案件停用，从 runnable/requires_params
+        移出、落入第三返回值 case_disabled（留痕：被案件启停挡下的镜头）；
+      - True 与未声明键为无操作（生效值回落包声明）；未知 skill_id 忽略；
+      - 包级 enabled=false（灰度/吊销）优先于案件覆盖——案件无法复活
+        平台已停用的镜头（batch_lens_ids 就不产出）。
+
+    返回 (runnable, requires_params, case_disabled)，三清单互斥且有序。
+    """
+    runnable, requires_params = batch_lens_ids(registry)
+    if not overrides:
+        return runnable, requires_params, []
+    disabled = {sid for sid in (*runnable, *requires_params)
+                if overrides.get(sid) is False}
+    return ([s for s in runnable if s not in disabled],
+            [s for s in requires_params if s not in disabled],
+            sorted(disabled))
+
+
+# ----------------------------------------------------------------------
 # 自枚举入口
 # ----------------------------------------------------------------------
 
