@@ -15,7 +15,7 @@ import { FIVE_JIAN } from '../api/endpoints/model'
 import { presentError, isApiError } from '../api/errors'
 import {
   canEditMachineBehavior, ruleTextError, diffRule, triggersRescan,
-  isDangerousChange, validateRuleEdit, sanitizeEditBody,
+  isDangerousChange, validateRuleEdit, sanitizeEditBody, jianTypesError,
 } from '../domain/ruleEdit'
 import EmptyState from '../components/common/EmptyState.vue'
 import ConfigConfirmDialog from '../components/config/ConfigConfirmDialog.vue'
@@ -158,6 +158,17 @@ function paramBool(r: Rule, key: string): boolean | null {
   return typeof v === 'boolean' ? v : null
 }
 
+// naive-ui NSelect 的 Value 仅接受 string|number（不含 boolean），
+// 故在边界做 string↔boolean 适配，paramValues 内仍存布尔值
+const BOOL_SELECT_OPTIONS = [
+  { label: 'true', value: 'true' },
+  { label: 'false', value: 'false' },
+]
+function boolSelectValue(r: Rule, key: string): string | null {
+  const b = paramBool(r, key)
+  return b === null ? null : String(b)
+}
+
 function buildBody(r: Rule): { body: Parameters<typeof rulesApi.update>[2] | null; error: string } {
   const ed = edits.value[r.id]
   if (!ed) return { body: null, error: '编辑态缺失' }
@@ -170,6 +181,9 @@ function buildBody(r: Rule): { body: Parameters<typeof rulesApi.update>[2] | nul
   if ([...ed.jianTypes].sort().join('|') !== [...(r.jian_types ?? [])].sort().join('|')) {
     body.jian_types = [...ed.jianTypes]
   }
+  // 间类校验兜底：勾选组已限定五间，出网前再显式拒绝五间之外的值（loader 强校验前置）
+  const jianErr = jianTypesError(ed.jianTypes)
+  if (jianErr) return { body: null, error: jianErr }
   const err = validateRuleEdit(r, body, auth.clearance)
   if (err) return { body: null, error: err }
   return { body, error: '' }
@@ -316,7 +330,7 @@ async function draft(): Promise<void> {
               <NCheckboxGroup
                 :value="edits[r.id]?.jianTypes"
                 :disabled="!canMachine"
-                @update:value="(v: Array<string>) => { if (edits[r.id]) { edits[r.id].jianTypes = v; markDirty(r) } }"
+                @update:value="(v: Array<string | number>) => { if (edits[r.id]) { edits[r.id].jianTypes = v.map((x) => String(x)); markDirty(r) } }"
               >
                 <NCheckbox v-for="j in jianOptions" :key="j.value" :value="j.value" :label="j.label" />
               </NCheckboxGroup>
@@ -348,11 +362,11 @@ async function draft(): Promise<void> {
                     />
                     <NSelect
                       v-else-if="row.type === 'boolean'"
-                      :value="paramBool(r, row.key)"
-                      :options="[{ label: 'true', value: true }, { label: 'false', value: false }]"
+                      :value="boolSelectValue(r, row.key)"
+                      :options="BOOL_SELECT_OPTIONS"
                       size="small" clearable :disabled="!canMachine"
                       placeholder="（默认值）"
-                      @update:value="(v: boolean | null) => setParam(r, row.key, v)"
+                      @update:value="(v: string | null) => setParam(r, row.key, v === null ? null : v === 'true')"
                     />
                     <NInputNumber
                       v-else-if="row.type === 'integer'"

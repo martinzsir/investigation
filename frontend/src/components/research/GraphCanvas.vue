@@ -5,6 +5,7 @@
 // 节点点击，不做业务判定（下钻路由在页面/domain）。
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { GraphDto, GraphNode } from '../../api/endpoints/graph'
+import { HIT_COLOR } from '../../domain/graphModel'
 
 const props = defineProps<{
   graph: GraphDto
@@ -44,13 +45,13 @@ function toData(): unknown {
   return {
     nodes: props.graph.nodes.map((n) => ({
       id: n.id,
-      data: { label: n.label, color: nodeColor(n) },
+      data: { label: n.label, color: nodeColor(n), hit: n.hit },
     })),
     edges: props.graph.edges.map((e, i) => ({
       id: `e${i}`,
       source: e.source,
       target: e.target,
-      data: { label: e.label },
+      data: { label: e.label, hit: e.hit },
     })),
   }
 }
@@ -86,8 +87,10 @@ async function mount(): Promise<void> {
       layout: { type: 'force', linkDistance: 90 },
       node: {
         style: {
-          size: 28,
+          size: (d: { data?: { hit?: boolean } }) => d.data?.hit ? 34 : 28,
           fill: (d: { data?: { color?: string } }) => d.data?.color ?? '#6e9fc1',
+          stroke: (d: { data?: { hit?: boolean } }) => d.data?.hit ? HIT_COLOR : 'transparent',
+          lineWidth: (d: { data?: { hit?: boolean } }) => d.data?.hit ? 3 : 0,
           labelText: (d: { data?: { label?: string } }) => d.data?.label ?? '',
           labelFill: '#d6e4f0',
           labelFontSize: 11,
@@ -96,7 +99,8 @@ async function mount(): Promise<void> {
       },
       edge: {
         style: {
-          stroke: '#3a5a72',
+          stroke: (d: { data?: { hit?: boolean } }) => d.data?.hit ? HIT_COLOR : '#3a5a72',
+          lineWidth: (d: { data?: { hit?: boolean } }) => d.data?.hit ? 2.5 : 1,
           endArrow: true,
           labelText: (d: { data?: { label?: string } }) => d.data?.label ?? '',
           labelFill: '#8aa5b8',

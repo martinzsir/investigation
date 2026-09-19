@@ -36,6 +36,7 @@ from server.app.main import create_app
 from server.app.meta.models import TASK_FAILED, TASK_SUCCEEDED, User
 from server.app.meta.repo_sqlite import SqliteMetaRepo
 from server.app.security import hash_password
+from server.app.canvas_seed import reconcile_canvas
 from server.app.store import StoreFactory
 from server.app.store.state_store import StateStore
 from server.app.worker.pool import WorkerPool
@@ -168,6 +169,98 @@ class CanvasApiTest(unittest.TestCase):
         self.assertEqual(d1["doc"], d2["doc"])
         self.assertEqual(d1["version"], d2["version"])
         self.assertEqual(d1["canvas_id"], d2["canvas_id"])
+
+    # ------------------------------------------------------------------
+    # GET 增量补种（reconcile）：seed 后新书证/新核查项进画布
+    # ------------------------------------------------------------------
+    def _seed_item_and_materials(self) -> str:
+        """直插 1 核查项 + 2 材料（1 已挂接 1 未挂接），返回 item_id。"""
+        st = self._state()
+        try:
+            st.upsert_verify_items("c1", "clue-1", [{
+                "kind": "manual", "text": "核查微信图片来源",
+                "origin": "manual", "status": "待核查",
+            }])
+            item_id = next(
+                it["item_id"] for it in st.list_verify_items("clue-1")
+                if it["text"] == "核查微信图片来源")
+            st.insert_evidence(
+                case_id="c1", clue_id="clue-1", material_type="缴款单",
+                filename="ev_link.png", orig_name="invoide.png",
+                sha256="a" * 8, size=128, uploaded_by="王检察官",
+                uploaded_at="2026-09-19T18:38:51", item_id=item_id,
+                material_id="ev_link")
+            st.insert_evidence(
+                case_id="c1", clue_id="clue-1", material_type="其他",
+                filename="ev_free.png", orig_name="微信图片.png",
+                sha256="b" * 8, size=256, uploaded_by="王检察官",
+                uploaded_at="2026-09-19T16:54:35", material_id="ev_free")
+        finally:
+            st.close()
+        return item_id
+
+    def test_get_reconciles_missing_material_and_item(self):
+        self._get()  # v1 seed（此时 state 无书证/核查项）
+        item_id = self._seed_item_and_materials()
+
+        d = self._get().json()["data"]
+        self.assertFalse(d["seeded"])
+        self.assertEqual(2, d["version"])  # 补种写库 version+1
+
+        nodes = {n["id"]: n for n in d["doc"]["nodes"]}
+        item_node = nodes[f"verify_item:{item_id}"]
+        self.assertEqual("待核实", item_node["label"])
+        self.assertTrue(item_node["adopted"])
+        self.assertEqual("待核查", item_node["props"]["status"])
+        ev_link = nodes["evidence:ev_link"]
+        self.assertEqual("invoide.png", ev_link["label"])
+        self.assertIn("evidence:ev_free", nodes)
+        # 新书证落书证列初始位（doc 内此前无书证 → y=0）
+        self.assertEqual(480, ev_link["x"])
+        self.assertEqual(0, ev_link["y"])
+
+        rels = [e for e in d["doc"]["edges"] if e["rel"] == "挂接"]
+        self.assertEqual(1, len(rels))
+        self.assertEqual(f"verify_item:{item_id}", rels[0]["source"])
+        self.assertEqual("evidence:ev_link", rels[0]["target"])
+        self.assertTrue(rels[0]["system"])
+
+    def test_get_reconcile_idempotent(self):
+        self._get()
+        self._seed_item_and_materials()
+        d2 = self._get().json()["data"]
+        self.assertEqual(2, d2["version"])
+        d3 = self._get().json()["data"]
+        self.assertEqual(d2["doc"], d3["doc"])   # 无缺失零副作用
+        self.assertEqual(2, d3["version"])       # 不再 bump
+
+    def test_reconcile_skips_suggested_items(self):
+        self._get()  # v1 seed
+        st = self._state()
+        try:
+            st.upsert_verify_items("c1", "clue-1", [{
+                "kind": "pending_rule", "text": "手册建议项X",
+                "status": "建议", "channel": "function",
+                "ref_function": "fn_x",
+            }])
+        finally:
+            st.close()
+        d = self._get().json()["data"]
+        self.assertEqual(1, d["version"])  # 建议项不成节点 → 无 diff 不写库
+        self.assertFalse(any(
+            n["kind"] == "verify_item" and "手册建议项X" in n["label"]
+            for n in d["doc"]["nodes"]))
+
+    def test_reconcile_does_not_duplicate_preseeded_edges(self):
+        # 挂接关系在首次 GET 前已存在 → seed 内含挂接边，reconcile 不重复
+        self._seed_item_and_materials()
+        d1 = self._get().json()["data"]
+        self.assertEqual(1, d1["version"])
+        self.assertEqual(
+            1, len([e for e in d1["doc"]["edges"] if e["rel"] == "挂接"]))
+        d2 = self._get().json()["data"]
+        self.assertEqual(d1["doc"], d2["doc"])
+        self.assertEqual(1, d2["version"])
 
     # ------------------------------------------------------------------
     # RC-205：PATCH 白名单 + 乐观锁
@@ -960,15 +1053,18 @@ class CanvasM4ApiTest(unittest.TestCase):
     # ------------------------------------------------------------------
     # RC-105：建议生成（虚节点，不写 state）
     # ------------------------------------------------------------------
-    def test_r1_rule_has_no_playbook_suggestions(self):
+    def test_r1_rule_playbook_suggestions(self):
+        """R1 现挂 3 条手册（R1 复跑/调档 + P8 图像核验）；r1_image_original_match
+        的 {subject} 占位在无有效主体时跳过（过滤后无有效主体），故落 2 条。"""
         base = self._open("r1")
         rule_id = self._rule_node(base, "R1")["id"]
         r = self._suggest(rule_id, clue="r1", version=base["version"])
         self.assertEqual(r.status_code, 200, r.text)
         d = r.json()["data"]
-        self.assertEqual([], d["added_nodes"])
-        self.assertEqual([], d["added_edges"])
-        self.assertEqual(base["version"], d["version"])  # 无新增不涨版本
+        self.assertEqual({n["ref"] for n in d["added_nodes"]},
+                         {"pb:r1_quarter_end_deposit_rerun",
+                          "pb:r1_deposit_slip_archive"})
+        self.assertNotEqual(base["version"], d["version"])  # 有新增涨版本
 
     def test_playbook_suggestion_seed_nodes(self):
         _, added, by_pb, sug_v = self._generate_three()
@@ -1431,6 +1527,40 @@ class CanvasM4ApiTest(unittest.TestCase):
                 json={"function": "integer_transfer_aggregates", "params": {},
                       "version": ver})
         self.assertEqual(403, r.status_code)
+
+
+class ReconcileCanvasPureTest(unittest.TestCase):
+    """reconcile_canvas 纯函数边界：corrupt doc 回退、不 mutate 入参、
+    无缺失原样返回。"""
+
+    def test_empty_doc_fallback_builds_nodes_and_edge(self):
+        doc, n_nodes, n_edges = reconcile_canvas(
+            {"nodes": [], "edges": []},
+            verify_items=[{"item_id": "vi_1", "text": "核查A",
+                           "status": "待核查", "kind": "manual"}],
+            materials=[{"material_id": "ev_1", "orig_name": "a.png",
+                        "item_id": "vi_1"}])
+        self.assertEqual((2, 1), (n_nodes, n_edges))
+        self.assertEqual("verify_item:vi_1", doc["nodes"][0]["id"])
+        self.assertEqual("evidence:ev_1", doc["nodes"][1]["id"])
+        self.assertEqual("挂接", doc["edges"][0]["rel"])
+        self.assertEqual("verify_item:vi_1", doc["edges"][0]["source"])
+
+    def test_input_doc_not_mutated(self):
+        doc = {"nodes": [{"id": "fact:x", "kind": "fact"}], "edges": []}
+        snapshot = copy.deepcopy(doc)
+        _, n_nodes, n_edges = reconcile_canvas(
+            doc, materials=[{"material_id": "ev_1", "item_id": "vi_missing"}])
+        self.assertEqual((1, 0), (n_nodes, n_edges))  # 端点缺核查项节点不补边
+        self.assertEqual(snapshot, doc)
+
+    def test_no_missing_returns_same_doc(self):
+        doc = {"nodes": [{"id": "evidence:ev_1", "kind": "evidence"}],
+               "edges": []}
+        out, n_nodes, n_edges = reconcile_canvas(
+            doc, materials=[{"material_id": "ev_1"}])
+        self.assertIs(doc, out)
+        self.assertEqual((0, 0), (n_nodes, n_edges))
 
 
 if __name__ == "__main__":

@@ -330,3 +330,241 @@ describe('REQ-V-010 展示纯函数', () => {
       ['缴款单', '监控截图', '合同', '付款凭证', '审批文件', '其他'])
   })
 })
+
+// ---- P8 回流：材料卡 AI 图像分析 + findings 子列表（发起→待核→人验闭环） ----
+const FINDINGS_PATH = '/cases/c1/vlm/findings'
+const DRAFT_PATH = '/cases/c1/vlm/draft'
+
+function imgMat(over: Partial<EvidenceMaterial> = {}): EvidenceMaterial {
+  return mat({
+    material_id: 'm_img', material_type: '缴款单',
+    filename: 'm_img_缴款单.jpg', orig_name: '缴款单.jpg',
+    ...over,
+  })
+}
+
+function pendingFinding(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    proposal_id: 'pp-1', title: '异常缴款', detail: '备注含现金字样',
+    severity: 'warn', image_uri: 'evidence/m_img/m_img_缴款单.jpg',
+    model: 'qwen-vl-max', model_score: 0.9, stale: false,
+    created_at: '2026-09-19 10:00:00',
+    ...over,
+  }
+}
+
+function verifiedFinding(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    image_evidence_id: 'imgev_1', title: '异常缴款', detail: '备注含现金字样',
+    severity: 'warn', image_uri: 'evidence/m_img/m_img_缴款单.jpg',
+    model: 'qwen-vl-max', model_score: 0.9, verifier: '王检察官',
+    verify_conclusion: '与原件一致', subject_type: 'person', subject_id: 'p1',
+    clue_id: 'clue-1', created_at: '2026-09-19 11:00:00',
+    ...over,
+  }
+}
+
+function findingsRoute(
+  findings: Record<string, unknown>,
+): FakeRoute {
+  return {
+    match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+    respond: () => okEnvelope({ findings }),
+  }
+}
+
+describe('P8 回流：材料卡发起 AI 图像分析', () => {
+  it('图像材料显示发起入口；非图像材料不显示', async () => {
+    const { panel } = mountPanel(
+      [imgMat(), mat({ material_id: 'm_pdf' })],
+      { routes: [findingsRoute({})] },
+    )
+    await flushPromises()
+    expect(panel.find('[data-material-id="m_img"]')
+      .find('[data-testid="ep-ai-new"]').exists()).toBe(true)
+    expect(panel.find('[data-material-id="m_pdf"]')
+      .find('[data-testid="ep-ai-new"]').exists()).toBe(false)
+  })
+
+  it('展开表单 → 发起分析：POST draft（image_uri 按材料构造，类别默认按材料类型）', async () => {
+    const { panel, transport } = mountPanel([imgMat()], {
+      routes: [
+        findingsRoute({}),
+        {
+          match: (r) => r.method === 'POST' && r.path === DRAFT_PATH,
+          respond: () => okEnvelope({
+            ok: true, mode: 'local', model: 'qwen-vl-max',
+            proposals: [{
+              proposal_id: 'pp-1', title: '异常缴款', detail: '备注含现金字样',
+              severity: 'warn', model_score: 0.9, stale: false,
+              model: 'qwen-vl-max', prompt_version: 'vlm-invoice-v1',
+            }],
+            dropped: [],
+          }),
+        },
+      ],
+    })
+    await flushPromises()
+    await panel.find('[data-material-id="m_img"]')
+      .find('[data-testid="ep-ai-new"]').trigger('click')
+    await flushPromises()
+    expect(panel.find('[data-testid="ep-ai-form"]').exists()).toBe(true)
+
+    await panel.find('[data-testid="ep-ai-submit"]').trigger('click')
+    await flushPromises()
+
+    const post = transport.calls.find((c) => c.method === 'POST'
+      && c.path === DRAFT_PATH)
+    expect(post).toBeDefined()
+    expect((post!.body as Record<string, unknown>).image_uri)
+      .toBe('evidence/m_img/m_img_缴款单.jpg')
+    expect((post!.body as Record<string, unknown>).content_class)
+      .toBe('invoice') // 缴款单 → 默认 invoice
+    // 发起成功后 findings 重拉（GET findings 两次：挂载 + 发起后）
+    const gets = transport.calls.filter((c) => c.method === 'GET'
+      && c.path === FINDINGS_PATH)
+    expect(gets.length).toBeGreaterThanOrEqual(2)
+    expect(panel.find('[data-testid="ep-ai-form"]').exists()).toBe(false)
+  })
+
+  it('degraded：发起入口禁用', async () => {
+    const { panel } = mountPanel([imgMat()], {
+      degraded: true, routes: [findingsRoute({})],
+    })
+    await flushPromises()
+    expect(panel.find('[data-testid="ep-ai-new"]').attributes('disabled'))
+      .toBeDefined()
+  })
+})
+
+describe('P8 回流：findings 子列表渲染与内联核验', () => {
+  it('待核草案（AI 草案徽标/明细/severity）+ 已人验（结论/核验人）分区渲染', async () => {
+    const { panel } = mountPanel([imgMat()], {
+      routes: [findingsRoute({
+        m_img: {
+          pending: [pendingFinding()],
+          verified: [verifiedFinding()],
+        },
+      })],
+    })
+    await flushPromises()
+    const findings = panel.find('[data-testid="ep-findings"]')
+    expect(findings.exists()).toBe(true)
+    expect(findings.text()).toContain('AI 草案')
+    expect(findings.text()).toContain('异常缴款')
+    expect(findings.text()).toContain('备注含现金字样')
+    expect(findings.text()).toContain('已人验')
+    expect(findings.text()).toContain('结论：与原件一致')
+    expect(findings.text()).toContain('王检察官')
+    // 待核带内联核验表单；已人验无
+    expect(findings.find('[data-testid="ep-inline-verify"]').exists()).toBe(true)
+  })
+
+  it('stale 草案不渲染内联核验表单', async () => {
+    const { panel } = mountPanel([imgMat()], {
+      routes: [findingsRoute({
+        m_img: { pending: [pendingFinding({ stale: true })], verified: [] },
+      })],
+    })
+    await flushPromises()
+    const findings = panel.find('[data-testid="ep-findings"]')
+    expect(findings.text()).toContain('已过期')
+    expect(findings.find('[data-testid="ep-inline-verify"]').exists()).toBe(false)
+  })
+
+  it('内联核验：结论/主体校验 + 提交走人验端点（clue_id 预填当前线索）', async () => {
+    const { panel, transport } = mountPanel([imgMat()], {
+      routes: [
+        findingsRoute({
+          m_img: { pending: [pendingFinding()], verified: [] },
+        }),
+        {
+          match: (r) => r.method === 'POST'
+            && r.path === '/cases/c1/vlm/drafts/pp-1/verify',
+          respond: () => okEnvelope({
+            proposal_id: 'pp-1', status: 'approved',
+            image_evidence: { image_evidence_id: 'imgev_9' },
+          }),
+        },
+      ],
+    })
+    await flushPromises()
+    const verifyBox = panel.find('[data-testid="ep-inline-verify"]')
+
+    // 未填结论点击 → 阻断（无 POST）
+    await verifyBox.find('[data-testid="ep-inline-verify-submit"]').trigger('click')
+    await flushPromises()
+    expect(transport.calls.some((c) => c.method === 'POST'
+      && c.path === '/cases/c1/vlm/drafts/pp-1/verify')).toBe(false)
+
+    await verifyBox.find('[data-testid="ep-inline-verify-conclusion"] textarea')
+      .setValue('与原件一致')
+    await verifyBox.findComponent(NSelect).vm.$emit('update:value', 'person')
+    await verifyBox.find('[data-testid="ep-inline-verify-subject-id"] input')
+      .setValue('p1')
+    await verifyBox.find('[data-testid="ep-inline-verify-submit"]').trigger('click')
+    await flushPromises()
+
+    const post = transport.calls.find((c) => c.method === 'POST'
+      && c.path === '/cases/c1/vlm/drafts/pp-1/verify')
+    expect(post).toBeDefined()
+    expect(post!.body).toEqual({
+      verify_conclusion: '与原件一致',
+      subject_type: 'person',
+      subject_id: 'p1',
+      clue_id: 'clue-1',
+    })
+    // 核验成功后 findings 重拉
+    expect(transport.calls.filter((c) => c.method === 'GET'
+      && c.path === FINDINGS_PATH).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('查看图像：按 image_uri 反解 material_id 走书证下载流', async () => {
+    const { panel, transport } = mountPanel([imgMat()], {
+      routes: [
+        findingsRoute({
+          m_img: { pending: [], verified: [verifiedFinding()] },
+        }),
+        {
+          match: (r) => r.method === 'GET'
+            && r.path === `${LIST_PATH}/m_img/download`,
+          respond: () => ({ status: 200, data: new Blob(['jpg'], { type: 'image/jpeg' }) }),
+        },
+      ],
+    })
+    await flushPromises()
+    await panel.find('[data-testid="ep-findings"]')
+      .find('button').trigger('click') // 已人验块的「查看图像」
+    await flushPromises()
+    expect(transport.calls.some((c) => c.method === 'GET'
+      && c.path === `${LIST_PATH}/m_img/download`)).toBe(true)
+  })
+
+  it('无 findings 材料不渲染子列表；findings 端点失败不阻塞书证清单', async () => {
+    setTransport(new FakeTransport([
+      {
+        match: (r) => r.method === 'GET' && r.path === LIST_PATH,
+        respond: () => okEnvelope({ items: [imgMat()] }),
+      },
+      {
+        match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+        respond: () => { throw new Error('findings down') },
+      },
+    ]))
+    rootWrapper = mount(NMessageProvider, {
+      slots: {
+        default: () => h(EvidencePanel, {
+          caseId: 'c1', clueId: 'clue-1', degraded: false, items: [vItem()],
+        }),
+      },
+    })
+    wrapper = rootWrapper.findComponent(EvidencePanel)
+    await flushPromises()
+    // 书证清单正常、材料卡仍在
+    expect(wrapper.find('[data-material-id="m_img"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ep-findings"]').exists()).toBe(false)
+    // findings 失败软提示
+    expect(wrapper.find('[data-testid="ep-findings-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('图像 findings 加载失败')
+  })
+})

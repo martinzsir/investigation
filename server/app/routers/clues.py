@@ -13,7 +13,6 @@ GET 列表/详情/suppressed（W-019）：读产物 artifact + state 状态真�
 """
 from __future__ import annotations
 
-import duckdb
 import hashlib
 import logging
 import re
@@ -43,6 +42,7 @@ from server.app.envelope import (
 )
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
+from server.app.store.backend import open_local_conn
 from server.app.store.state_store import StateStore
 from server.app.worker.tasks import TASK_DISPOSE, TASK_VERIFY, enqueue_task
 
@@ -561,7 +561,7 @@ def draft_verify_direction(case_id: str, clue_id: str,
                 case.pack_id, base_dir)):
         raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
 
-    conn = duckdb.connect(ctx.proposals_db)
+    conn = open_local_conn(ctx.proposals_db)
     try:
         result = draft_verify_items(
             conn, access, clue_id, case_id=case_id,

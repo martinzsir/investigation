@@ -4,8 +4,9 @@ REQ-G-011/012/013 声明化（声明是数据）：
   - G-011 dimensions.json：维度名从声明读；规则引用未声明 dimension → 装载期硬失败；
     新增维度不改 Python 即被规则引用、参与覆盖度
   - G-012 enum_space.json：枚举空间从声明读；自定义 space 传参仍覆盖
-  - G-013 objects/links 的 jian 字段：非法 jian 硬失败；五间交叉遍历声明而非硬编码表名；
-    交叉**等级规则/展示顺序保持硬编码**（改声明不改变单/双/三源等级）
+  - P6 五间解耦：objects/links 已删除 jian/jian_source 字段、案件包删除
+    jians.json；底座不认识间类。规则 jian_types 是不透明注解（保留不校验），
+    词汇合法性由 packs/wujian（core/wujian）负责
 """
 from __future__ import annotations
 
@@ -23,15 +24,14 @@ _RULE_TEXT = ("当对象出现某模式且无合法业务对价时命中，用�
 
 
 def _write_pack(root: Path, *, dimensions=None, enum_space=None,
-                rule_dimension="资金", obj_jian=None, link_jian=None,
-                rule_function="f_ping"):
+                rule_dimension="资金",
+                rule_function="f_ping", rule_jian=None):
     root.mkdir(parents=True, exist_ok=True)
     (root / "objects.json").write_text(json.dumps({
         "schema_version": 2,
         "objects": [
             {"name": "foo", "pk": "foo_id", "kind": "entity",
              "name_property": "foo_id",
-             **({"jian": obj_jian} if obj_jian else {}),
              "properties": {"name": "string"}},
         ],
     }, ensure_ascii=False), encoding="utf-8")
@@ -40,7 +40,6 @@ def _write_pack(root: Path, *, dimensions=None, enum_space=None,
         "links": [
             {"name": "fw", "from_obj": "foo", "to_obj": "foo",
              "runtime": True,
-             **({"jian": link_jian} if link_jian else {}),
              "properties": {}},
         ],
     }, ensure_ascii=False), encoding="utf-8")
@@ -66,6 +65,7 @@ def _write_pack(root: Path, *, dimensions=None, enum_space=None,
         "rule_text": _RULE_TEXT, "hit_when": "rows_nonempty",
         "function": rule_function, "dimension": rule_dimension,
         "params": {}, "assumption": "",
+        **({"jian_types": rule_jian} if rule_jian else {}),
     }
     (root / "rules.json").write_text(json.dumps({
         "schema_version": 2, "rules": [rule] if rule_dimension is not None else []},
@@ -157,46 +157,60 @@ class EnumSpaceDeclTests(unittest.TestCase):
             self.assertEqual(out2["total_combos"], 2)
 
 
-class JianDeclTests(unittest.TestCase):
-    def test_illegal_jian_hard_fails(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "p"
-            _write_pack(root, obj_jian="仙间")  # 非法间类
-            with self.assertRaises(ValueError) as ctx:
-                load_pack("p", base_dir=Path(td))
-            self.assertIn("jian", str(ctx.exception))
+class BaseWithoutJianTests(unittest.TestCase):
+    """P6：底座不认识间类——案件包无 jians.json、objects/links 无 jian 字段。"""
 
-    def test_legal_jian_loads(self):
+    def setUp(self):
+        from core.wujian import reset_wujian
+        reset_wujian()
+
+    def tearDown(self):
+        from core.wujian import reset_wujian
+        reset_wujian()
+
+    def test_pack_loads_without_jians_file(self):
+        """无 jians.json、无 jian 字段 → 案件包正常装载（底座独立）。"""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "p"
-            _write_pack(root, obj_jian="生间", link_jian="反间")
+            _write_pack(root)
+            spec = load_pack("p", base_dir=Path(td))   # 不抛
+            self.assertEqual([o.name for o in spec.objects], ["foo"])
+            self.assertEqual([l.name for l in spec.links], ["fw"])
+
+    def test_objects_links_have_no_jian(self):
+        """ObjectType/LinkType 已无 jian/jian_source 属性。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "p"
+            _write_pack(root)
             spec = load_pack("p", base_dir=Path(td))
-            foo = next(o for o in spec.objects if o.name == "foo")
-            fw = next(l for l in spec.links if l.name == "fw")
-            self.assertEqual(foo.jian, "生间")
-            self.assertEqual(fw.jian, "反间")
+            self.assertFalse(hasattr(spec.objects[0], "jian"))
+            self.assertFalse(hasattr(spec.objects[0], "jian_source"))
+            self.assertFalse(hasattr(spec.links[0], "jian"))
 
-    def test_default_pack_jian_declared(self):
-        spec = load_pack("default")
-        jians = {o.name: o.jian for o in spec.objects if o.jian}
-        self.assertEqual(jians.get("transaction"), "生间")
-        self.assertEqual(jians.get("bid_project"), "因间")
-        self.assertEqual(jians.get("org"), "死间")
-        self.assertEqual(jians.get("tipoff"), "内间")
-        tw = next(l for l in spec.links if l.name == "time_window")
-        self.assertEqual(tw.jian, "反间")
+    def test_rule_jian_tag_is_opaque(self):
+        """规则 jian_types 是不透明注解：底座不校验，标签原样保留。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "p"
+            _write_pack(root, rule_jian=["生间", "自造间"])
+            spec = load_pack("p", base_dir=Path(td))
+            self.assertEqual(spec.rules["R99"].jian_types,
+                             ("生间", "自造间"))
 
-    def test_level_rule_remains_hardcoded(self):
-        # 红线：无论声明多少对象，等级阈值单源=观察/双源=线索/三源+=可立案依据候选
-        from core.functions import _jian_entries, _jian_order
-        entries = _jian_entries("default")
-        # 声明驱动出多条数据源
-        self.assertTrue(len(entries) >= 7)
-        # 展示顺序从 jians.json 读取
-        jian_order = _jian_order("default")
-        self.assertEqual(jian_order, ["因间", "内间", "反间", "死间", "生间"])
-        jians = {j for _t, j, _s, _o in entries}
-        self.assertTrue(jians.issubset(set(jian_order)))
+    def test_default_pack_has_no_jians_file(self):
+        """default 案件包不再含 jians.json（词汇唯一权威在 packs/wujian）。"""
+        default_dir = Path(__file__).resolve().parent.parent / \
+            "ontology" / "default"
+        self.assertFalse((default_dir / "jians.json").exists())
+
+    def test_wujian_vocab_supplies_mapping(self):
+        """装包后：五间词汇经全局注册表提供（transaction=生间/transfers=反间）。"""
+        from core.wujian import build_wujian, register_wujian
+        root = Path(__file__).resolve().parent.parent
+        wj = build_wujian(root / "packs" / "wujian", "default")
+        register_wujian(wj)
+        self.assertEqual(wj.jians_for_types(["transaction"]), ["生间"])
+        self.assertEqual(wj.jians_for_types(["transfers"]), ["反间"])
+        self.assertEqual(wj.jians_for_types(["org"]), ["因间", "死间"])
 
 
 if __name__ == "__main__":

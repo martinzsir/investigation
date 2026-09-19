@@ -6,6 +6,17 @@ import type { GraphDto, GraphEdge, GraphNode } from '../api/endpoints/graph'
 export const NODE_LIMIT = { def: 300, min: 1, max: 1000 }
 export const EDGE_LIMIT = { def: 500, min: 1, max: 3000 }
 
+/** P7 投影模式：同一取数，不同 edge_kinds 白名单 */
+export type GraphMode = 'relation' | 'fund'
+
+export const GRAPH_MODES: { key: GraphMode; label: string; hint: string; edgeKinds: string[] | null }[] = [
+  { key: 'relation', label: '关系图谱', hint: '全部入图关系类型', edgeKinds: null },
+  { key: 'fund', label: '资金链路图', hint: '仅转账关系投影', edgeKinds: ['transfers'] },
+]
+
+/** 命中高亮色（被线索 evidence_refs 引用） */
+export const HIT_COLOR = '#ffb454'
+
 export function clampNodeLimit(n: number): number {
   if (!Number.isFinite(n)) return NODE_LIMIT.def
   return Math.min(NODE_LIMIT.max, Math.max(NODE_LIMIT.min, Math.floor(n)))
@@ -42,6 +53,8 @@ export interface RelationRow {
   target: string
   targetLabel: string
   type: string
+  hit: boolean
+  clue_ids: string[]
 }
 
 /** 降级关系表格：边 → 关系行；端点缺失补 id-only */
@@ -55,6 +68,8 @@ export function edgesToRows(edges: GraphEdge[], nodes: GraphNode[]): RelationRow
     target: e.target,
     targetLabel: labelOf(e.target),
     type: e.type,
+    hit: e.hit,
+    clue_ids: e.clue_ids,
   }))
 }
 
@@ -73,4 +88,33 @@ export function nodesByDegree(g: GraphDto): { node: GraphNode; degree: number }[
 /** 节点点击下钻路由：按 type 跳线索列表过滤（无实体详情页） */
 export function nodeDrillHref(node: GraphNode): string {
   return `/c/clues?jian=${encodeURIComponent(node.type_title || node.type)}&q=${encodeURIComponent(node.label)}`
+}
+
+export interface HitTimelineItem {
+  edge: GraphEdge
+  sourceLabel: string
+  targetLabel: string
+  date: string
+  amount?: string
+}
+
+/** 命中边时间轴：带 date 的命中边按日期升序（同一 DTO 内派生，不另取数）。 */
+export function hitTimeline(g: GraphDto): HitTimelineItem[] {
+  const m = nodeMap(g.nodes)
+  const labelOf = (id: string) => m.get(id)?.label ?? id
+  return g.edges
+    .filter((e) => e.hit && e.props.date)
+    .map((edge) => ({
+      edge,
+      sourceLabel: labelOf(edge.source),
+      targetLabel: labelOf(edge.target),
+      date: edge.props.date ?? '',
+      amount: edge.props.amount,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/** 案件已存在的入图边类型（过滤勾选器用） */
+export function presentEdgeKinds(g: GraphDto): { name: string; title: string }[] {
+  return g.edge_kinds.filter((k) => k.present).map((k) => ({ name: k.name, title: k.title }))
 }

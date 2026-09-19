@@ -1,0 +1,13 @@
+{
+  "pack_id": "wujian",
+  "version": "0.1.0",
+  "_note": "P6 五间研判包（兵法五间词汇）。本包只提供 vocabulary（间类定义/对象→间类映射/cross_levels 升格名/同源对/数据源展示名），不声明技能——内置 yong_jian 技能仍是五间交叉的编排入口，其 Function 经 core/wujian.py 消费本包词汇。pack_loader.discover() 扫描到 provides.vocabulary.type=wujian 即注册到全局五间注册表；拔出目录即注销。未安装本包时底座可独立装载，关系/时间镜头照常运行，交叉页以缺口展示。",
+  "provides": {
+    "vocabulary": {
+      "type": "wujian",
+      "ontology_pack": "default",
+      "jians": "jians.json"
+    }
+  },
+  "skills": []
+}

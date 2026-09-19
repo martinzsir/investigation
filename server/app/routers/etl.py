@@ -302,7 +302,10 @@ def _pipeline_from_bindings(bindings: dict) -> list[dict]:
         tbl = b.get("source_table")
         if not tbl and isinstance(b.get("source"), dict):
             tbl = b["source"].get("table")
-        key = b.get("key") or {}
+        # P1：业务键去重字段由 key 改名为 business_key（回落 key 兼容存量快照）
+        key = b.get("business_key")
+        if key is None:
+            key = b.get("key") or {}
         sources.append({
             "source_table": tbl,
             "object": b.get("object"),
@@ -369,10 +372,12 @@ def put_etl_pipeline(case_id: str, body: dict,
             b.pop("null_policy", None)
         dedup = src.get("dedup_key") or []
         if dedup:
-            b["key"] = {"columns": list(dedup),
-                        "on_conflict": src.get("dedup_on_conflict",
-                                               "keep_latest")}
+            b["business_key"] = {"columns": list(dedup),
+                                 "on_conflict": src.get("dedup_on_conflict",
+                                                        "keep_latest")}
+            b.pop("key", None)  # P1：清理旧字段名
         else:
+            b.pop("business_key", None)
             b.pop("key", None)
         changed.append(b.get("object"))
     _write_validated(ctx=ctx, case_id=case_id, filename="bindings.json",

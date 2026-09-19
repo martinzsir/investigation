@@ -337,12 +337,15 @@ def log_llm_call(conn, *, operator: str, network: str, model: str | None,
 # ----------------------------------------------------------------------
 def _llm_gate_check(conn, ctx: AccessContext, policy: dict | None = None, *,
                     model: str, prompt: str, redacted_input: dict[str, Any],
-                    has_invoke: bool) -> tuple[str | None, str | None, str]:
+                    has_invoke: bool,
+                    model_field: str = "allowed_models") -> tuple[str | None, str | None, str]:
     """LLM 闸门共享检查序列。
 
     返回 (blocked_reason, input_hash, log_id)：
     blocked_reason=None 表示放行；log_id 为调用日志 ID（无论放拒都落）。
     has_invoke: True=有注入函数（fake_invoke/streaming_invoke），False=无→确定性回退。
+    model_field: 模型白名单策略键——文本通道 allowed_models；
+                 VLM 视觉通道 allowed_vision_models（物理隔离）。
     """
     policy = policy or load_llm_policy()
     blocked: str | None = None
@@ -353,10 +356,10 @@ def _llm_gate_check(conn, ctx: AccessContext, policy: dict | None = None, *,
     except LLMBlockedError as e:
         blocked = str(e)
 
-    # ② 模型白名单
-    if blocked is None and model not in (policy.get("allowed_models") or []):
-        blocked = (f"model {model!r} 不在 allowed_models 白名单"
-                   f" {policy.get('allowed_models')}（REQ-038 模型白名单）")
+    # ② 模型白名单（文本/视觉分字段，防跨通道调用）
+    if blocked is None and model not in (policy.get(model_field) or []):
+        blocked = (f"model {model!r} 不在 {model_field} 白名单"
+                   f" {policy.get(model_field)}（REQ-038 模型白名单）")
 
     # ③ 脱敏双保险：必须有 redaction_hash，且复扫零命中
     input_hash = None
@@ -397,10 +400,12 @@ def _llm_gate_check(conn, ctx: AccessContext, policy: dict | None = None, *,
 
 def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
              model: str, prompt: str, redacted_input: dict[str, Any],
-             fake_invoke: Callable | None = None) -> dict[str, Any]:
+             fake_invoke: Callable | None = None,
+             model_field: str = "allowed_models") -> dict[str, Any]:
     """LLM 调用唯一闸门。
 
-    闸门序列：① require_llm_allowed（isolated 拒）；② model ∈ allowed_models；
+    闸门序列：① require_llm_allowed（isolated 拒）；② model ∈ 白名单
+    （model_field 决定文本 allowed_models / 视觉 allowed_vision_models）；
     ③ redacted_input 必须带 redaction_hash 且 PII 复扫零命中；
     ④ 落 llm_call_log + AuditChain（允许/拒绝都落）；
     ⑤ fake_invoke 注入点——生产无模型即拒（fallback=deterministic_only）。
@@ -409,7 +414,8 @@ def call_llm(conn, ctx: AccessContext, policy: dict | None = None, *,
     """
     blocked, input_hash, log_id = _llm_gate_check(
         conn, ctx, policy, model=model, prompt=prompt,
-        redacted_input=redacted_input, has_invoke=fake_invoke is not None)
+        redacted_input=redacted_input, has_invoke=fake_invoke is not None,
+        model_field=model_field)
 
     if blocked:
         raise LLMBlockedError(blocked)

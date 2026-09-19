@@ -107,7 +107,8 @@ class RuleWorkshopTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)  # 正兵可读
         data = r.json()["data"]
         ids = {x["id"] for x in data["rules"]}
-        self.assertEqual(ids, {"R1", "R2", "R3", "R4", "R5", "R6"})
+        self.assertEqual(ids,
+                         {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
         self.assertIn("quarter_end_integer_deposits",
                       data["function_catalog"])
         # 新装载规则缺省 enabled=True

@@ -98,6 +98,12 @@ def _gather_evidence(case_id: str, clue_id: str,
     if version is None:
         degraded.append("未解析到 data_version：报告将缺少数据版本锚点")
 
+    # P8：人验通过的图像证据（state.sqlite；无库=空，查询失败记降级）——
+    # 与 MCP report.gather_evidence / CLI main() 同构；漏接会让八段书证
+    # 退化为 LLM 转述，发现级内容（title/severity/人验结论）不进报告
+    image_evidence = ge.collect_image_evidence_safe(
+        root, case_id, clue_id, degraded)
+
     evidence = {
         "case_id": case_id,
         "clue_id": clue_id,
@@ -109,6 +115,15 @@ def _gather_evidence(case_id: str, clue_id: str,
                 "过桥路径": ge.collect_overpass(root, degraded),
                 "规则手册": ge.load_rules(root, pack),
             },
+            # 第九段：ingest 登记 + 本线索画布引用（与 MCP gather 同构；
+            # 漏接会让第九段落「未知（采集端未提供登记）」占位）
+            "数据源清单": ge.collect_sources(
+                root, case_id, clue_id, pack, version, degraded),
+            # P7：线索 evidence_refs 自动聚合（图谱/资金/书证引用）
+            "线索证据引用": ge.collect_clue_refs(
+                root, case_id, clue_id, degraded),
+            # P8：人验通过的图像证据（发现级内容确定性入报告）
+            "图像证据": image_evidence,
         },
         "降级": degraded,
         "脱敏": True,

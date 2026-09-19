@@ -285,8 +285,11 @@ class WorkerReplayTest(unittest.TestCase):
         self.svc.create_case(case_id="c1", name="复跑测试案",
                              tenant_id="t1", created_by="王检察官")
         self.repo.set_version("c1", 1, "test")
-        # read 模式要求版本文件存在：write 打开一次创建空库（无 obj_* 表）
-        self.factory.for_case("c1", mode="write", version=1).close()
+        # read 模式要求版本文件存在：write 打开一次创建空库（无 obj_* 表）。
+        # CaseStore 连接是惰性打开的（首次触碰 read_conn/write_conn 才连接），
+        # 仅 close() 不会落盘——须显式触碰 write_conn 触发建文件。
+        with self.factory.for_case("c1", mode="write", version=1) as st:
+            st.write_conn.execute("SELECT 1")
         self.state = None
         self._seed("clue-1", [dict(_REPLAY_SEED)])
         self.item_id = self._find_item("clue-1", _REPLAY_SEED["text"])

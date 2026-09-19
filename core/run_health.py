@@ -58,6 +58,8 @@ KINDS = (
     "data_freshness_future",      # REQ-D-019：对象数据时间超前于参照日期（未来日期/时区错误/脏值）
     "unit_mismatch",              # REQ-D-020：单位/口径疑似混用（元/万元、金额量级突增、单位缺失提示，只告警不阻断）
     "diagnostic_run",             # 手动运行诊断印记（DIAGNOSE 任务每次发起落一条 info：零问题也有留痕）
+    "skill_failed",               # P3 镜头运行期异常被失败隔离捕获（单镜头降级空转）
+    "skill_disabled",             # P3 镜头 enabled=false 被调度短路（过期调用方留痕）
 )
 
 SEVERITIES = ("info", "warning", "critical")

@@ -63,6 +63,8 @@ export const router = createRouter({
         { path: 'c/cross-case', component: () => import('../views/CrossCaseView.vue'), meta: { title: '跨案件查询', mvp: 5 } },
         { path: 'c/package', component: () => import('../views/PackageView.vue'), meta: { title: '案件包', mvp: 5 } },
         { path: 'c/escape', component: () => import('../views/EscapeHatchView.vue'), meta: { title: '代码逃生舱', mvp: 5 } },
+        // P8 多模态图像研判（AI 草案 · 人验闭环）
+        { path: 'c/vlm', component: () => import('../views/VlmView.vue'), meta: { title: '图像研判', mvp: 8 } },
         // 六分组业务占位（FE-C-026）
         { path: 'c/:section', component: () => import('../views/PlaceholderView.vue') },
       ],

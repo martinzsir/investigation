@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.ontology import (
     ObjectType, ObjectBinding, LinkType, LinkBinding,
     ActionSpec, ParamSpec, FunctionSpec, RuleSpec,
-    TYPE_SQL, TYPE_NAMES, OBJECT_KINDS,
+    ObjectKey, TYPE_SQL, TYPE_NAMES, OBJECT_KINDS, KEY_STRATEGIES,
     CLEAN_RULE_NAMES, reverse_reach, _render_projection,
     _render_split_projection,
 )
@@ -68,15 +69,14 @@ def invalidate_pack_cache(pack: str | None = None) -> None:
 
 ALLOWED_ROLES = {"any", "human"}
 ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision",
-                        "merge_entity", "dismiss_review"}
+                        "merge_entity", "dismiss_review",
+                        "create_image_evidence"}
 ALLOWED_IMPL_KINDS = {"sql", "py"}
 ALLOWED_OUTPUT_TYPES = {"rows", "scalar", "report"}
 ALLOWED_RULE_STAGES = {"xu_shi", "qi_zheng", "yong_jian"}
 ALLOWED_DIMENSIONS = {"资金", "通讯", "行为", "关系", "时间"}
 # v1.2 §3.0.6：数据元全域化行业白名单（pack_meta.json industry 字段取值）
 ALLOWED_INDUSTRIES = {"金融", "医疗"}
-# R5：五间不再硬编码，改由 jians.json 声明；DEFAULT_JIANS 仅作缺省回落
-DEFAULT_JIANS = ["因间", "内间", "反间", "死间", "生间"]
 ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
 RULE_TEXT_MIN = 30
 _DERIVE_RULES = {"reverse_reach"}
@@ -121,12 +121,9 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     elements = load_data_elements(pack, base_dir)
     # REQ-D-002 AC-4/AD-5：sensitive 数据元属性必须已在 policies.json 声明遮蔽
     mask_set = _load_property_mask_set(root)
-    # R5：五间声明先于对象/链接装载——jian 字段必须在 jians.json 已声明
-    jian_decls = load_jians(pack, base_dir)
-    allowed_jian = {j["name"] for j in jian_decls}
-    objects = _load_objects(root / "objects.json", elements, mask_set,
-                            allowed_jian=allowed_jian)
-    links = _load_links(root / "links.json", objects, allowed_jian=allowed_jian)
+    # P6：底座不再依赖五间——objects/links 直接装载，jian 词汇由 packs/wujian 提供
+    objects = _load_objects(root / "objects.json", elements, mask_set)
+    links = _load_links(root / "links.json", objects)
     object_bindings, link_bindings = _load_bindings(
         root / "bindings.json", objects, links)
     # R6：状态机声明先于 actions 装载——target_status 必须在 states.json 已声明
@@ -141,8 +138,7 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     # 已声明的 name（缺省回落内置 5 维）；新增维度在声明文件加一项即被规则引用。
     dim_names = load_dimensions(pack, base_dir)
     rules = _load_rules(root / "rules.json", functions, required=False,
-                        allowed_dimensions=set(dim_names),
-                        allowed_jian=allowed_jian)
+                        allowed_dimensions=set(dim_names))
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
     # REQ-V-018：核查手册建议项装载校验（缺失回落 []，零破坏旧包；
@@ -211,109 +207,9 @@ def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list
     return [d["name"] for d in load_dimension_declarations(pack, base_dir)]
 
 
-# R5：五间声明化加载
-def load_jians(pack: str = "default", base_dir: Path | None = None) -> list[dict]:
-    """返回间类声明列表 [{name, default_clearance, source_object_types}, ...]。
-
-    jians.json 缺失 → 内置 DEFAULT_JIANS 回落；存在 → 校验 name 非空/不重复/非空。
-    """
-    root = (base_dir or PACK_ROOT) / pack
-    p = root / "jians.json"
-    if not p.exists():
-        return [{"name": n, "default_clearance": 1, "source_object_types": []}
-                for n in DEFAULT_JIANS]
-    data = _read_json(p)
-    jians = data.get("jians", [])
-    out: list[dict] = []
-    seen: set[str] = set()
-    for i, j in enumerate(jians):
-        name = j.get("name") if isinstance(j, dict) else None
-        if not name:
-            raise ValueError(f"jians.json jians[{i}] 缺 name 字段")
-        if name in seen:
-            raise ValueError(f"jians.json 间类名重复：{name}")
-        seen.add(name)
-        out.append({
-            "name": name,
-            "default_clearance": j.get("default_clearance", 1),
-            "weight": j.get("weight", 1),
-            "source_object_types": j.get("source_object_types", []),
-        })
-    if not out:
-        raise ValueError("jians.json 声明为空：至少需要一个间类（REQ-R5）")
-    return out
-
-
-def load_cross_levels(pack: str = "default",
-                      base_dir: Path | None = None) -> list[dict]:
-    """返回交叉等级声明 [{min_independent_sources, name}, ...]。
-
-    红线：min_independent_sources 的映射（1/2/3）硬编码，只替换名称。
-    """
-    root = (base_dir or PACK_ROOT) / pack
-    p = root / "jians.json"
-    if not p.exists():
-        return [
-            {"min_independent_sources": 1, "name": "观察"},
-            {"min_independent_sources": 2, "name": "线索"},
-            {"min_independent_sources": 3, "name": "可立案依据候选"},
-        ]
-    data = _read_json(p)
-    levels = data.get("cross_levels", [])
-    out: list[dict] = []
-    allowed_sources = {1, 2, 3}
-    for i, lv in enumerate(levels):
-        src = lv.get("min_independent_sources")
-        name = lv.get("name")
-        if src not in allowed_sources:
-            raise ValueError(
-                f"jians.json cross_levels[{i}] min_independent_sources={src} "
-                f"非法，仅允许 {sorted(allowed_sources)}（红线：映射不可配置）")
-        if not name:
-            raise ValueError(f"jians.json cross_levels[{i}] 缺 name 字段")
-        out.append({"min_independent_sources": src, "name": name})
-    return out
-
-
-def load_source_independence(pack: str = "default",
-                             base_dir: Path | None = None) -> dict:
-    """R9：返回 {"related_pairs": [{a, b}, ...]}——同源数据源对声明。
-
-    交叉等级计独立源数时，并查集按这些对合并；校验：
-    a/b 必须为非空字符串、成对、且引用 jians 声明的 source_object_types。
-    """
-    root = (base_dir or PACK_ROOT) / pack
-    p = root / "jians.json"
-    if not p.exists():
-        return {"related_pairs": []}
-    data = _read_json(p)
-    jians = load_jians(pack, base_dir)
-    universe = {t for j in jians for t in (j.get("source_object_types") or [])}
-    sec = data.get("source_independence") or {}
-    if not isinstance(sec, dict):
-        raise ValueError("jians.json source_independence 必须是对象")
-    pairs_raw = sec.get("related_pairs", [])
-    if not isinstance(pairs_raw, list):
-        raise ValueError("jians.json source_independence.related_pairs 必须是数组")
-    pairs: list[dict] = []
-    for i, pr in enumerate(pairs_raw):
-        if not isinstance(pr, dict):
-            raise ValueError(f"jians.json related_pairs[{i}] 必须是对象")
-        a, b = pr.get("a"), pr.get("b")
-        if not isinstance(a, str) or not a.strip():
-            raise ValueError(f"jians.json related_pairs[{i}] 缺非空字符串 a")
-        if not isinstance(b, str) or not b.strip():
-            raise ValueError(f"jians.json related_pairs[{i}] 缺非空字符串 b")
-        a, b = a.strip(), b.strip()
-        if a == b:
-            raise ValueError(f"jians.json related_pairs[{i}] a/b 不得相同：{a}")
-        missing = [x for x in (a, b) if universe and x not in universe]
-        if missing:
-            raise ValueError(
-                f"jians.json related_pairs[{i}] 引用了未声明的 "
-                f"source_object_types：{missing}（全集：{sorted(universe)}）")
-        pairs.append({"a": a, "b": b})
-    return {"related_pairs": pairs}
+# P6：五间词汇（load_jians/load_cross_levels/load_source_independence）已搬出
+# 到 packs/wujian，经 core/wujian.py 装载；DEFAULT_JIANS 常量一并删除。底座不认识
+# 任何间类词汇，objects/links/rules 装载不再做间类白名单校验。
 
 
 # R6：线索状态机声明化加载
@@ -988,12 +884,64 @@ def _require(d: dict, keys: tuple, ctx: str) -> None:
             raise ValueError(f"ontology 声明 {ctx} 缺必填字段：{k}")
 
 
-def _parse_jian(d: dict, ctx: str, allowed_jian: set[str]) -> tuple[str, str]:
-    """REQ-G-013/R5：读取可选 jian/jian_source；jian 非空时必须在已声明间类内（非法硬失败）。"""
-    jian = (d.get("jian") or "").strip()
-    if jian and jian not in allowed_jian:
-        raise ValueError(f"{ctx} jian='{jian}' 非法，允许 {sorted(allowed_jian)}（REQ-G-013/R5）")
-    return jian, (d.get("jian_source") or "").strip()
+# P6：_parse_jian / _apply_jian_mapping 已随五间字段删除——间类白名单与
+# source_object_types 双向一致性守卫下沉到 packs/wujian（core/wujian.py），
+# 底座装载 objects/links 不再认识 jian。
+
+
+def _parse_object_key(o: dict, ctx: str, name: str, props: dict) -> ObjectKey | None:
+    """P1：解析对象主键一等声明 key。
+
+    校验：
+      - key.column 必须等于 pk（同时写且不等 → 硬失败）
+      - strategy ∈ {proxy, natural, composite}
+      - proxy 策略需要非空 prefix（5 个不一致前缀按现值硬编码固化）
+      - natural 策略不得声明 prefix
+      - properties 必须在已声明属性中
+      - key 缺失 → 返回 None（装载期回落 pk 并告警，由调用方处理）
+    """
+    raw = o.get("key")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{ctx}（{name}）key 必须是对象映射")
+    col = raw.get("column")
+    if not isinstance(col, str) or not col.strip():
+        raise ValueError(f"{ctx}（{name}）key.column 必须是非空字符串")
+    pk = o["pk"]
+    if col != pk:
+        raise ValueError(
+            f"{ctx}（{name}）key.column='{col}' 与 pk='{pk}' 不一致"
+            f"（P1：key 是主键权威声明，column 必须等于 pk；改主键须走正式迁移）")
+    ktype = raw.get("type", "string")
+    if ktype != "string":
+        raise ValueError(
+            f"{ctx}（{name}）key.type='{ktype}' 非法，Palantir 主键必须 string")
+    strategy = raw.get("strategy", "proxy")
+    if strategy not in KEY_STRATEGIES:
+        raise ValueError(
+            f"{ctx}（{name}）key.strategy='{strategy}' 非法，允许 {KEY_STRATEGIES}")
+    prefix = raw.get("prefix", "") or ""
+    if strategy == "proxy" and not prefix:
+        raise ValueError(
+            f"{ctx}（{name}）key.strategy=proxy 必须声明非空 prefix"
+            f"（P1：前缀硬编码固化，禁止从 pk 隐式反解）")
+    if strategy == "natural" and prefix:
+        raise ValueError(
+            f"{ctx}（{name}）key.strategy=natural 不得声明 prefix='{prefix}'"
+            f"（自然键直通，无前缀）")
+    key_props = raw.get("properties", [])
+    if key_props:
+        if not isinstance(key_props, list) or not all(
+                isinstance(c, str) and c for c in key_props):
+            raise ValueError(
+                f"{ctx}（{name}）key.properties 必须是非空字符串数组")
+        unknown = [c for c in key_props if c not in props]
+        if unknown:
+            raise ValueError(
+                f"{ctx}（{name}）key.properties {unknown} 不在对象属性声明内")
+    return ObjectKey(column=col, type=ktype, strategy=strategy,
+                     prefix=prefix, properties=tuple(key_props))
 
 
 # ----------------------------------------------------------------------
@@ -1019,12 +967,10 @@ def _load_property_mask_set(root: Path) -> set[tuple[str, str]]:
 
 def _load_objects(path: Path,
                   elements: dict | None = None,
-                  mask_set: set | None = None,
-                  allowed_jian: set[str] | None = None) -> list[ObjectType]:
+                  mask_set: set | None = None) -> list[ObjectType]:
     data = _read_json(path)
     out: list[ObjectType] = []
     seen: set[str] = set()
-    allowed_jian = allowed_jian or set(DEFAULT_JIANS)
     for i, o in enumerate(data.get("objects", [])):
         ctx = f"objects[{i}]"
         _require(o, ("name", "pk", "name_property"), ctx)
@@ -1151,7 +1097,13 @@ def _load_objects(path: Path,
                     f"{ctx}（{name}）属性 '{p}' 声明为 enum 但未声明 enum_values"
                     f"（REQ-041 AC2：enum 属性必须有白名单）")
 
-        jian, jian_source = _parse_jian(o, f"{ctx}（{name}）", allowed_jian)
+        # P1：主键一等声明解析。key 缺失回落 pk（兼容存量快照），告警不中断。
+        obj_key = _parse_object_key(o, f"{ctx}（{name}）", name, props)
+        if obj_key is None:
+            warnings.warn(
+                f"对象 '{name}' 未声明 key，回落 pk='{o['pk']}' 隐式推断策略"
+                f"（P1 建议显式声明 key：column/strategy/prefix）",
+                stacklevel=2)
         # REQ-P-034：元数据/内容属性排除声明（不参与实体连接与画像）
         md = o.get("metadata_props", [])
         if not isinstance(md, list) or any(
@@ -1169,8 +1121,8 @@ def _load_objects(path: Path,
             name=name, title=o.get("title", name), pk=o["pk"], kind=kind,
             name_property=name_prop, properties=dict(props),
             runtime=bool(o.get("runtime", False)),
+            key=obj_key,
             enum_values=enum_values,
-            jian=jian, jian_source=jian_source,
             metadata_props=tuple(md),
             composite_props=tuple(composite),
             prop_data_elements=prop_de,
@@ -1182,11 +1134,11 @@ def _load_objects(path: Path,
 # ----------------------------------------------------------------------
 # links（类型层）
 # ----------------------------------------------------------------------
-def _load_links(path: Path, objects: list[ObjectType],
-                allowed_jian: set[str] | None = None) -> list[LinkType]:
+def _load_links(path: Path, objects: list[ObjectType]) -> list[LinkType]:
     data = _read_json(path)
     obj_names = {o.name for o in objects}
-    allowed_jian = allowed_jian or set(DEFAULT_JIANS)
+    # P1：对象名 → 主键列名（key.column，缺失回落 pk），供 endpoints ref.key 联动校验
+    obj_key_map = {o.name: (o.key.column if o.key else o.pk) for o in objects}
     out: list[LinkType] = []
     seen: set[str] = set()
     for i, l in enumerate(data.get("links", [])):
@@ -1208,32 +1160,35 @@ def _load_links(path: Path, objects: list[ObjectType],
         bad = {p: t for p, t in props.items() if t not in TYPE_NAMES}
         if bad:
             raise ValueError(f"{ctx}（{name}）边属性类型非法：{bad}，允许 {TYPE_NAMES}")
-        jian, jian_source = _parse_jian(l, f"{ctx}（{name}）", allowed_jian)
-        endpoints = _parse_endpoints(l, f"{ctx}（{name}）", obj_names)
+        endpoints = _parse_endpoints(l, f"{ctx}（{name}）", obj_names, obj_key_map)
         out.append(LinkType(
             name=name, title=l.get("title", name),
             from_obj=l["from_obj"], to_obj=l["to_obj"],
             properties=dict(props),
             runtime=bool(l.get("runtime", False)),
-            jian=jian, jian_source=jian_source,
             endpoints=endpoints,
         ))
     return out
 
 
-def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
+def _parse_endpoints(l: dict, ctx: str, obj_names: set[str],
+                     obj_key_map: dict[str, str] | None = None) -> dict:
     """REQ-G-015：解析图导出端点声明（可选）。
 
     形态：{"from": {"col": "<lnk 列>", "ref": {"object","key","name"}?},
            "to":   {...}, "extra": ["直传边属性列", ...]}
     col 为 lnk_<link> 中直接可读的端点列；ref 存在表示该列是代理键，需 JOIN
     obj_<object> 按 key 取 name 列（导出边端点名）。非法结构装载期硬失败。
+
+    P1：ref.key 必须等于 objects[ref.object].key.column（主键列名权威），
+    不一致硬失败，杜绝改 objects.pk 不联动 endpoints 的静默漂移。
     """
     ep = l.get("endpoints")
     if ep is None:
         return {}
     if not isinstance(ep, dict):
         raise ValueError(f"{ctx} endpoints 必须是对象")
+    obj_key_map = obj_key_map or {}
     out: dict = {}
     for side in ("from", "to"):
         e = ep.get(side)
@@ -1250,6 +1205,13 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str]) -> dict:
             if ref["object"] not in obj_names:
                 raise ValueError(
                     f"{ctx} endpoints.{side}.ref.object='{ref['object']}' 未在 objects 声明")
+            # P1：ref.key 与 objects[ref.object].key.column 联动校验
+            expected_key = obj_key_map.get(ref["object"])
+            if expected_key and ref["key"] != expected_key:
+                raise ValueError(
+                    f"{ctx} endpoints.{side}.ref.key='{ref['key']}' 与对象 "
+                    f"'{ref['object']}' 的主键列 '{expected_key}' 不一致"
+                    f"（P1：endpoints ref.key 必须等于引用对象的 key.column）")
             ref_out = {"object": ref["object"], "key": ref["key"],
                        "name": ref["name"]}
         out[side] = {"col": e["col"], "ref": ref_out}
@@ -1343,9 +1305,9 @@ def _parse_null_policy(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
 
 
 def _parse_dedup_key(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
-    """REQ-D-015：key 声明 → (业务键列元组, on_conflict 策略)。
+    """REQ-D-015：business_key 声明（P1 由 key 改名）→ (业务键列元组, on_conflict 策略)。
 
-    key = {"columns": ["serial_no", ...], "on_conflict": "keep_latest"}；
+    business_key = {"columns": ["serial_no", ...], "on_conflict": "keep_latest"}；
     columns 必须是非空属性名数组（业务键，非全行比对）；on_conflict ∈
     keep_latest（缺省）/ keep_first / fail。
     """
@@ -1353,21 +1315,21 @@ def _parse_dedup_key(raw, otype: ObjectType, ctx: str, name: str) -> tuple:
         return (), ""
     if not isinstance(raw, dict) or not raw.get("columns"):
         raise ValueError(
-            f"{ctx}（{name}）key 必须是 {{\"columns\": [业务键列...], "
+            f"{ctx}（{name}）business_key 必须是 {{\"columns\": [业务键列...], "
             f"\"on_conflict\"?: ...}} 非空映射（REQ-D-015）")
     cols = raw["columns"]
     if not isinstance(cols, list) or not all(isinstance(c, str) and c for c in cols):
         raise ValueError(
-            f"{ctx}（{name}）key.columns 必须是非空字符串数组（REQ-D-015）")
+            f"{ctx}（{name}）business_key.columns 必须是非空字符串数组（REQ-D-015）")
     unknown = [c for c in cols if c not in otype.properties]
     if unknown:
         raise ValueError(
-            f"{ctx}（{name}）key.columns {unknown} 不在对象属性声明 "
+            f"{ctx}（{name}）business_key.columns {unknown} 不在对象属性声明 "
             f"{sorted(otype.properties)} 内（REQ-D-015）")
     conflict = raw.get("on_conflict", "keep_latest")
     if conflict not in DEDUP_CONFLICT_POLICIES:
         raise ValueError(
-            f"{ctx}（{name}）key.on_conflict='{conflict}' 非法，仅允许 "
+            f"{ctx}（{name}）business_key.on_conflict='{conflict}' 非法，仅允许 "
             f"{DEDUP_CONFLICT_POLICIES}（REQ-D-015）")
     return tuple(cols), conflict
 
@@ -1714,8 +1676,11 @@ def _load_bindings(path: Path, objects: list[ObjectType],
             structured=("source" in b))
         # ---- REQ-D-014：null_policy 属性级空值策略（allow/reject/quarantine）----
         null_policy = _parse_null_policy(b.get("null_policy"), otype, ctx, name)
-        # ---- REQ-D-015：业务键去重（key.columns + on_conflict）----
-        dedup_key, dedup_conflict = _parse_dedup_key(b.get("key"), otype, ctx, name)
+        # ---- REQ-D-015：业务键去重（P1 字段改名 business_key，回落 key 兼容存量）----
+        dedup_raw = b.get("business_key")
+        if dedup_raw is None:
+            dedup_raw = b.get("key")  # 向后兼容：存量快照可能仍用 key
+        dedup_key, dedup_conflict = _parse_dedup_key(dedup_raw, otype, ctx, name)
         # P3-2：binding 级 split 声明（仅结构化源）
         source_aliases = set(b["source"]["columns"]) if "source" in b else set()
         split_decls = ()
@@ -1823,16 +1788,19 @@ def _load_bindings(path: Path, objects: list[ObjectType],
     if missing_link:
         raise ValueError(f"非 runtime 链接缺少 binding 声明：{missing_link}")
 
-    # runtime 链接端点列约定：<from_obj>_id / <to_obj>_id（ensure_runtime_tables 据此建表）
+    # runtime 链接端点建表列约定：跟随端点对象实际主键列（P1 后主键权威是
+    # key.column，缺失回落 pk；ensure_runtime_tables 据此建表，副作用写入方
+    # 以同名列插入）。不再强制 <obj>_id 同形（bid_project 主键是 project_id）。
     for l in links:
         if not l.runtime:
             continue
         for end in (l.from_obj, l.to_obj):
-            epk = obj_map[end].pk
-            if epk != f"{end}_id":
+            o = obj_map[end]
+            epk = (o.key.column if getattr(o, "key", None) else o.pk)
+            if not epk:
                 raise ValueError(
-                    f"runtime 链接 {l.name} 端点对象 '{end}' 的 pk 必须是 '{end}_id' "
-                    f"（当前 '{epk}'），否则副作用建表列名无法约定")
+                    f"runtime 链接 {l.name} 端点对象 '{end}' 缺主键声明"
+                    f"（pk/key.column 均为空），副作用建表列名无法约定")
 
     return obj_out, link_out
 
@@ -1879,6 +1847,9 @@ def _load_actions(path: Path, objects: list[ObjectType],
         if "create_decision" in effects and "decision" not in obj_names:
             raise ValueError(f"{ctx}（{name}）副作用 create_decision 要求在 objects.json "
                              f"声明 runtime 对象 'decision'")
+        if "create_image_evidence" in effects and "image_evidence" not in obj_names:
+            raise ValueError(f"{ctx}（{name}）副作用 create_image_evidence 要求在 "
+                             f"objects.json 声明 runtime 对象 'image_evidence'")
         params = []
         for p in a.get("parameters", []):
             _require(p, ("name",), f"{ctx}.parameters")
@@ -2089,8 +2060,7 @@ def _validate_assumption(assumption: str, ctx: str, rid: str) -> str:
 
 def _load_rules(path: Path, functions: dict[str, FunctionSpec],
                 required: bool,
-                allowed_dimensions: set | None = None,
-                allowed_jian: set | None = None) -> dict[str, RuleSpec]:
+                allowed_dimensions: set | None = None) -> dict[str, RuleSpec]:
     if not path.exists():
         if required:
             raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
@@ -2099,8 +2069,8 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
     from core import functions as fn_mod
     # REQ-G-011：合法维度集来自 dimensions.json 声明（缺省回落内置 5 维）
     _dims = allowed_dimensions if allowed_dimensions is not None else set(DEFAULT_DIMENSIONS)
-    # R5：合法间类集来自 jians.json 声明（缺省回落 DEFAULT_JIANS）
-    _jians = allowed_jian if allowed_jian is not None else set(DEFAULT_JIANS)
+    # P6：rules 的 jian_types 标签是不透明注解——底座不再做间类白名单校验
+    # （无 wujian 包也须能装载）；标签合法性由 packs/wujian validator 负责。
 
     out: dict[str, RuleSpec] = {}
     for i, r in enumerate(data.get("rules", [])):
@@ -2117,9 +2087,6 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             raise ValueError(f"{ctx}（{rid}）dimension='{dimension}' 非法，"
                              f"须在 dimensions.json 声明，可用 {sorted(_dims)}（REQ-G-011）")
         jian = tuple(r.get("jian_types", []))
-        bad_jian = set(jian) - _jians
-        if bad_jian:
-            raise ValueError(f"{ctx}（{rid}）jian_types 非法：{sorted(bad_jian)}，允许 {sorted(_jians)}")
         hit_when = r["hit_when"]
         if hit_when not in ALLOWED_HIT_WHEN:
             raise ValueError(f"{ctx}（{rid}）hit_when='{hit_when}' 非法，允许 {sorted(ALLOWED_HIT_WHEN)}")

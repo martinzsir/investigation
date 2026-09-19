@@ -38,7 +38,7 @@ export function countCrossings(
   )
 
   // 按列对分组
-  const pairs = new Map<string, [number, number][]>()
+  const pairs = new Map<string, CanvasEdge[]>()
   for (const e of longEdges) {
     const xa = RANK_X[kind.get(e.source)!]
     const xb = RANK_X[kind.get(e.target)!]
@@ -80,7 +80,7 @@ export function countCrossings(
 export function minimizeCrossings(
   nodes: readonly CanvasNode[],
   edges: readonly CanvasEdge[],
-  pinnedIds?: ReadonlySet<string>,
+  _pinnedIds?: ReadonlySet<string>,
   iterations: number = DEFAULT_ITERATIONS,
 ): Map<string, number> {
   const kindOf = new Map(nodes.map((n) => [n.id, n.kind]))

@@ -15,6 +15,14 @@
       "type": "array",
       "items": {"type": "string"}
     },
+    "allowed_vision_models": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "image_pii": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
     "llm_enabled": {"type": "boolean"},
     "mode": {"enum": ["shadow", "direct"]},
     "canvas_chat_mode": {"enum": ["direct", "shadow"]},

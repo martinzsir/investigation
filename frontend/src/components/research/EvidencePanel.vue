@@ -14,6 +14,13 @@ import {
   type VerifyItem,
 } from '../../domain/verify'
 import { evidenceApi, saveBlobAs } from '../../api/endpoints/evidence'
+import {
+  vlmApi,
+  type VlmContentClass,
+  type VlmMaterialFindings,
+  type VlmSubjectType,
+} from '../../api/endpoints/vlm'
+import { materialIdFromUri } from '../../domain/imageEvidence'
 import { presentError } from '../../api/errors'
 
 const props = defineProps<{
@@ -52,6 +59,8 @@ async function refresh(): Promise<void> {
   } finally {
     loading.value = false
   }
+  // P8 回流：图像 findings 独立加载（失败不阻塞书证清单）
+  void refreshFindings()
 }
 
 defineExpose({ refresh })
@@ -144,6 +153,168 @@ function confirmLink(m: EvidenceMaterial): void {
   if (!itemId || props.degraded || props.submitting) return
   emit('link', { item_id: itemId, material_id: m.material_id })
 }
+
+// ---------- P8 回流：材料卡 AI 图像分析 + findings 子列表（发起→待核→人验闭环） ----------
+const isImageMaterial = (m: EvidenceMaterial): boolean =>
+  /\.(jpe?g|png)$/i.test(m.filename) || /\.(jpe?g|png)$/i.test(m.orig_name)
+
+const findingsMap = ref<Record<string, VlmMaterialFindings>>({})
+const findingsError = ref('')
+
+async function refreshFindings(): Promise<void> {
+  if (!props.caseId || !props.clueId) return
+  try {
+    const page = await vlmApi.findings(props.caseId, props.clueId)
+    findingsMap.value = page.findings ?? {}
+    findingsError.value = ''
+  } catch (e) {
+    // findings 是材料卡增强面：失败黄条提示但不阻塞书证清单
+    findingsError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+const EMPTY_FINDINGS: VlmMaterialFindings = { pending: [], verified: [] }
+
+function findingsOf(mid: string): VlmMaterialFindings {
+  return findingsMap.value[mid] ?? EMPTY_FINDINGS
+}
+
+function hasFindings(mid: string): boolean {
+  const f = findingsMap.value[mid]
+  return !!f && (f.pending.length > 0 || f.verified.length > 0)
+}
+
+/** content_class 默认取材料已知类别（可改） */
+const CLASS_BY_MATERIAL: Record<string, VlmContentClass> = {
+  缴款单: 'invoice',
+  付款凭证: 'receipt',
+  合同: 'document',
+  审批文件: 'document',
+  监控截图: 'other',
+  其他: 'other',
+}
+
+const classOptions = [
+  { label: '发票 invoice', value: 'invoice' },
+  { label: '收据 receipt', value: 'receipt' },
+  { label: '文书 document', value: 'document' },
+  { label: '其他 other', value: 'other' },
+]
+
+const subjectOptions = [
+  { label: '人员 person', value: 'person' },
+  { label: '机构 org', value: 'org' },
+  { label: '项目 bid_project', value: 'bid_project' },
+]
+
+// 发起分析（区内直发，仍走 draft 闸门：content_class 门禁/LLM 策略/提案草案）
+const aiFormOpenId = ref('')
+const aiClassSel = ref<Record<string, VlmContentClass>>({})
+const aiBusyId = ref('')
+
+function toggleAiForm(m: EvidenceMaterial): void {
+  if (props.degraded || props.submitting) return
+  if (aiFormOpenId.value === m.material_id) {
+    aiFormOpenId.value = ''
+    return
+  }
+  aiFormOpenId.value = m.material_id
+  if (!aiClassSel.value[m.material_id]) {
+    aiClassSel.value[m.material_id] = CLASS_BY_MATERIAL[m.material_type] ?? 'other'
+  }
+}
+
+async function submitAiDraft(m: EvidenceMaterial): Promise<void> {
+  if (aiBusyId.value || props.degraded || props.submitting) return
+  aiBusyId.value = m.material_id
+  try {
+    const r = await vlmApi.draft(props.caseId, {
+      image_uri: `evidence/${m.material_id}/${m.filename}`,
+      content_class: aiClassSel.value[m.material_id] ?? 'other',
+    })
+    if (r.ok) {
+      message.success(`已生成 ${r.proposals.length} 条待核草案`)
+      aiFormOpenId.value = ''
+    } else if (r.degraded) {
+      message.warning(r.reason ?? r.error ?? '视觉能力降级，未发起模型调用')
+    } else {
+      message.error(r.error ?? r.reason ?? '被安全闸门阻断')
+    }
+    await refreshFindings()
+  } catch (e) {
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    aiBusyId.value = ''
+  }
+}
+
+// 内联核验（与 VlmView 核验行同契约：结论必填、主体必选必填；clue_id 预填当前线索）
+interface InlineVerifyForm {
+  conclusion: string
+  subjectType: VlmSubjectType | null
+  subjectId: string
+  busy: boolean
+}
+const inlineVerify = ref<Record<string, InlineVerifyForm>>({})
+
+function verifyFormOf(pid: string): InlineVerifyForm {
+  if (!inlineVerify.value[pid]) {
+    inlineVerify.value[pid] = {
+      conclusion: '', subjectType: null, subjectId: '', busy: false,
+    }
+  }
+  return inlineVerify.value[pid]
+}
+
+async function submitInlineVerify(pid: string): Promise<void> {
+  const f = verifyFormOf(pid)
+  if (f.busy || props.degraded || props.submitting) return
+  if (!f.conclusion.trim()) {
+    message.warning('须填写核验结论（与原件比对结果）')
+    return
+  }
+  if (!f.subjectType) {
+    message.warning('核验须选择主体类型（人员/机构/项目）')
+    return
+  }
+  if (!f.subjectId.trim()) {
+    message.warning('核验须填写主体 ID')
+    return
+  }
+  f.busy = true
+  try {
+    await vlmApi.verify(props.caseId, pid, {
+      verify_conclusion: f.conclusion.trim(),
+      subject_type: f.subjectType,
+      subject_id: f.subjectId.trim(),
+      clue_id: props.clueId || undefined,
+    })
+    message.success('核验通过：图像证据已入图入报告')
+    await refreshFindings()
+  } catch (e) {
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    f.busy = false
+  }
+}
+
+// 查看图像（pending/verified 共用；按 uri 反解 material_id 后走书证下载流）
+const findingPreviews = ref<Record<string, string>>({})
+
+async function previewFinding(key: string, imageUri: string): Promise<void> {
+  if (findingPreviews.value[key]) return
+  const mid = materialIdFromUri(imageUri)
+  if (!mid) {
+    message.error('image_uri 不可解析（evidence/<材料ID>/<文件名>）')
+    return
+  }
+  try {
+    const blob = await evidenceApi.download(props.caseId, props.clueId, mid)
+    findingPreviews.value[key] = URL.createObjectURL(blob)
+  } catch (e) {
+    message.error(presentError(e).title, { duration: 5000 })
+  }
+}
 </script>
 
 <template>
@@ -165,6 +336,12 @@ function confirmLink(m: EvidenceMaterial): void {
     <p v-if="errorMsg" class="ep-error" role="alert">
       书证清单加载失败：{{ errorMsg }}
       <NButton text size="tiny" @click="refresh">重试</NButton>
+    </p>
+
+    <!-- P8 回流：findings 拉取失败软提示（不阻塞书证清单） -->
+    <p v-if="findingsError" class="ep-findings-error" role="status" data-testid="ep-findings-error">
+      图像 findings 加载失败：{{ findingsError }}
+      <NButton text size="tiny" @click="refreshFindings">重试</NButton>
     </p>
 
     <!-- REQ-V-010 上传表单（文件 + 类型 + 备注；上传成功即落审计链） -->
@@ -255,6 +432,17 @@ function confirmLink(m: EvidenceMaterial): void {
           </p>
         </div>
         <div class="ep-item-actions">
+          <!-- P8 回流：图像材料区内直发 AI 分析（仍走 draft 闸门） -->
+          <NButton
+            v-if="isImageMaterial(m)"
+            size="tiny"
+            class="ep-ai-entry"
+            :disabled="degraded || submitting"
+            data-testid="ep-ai-new"
+            @click="toggleAiForm(m)"
+          >
+            AI 图像分析
+          </NButton>
           <NButton
             size="tiny"
             :loading="downloadingId === m.material_id"
@@ -293,6 +481,134 @@ function confirmLink(m: EvidenceMaterial): void {
               挂接
             </NButton>
           </template>
+        </div>
+        <!-- P8 回流：发起表单（content_class 默认取材料已知类别） -->
+        <div
+          v-if="aiFormOpenId === m.material_id"
+          class="ep-ai-form"
+          data-testid="ep-ai-form"
+        >
+          <NSelect
+            v-model:value="aiClassSel[m.material_id]"
+            :options="classOptions"
+            size="tiny"
+            class="ep-ai-class"
+            :disabled="degraded || submitting"
+            data-testid="ep-ai-class"
+          />
+          <NButton
+            size="tiny"
+            type="primary"
+            :loading="aiBusyId === m.material_id"
+            :disabled="degraded || submitting"
+            data-testid="ep-ai-submit"
+            @click="submitAiDraft(m)"
+          >
+            发起分析
+          </NButton>
+          <span class="dim ep-ai-hint">模型只产待核草案，经人比对原件后才入图入报告</span>
+        </div>
+        <!-- P8 回流：findings 子列表（待核草案 + 已人验证据，归属=本材料） -->
+        <div v-if="hasFindings(m.material_id)" class="ep-findings" data-testid="ep-findings">
+          <div
+            v-for="f in findingsOf(m.material_id).pending"
+            :key="f.proposal_id"
+            class="ep-finding ep-finding--pending"
+            :data-proposal-id="f.proposal_id"
+          >
+            <div class="ep-finding-head">
+              <span class="ep-f-tag ep-f-tag--ai">AI 草案</span>
+              <span v-if="f.stale" class="ep-f-tag ep-f-tag--stale">已过期</span>
+              <span class="ep-f-sev" :class="{ 'ep-f-sev--warn': f.severity === 'warn' }">
+                {{ f.severity }}
+              </span>
+              <span class="ep-f-title">{{ f.title }}</span>
+            </div>
+            <p class="ep-f-detail">{{ f.detail }}</p>
+            <p class="ep-f-meta dim">
+              {{ f.model }} · {{ f.created_at }}
+              <template v-if="f.model_score !== null && f.model_score !== undefined">
+                · 把握度 {{ f.model_score.toFixed(2) }}
+              </template>
+            </p>
+            <img
+              v-if="findingPreviews[f.proposal_id]"
+              :src="findingPreviews[f.proposal_id]"
+              class="ep-f-preview"
+              alt="图像预览"
+            />
+            <div v-if="!f.stale" class="ep-f-verify" data-testid="ep-inline-verify">
+              <NInput
+                v-model:value="verifyFormOf(f.proposal_id).conclusion"
+                type="textarea"
+                :rows="2"
+                placeholder="核验结论（必填）：与原件/书证来源比对结果"
+                :disabled="degraded || submitting"
+                data-testid="ep-inline-verify-conclusion"
+              />
+              <div class="ep-f-verify-row">
+                <NSelect
+                  v-model:value="verifyFormOf(f.proposal_id).subjectType"
+                  :options="subjectOptions"
+                  placeholder="主体类型（必选）"
+                  size="tiny"
+                  class="ep-f-subject-type"
+                  :disabled="degraded || submitting"
+                  data-testid="ep-inline-verify-subject-type"
+                />
+                <NInput
+                  v-model:value="verifyFormOf(f.proposal_id).subjectId"
+                  placeholder="主体 ID（必填）"
+                  size="tiny"
+                  class="ep-f-subject-id"
+                  :disabled="degraded || submitting"
+                  data-testid="ep-inline-verify-subject-id"
+                />
+                <NButton size="tiny" :disabled="degraded || submitting" @click="previewFinding(f.proposal_id, f.image_uri)">
+                  查看图像
+                </NButton>
+                <NButton
+                  size="tiny"
+                  type="primary"
+                  :loading="verifyFormOf(f.proposal_id).busy"
+                  :disabled="degraded || submitting"
+                  data-testid="ep-inline-verify-submit"
+                  @click="submitInlineVerify(f.proposal_id)"
+                >
+                  核验通过
+                </NButton>
+              </div>
+            </div>
+            <p v-else class="ep-f-stale-note">
+              过期草案不得人验升格，请重新发起分析
+            </p>
+          </div>
+          <div
+            v-for="r in findingsOf(m.material_id).verified"
+            :key="r.image_evidence_id"
+            class="ep-finding ep-finding--verified"
+            :data-image-evidence-id="r.image_evidence_id"
+          >
+            <div class="ep-finding-head">
+              <span class="ep-f-tag ep-f-tag--ok">已人验</span>
+              <span class="ep-f-sev" :class="{ 'ep-f-sev--warn': r.severity === 'warn' }">
+                {{ r.severity }}
+              </span>
+              <span class="ep-f-title">{{ r.title || r.image_uri }}</span>
+            </div>
+            <p class="ep-f-detail">{{ r.detail }}</p>
+            <p class="ep-f-conclusion">结论：{{ r.verify_conclusion }}</p>
+            <p class="ep-f-meta dim">{{ r.verifier }} · {{ r.created_at }}</p>
+            <img
+              v-if="findingPreviews[r.image_evidence_id]"
+              :src="findingPreviews[r.image_evidence_id]"
+              class="ep-f-preview"
+              alt="图像预览"
+            />
+            <NButton size="tiny" quaternary @click="previewFinding(r.image_evidence_id, r.image_uri)">
+              查看图像
+            </NButton>
+          </div>
         </div>
       </li>
     </ul>
@@ -370,12 +686,138 @@ function confirmLink(m: EvidenceMaterial): void {
 }
 .ep-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--sun-border);
   border-radius: 6px;
+}
+/* ---- P8 回流：发起表单 + findings 子列表（占满整行） ---- */
+.ep-findings-error {
+  margin: 6px 0 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--sun-warn-text);
+}
+.ep-ai-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px dashed var(--sun-border-active);
+  border-radius: 6px;
+  background: var(--sun-input-bg);
+}
+.ep-ai-class {
+  width: 150px;
+}
+.ep-ai-hint {
+  font-size: 11px;
+}
+.ep-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-top: 1px dashed var(--sun-border);
+}
+.ep-finding {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--sun-border);
+  border-radius: 6px;
+  background: var(--sun-input-bg);
+  font-size: 12px;
+}
+.ep-finding--pending {
+  border-style: dashed;
+}
+.ep-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ep-f-tag {
+  display: inline-flex;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 15px;
+  border-radius: 8px;
+  border: 1px solid var(--sun-border);
+}
+.ep-f-tag--ai {
+  border-color: var(--sun-warn-border);
+  color: var(--sun-warn-text);
+}
+.ep-f-tag--stale {
+  border-color: var(--sun-error-border, var(--sun-warn-border));
+  color: var(--sun-error-text, var(--sun-warn-text));
+}
+.ep-f-tag--ok {
+  border-color: var(--sun-ok-border);
+  color: var(--sun-ok-text);
+}
+.ep-f-sev {
+  font-size: 10px;
+  color: var(--sun-text-tertiary);
+}
+.ep-f-sev--warn {
+  color: var(--sun-warn-text);
+}
+.ep-f-title {
+  font-weight: 600;
+}
+.ep-f-detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--sun-text-primary);
+}
+.ep-f-conclusion {
+  margin: 0;
+  font-size: 12px;
+  color: var(--sun-ok-text);
+}
+.ep-f-meta {
+  margin: 0;
+  font-size: 11px;
+}
+.ep-f-preview {
+  max-width: 280px;
+  max-height: 200px;
+  border: 1px solid var(--sun-border);
+  border-radius: 4px;
+}
+.ep-f-stale-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--sun-warn-text);
+}
+.ep-f-verify {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--sun-border);
+}
+.ep-f-verify-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ep-f-subject-type {
+  width: 150px;
+}
+.ep-f-subject-id {
+  width: 140px;
 }
 .ep-item-main {
   min-width: 0;

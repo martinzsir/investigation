@@ -139,17 +139,18 @@ class MiaoSuan:
         # REQ-G-011/012：维度与枚举空间改读 ontology/<pack> 声明；
         # 声明文件缺失时回落类属性内置默认（旧案件包/精简测试包零行为变化）。
         try:
-            from core.ontology_loader import load_dimensions, load_enum_space, load_jians
+            from core.ontology_loader import load_dimensions, load_enum_space
+            from core.wujian import load_wujian
             dims = load_dimensions(pack)
             if dims:
                 self.DIMENSIONS = dims
             space = load_enum_space(pack)
             if space:
                 self.ENUM_SPACE = space
-            # R5：五间从 jians.json 声明读取
-            jians = load_jians(pack)
-            if jians:
-                self.JIAN_ALL = [j["name"] for j in jians]
+            # P6：五间从已挂载词汇（packs/wujian）读取；无包保留类属性默认
+            wj = load_wujian(pack)
+            if wj is not None and wj.jian_order:
+                self.JIAN_ALL = wj.jian_order
         except Exception:
             pass  # 装载失败保留类属性默认；loader 在 build 期会对正式包硬失败
 

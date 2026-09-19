@@ -32,9 +32,20 @@ export const CARDINALITY_LABEL: Record<Cardinality, string> = {
   many_to_many: '多对多',
 }
 
+/** P1 主键一等声明（column/type/strategy/prefix/properties） */
+export interface ObjectKey {
+  column: string
+  type?: string
+  strategy: 'proxy' | 'natural' | 'composite'
+  prefix?: string
+  properties?: string[]
+}
+
 export interface ObjectType {
   name: string
   pk?: string
+  /** P1 主键一等声明（权威）；缺失时回落 pk 隐式推断 */
+  key?: ObjectKey
   kind: 'entity' | 'event'
   name_property?: string
   jian?: string

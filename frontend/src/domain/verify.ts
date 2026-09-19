@@ -221,6 +221,8 @@ export interface EvidenceMaterial {
   note: string
   uploaded_by: string
   uploaded_at: string
+  /** 所属线索（仅案件级清单 GET /cases/{cid}/evidence 返回；per-clue 清单不返回） */
+  clue_id?: string
 }
 
 /** 字节大小人类可读（B/KB/MB，整数 KB、1 位小数 MB） */

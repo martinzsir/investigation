@@ -93,10 +93,6 @@ const roleOptions = computed(() => enums.value.requires_role.map((r) => ({
   label: ROLE_LABEL[r] ?? r,
   value: r,
 })))
-const effectOptions = computed(() => enums.value.side_effects.map((fx) => ({
-  label: SIDE_EFFECT_LABEL[fx] ?? fx,
-  value: fx,
-})))
 
 function isExisting(name: string): boolean {
   return beforeSnapshot.value.some((a) => a.name === name)
@@ -290,7 +286,7 @@ async function doSave(): Promise<void> {
               <NCheckbox
                 :checked="onlyFromChecked(selected, s)"
                 :disabled="!canWrite"
-                @update:checked="(v: boolean) => toggleOnlyFrom(selected, s, v)"
+                @update:checked="(v: boolean) => { if (selected) toggleOnlyFrom(selected, s, v) }"
               >{{ s }}{{ stateTerminal[s] ? ' 🔒' : '' }}</NCheckbox>
             </label>
           </div>
@@ -302,7 +298,7 @@ async function doSave(): Promise<void> {
             <NCheckbox
               :checked="selected.terminal"
               :disabled="!canWrite"
-              @update:checked="(v: boolean) => { selected.terminal = v }"
+              @update:checked="(v: boolean) => { if (selected) selected.terminal = v }"
             >
               <span class="ac-danger-text">🔴 终态动作 terminal</span>
             </NCheckbox>
@@ -352,6 +348,7 @@ async function doSave(): Promise<void> {
                 :checked="selected.side_effects.includes(fx)"
                 :disabled="!canWrite"
                 @update:checked="(v: boolean) => {
+                  if (!selected) return
                   const set = new Set(selected.side_effects)
                   if (v) set.add(fx); else set.delete(fx)
                   selected.side_effects = enums.side_effects.filter((x) => set.has(x))

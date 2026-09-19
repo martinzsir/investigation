@@ -542,13 +542,13 @@ def tool_clue_list(args: dict) -> dict:
     board, store, rep = _build_board()
     try:
         # REQ-011 AC1：低权限会话只返回授权范围内线索——
-        # R5：间类可见门槛读 jians.json default_clearance（角色→密级经
-        # ROLE_CLEARANCE 对照表，不直接比 rank，不硬编码"内间"）
+        # P6：间类可见门槛读五间词汇 default_clearance（角色→密级经
+        # ROLE_CLEARANCE 对照表，不直接比 rank，不硬编码"内间"）；无包为空
         from core.access import can_see_jian_types
-        from core.ontology_loader import load_jians
+        from core.wujian import load_wujian
         pack = getattr(board, "pack", None) or "default"
-        jian_clearances = {j["name"]: j["default_clearance"]
-                          for j in load_jians(pack)}
+        wj = load_wujian(pack)
+        jian_clearances = wj.jian_clearances if wj is not None else {}
         items = []
         filtered = 0
         for c in board.clues.values():
@@ -1073,6 +1073,12 @@ def tool_report_gather_evidence(args: dict) -> dict:
     if version is None and not demo:
         degraded.append("未解析到 data_version：报告将缺少数据版本锚点")
 
+    # P8：人验通过的图像证据（state.sqlite；无库=空，查询失败记降级）——
+    # 与 gather_evidence.main() 同构；漏接会让发现级内容（title/severity/
+    # 人验结论）不进报告，八段书证退化为 LLM 转述
+    image_evidence = ge.collect_image_evidence_safe(
+        root, case_id, clue_id, degraded)
+
     try:
         evidence = {
             "case_id": case_id,
@@ -1087,6 +1093,12 @@ def tool_report_gather_evidence(args: dict) -> dict:
                 },
                 "数据源清单": ge.collect_sources(
                     root, case_id, clue_id, pack, version, degraded),
+                # P7：线索 evidence_refs 自动聚合（图谱/资金/书证引用）——
+                # 与 worker/report.py 同构；漏接会让第五段落「未产出线索产物」兜底文案
+                "线索证据引用": ge.collect_clue_refs(
+                    root, case_id, clue_id, degraded),
+                # P8：人验通过的图像证据（发现级内容确定性入报告）
+                "图像证据": image_evidence,
             },
             "降级": degraded,
             "脱敏": True,
@@ -1283,6 +1295,13 @@ def _handle(msg: dict) -> dict | None:
 
 
 def main() -> int:
+    # P3/P6：启动时自枚举 packs/*——挂载 wujian 五间词汇（密级门槛）与
+    # relation/timeline 镜头；report 线索已固化 jian_types，此处供可见性判定。
+    try:
+        from core.pack_loader import discover as discover_packs
+        discover_packs()
+    except Exception as e:
+        _log(f"pack discover failed: {e}")
     _log(f"starting, protocol={PROTOCOL_VERSION}, root={ROOT}")
     for line in sys.stdin:
         line = line.strip()

@@ -10,7 +10,6 @@ import { canvasApi } from '../../api/endpoints/canvas'
 import type { ChatStreamHandlers } from '../../api/endpoints/canvas'
 import type {
   CanvasChatArtifact,
-  CanvasChatEnvelope,
   CanvasChatFact,
 } from '../../domain/canvas'
 import type { StreamHandle } from '../../api/transport/types'
@@ -271,7 +270,7 @@ async function send() {
       messages.value[assistantIdx].artifact = result.artifact ?? null
       messages.value[assistantIdx].streaming = false
     },
-    onErrorEvent: (error, message) => {
+    onErrorEvent: (_error, message) => {
       errorMsg.value = message
       messages.value[assistantIdx].content = message
       messages.value[assistantIdx].streaming = false

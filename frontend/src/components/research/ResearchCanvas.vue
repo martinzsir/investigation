@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { NAlert, NButton, NIcon, NSpin, useDialog, useMessage } from 'naive-ui'
 import { RefreshOutline } from '@vicons/ionicons5'
 import { canvasApi } from '../../api/endpoints/canvas'
+import { vlmApi, type VlmMaterialFindings } from '../../api/endpoints/vlm'
 import { waitForTerminal } from '../../api/endpoints/tasks'
 import { ApiError, presentError } from '../../api/errors'
 import {
@@ -1251,6 +1252,33 @@ async function onAuditViewChange(v: 'business' | 'audit'): Promise<void> {
 
 const drawerAudit = computed<RuleAudit | null>(() =>
   drawerNode.value ? auditsMap[drawerNode.value.ref] ?? null : null)
+
+/** P8 回流：书证节点抽屉的 AI findings（点开时拉取，软失败不阻塞抽屉） */
+const evidenceFindings = ref<VlmMaterialFindings | null>(null)
+const findingsLoading = ref(false)
+const findingsError = ref(false)
+
+watch(
+  () => (drawerNode.value?.kind === 'evidence' ? drawerNode.value.ref : null),
+  (mid) => {
+    evidenceFindings.value = null
+    findingsError.value = false
+    findingsLoading.value = false
+    if (!mid) return
+    findingsLoading.value = true
+    vlmApi.findings(props.caseId, props.clueId).then((page) => {
+      // 抽屉已切走：丢弃过期响应
+      const cur = drawerNode.value
+      if (cur?.kind !== 'evidence' || cur.ref !== mid) return
+      evidenceFindings.value = page.findings[mid] ?? { pending: [], verified: [] }
+    }).catch(() => {
+      if (drawerNode.value?.ref === mid) findingsError.value = true
+    }).finally(() => {
+      if (drawerNode.value?.ref === mid) findingsLoading.value = false
+    })
+  },
+  { immediate: true },
+)
 
 /** 抽屉节点的人工连线（支持删除；系统边不出现操作入口） */
 const drawerManualEdges = computed<CanvasEdge[]>(() => {
@@ -2782,6 +2810,9 @@ function nodeLabel(id: string): string {
       :to-verifying="toVerifying"
       :to-verify-error="toVerifyError"
       :verify-suggestions="verifySuggestions"
+      :evidence-findings="evidenceFindings"
+      :findings-loading="findingsLoading"
+      :findings-error="findingsError"
       @expand="onDrawerExpand"
       @retry="retryExpand"
       @collapse="collapseCurrent"

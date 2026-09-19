@@ -251,25 +251,24 @@ def _call_pair_coverage(store, params: dict, ctx=None) -> dict:
 _UNMODELED: dict[str, list[str]] = {}
 
 
+def _wujian(pack: str):
+    from core.wujian import load_wujian
+    return load_wujian(pack)
+
+
 def _jian_order(pack: str) -> list[str]:
-    """R5：从 jians.json 读取间类展示顺序（缺省回落 DEFAULT_JIANS）。"""
-    try:
-        from core.ontology_loader import load_jians
-        return [j["name"] for j in load_jians(pack)]
-    except Exception:
-        from core.ontology_loader import DEFAULT_JIANS
-        return list(DEFAULT_JIANS)
+    """P6：间类展示顺序来自已挂载五间词汇（packs/wujian）；无包返回 []。"""
+    wj = _wujian(pack)
+    return wj.jian_order if wj else []
 
 
 def _cross_level_name(n: int, pack: str) -> str:
-    """R5：从 jians.json cross_levels 读取等级名称；映射（1/2/3）硬编码。"""
-    try:
-        from core.ontology_loader import load_cross_levels
-        for lv in load_cross_levels(pack):
-            if lv["min_independent_sources"] == n:
-                return lv["name"]
-    except Exception:
-        pass
+    """P6：升格名来自五间词汇 cross_levels；无包回落通用名。映射（1/2/3）硬编码。"""
+    wj = _wujian(pack)
+    if wj is not None:
+        name = wj.cross_level_name(n)
+        if name:
+            return name
     return {1: "观察", 2: "线索", 3: "可立案依据候选"}[n]
 
 
@@ -306,26 +305,37 @@ def count_independent(sources: list[str],
 
 
 def _jian_entries(pack: str) -> list[tuple[str, str, str, str]]:
-    """从案件包声明收集五间数据源
+    """从五间词汇映射收集五间数据源
     → [(语义表名, 间类, 数据源展示名, 对象/链接类型名), ...]。
 
-    obj_<name>/lnk_<name> 的 jian 非空才纳入；jian_source 缺省回落对象/链接 title。
-    装载失败/精简测试包无声明 → 空列表（不硬编码业务表名，缺口如实呈现）。
+    P6：以 packs/wujian 的 source_object_types 为唯一权威反查（支持一对多，
+    如 org 同时属因间/死间），数据源展示名读词汇 source_names（原 jian_source）。
+    映射中的对象/链接必须在 OntologyPack 中已声明（缺失跳过并留缺口）。
+    五间包未安装/装载失败 → 空列表（交叉页整体降级为缺口）。
     """
+    wj = _wujian(pack)
+    if wj is None:
+        return []
     try:
         from core.ontology_loader import load_pack
         spec = load_pack(pack)
     except Exception:
         return []
+    obj_map = {o.name: o for o in spec.objects}
+    lnk_map = {l.name: l for l in spec.links}
     entries: list[tuple[str, str, str, str]] = []
-    for o in spec.objects:
-        if o.jian:
-            entries.append((f"obj_{o.name}", o.jian,
-                            o.jian_source or o.title, o.name))
-    for l in spec.links:
-        if l.jian:
-            entries.append((f"lnk_{l.name}", l.jian,
-                            l.jian_source or l.title, l.name))
+    for jd in wj.jians:
+        jian = jd.name
+        for t in jd.source_object_types:
+            if t in obj_map:
+                o = obj_map[t]
+                entries.append((f"obj_{o.name}", jian,
+                                wj.source_name_for(t, o.title), o.name))
+            elif t in lnk_map:
+                l = lnk_map[t]
+                entries.append((f"lnk_{l.name}", jian,
+                                wj.source_name_for(t, l.title), l.name))
+            # 未声明的对象/链接类型：跳过（缺口由 _UNMODELED 展示）
     return entries
 
 
@@ -355,15 +365,13 @@ def _jian_cross_level(store, params: dict) -> dict:
         src_by_jian.setdefault(jn, []).append(s)
     for jn, extras in _UNMODELED.items():
         src_by_jian.setdefault(jn, []).extend(extras)
-    # R9：独立源数——按 jians.json source_independence.related_pairs
-    # 把声明同源的数据源合并；无声明时每个对象类型独立
-    try:
-        from core.ontology_loader import load_source_independence
-        related_pairs = load_source_independence(pack)["related_pairs"]
-    except Exception:
-        related_pairs = []
+    # R9：独立源数——按五间词汇 source_independence.related_pairs
+    # 把声明同源的数据源合并；无包/无声明时每个对象类型独立
+    wj = _wujian(pack)
+    related_pairs = ([{"a": a, "b": b} for a, b in wj.related_pairs]
+                     if wj is not None else [])
     n = count_independent(sorted(set(hit_sources)), related_pairs)
-    # 红线：等级映射（1/2/3）硬编码；名称从 jians.json cross_levels 读取
+    # 红线：等级映射（1/2/3）硬编码；名称从五间词汇 cross_levels 读取
     level_n = 3 if n >= 3 else (2 if n == 2 else 1)
     level = _cross_level_name(level_n, pack)
     jian_order = _jian_order(pack)
@@ -540,6 +548,600 @@ def _overpass_two_hop(store, params: dict) -> dict:
     paths = overpass_two_hop_sql(store)
     subject = paths[0].source if paths else ""
     return {"rows": [p.to_dict() for p in paths], "subject": subject}
+
+
+# ---- P4 关系研判：语义层统一图算法（N 跳邻域/共同邻居/路径枚举）----
+# 自由文本主体（target/subject_a/subject_b）跟随 location_colocated 先例：
+# 不进 functions.json parameters（string 必须 enum），由编排层/镜头透传，
+# graph.resolve_subject 内做标识符白名单 + 参数化查询。
+from core.graph import (  # noqa: E402
+    EDGE_KINDS as _EDGE_KINDS,
+    load_node_names as _load_node_names,
+    load_semantic_graph as _load_semantic_graph,
+    node_type_of as _node_type_of,
+    resolve_subject as _resolve_subject,
+)
+
+
+def _graph_query_params(params: dict) -> tuple[int, str]:
+    depth = int(params.get("depth", 2))
+    if not 1 <= depth <= 3:
+        raise ValueError(f"depth 允许 1-3，得到 {depth}")
+    edge_kinds = params.get("edge_kinds", "all")
+    if edge_kinds not in _EDGE_KINDS:
+        raise ValueError(f"edge_kinds={edge_kinds!r}，允许 {_EDGE_KINDS}")
+    return depth, edge_kinds
+
+
+def _node_brief(pk: str, names: dict) -> dict:
+    return {"pk": pk, "type": _node_type_of(pk), "name": names.get(pk, pk)}
+
+
+def _edge_brief(e) -> dict:
+    d = e.to_dict()
+    d["ref"] = e.ref()
+    return d
+
+
+def _gap_diagnostic(g) -> dict:
+    return {
+        "engine": "semantic",
+        "loaded_links": list(g.loaded_links),
+        "gaps": g.gaps,
+        "is_degraded": bool(g.gaps),
+    }
+
+
+def _missing_subject(target, g) -> dict:
+    return {
+        "hit": False,
+        "subject": None,
+        "nodes": [],
+        "edges": [],
+        "degraded": True,
+        "degraded_reason": f"主体 {target!r} 在语义层实体中不存在（未建档或未归一）",
+        "diagnostics": _gap_diagnostic(g),
+    }
+
+
+@register_function("relation_neighborhood")
+def _relation_neighborhood(store, params: dict, ctx=None) -> dict:
+    """目标主体 N 跳关系圈层（跨资金/通话/持有/中标/同框边，无向 BFS）。"""
+    depth, edge_kinds = _graph_query_params(params)
+    target = params.get("target") or params.get("target_subject") or ""
+    target_type = params.get("target_type", "auto")
+    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
+    subject = _resolve_subject(store, target, target_type, ctx)
+    if subject is None:
+        return _missing_subject(target, g)
+    hops, first_path = g.neighborhood(subject["pk"], depth)
+    names = _load_node_names(store, set(hops), ctx)
+    tree_edges: dict[tuple, object] = {}
+    for pk, chain in first_path.items():
+        for e in chain:
+            # BFS 树：每个节点只有一条首达链，同一物理边行至多出现一次
+            tree_edges.setdefault((e.edge, e.edge_pk), e)
+    nodes = [
+        {**_node_brief(pk, names), "hops": h}
+        for pk, h in sorted(hops.items(), key=lambda kv: (kv[1], kv[0]))
+    ]
+    diag = _gap_diagnostic(g)
+    return {
+        "hit": len(hops) > 1,
+        "subject": subject,
+        "nodes": nodes,
+        "edges": [_edge_brief(e) for e in tree_edges.values()],
+        "degraded": diag["is_degraded"],
+        "degraded_reason": ("部分关系数据源未接入，圈层不完整："
+                            + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
+        "diagnostics": diag,
+    }
+
+
+@register_function("relation_common_neighbors")
+def _relation_common_neighbors(store, params: dict, ctx=None) -> dict:
+    """两主体的共同邻居（跨类型混合关系圈层的交集）。"""
+    _depth, edge_kinds = _graph_query_params(params)
+    ta, tb = params.get("subject_a") or "", params.get("subject_b") or ""
+    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
+    sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
+    sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
+    if sa is None or sb is None:
+        missing = ta if sa is None else tb
+        out = _missing_subject(missing, g)
+        out["subject_a"] = sa
+        out["subject_b"] = sb
+        return out
+    if sa["pk"] == sb["pk"]:
+        raise ValueError("subject_a 与 subject_b 指向同一主体，共同邻居无意义")
+    common = g.common_neighbors(sa["pk"], sb["pk"])
+    pks = set(common) | {sa["pk"], sb["pk"]}
+    names = _load_node_names(store, pks, ctx)
+    items = [{
+        **_node_brief(pk, names),
+        "via_a": _edge_brief(ea),
+        "via_b": _edge_brief(eb),
+    } for pk, (ea, eb) in sorted(common.items())]
+    diag = _gap_diagnostic(g)
+    return {
+        "hit": bool(items),
+        "subject_a": sa,
+        "subject_b": sb,
+        "common": items,
+        "count": len(items),
+        "degraded": diag["is_degraded"],
+        "degraded_reason": ("部分关系数据源未接入："
+                            + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
+        "diagnostics": diag,
+    }
+
+
+@register_function("relation_paths")
+def _relation_paths(store, params: dict, ctx=None) -> dict:
+    """两主体间 N 跳内简单路径枚举（环剪枝 + max_paths 上限）。"""
+    depth, edge_kinds = _graph_query_params(params)
+    max_paths = int(params.get("max_paths", 20))
+    if not 1 <= max_paths <= 100:
+        raise ValueError(f"max_paths 允许 1-100，得到 {max_paths}")
+    ta, tb = params.get("subject_a") or "", params.get("subject_b") or ""
+    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
+    sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
+    sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
+    if sa is None or sb is None:
+        missing = ta if sa is None else tb
+        out = _missing_subject(missing, g)
+        out["subject_a"] = sa
+        out["subject_b"] = sb
+        out["paths"] = []
+        return out
+    if sa["pk"] == sb["pk"]:
+        raise ValueError("subject_a 与 subject_b 指向同一主体，路径枚举无意义")
+    chains = g.paths(sa["pk"], sb["pk"], depth, max_paths)
+    pks = {sa["pk"], sb["pk"]}
+    for chain in chains:
+        for e in chain:
+            pks.update((e.src, e.dst))
+    names = _load_node_names(store, pks, ctx)
+    paths_out = []
+    for chain in chains:
+        node_seq = [sa["pk"]] + [e.dst for e in chain]
+        paths_out.append({
+            "length": len(chain),
+            "nodes": [_node_brief(pk, names) for pk in node_seq],
+            "edges": [_edge_brief(e) for e in chain],
+        })
+    truncated = len(chains) >= max_paths
+    diag = _gap_diagnostic(g)
+    diag["truncated_at_max_paths"] = truncated
+    return {
+        "hit": bool(paths_out),
+        "subject_a": sa,
+        "subject_b": sb,
+        "paths": paths_out,
+        "count": len(paths_out),
+        "degraded": diag["is_degraded"] or truncated,
+        "degraded_reason": (
+            ("部分关系数据源未接入："
+             + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None)
+            or ("路径数达到 max_paths 上限被截断" if truncated else None),
+        "diagnostics": diag,
+    }
+
+
+# ----------------------------------------------------------------------
+# P5 时间研判镜头：统一时间轴（资金/通话/轨迹事件）
+# 见 .trae/documents/研判能力插件化_实施方案_v3.md §4-P5
+# ----------------------------------------------------------------------
+from datetime import date as _date
+
+
+def _tl_table(ctx, object_name: str) -> str:
+    """表名经 RuntimeContext 派生（换包不崩）；无 ctx 回落 obj_ 前缀。"""
+    return ctx.table(object_name) if ctx is not None else f"obj_{object_name}"
+
+
+def _tl_gap(object_name: str, e: Exception) -> dict:
+    return {"object": object_name,
+            "reason": f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"}
+
+
+def _amount_brief(amount) -> str:
+    if amount is None:
+        return ""
+    return f" {float(amount):g} 元"
+
+
+def _collect_subject_events(store, target: str, ctx=None
+                            ) -> tuple[list[dict], list[dict]]:
+    """收集目标主体在资金/通话/轨迹三表的全部事件 → (events, gaps)。
+
+    事件统一形态：
+      {"type": 资金|通话|轨迹, "src_object": transaction|call|trackpoint,
+       "event_pk", "date"(ISO), "role", "brief"}
+    缺表/缺列（Catalog/Binder 且指向语义表）= 数据源未接入 → gaps，
+    其余异常照抛。
+    """
+    events: list[dict] = []
+    gaps: list[dict] = []
+
+    # ---- 资金 ----
+    tbl = _tl_table(ctx, "transaction")
+    try:
+        rows = store.query(
+            f'SELECT txn_id AS event_pk, from_raw, to_raw, '
+            f'CAST(amount AS DOUBLE) AS amount, CAST(date AS DATE) AS d '
+            f'FROM {tbl} WHERE from_raw = ? OR to_raw = ?',
+            (target, target))
+    except Exception as e:
+        if not _is_structural_degrade(e):
+            raise
+        gaps.append(_tl_gap("transaction", e))
+    else:
+        for r in rows:
+            if not r["event_pk"] or not r["d"]:
+                continue
+            if r["from_raw"] == target:
+                role, peer = "转出", r["to_raw"]
+            else:
+                role, peer = "转入", r["from_raw"]
+            events.append({
+                "type": "资金", "src_object": "transaction",
+                "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
+                "role": role,
+                "brief": f'{role}→{peer}{_amount_brief(r["amount"])}'})
+
+    # ---- 通话 ----
+    tbl = _tl_table(ctx, "call")
+    try:
+        rows = store.query(
+            f'SELECT call_id AS event_pk, caller_raw, callee_raw, '
+            f'CAST(date AS DATE) AS d FROM {tbl} '
+            f'WHERE caller_raw = ? OR callee_raw = ?',
+            (target, target))
+    except Exception as e:
+        if not _is_structural_degrade(e):
+            raise
+        gaps.append(_tl_gap("call", e))
+    else:
+        for r in rows:
+            if not r["event_pk"] or not r["d"]:
+                continue
+            if r["caller_raw"] == target:
+                role, peer = "主叫", r["callee_raw"]
+            else:
+                role, peer = "被叫", r["caller_raw"]
+            events.append({
+                "type": "通话", "src_object": "call",
+                "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
+                "role": role, "brief": f"{role}→{peer}"})
+
+    # ---- 轨迹 ----
+    tbl = _tl_table(ctx, "trackpoint")
+    try:
+        rows = store.query(
+            f'SELECT track_id AS event_pk, person_raw, location, '
+            f'CAST(date AS DATE) AS d FROM {tbl} WHERE person_raw = ?',
+            (target,))
+    except Exception as e:
+        if not _is_structural_degrade(e):
+            raise
+        gaps.append(_tl_gap("trackpoint", e))
+    else:
+        for r in rows:
+            if not r["event_pk"] or not r["d"]:
+                continue
+            events.append({
+                "type": "轨迹", "src_object": "trackpoint",
+                "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
+                "role": "出现",
+                "brief": f'出现于 {r["location"] or "未知地点"}'})
+
+    events.sort(key=lambda e: (e["date"], e["type"], e["event_pk"]))
+    return events, gaps
+
+
+def _event_type_counts(events: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for e in events:
+        counts[e["type"]] = counts.get(e["type"], 0) + 1
+    return counts
+
+
+@register_function("timeline_event_sequence")
+def _timeline_event_sequence(store, params: dict, ctx=None) -> dict:
+    """目标主体跨类型事件序列邻接（统一时间轴，附相邻事件日差）。"""
+    target = params.get("target") or params.get("target_subject") or ""
+    subject = _resolve_subject(store, target,
+                               params.get("target_type", "auto"), ctx)
+    if subject is None:
+        return {"hit": False, "subject": None, "timeline": [],
+                "event_count": 0, "span_days": None, "type_counts": {},
+                "degraded": True,
+                "degraded_reason": f"主体 {target!r} 在语义层实体中不存在",
+                "diagnostics": {"gaps": []}}
+    events, gaps = _collect_subject_events(store, subject["name"], ctx)
+    timeline: list[dict] = []
+    prev: _date | None = None
+    for e in events:
+        d = _date.fromisoformat(e["date"])
+        gap_days = None if prev is None else (d - prev).days
+        timeline.append({**e, "gap_days": gap_days})
+        prev = d
+    span_days = None if not events else (
+        _date.fromisoformat(events[-1]["date"])
+        - _date.fromisoformat(events[0]["date"])).days
+    return {
+        "hit": len(events) >= 2,
+        "subject": subject,
+        "timeline": timeline,
+        "event_count": len(events),
+        "span_days": span_days,
+        "type_counts": _event_type_counts(events),
+        "degraded": bool(gaps),
+        "degraded_reason": ("部分时间数据源未接入："
+                            + "; ".join(x["object"] for x in gaps)) if gaps else None,
+        "diagnostics": {"gaps": gaps},
+    }
+
+
+@register_function("timeline_rhythm")
+def _timeline_rhythm(store, params: dict, ctx=None) -> dict:
+    """目标主体事件周期节奏：间隔统计 + burst_days 内事件聚集簇。"""
+    import statistics
+    burst_days = int(params.get("burst_days", 3))
+    if not 1 <= burst_days <= 14:
+        raise ValueError(f"burst_days 允许 1-14，得到 {burst_days}")
+    target = params.get("target") or params.get("target_subject") or ""
+    subject = _resolve_subject(store, target,
+                               params.get("target_type", "auto"), ctx)
+    if subject is None:
+        return {"hit": False, "subject": None, "bursts": [],
+                "event_count": 0, "median_gap_days": None,
+                "degraded": True,
+                "degraded_reason": f"主体 {target!r} 在语义层实体中不存在",
+                "diagnostics": {"gaps": []}}
+    events, gaps = _collect_subject_events(store, subject["name"], ctx)
+    if len(events) < 2:
+        return {"hit": False, "subject": subject, "bursts": [],
+                "event_count": len(events), "median_gap_days": None,
+                "degraded": True,
+                "degraded_reason": "事件不足 2 起，节奏不可计算",
+                "diagnostics": {"gaps": gaps}}
+
+    day_seq = [_date.fromisoformat(e["date"]) for e in events]
+    intervals = [(b - a).days for a, b in zip(day_seq, day_seq[1:])]
+    median_gap = statistics.median(intervals)
+
+    # 聚集簇：相邻事件日差 ≤ burst_days 贪心成团（仅 ≥2 起成簇）
+    bursts: list[dict] = []
+    cur = [events[0]]
+    for e, d in zip(events[1:], day_seq[1:]):
+        if (d - _date.fromisoformat(cur[-1]["date"])).days <= burst_days:
+            cur.append(e)
+        else:
+            if len(cur) >= 2:
+                bursts.append(cur)
+            cur = [e]
+    if len(cur) >= 2:
+        bursts.append(cur)
+
+    bursts_out = [{
+        "start": b[0]["date"], "end": b[-1]["date"],
+        "event_count": len(b),
+        "types": sorted({x["type"] for x in b}),
+        "events": b,
+    } for b in bursts]
+    return {
+        "hit": bool(bursts_out),
+        "subject": subject,
+        "bursts": bursts_out,
+        "burst_count": len(bursts_out),
+        "event_count": len(events),
+        "median_gap_days": median_gap,
+        "burst_days": burst_days,
+        "type_counts": _event_type_counts(events),
+        "degraded": bool(gaps),
+        "degraded_reason": ("部分时间数据源未接入："
+                            + "; ".join(x["object"] for x in gaps)) if gaps else None,
+        "diagnostics": {"gaps": gaps},
+    }
+
+
+@register_function("timeline_cross_collision")
+def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
+    """锚点项目开标/公示日前后 window_days：同主体跨类型（资金/通话/轨迹）碰撞。
+
+    project 显式给出时只扫该项目；project 缺省（规则手册 R7 执行路径）时
+    扫描全部有可用公示日的项目，逐锚点计算并在每行带 project/anchor_date。
+    """
+    window_days = int(params.get("window_days", 7))
+    if not 1 <= window_days <= 60:
+        raise ValueError(f"window_days 允许 1-60，得到 {window_days}")
+    min_event_types = int(params.get("min_event_types", 2))
+    if not 2 <= min_event_types <= 3:
+        raise ValueError(f"min_event_types 允许 2-3，得到 {min_event_types}")
+    project = (params.get("project") or "").strip()
+
+    bp = _tl_table(ctx, "bid_project")
+
+    def _missing(pj, reason):
+        return {"hit": False, "project": pj, "anchor_date": None,
+                "rows": [], "count": 0, "degraded": True,
+                "degraded_reason": reason,
+                "diagnostics": {"gaps": []}}
+
+    # 锚点集：(project_dict, anchor_date)；single 模式 1 个，scan 模式全部
+    if project:
+        pj = _resolve_subject(store, project, "bid_project", ctx)
+        if pj is None:
+            return _missing(None, f"项目 {project!r} 在语义层不存在")
+        try:
+            arows = store.query(
+                f'SELECT project_id, title, CAST(pub_date AS DATE) AS d '
+                f'FROM {bp} WHERE project_id = ?', (pj["pk"],))
+        except Exception as e:
+            if not _is_structural_degrade(e):
+                raise
+            return _missing(pj, _tl_gap("bid_project", e)["reason"])
+        if not arows or not arows[0]["d"]:
+            return _missing(pj, f"项目 {pj['name']} 缺少可用公示日")
+        anchors = [(pj, arows[0]["d"])]
+        single_pj, single_anchor = pj, arows[0]["d"]
+    else:
+        try:
+            prows = store.query(
+                f'SELECT project_id, title, CAST(pub_date AS DATE) AS d '
+                f'FROM {bp}')
+        except Exception as e:
+            if not _is_structural_degrade(e):
+                raise
+            return _missing(None, _tl_gap("bid_project", e)["reason"])
+        anchors = [(
+            {"pk": str(r["project_id"]), "type": "bid_project",
+             "name": r["title"] or str(r["project_id"])}, r["d"])
+            for r in prows if r["project_id"] and r["d"]]
+        if not anchors:
+            return _missing(None, "语义层无带可用公示日的项目，碰撞不可计算")
+        single_pj, single_anchor = None, None
+
+    def _scan_anchor(anchor, gaps_acc: list[dict], seen_gaps: set):
+        """单锚点：窗口内三类事件按主体归集 → 主体→bucket。"""
+        by_subject: dict[str, dict] = {}
+
+        def _add(subject_name, entry_type: str, event: dict) -> None:
+            if not subject_name:
+                return
+            bucket = by_subject.setdefault(
+                subject_name, {"types": set(), "events": []})
+            bucket["types"].add(entry_type)
+            bucket["events"].append(event)
+
+        def _gap(obj_name: str, e: Exception) -> None:
+            if obj_name not in seen_gaps:
+                seen_gaps.add(obj_name)
+                gaps_acc.append(_tl_gap(obj_name, e))
+
+        # 资金：窗口内资金交易两侧主体
+        tbl = _tl_table(ctx, "transaction")
+        try:
+            rows = store.query(
+                f'SELECT txn_id AS event_pk, from_raw, to_raw, '
+                f'CAST(date AS DATE) AS d FROM {tbl} '
+                f'WHERE ABS(date_diff(\'day\', CAST(? AS DATE), '
+                f'CAST(date AS DATE))) <= ?',
+                (anchor, window_days))
+        except Exception as e:
+            if not _is_structural_degrade(e):
+                raise
+            _gap("transaction", e)
+        else:
+            for r in rows:
+                if not r["event_pk"] or not r["d"]:
+                    continue
+                off = (r["d"] - anchor).days
+                _add(r["from_raw"], "资金", {
+                    "type": "资金", "src_object": "transaction",
+                    "event_pk": str(r["event_pk"]),
+                    "date": r["d"].isoformat(), "offset_days": off,
+                    "role": "转出", "brief": f"转出（{off:+d} 天）"})
+                _add(r["to_raw"], "资金", {
+                    "type": "资金", "src_object": "transaction",
+                    "event_pk": str(r["event_pk"]),
+                    "date": r["d"].isoformat(), "offset_days": off,
+                    "role": "转入", "brief": f"转入（{off:+d} 天）"})
+
+        # 通话：窗口内通话两侧主体
+        tbl = _tl_table(ctx, "call")
+        try:
+            rows = store.query(
+                f'SELECT call_id AS event_pk, caller_raw, callee_raw, '
+                f'CAST(date AS DATE) AS d FROM {tbl} '
+                f'WHERE ABS(date_diff(\'day\', CAST(? AS DATE), '
+                f'CAST(date AS DATE))) <= ?',
+                (anchor, window_days))
+        except Exception as e:
+            if not _is_structural_degrade(e):
+                raise
+            _gap("call", e)
+        else:
+            for r in rows:
+                if not r["event_pk"] or not r["d"]:
+                    continue
+                off = (r["d"] - anchor).days
+                _add(r["caller_raw"], "通话", {
+                    "type": "通话", "src_object": "call",
+                    "event_pk": str(r["event_pk"]),
+                    "date": r["d"].isoformat(), "offset_days": off,
+                    "role": "主叫", "brief": f"主叫（{off:+d} 天）"})
+                _add(r["callee_raw"], "通话", {
+                    "type": "通话", "src_object": "call",
+                    "event_pk": str(r["event_pk"]),
+                    "date": r["d"].isoformat(), "offset_days": off,
+                    "role": "被叫", "brief": f"被叫（{off:+d} 天）"})
+
+        # 轨迹：窗口内轨迹点主体
+        tbl = _tl_table(ctx, "trackpoint")
+        try:
+            rows = store.query(
+                f'SELECT track_id AS event_pk, person_raw, '
+                f'CAST(date AS DATE) AS d FROM {tbl} '
+                f'WHERE ABS(date_diff(\'day\', CAST(? AS DATE), '
+                f'CAST(date AS DATE))) <= ?',
+                (anchor, window_days))
+        except Exception as e:
+            if not _is_structural_degrade(e):
+                raise
+            _gap("trackpoint", e)
+        else:
+            for r in rows:
+                if not r["event_pk"] or not r["d"]:
+                    continue
+                off = (r["d"] - anchor).days
+                _add(r["person_raw"], "轨迹", {
+                    "type": "轨迹", "src_object": "trackpoint",
+                    "event_pk": str(r["event_pk"]),
+                    "date": r["d"].isoformat(), "offset_days": off,
+                    "role": "出现", "brief": f"轨迹出现（{off:+d} 天）"})
+        return by_subject
+
+    gaps: list[dict] = []
+    seen_gaps: set[str] = set()
+    rows_out: list[dict] = []
+    for pj, anchor in anchors:
+        by_subject = _scan_anchor(anchor, gaps, seen_gaps)
+        anchor_iso = anchor.isoformat()
+        for name, bucket in sorted(by_subject.items()):
+            if len(bucket["types"]) < min_event_types:
+                continue
+            ev = sorted(bucket["events"],
+                        key=lambda x: (x["date"], x["type"], x["event_pk"]))
+            offsets = [x["offset_days"] for x in ev]
+            rows_out.append({
+                "主体": name,
+                "事件类型": "、".join(sorted(bucket["types"])),
+                "类型数": len(bucket["types"]),
+                "事件数": len(ev),
+                "最早偏移": min(offsets),
+                "最晚偏移": max(offsets),
+                "project": pj,
+                "anchor_date": anchor_iso,
+                "events": ev,
+            })
+    rows_out.sort(key=lambda x: (x["project"]["pk"], x["主体"]))
+    return {
+        "hit": bool(rows_out),
+        "project": single_pj,
+        "anchor_date": single_anchor.isoformat() if single_anchor else None,
+        "scanned_projects": len(anchors),
+        "window_days": window_days,
+        "min_event_types": min_event_types,
+        "rows": rows_out,
+        "count": len(rows_out),
+        "degraded": bool(gaps),
+        "degraded_reason": ("部分时间数据源未接入："
+                            + "; ".join(x["object"] for x in gaps)) if gaps else None,
+        "diagnostics": {"gaps": gaps},
+    }
 
 
 # ----------------------------------------------------------------------

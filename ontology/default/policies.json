@@ -13,7 +13,8 @@
     {"object": "clue",         "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "工作面线索全队可见"},
     {"object": "decision",     "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "处置决策：偏将及以上"},
     {"object": "tipoff",       "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "内间举报材料：AC1 演示对象，正兵被拒"},
-    {"object": "osint_article","roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报归档同内间门槛"}
+    {"object": "osint_article","roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报归档同内间门槛"},
+    {"object": "image_evidence","roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 人验通过图像证据：全队可见（仅人验 Action 可创建）"}
   ],
   "link_policies": [
     {"link": "transfers",     "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
@@ -25,7 +26,10 @@
     {"link": "decision_for",  "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "runtime 链接，与 decision 同门槛"},
     {"link": "tipoff_targets_person", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "举报指向关系，与 tipoff 同门槛"},
     {"link": "tipoff_from_reporter", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "REQ-P-032 举报来源关系，与 tipoff 同门槛"},
-    {"link": "osint_mentions", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报提及关系，与 osint_article 同门槛"}
+    {"link": "osint_mentions", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报提及关系，与 osint_article 同门槛"},
+    {"link": "image_for_person", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接，与 image_evidence 同门槛"},
+    {"link": "image_for_org", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接"},
+    {"link": "image_for_project", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接"}
   ],
   "property_policies": [
     {"object": "person", "property": "id_card",    "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "身份证号：主办及以上原文，其余部分遮蔽（310****1234）"},

@@ -9,7 +9,7 @@
     "proposal_id": {"type": "string", "pattern": "^pp-[a-z0-9][a-z0-9\\-]+$"},
     "kind": {
       "enum": ["rule_draft", "parameter_draft", "alignment_review", "explanation",
-               "verify_item", "verify_request"]
+               "verify_item", "verify_request", "image_draft"]
     },
     "case_id": {"type": "string", "minLength": 1},
     "ontology_version": {"type": "string"},

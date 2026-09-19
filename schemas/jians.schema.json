@@ -46,6 +46,10 @@
         }
       },
       "additionalProperties": true
+    },
+    "source_names": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
     }
   },
   "additionalProperties": false

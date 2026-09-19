@@ -34,6 +34,7 @@ from server.app.envelope import (
 )
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
+from server.app.store.backend import open_local_conn
 from server.app.worker.tasks import TASK_VERIFY, enqueue_task
 
 router = APIRouter(tags=["proposals"])
@@ -45,8 +46,8 @@ class ProposalDecisionIn(BaseModel):
 
 
 def _open_proposals(ctx: WebContext) -> tuple[ProposalStore, duckdb]:
-    """打开全局提案库（与 MCP 提交侧 core.Store() 同库）。"""
-    conn = duckdb.connect(ctx.proposals_db)
+    """打开全局提案库（与 MCP 提交侧 core 层提案库同库）。"""
+    conn = open_local_conn(ctx.proposals_db)
     return ProposalStore(conn), conn
 
 
@@ -126,6 +127,14 @@ def decide_proposal(case_id: str, proposal_id: str,
         if rec is None or rec["case_id"] != case_id:
             raise APIError(ERR_NOT_FOUND,
                            f"提案不存在：{proposal_id}", 404)
+        # image_draft approve 必须经专用人验端点（写 image_evidence），
+        # 通用桥接会把图像草案误当核查任务；reject 仍允许（人直接驳回）。
+        if decision == "approve" and rec["kind"] == "image_draft":
+            raise APIError(
+                ERR_VALIDATION,
+                "image_draft 核验请走 "
+                f"/cases/{case_id}/vlm/drafts/{proposal_id}/verify"
+                "（人比对原件后入图入报告）", 400)
         try:
             rec = ps.decide(proposal_id, decision, operator=p.operator,
                             reason=reason)

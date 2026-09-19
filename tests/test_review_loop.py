@@ -146,7 +146,8 @@ class TestReviewLoop(unittest.TestCase):
         self.assertFalse({"R1", "R2", "R5", "R6"} & affected)
         # 无关规则当前可正常产出（未被重建破坏）
         post = run_rules(self.store, stage=None)
-        self.assertTrue({f["rule_id"] for f in post} <= {"R1", "R2", "R3", "R4", "R5", "R6"})
+        self.assertTrue({f["rule_id"] for f in post}
+                        <= {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
 
     def test_ac5_changed_findings_reenter_review(self):
         """AC5: 变化的 finding 标记 needs_review + review_round=2。"""

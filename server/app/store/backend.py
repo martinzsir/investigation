@@ -40,6 +40,15 @@ def open_readonly_conn(path: str | Path) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(path), read_only=True)
 
 
+def open_local_conn(path: str | Path) -> duckdb.DuckDBPyConnection:
+    """本地非版本化 DuckDB 读写连接唯一开库口（M1 门禁）。
+
+    提案库（proposals_db）等单文件库没有版本化语义，不适用 CaseStore；
+    server/app 除 store/ 外禁止直接 duckdb.connect，一律经本口开库。
+    """
+    return duckdb.connect(str(path))
+
+
 class _MetaPointer(Protocol):
     """版本指针提供者（meta 元数据层鸭子类型，阶段 D 接入）。"""
 

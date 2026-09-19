@@ -111,6 +111,25 @@ async def upload_evidence(case_id: str, clue_id: str,
               data_version=ver)
 
 
+@router.get("/cases/{case_id}/evidence")
+def list_case_evidence(case_id: str,
+                       p: Principal = Depends(get_principal),
+                       ctx: WebContext = Depends(get_ctx)):
+    """案件级书证清单（全部线索；P8 VLM 选图用，案卷视图复用）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    path = ctx.factory.case_dir(case_id) / "state.sqlite"
+    items: list[dict] = []
+    if path.exists():
+        state = StateStore(case_id, path)
+        try:
+            items = [{k: r[k] for k in _EVIDENCE_FIELDS + ("clue_id",)}
+                     for r in state.list_case_evidence(case_id)]
+        finally:
+            state.close()
+    return ok({"items": items},
+              data_version=ctx.repo.current_version(case_id))
+
+
 @router.get("/cases/{case_id}/clues/{clue_id}/evidence")
 def list_evidence(case_id: str, clue_id: str,
                   p: Principal = Depends(get_principal),

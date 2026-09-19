@@ -26,7 +26,7 @@ core/verify_machine.py
     关闭（终态）
 
 注：「超期」不是存储状态——due_date 已过且 status=已发起 由读面派生
-overdue 徽标（state_store.list_verify_requests），不改库、免定时任务。
+overdue 徽标（状态库 list_verify_requests 查询），不改库、免定时任务。
 """
 from __future__ import annotations
 

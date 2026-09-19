@@ -129,6 +129,86 @@
       "impl": "py",
       "impl_ref": "call_pair_coverage",
       "description": "生间：输出主体唯一数、对端数、中位数、是否降级、缺失对端清单——用于判断 call_frequency_spike 是否运行在不可靠的绝对阈值模式"
+    },
+    {
+      "name": "relation_neighborhood",
+      "title": "关系圈层（N跳邻域）",
+      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
+      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "parameters": {
+        "depth": {"type": "integer", "required": false, "default": 2, "description": "邻域跳数，1-3"},
+        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄：all 跨类型混合图/fund 资金/contact 通话同框/org 持有中标"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "relation_neighborhood",
+      "description": "P4 关系研判：目标主体（target/target_type 自由文本由编排层透传，raw_name 或代理键）N 跳关系圈层，跨资金/通话/持有/中标/同框边无向 BFS；缺边表结构降级进 gaps 不崩；引擎 engine=semantic（语义层主轨）"
+    },
+    {
+      "name": "relation_common_neighbors",
+      "title": "共同关系邻居",
+      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
+      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "parameters": {
+        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "relation_common_neighbors",
+      "description": "P4 关系研判：subject_a/subject_b（编排层透传）的一跳共同邻居/圈层交集，跨类型混合关系，返回每个共同邻居及两侧关联边（证据可溯源）"
+    },
+    {
+      "name": "relation_paths",
+      "title": "关系路径枚举",
+      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
+      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "parameters": {
+        "depth": {"type": "integer", "required": false, "default": 2, "description": "路径最大跳数，1-3"},
+        "max_paths": {"type": "integer", "required": false, "default": 20, "description": "枚举条数上限（防爆），1-100"},
+        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "relation_paths",
+      "description": "P4 关系研判：subject_a/subject_b（编排层透传）间 N 跳内简单路径枚举（环剪枝 + max_paths 截断），每条路径节点+边均可回源 obj_*/lnk_* 行；只出关系路径不出定性结论"
+    },
+    {
+      "name": "timeline_event_sequence",
+      "title": "跨类型事件序列邻接",
+      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint"],
+      "requires": {"objects": ["transaction", "call", "trackpoint"], "props": {"transaction": ["from_raw", "to_raw", "amount", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "location", "date"]}},
+      "parameters": {},
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "timeline_event_sequence",
+      "description": "P5 时间研判：target/target_type（编排层透传）在资金/通话/轨迹三类事件的统一时间轴，按日排序并给相邻事件 gap_days；缺表结构降级进 gaps 不崩"
+    },
+    {
+      "name": "timeline_rhythm",
+      "title": "事件周期节奏与聚集",
+      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint"],
+      "requires": {"objects": ["transaction", "call", "trackpoint"], "props": {"transaction": ["from_raw", "to_raw", "amount", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "location", "date"]}},
+      "parameters": {
+        "burst_days": {"type": "integer", "required": false, "default": 3, "description": "相邻事件日差 ≤ 该值视为同一聚集簇，1-14"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "timeline_rhythm",
+      "description": "P5 时间研判：目标主体事件间隔中位数与 burst_days 内事件聚集簇；事件不足 2 起降级为节奏不可计算，不造结论"
+    },
+    {
+      "name": "timeline_cross_collision",
+      "title": "开标前后跨类型时间窗碰撞",
+      "inputs": ["obj_bid_project", "obj_transaction", "obj_call", "obj_trackpoint"],
+      "requires": {"objects": ["bid_project", "transaction", "call", "trackpoint"], "props": {"bid_project": ["title", "pub_date"], "transaction": ["from_raw", "to_raw", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "date"]}},
+      "parameters": {
+        "window_days": {"type": "integer", "required": false, "default": 7, "description": "锚点公示日前后窗口天数，1-60"},
+        "min_event_types": {"type": "integer", "required": false, "default": 2, "description": "同主体命中碰撞所需的最少事件类型数，2-3"}
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "timeline_cross_collision",
+      "description": "P5 时间研判：以 project（编排层透传）公示日为锚点，窗口内同一主体跨资金/通话/轨迹事件类型碰撞，每主体一行并给偏移区间；只报候选事实，定性权属正兵"
     }
   ]
 }

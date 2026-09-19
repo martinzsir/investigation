@@ -121,7 +121,7 @@ class ReviewWriteTests(unittest.TestCase):
     # ---- 工具注册 ----
     def test_tool_registered(self):
         self.assertIn("review.submit_proposal", mcp._TOOL_IMPL)
-        self.assertEqual(len(mcp._TOOL_IMPL), 13)
+        self.assertEqual(len(mcp._TOOL_IMPL), 15)
         spec = next(t for t in mcp._tools() if t["name"] == "review.submit_proposal")
         self.assertFalse(spec["annotations"]["readOnlyHint"])
         for name in ("agent_id", "kind", "candidate"):

@@ -164,11 +164,17 @@ def main() -> int:
 
         d = payload(c.request("tools/call", {"name": "function_list", "arguments": {}}))
         fnames = [f["name"] for f in d.get("functions", [])]
-        check(f"function_list 返回 11 个 Function（{len(fnames)}）", len(fnames) == 11, str(fnames))
+        check(f"function_list 返回 17 个 Function（{len(fnames)}）", len(fnames) == 17, str(fnames))
         check("function_list 全部标注 readonly",
               all(f.get("readonly") for f in d.get("functions", [])))
         check("function_list 含新增内间/对端诊断（tipoff_cross_reference, call_pair_coverage）",
               "tipoff_cross_reference" in fnames and "call_pair_coverage" in fnames)
+        check("function_list 含 P4 关系研判三函数（relation_neighborhood/common_neighbors/paths）",
+              {"relation_neighborhood", "relation_common_neighbors",
+               "relation_paths"} <= set(fnames))
+        check("function_list 含 P5 时间研判三函数（timeline_event_sequence/rhythm/cross_collision）",
+              {"timeline_event_sequence", "timeline_rhythm",
+               "timeline_cross_collision"} <= set(fnames))
 
         d = payload(c.request("tools/call", {"name": "function_invoke",
                                              "arguments": {"name": "quarter_end_integer_deposits"}}))
@@ -182,8 +188,8 @@ def main() -> int:
         # ---- 自然语言规则手册（rule_list）----
         d = payload(c.request("tools/call", {"name": "rule_list", "arguments": {}}))
         rids = [r["id"] for r in d.get("rules", [])]
-        check(f"rule_list 返回 6 条自然语言规则（{len(rids)}）",
-              d.get("count") == 6 and d.get("readonly") is True, str(rids))
+        check(f"rule_list 返回 7 条自然语言规则（{len(rids)}）",
+              d.get("count") == 7 and d.get("readonly") is True, str(rids))
         check("rule_list 规则携带判据原文与函数挂钩",
               all(len(r.get("rule_text", "")) >= 30 and r.get("function")
                   for r in d.get("rules", [])))
@@ -227,7 +233,9 @@ def main() -> int:
         check("report.gather_evidence 返回 evidence 结构（确定性块齐全）",
               d.get("ok") is True and d.get("readonly") is True
               and "确定性块" in ev and "证据充分性" in ev.get("确定性块", {})
-              and "关联核验" in ev.get("确定性块", {}),
+              and "关联核验" in ev.get("确定性块", {})
+              and "线索证据引用" in ev.get("确定性块", {})
+              and "图像证据" in ev.get("确定性块", {}),
               str(d.get("error"))[:60])
         check("report.gather_evidence 五间声明齐全",
               len(ev.get("确定性块", {}).get("证据充分性", {})

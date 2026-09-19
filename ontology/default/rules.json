@@ -90,6 +90,20 @@
       "params": {"round_unit": 10000, "exclude_org_suffix": "公司"},
       "hit_when": "rows_nonempty",
       "subject_column": "资金主体"
+    },
+    {
+      "id": "R7",
+      "stage": "qi_zheng",
+      "title": "开标前后跨类型时间碰撞",
+      "dimension": "时间",
+      "jian_types": ["反间", "生间"],
+      "assumption": "",
+      "rule_text": "以招投标项目开标/中标公示日为锚点，前后 7 天窗口内，同一主体名下跨类型事件（资金转出转入、通话主叫被叫、轨迹出现）达到 2 类及以上，在统一时间轴上发生碰撞。正常主体的资金、通讯、出行活动各自按经营与生活节奏分布；敏感时点多类事件向同一主体聚集吻合串标组织、资金兑现、异地接触的时间协同，列为奇兵拓线候选。窗口内仅有单一类型事件（如只有通话）不构成本规则；窗口起止与最少类型数按参数执行，“串标”等定性权属正兵。",
+      "basis_text": "项目公示日 ±7 天窗口内，同一主体资金/通话/轨迹事件类型 ≥2 类",
+      "function": "timeline_cross_collision",
+      "params": {"window_days": 7, "min_event_types": 2},
+      "hit_when": "rows_nonempty",
+      "subject_column": "主体"
     }
   ]
 }

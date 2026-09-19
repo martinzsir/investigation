@@ -39,6 +39,16 @@ from server.app.meta.models import (
 )
 from server.app.meta.repo import MetaRepo
 
+
+def connect_sqlite(path: str | Path) -> sqlite3.Connection:
+    """server/ 内唯一 sqlite 直连口（M2 门禁：sqlite3.connect 仅允许出现在
+    本文件与 store/state_store.py）。ontology_proposals 等轻量 sqlite 库
+    统一经此开连接，保持 row_factory 口径一致。"""
+    con = sqlite3.connect(str(path))
+    con.row_factory = sqlite3.Row
+    return con
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta_users (
     operator      VARCHAR PRIMARY KEY,

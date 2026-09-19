@@ -30,6 +30,16 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Optional
 
+from core.run_health import get_health
+
+try:
+    from duckdb import Error as _DuckDBError
+    _RUNTIME_EXC: tuple = (ValueError, KeyError, IndexError, AttributeError,
+                           TypeError, RuntimeError, OSError, _DuckDBError)
+except ImportError:  # pragma: no cover
+    _RUNTIME_EXC = (ValueError, KeyError, IndexError, AttributeError,
+                    TypeError, RuntimeError, OSError)
+
 
 # ----------------------------------------------------------------------
 # 处置状态常量（状态机合法迁移见 ClueStatusMachine）
@@ -129,13 +139,82 @@ def _now() -> str:
 
 @dataclass
 class SkillSpec:
-    """子技能元数据。注册时声明，运行时供调度器读取。"""
+    """子技能元数据。注册时声明，运行时供调度器读取。
+
+    P3 新增字段（全部带默认值，旧规格零改动）：
+      consumes_objects : 消费的语义对象/链接类型（能力声明主口径）
+      produces_dims    : 产出的评分维度标签
+      mode             : deterministic（可复现，直接推演）| draft（不可复现，人验才成证据）
+      enabled          : 单镜头开关（灰度/停用/吊销）
+      params_schema    : 任务声明 {参数名: {type, enum?, required?}}；空=仅被动上报
+      external_services: draft 镜头依赖的外部服务标识；确定性镜头恒空
+      timeout_ms       : 外部调用超时；0=不适用
+      result_ttl_s     : 产出新鲜期；0=不适用
+      scope_reads      : 镜头查询通道可读的语义类型；缺省 []=零读取权（fail-closed）
+      pack_id          : 来源包标识；内置技能为 "_builtin"
+    """
     skill_id: str                     # 调用标识，如 "xu_shi"
     name: str                         # 中文名
     stage: str                        # 所属阶段：庙算/知己/虚实/奇正/用间/全胜
     consumes_jian: list[str] = field(default_factory=list)  # 消费的间类
     data_deps: list[str] = field(default_factory=list)       # 依赖的数据源
     handler: Optional[Callable] = None                        # 实际执行函数
+    # ---- P3 镜头契约 ----
+    consumes_objects: list[str] = field(default_factory=list)
+    produces_dims: list[str] = field(default_factory=list)
+    mode: str = "deterministic"
+    enabled: bool = True
+    params_schema: dict[str, Any] = field(default_factory=dict)
+    external_services: list[str] = field(default_factory=list)
+    timeout_ms: int = 0
+    result_ttl_s: int = 0
+    scope_reads: list[str] = field(default_factory=list)
+    pack_id: str = "_builtin"
+
+    MODES = ("deterministic", "draft")
+    PARAM_TYPES = ("string", "integer", "decimal", "date", "boolean")
+
+    def validate(self) -> None:
+        """注册期内部一致性校验（硬失败）。
+
+        跨文件的引用存在性（consumes_objects/scope_reads 指向的底座类型）由
+        pack_loader 在注册前对照 ontology 校验，不在此处。
+        """
+        if self.mode not in self.MODES:
+            raise ValueError(
+                f"技能 {self.skill_id} 非法 mode={self.mode!r}，允许 {self.MODES}")
+        if self.mode == "draft":
+            if not self.external_services:
+                raise ValueError(
+                    f"draft 镜头 {self.skill_id} 必须声明 external_services")
+            if self.timeout_ms <= 0:
+                raise ValueError(
+                    f"draft 镜头 {self.skill_id} 必须声明正整数 timeout_ms")
+            if self.result_ttl_s <= 0:
+                raise ValueError(
+                    f"draft 镜头 {self.skill_id} 必须声明正整数 result_ttl_s")
+        elif (self.external_services or self.timeout_ms != 0
+              or self.result_ttl_s != 0):
+            raise ValueError(
+                f"deterministic 镜头 {self.skill_id} 的 external_services/"
+                f"timeout_ms/result_ttl_s 必须为空/0")
+        if not isinstance(self.params_schema, dict):
+            raise ValueError(
+                f"技能 {self.skill_id} params_schema 必须为对象 dict")
+        for pname, pspec in self.params_schema.items():
+            if not isinstance(pspec, dict):
+                raise ValueError(
+                    f"技能 {self.skill_id} 参数 {pname} 声明必须为对象 dict")
+            if pspec.get("type") not in self.PARAM_TYPES:
+                raise ValueError(
+                    f"技能 {self.skill_id} 参数 {pname} type="
+                    f"{pspec.get('type')!r}，允许 {self.PARAM_TYPES}")
+        if self.consumes_objects:
+            extra = set(self.scope_reads) - set(self.consumes_objects)
+            if extra:
+                raise ValueError(
+                    f"技能 {self.skill_id} scope.reads {sorted(extra)} "
+                    f"超出 consumes_objects 声明")
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -170,9 +249,20 @@ class LineageClue:
     status: str = ClueStatus.PENDING
     audit_log: list[dict[str, Any]] = field(default_factory=list)
     note: str = ""
+    # ---- P3 结构化证据引用 ----
+    # 每条：{"kind": "node"|"edge"|"time_window"|"aggregate"|"file",
+    #       "ref": "obj_org#id"/"lnk_transfers#id", "file_uri"/...}
+    evidence_refs: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "LineageClue":
+        """从 dict 重建线索；旧记录缺新字段（如 evidence_refs）时回落默认值。"""
+        import dataclasses as _dc
+        names = {f.name for f in _dc.fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in names})
 
     # ------------------------------------------------------------------
     # 状态变更（唯一入口，禁止直接赋值 status —— 保证审计链完整）
@@ -264,8 +354,13 @@ class SkillRegistry:
     def register(self, spec: SkillSpec) -> SkillSpec:
         if spec.skill_id in self._specs:
             raise ValueError(f"技能 {spec.skill_id} 已注册，不可重复")
+        spec.validate()
         self._specs[spec.skill_id] = spec
         return spec
+
+    def unregister(self, skill_id: str) -> None:
+        """注销技能（镜头包拔出/吊销）；不存在静默忽略。"""
+        self._specs.pop(skill_id, None)
 
     def skill(self, skill_id: str) -> SkillSpec:
         if skill_id not in self._specs:
@@ -306,10 +401,11 @@ def skill_invoke(
 
     流程：
       1. 解析 skill_id（支持 "stage.skill" 或裸 "skill_id"）
-      2. 校验前置条件（知己非空 / store 可用）
-      3. 调用 handler(miao, store, ctx, params) -> [LineageClue]
-      4. 后处理：补齐 assumption_chain（若技能未填，则按数据依赖反推）
-      5. 写入 L1 特征层（供用间交叉消费）
+      2. enabled=false → 调度短路（记 skill_disabled）
+      3. 前置校验 + params 与 params_schema 双向核对（硬失败，不隔离）
+      4. 调用 handler：运行期异常白名单 → 失败隔离（skill_failed 留痕 +
+         ctx["degraded"] 清单），返回空线索，不影响其余镜头
+      5. 归一化 + 后处理：补齐血缘、evidence_refs 契约校验、写 L1 特征层
 
     参数:
         registry : 技能注册表
@@ -318,39 +414,102 @@ def skill_invoke(
         store    : Store 实例
         ctx      : 运行上下文
         params   : 技能私有参数
+        health   : 运行诊断（None → NullRunHealth）
 
     返回:
-        [LineageClue] —— 该技能产出的所有带血缘线索
+        [LineageClue] —— 该技能产出的所有带血缘线索；镜头失败/停用时为 []
     """
-    ctx = ctx or {}
+    if ctx is None:
+        ctx = {}
     params = params or {}
+    h = get_health(health)
 
     # 1. 解析 id
     sid = skill_id.split(".")[-1]
     spec = registry.skill(sid)
 
-    # 2. 前置校验
-    _precheck(spec, miao=miao, store=store)
+    # 2. 单镜头开关：调度短路（灰度/停用/吊销）
+    if not spec.enabled:
+        h.record("skill_disabled", severity="info", source=sid,
+                 reason=f"镜头 {sid} 已停用，调度短路")
+        return []
 
-    # 3. 调用 handler
+    # 3. 前置校验 + 参数核对（契约/配置错误，硬失败不走隔离）
+    _precheck(spec, miao=miao, store=store)
+    _validate_params(spec, params)
+
+    # 4. 调用 handler（仅运行期数据异常被隔离；注册期/契约硬失败照常抛出）
     handler = spec.handler
     if handler is None:
         raise RuntimeError(f"技能 {sid} 已注册但未绑定 handler")
-    raw = handler(miao=miao, store=store, ctx=ctx, params=params, health=health)
+    try:
+        raw = handler(miao=miao, store=store, ctx=ctx, params=params, health=health)
+    except _RUNTIME_EXC as e:
+        h.record("skill_failed", severity="warning", source=sid,
+                 reason=f"{type(e).__name__}: {e}", skill_id=sid)
+        ctx.setdefault("degraded", []).append({
+            "skill_id": sid, "error_type": type(e).__name__,
+            "error": str(e)})
+        return []
 
     # 归一化：允许 handler 返回 (clues, meta) 或纯 list
     clues = _normalize(raw)
 
-    # 4. 后处理：补齐血缘 + 写 L1
+    # 5. 后处理：补齐血缘 + evidence_refs 契约校验 + 写 L1
     for c in clues:
         if not c.assumption_chain:
             c.assumption_chain = _infer_assumptions(c, spec, miao)
         if not c.jian_types:
-            c.jian_types = list(spec.consumes_jian)
+            # P6：间类不再由技能自报（spec.consumes_jian），改为融合层按
+            # evidence_refs 源对象类型 → packs/wujian 映射反查注入；无包留空。
+            c.jian_types = _infer_jian_types(c, ctx)
+        _validate_evidence_refs(c, store)
         if store is not None:
             store.set_feature(f"_clue:{c.clue_id}", "lineage", c.to_dict())
 
     return clues
+
+
+def scoped_rows(spec: SkillSpec, access: Any, store: Any, object_type: str,
+                *, where: str = "", params: list | None = None,
+                policy_pack: str = "default") -> list[dict]:
+    """
+    镜头查询通道：scope_reads 作用域 + policies 属性遮蔽的只读读取（P3）。
+
+      - object_type 不在 spec.scope_reads → PermissionError（缺省零读取权，
+        fail-closed；须在 pack.json scope.reads 显式声明）
+      - access 为 AccessContext，查询结果按属性级策略遮蔽；system 角色旁路
+      - 只作用于镜头查询通道，不改使用方五出口口径
+    """
+    if object_type not in spec.scope_reads:
+        raise PermissionError(
+            f"镜头 {spec.skill_id} 作用域未授权读取 {object_type}"
+            f"（fail-closed，请在 pack.json scope.reads 声明）")
+    conn = getattr(store, "conn", store)
+    table = _resolve_semantic_table(conn, object_type)
+    sql = f'SELECT * FROM "{table}"'
+    if where:
+        sql = f"{sql} WHERE {where}"
+    cur = conn.execute(sql, params or [])
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    if access is not None:
+        from core.policy import PolicyEngine
+        rows = PolicyEngine(policy_pack).apply_row_masks(access, object_type, rows)
+    return rows
+
+
+def _resolve_semantic_table(conn: Any, name: str) -> str:
+    """类型名 → 物化语义表：对象 obj_X 优先，其次链接 lnk_X。"""
+    for prefix in ("obj_", "lnk_"):
+        table = f"{prefix}{name}"
+        hit = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name=?",
+            [table]).fetchone()[0]
+        if hit:
+            return table
+    raise ValueError(
+        f"语义类型 {name} 未物化（obj_{name}/lnk_{name} 均不存在）")
 
 
 # ----------------------------------------------------------------------
@@ -365,6 +524,157 @@ def _precheck(spec: SkillSpec, *, miao: Any, store: Any) -> None:
         raise ValueError(f"技能 {spec.skill_id} 调用前必须先完成『知己』(miao.ji 非空)")
     if store is None and spec.data_deps:
         raise ValueError(f"技能 {spec.skill_id} 声明了数据依赖 {spec.data_deps}，但未提供 store")
+
+
+def _validate_params(spec: SkillSpec, params: dict) -> None:
+    """下发参数与 params_schema 双向核对：未声明参数拒、必填缺失拒。"""
+    for k in params:
+        if k not in spec.params_schema:
+            raise ValueError(
+                f"镜头 {spec.skill_id} 未声明参数 {k!r}，禁止下发"
+                f"（见 params_schema）")
+    for pname, pspec in spec.params_schema.items():
+        if pspec.get("required") and pname not in params:
+            raise ValueError(
+                f"镜头 {spec.skill_id} 缺少必填参数 {pname!r}")
+
+
+_EVIDENCE_KINDS = ("node", "edge", "time_window", "aggregate", "file")
+
+
+def _source_types_from_refs(clue: LineageClue) -> list[str]:
+    """从 evidence_refs 提取去前缀的源对象/链接类型名（去重保序）。
+
+    ref 形如 obj_transaction#<pk> / lnk_transfers#<key>；去掉 obj_/lnk_
+    前缀即 ontology 类型名。aggregate 的 ref 同样按表名解析；file/纯 metric
+    无源表，跳过。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in clue.evidence_refs or []:
+        if not isinstance(r, dict):
+            continue
+        target = r.get("ref")
+        if not isinstance(target, str) or "#" not in target:
+            continue
+        table = target.split("#", 1)[0]
+        if table.startswith(("obj_", "lnk_")):
+            tname = table[4:]
+            if tname and tname not in seen:
+                seen.add(tname)
+                out.append(tname)
+    return out
+
+
+def _infer_jian_types(clue: LineageClue, ctx: dict) -> list[str]:
+    """P6 融合层注入：evidence_refs 源类型 → packs/wujian 映射反查间类。
+
+    五间包未安装（load_wujian 返回 None）→ 空列表（交叉页以缺口展示）。
+    """
+    try:
+        from core.wujian import load_wujian
+    except Exception:
+        return []
+    pack = "default"
+    if isinstance(ctx, dict) and isinstance(ctx.get("ontology_pack"), str):
+        pack = ctx["ontology_pack"]
+    wj = load_wujian(pack)
+    if wj is None:
+        return []
+    return wj.jians_for_types(_source_types_from_refs(clue))
+
+
+def _validate_evidence_refs(clue: LineageClue, store: Any) -> None:
+    """
+    evidence_refs 挂 P1 key 契约（P3）：
+      ① 结构合法：kind 白名单；node/edge/time_window 须带 "table#key" ref；
+         file 须带 file_uri；aggregate 带 ref（定位到行）或 metric（聚合量）
+      ② 引用的 obj_*/lnk_* 语义表存在
+      ③ 引用行按表分组批量 IN 查询，悬空引用硬失败
+    """
+    refs = clue.evidence_refs
+    if not refs:
+        return
+    grouped: dict[str, tuple[str, set[str]]] = {}
+
+    def _group(target: Any, key_column: str | None = None) -> None:
+        if not isinstance(target, str) or "#" not in target:
+            raise ValueError(
+                f"线索 {clue.clue_id} 证据缺少 'table#key' 形式 ref：{target!r}")
+        table, _, key = target.partition("#")
+        if not table or not key:
+            raise ValueError(
+                f"线索 {clue.clue_id} 证据 ref {target!r} 表名/键值不得为空")
+        # obj_* 物化表带统一 pk 列；lnk_* 边表无 pk（CREATE AS build_sql），
+        # 必须由引用方显式 key_column 指定行键列
+        if not key_column:
+            if table.startswith("obj_"):
+                key_column = "pk"
+            else:
+                raise ValueError(
+                    f"线索 {clue.clue_id} 证据 {target} 引用边表须显式声明 "
+                    f"key_column（lnk_* 无统一 pk 列）")
+        prev = grouped.get(table)
+        if prev is not None and prev[0] != key_column:
+            raise ValueError(
+                f"线索 {clue.clue_id} 证据对表 {table} 的 key_column 不一致："
+                f"{prev[0]} vs {key_column}")
+        grouped.setdefault(table, (key_column, set()))[1].add(key)
+
+    for r in refs:
+        if not isinstance(r, dict):
+            raise ValueError(
+                f"线索 {clue.clue_id} evidence_refs 条目必须为 dict")
+        kind = r.get("kind")
+        if kind not in _EVIDENCE_KINDS:
+            raise ValueError(
+                f"线索 {clue.clue_id} evidence_refs kind={kind!r}，"
+                f"允许 {_EVIDENCE_KINDS}")
+        if kind == "file":
+            if not r.get("file_uri"):
+                raise ValueError(
+                    f"线索 {clue.clue_id} file 类证据缺少 file_uri")
+        elif kind == "aggregate":
+            target = r.get("ref")
+            if target:
+                _group(target, r.get("key_column"))
+            elif not r.get("metric"):
+                raise ValueError(
+                    f"线索 {clue.clue_id} aggregate 证据须带 ref 或 metric")
+        else:
+            _group(r.get("ref"), r.get("key_column"))
+
+    if not grouped:
+        return
+    if store is None:
+        raise ValueError(
+            f"线索 {clue.clue_id} 携带 evidence_refs 但未提供 store，无法校验引用")
+    conn = getattr(store, "conn", store)
+    for table, (key_column, keys) in grouped.items():
+        hit = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name=?",
+            [table]).fetchone()[0]
+        if not hit:
+            raise ValueError(
+                f"线索 {clue.clue_id} evidence_refs 引用了不存在的语义表 {table}")
+        col_hit = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_name=? AND column_name=?",
+            [table, key_column]).fetchone()[0]
+        if not col_hit:
+            raise ValueError(
+                f"线索 {clue.clue_id} evidence_refs 表 {table} 无行键列 "
+                f"{key_column}")
+        placeholders = ", ".join(["?"] * len(keys))
+        found = conn.execute(
+            f'SELECT "{key_column}" FROM "{table}" '
+            f'WHERE "{key_column}" IN ({placeholders})',
+            list(keys)).fetchall()
+        missing = keys - {row[0] for row in found}
+        if missing:
+            raise ValueError(
+                f"线索 {clue.clue_id} evidence_refs 存在悬空引用 {table}#"
+                f"{sorted(missing)[:3]}（共 {len(missing)} 条）")
 
 
 def _normalize(raw: Any) -> list[LineageClue]:

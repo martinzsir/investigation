@@ -127,7 +127,7 @@ describe('E2-1 降级域逻辑（degradeStaleBindings）', () => {
 
 // ---------------------------------------------------------------- 保存确认弹窗
 describe('保存确认弹窗（理由必填 + R3 事实文案）', () => {
-  const mountModal = (props: Record<string, unknown>) =>
+  const mountModal = (props: InstanceType<typeof SaveConfirmModal>['$props']) =>
     mount(SaveConfirmModal, { props })
 
   it('结构性改动 → 理由必填：空理由禁用确认，填理由后放行', async () => {
@@ -164,7 +164,7 @@ describe('保存确认弹窗（理由必填 + R3 事实文案）', () => {
 // ---------------------------------------------------------------- 关系弹窗
 describe('关系弹窗（R1 名称锁定 + 唯一性/端点校验 + 基数）', () => {
   const objectOptions = [{ label: 'person', value: 'person' }, { label: 'company', value: 'company' }]
-  const mountModal = (props: Record<string, unknown>) =>
+  const mountModal = (props: InstanceType<typeof LinkEditModal>['$props']) =>
     mount(LinkEditModal, { props })
   const nameInput = (): HTMLInputElement => {
     const i = Array.from(document.body.querySelectorAll('input')).find(
@@ -232,7 +232,7 @@ describe('关系弹窗（R1 名称锁定 + 唯一性/端点校验 + 基数）', 
 
 // ---------------------------------------------------------------- 建模器集成
 describe('建模器集成：E2-1 载入降级 → 危险确认 → PUT 负载（UC-S2-3 / R3）', () => {
-  const ME: MeInfo = { operator: '测试员', role: 'human', clearance: 3, tenant_id: 't1', is_admin: true }
+  const ME: MeInfo = { operator: '测试员', role: 'human', clearance: 3, tenant_id: 't1', is_admin: true, is_ontology_admin: true }
 
   // R2 字段齐备：对象级 jian/jian_source + 未知键 owner_unit；属性含失联/有效绑定
   // fin 绑定行业层数据元 DE_FIN（S0-1 落地后三层并集判定，不得误降级）
@@ -241,8 +241,8 @@ describe('建模器集成：E2-1 载入降级 → 危险确认 → PUT 负载（
       name: 'transaction', kind: 'event', pk: 'id', name_property: 'acct',
       jian: '内间', jian_source: '初审判决书P12',
       owner_unit: '第三大队',
+      // P1：pk 是独立列、不得出现在 properties 中（与后端 loader 及客户端校验对齐）
       properties: {
-        id: 'string',
         acct: { data_element: 'DE_GONE' },
         amount: { type: 'decimal', data_element: 'DE_GONE2' },
         id_card: { data_element: 'DE_IDCARD' },

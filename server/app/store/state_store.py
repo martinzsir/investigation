@@ -189,6 +189,28 @@ CREATE TABLE IF NOT EXISTS clue_evidence (
     uploaded_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ev_clue ON clue_evidence(clue_id);
+-- P8 人验通过的图像证据（与内核 obj_image_evidence 同字段；真值源在
+-- state、BUILD 不丢）。VLM 草案经人比对原件后由人验端点写入本表；
+-- graph/报告经 StateStore 读取，核验后自动可见。
+CREATE TABLE IF NOT EXISTS image_evidence (
+    image_evidence_id TEXT PRIMARY KEY,   -- imgev_{uuid12}
+    case_id           TEXT NOT NULL,
+    clue_id           TEXT NOT NULL DEFAULT '',
+    image_uri         TEXT NOT NULL,
+    model             TEXT NOT NULL DEFAULT '',
+    prompt_version    TEXT NOT NULL DEFAULT '',
+    model_score       REAL,
+    title             TEXT NOT NULL DEFAULT '',  -- AI 草案 finding 标题（candidate 同构）
+    detail            TEXT NOT NULL DEFAULT '',  -- AI 草案 finding 明细
+    severity          TEXT NOT NULL DEFAULT '',  -- info|warn
+    verifier          TEXT NOT NULL DEFAULT '',
+    verify_conclusion TEXT NOT NULL DEFAULT '',
+    subject_type      TEXT NOT NULL,      -- person/org/bid_project
+    subject_id        TEXT NOT NULL,
+    draft_id          TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_imgev_case ON image_evidence(case_id);
 -- 调取清单：外部取证的台账（超期可跟踪；REQ-V-013 P2 接方法层）
 CREATE TABLE IF NOT EXISTS verify_request (
     request_id       TEXT PRIMARY KEY,       -- vr_{uuid12}
@@ -279,6 +301,14 @@ _VERIFY_ITEM_ADDED_COLUMNS = {
     "replay_json": "TEXT NOT NULL DEFAULT ''",
 }
 
+# 旧库幂等迁移：image_evidence 文案三列（AI 草案 candidate 同构，书证卡回流
+# P8 批次）在加列前可能已建表，打开时探测缺列再 ADD COLUMN（带 DEFAULT）。
+_IMAGE_EVIDENCE_ADDED_COLUMNS = {
+    "title": "TEXT NOT NULL DEFAULT ''",
+    "detail": "TEXT NOT NULL DEFAULT ''",
+    "severity": "TEXT NOT NULL DEFAULT ''",
+}
+
 # list_verify_items 状态展示序：待办在前、建议态垫后（rowid 保创建序）
 _VERIFY_STATUS_RANK_SQL = (
     "CASE status WHEN '待核查' THEN 0 WHEN '核查中' THEN 1 "
@@ -314,6 +344,7 @@ class StateStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._migrate_verify_item_columns()
+        self._migrate_image_evidence_columns()
 
     @property
     def conn(self):
@@ -592,6 +623,15 @@ class StateStore:
                 self._conn.execute(
                     f"ALTER TABLE clue_verify_item ADD COLUMN {name} {decl}")
 
+    def _migrate_image_evidence_columns(self) -> None:
+        """旧库幂等补列：image_evidence 文案三列（同 _migrate_verify_item_columns 先例）。"""
+        cols = {r[1] for r in self._conn.execute(
+            "PRAGMA table_info(image_evidence)").fetchall()}
+        for name, decl in _IMAGE_EVIDENCE_ADDED_COLUMNS.items():
+            if name not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE image_evidence ADD COLUMN {name} {decl}")
+
     @staticmethod
     def verify_item_key(clue_id: str, kind: str, text: str) -> str:
         """ADR-V-4：item_key = sha1('{clue_id}|{kind}|{text}')[:16]。"""
@@ -799,6 +839,13 @@ class StateStore:
             sql + " ORDER BY uploaded_at DESC, rowid DESC", args).fetchall()
         return [dict(r) for r in rows]
 
+    def list_case_evidence(self, case_id: str) -> list[dict]:
+        """案件级书证清单（全部线索；P8 VLM 选图，案卷视图复用）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM clue_evidence WHERE case_id=? "
+            "ORDER BY uploaded_at DESC, rowid DESC", [case_id]).fetchall()
+        return [dict(r) for r in rows]
+
     def link_evidence(self, material_id: str, item_id: str) -> dict | None:
         """书证 ↔ 核查项挂接（材料不存在 → None）。item 存在性校验在
         Worker 层（REQ-V-011 ITEM_NOT_FOUND），方法层不重复。"""
@@ -817,6 +864,90 @@ class StateStore:
         if cur.rowcount == 0:
             return None
         return self.get_evidence(material_id)
+
+    # ==================================================================
+    # P8 图像证据（人验通过写入；graph/报告读取，核验后自动可见）
+    # 字段与内核 persist_image_evidence 同构；幂等键=draft_id。
+    # ==================================================================
+    def insert_image_evidence(self, *, case_id: str, clue_id: str = "",
+                              image_uri: str, model: str,
+                              prompt_version: str, model_score=None,
+                              title: str = "", detail: str = "",
+                              severity: str = "",
+                              verifier: str, verify_conclusion: str,
+                              subject_type: str, subject_id: str,
+                              draft_id: str = "",
+                              image_evidence_id: str | None = None) -> dict:
+        """人验通过写图像证据。draft_id 已存在 → 原样返回（不重复写）。
+
+        subject_type 非法/subject_id 空 → ValueError（fail-closed，
+        与内核 persist_image_evidence 同口径）。
+        """
+        import uuid as _uuid
+
+        subject_type = str(subject_type or "").strip()
+        subject_id = str(subject_id or "").strip()
+        if subject_type not in ("person", "org", "bid_project"):
+            raise ValueError(
+                f"subject_type={subject_type!r} 非法（允许 person/org/bid_project）")
+        if not subject_id:
+            raise ValueError("subject_id 不得为空")
+
+        draft_id = str(draft_id or "").strip()
+        if draft_id:
+            row = self._conn.execute(
+                "SELECT image_evidence_id FROM image_evidence "
+                "WHERE draft_id=? LIMIT 1", [draft_id]).fetchone()
+            if row is not None:
+                return self.get_image_evidence(row["image_evidence_id"])
+
+        score_val: float | None
+        if model_score is None or str(model_score).strip() == "":
+            score_val = None
+        else:
+            try:
+                score_val = float(model_score)
+            except (TypeError, ValueError):
+                raise ValueError(f"model_score={model_score!r} 非数值")
+
+        iid = image_evidence_id or f"imgev_{_uuid.uuid4().hex[:12]}"
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._conn.execute(
+            "INSERT INTO image_evidence "
+            "(image_evidence_id, case_id, clue_id, image_uri, model, "
+            "prompt_version, model_score, title, detail, severity, "
+            "verifier, verify_conclusion, "
+            "subject_type, subject_id, draft_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [iid, case_id, clue_id, str(image_uri or ""), str(model or ""),
+             str(prompt_version or ""), score_val,
+             str(title or ""), str(detail or ""), str(severity or ""),
+             str(verifier or ""),
+             str(verify_conclusion or ""), subject_type, subject_id,
+             draft_id, created_at])
+        self._conn.commit()
+        return self.get_image_evidence(iid)
+
+    def get_image_evidence(self, image_evidence_id: str) -> dict:
+        row = self._conn.execute(
+            "SELECT * FROM image_evidence WHERE image_evidence_id=?",
+            [image_evidence_id]).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_image_evidence(self, *, case_id: str | None = None,
+                            clue_id: str | None = None) -> list[dict]:
+        """列图像证据（created_at 降序）；供 graph 合成与报告采集。"""
+        sql = "SELECT * FROM image_evidence WHERE 1=1"
+        args: list = []
+        if case_id is not None:
+            sql += " AND case_id=?"
+            args.append(case_id)
+        if clue_id is not None:
+            sql += " AND clue_id=?"
+            args.append(clue_id)
+        rows = self._conn.execute(
+            sql + " ORDER BY created_at DESC, rowid DESC", args).fetchall()
+        return [dict(r) for r in rows]
 
     # ==================================================================
     # REQ-V-012：调取清单台账（verify_request）

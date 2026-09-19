@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "_note": "P6 五间研判词汇（自 ontology/default/jians.json 搬出，唯一权威）。间类集合/default_clearance/weight/对象类型→间类映射均由本文件声明；core/wujian.py 装载校验（不再寄生 ontology_loader）。红线：cross_levels 的 min_independent_sources 映射（1/2/3）不可配置——名称可配，映射关系硬编码校验。source_names 是原 objects/links 的 jian_source（数据源展示名），随词汇一并搬出。",
+  "jians": [
+    {"name": "因间", "default_clearance": 1, "weight": 3, "source_object_types": ["org", "bid_project"]},
+    {"name": "内间", "default_clearance": 3, "weight": 5, "source_object_types": ["tipoff"]},
+    {"name": "反间", "default_clearance": 1, "weight": 2, "source_object_types": ["transfers", "time_window"]},
+    {"name": "死间", "default_clearance": 0, "weight": 4, "source_object_types": ["osint_article", "org"]},
+    {"name": "生间", "default_clearance": 1, "weight": 4, "source_object_types": ["call", "trackpoint", "transaction"]}
+  ],
+  "cross_levels": [
+    {"min_independent_sources": 1, "name": "观察"},
+    {"min_independent_sources": 2, "name": "线索"},
+    {"min_independent_sources": 3, "name": "可立案依据候选"}
+  ],
+  "source_independence": {
+    "related_pairs": []
+  },
+  "source_names": {
+    "org": "工商信息",
+    "bid_project": "招投标档案",
+    "tipoff": "举报材料",
+    "transfers": "银行流水",
+    "time_window": "银行流水(过桥)",
+    "osint_article": "公开OSINT",
+    "call": "通话记录",
+    "trackpoint": "轨迹出行",
+    "transaction": "银行流水"
+  }
+}

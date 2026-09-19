@@ -439,6 +439,86 @@ class M6BoardTest(unittest.TestCase):
         r = self.client.get("/api/v1/cases/c1/graph", headers=self.auth_l)
         self.assertEqual(r.status_code, 404)
 
+    # ---- P7：edge_kinds 投影 + evidence_refs 高亮 ----
+    def test_034_graph_edge_kinds_projection(self):
+        self._make_case()
+        self._seed_graph()
+        r = self.client.get(
+            "/api/v1/cases/c1/graph?edge_kinds=transfers",
+            headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        self.assertTrue(d["available"])
+        self.assertEqual({e["type"] for e in d["edges"]}, {"transfers"})
+        self.assertEqual(len(d["edges"]), 1)
+        # 目录仍列全部可入图类型（供前端过滤勾选），present 标记表是否已物化
+        catalog = {k["name"]: k["present"] for k in d["edge_kinds"]}
+        self.assertEqual(set(catalog),
+                         {"transfers", "calls_to", "involved_in",
+                          "co_located", "tipoff_targets_person",
+                          "tipoff_from_reporter"})
+        self.assertTrue(catalog["transfers"])
+        self.assertTrue(catalog["calls_to"])
+        self.assertFalse(catalog["involved_in"])
+
+    def test_035_graph_unknown_edge_kinds_400(self):
+        self._make_case()
+        self._seed_graph()
+        r = self.client.get(
+            "/api/v1/cases/c1/graph?edge_kinds=ghost",
+            headers=self.auth_h)
+        self.assertEqual(r.status_code, 400)
+
+    def test_036_graph_highlight_from_clue_evidence_refs(self):
+        self._make_case()
+        self._seed_graph()
+        clue = LineageClue(
+            clue_id="clue-hl", skill_id="relation_neighborhood",
+            title="张三资金关系圈", jian_types=["生间"],
+            evidence_refs=[
+                {"kind": "node", "ref": "obj_person#p1"},
+                {"kind": "edge", "ref": "lnk_transfers#a1"},
+            ])
+        save_case_clues(self.factory.case_dir("c1"), 1, [clue])
+        r = self.client.get("/api/v1/cases/c1/graph", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()["data"]
+        p1 = next(n for n in d["nodes"] if n["id"] == "person:p1")
+        self.assertTrue(p1["hit"])
+        self.assertEqual(p1["clue_ids"], ["clue-hl"])
+        te = next(e for e in d["edges"] if e["type"] == "transfers")
+        self.assertTrue(te["hit"])
+        self.assertEqual(te["clue_ids"], ["clue-hl"])
+        self.assertEqual(d["highlights"]["clue_count"], 1)
+        self.assertGreaterEqual(d["highlights"]["nodes"], 1)
+        self.assertGreaterEqual(d["highlights"]["edges"], 1)
+
+    def test_037_graph_highlight_clue_id_filter(self):
+        self._make_case()
+        self._seed_graph()
+        clues = [
+            LineageClue(
+                clue_id="clue-a", skill_id="relation_neighborhood",
+                title="线索A", jian_types=["生间"],
+                evidence_refs=[
+                    {"kind": "node", "ref": "obj_person#p1"}]),
+            LineageClue(
+                clue_id="clue-b", skill_id="relation_neighborhood",
+                title="线索B", jian_types=["生间"],
+                evidence_refs=[
+                    {"kind": "edge", "ref": "lnk_transfers#a1"}]),
+        ]
+        save_case_clues(self.factory.case_dir("c1"), 1, clues)
+        r = self.client.get(
+            "/api/v1/cases/c1/graph?clue_id=clue-a",
+            headers=self.auth_h)
+        d = r.json()["data"]
+        p1 = next(n for n in d["nodes"] if n["id"] == "person:p1")
+        self.assertTrue(p1["hit"])
+        te = next(e for e in d["edges"] if e["type"] == "transfers")
+        self.assertFalse(te["hit"])  # clue-b 的边引用不应高亮
+        self.assertEqual(d["highlights"]["clue_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

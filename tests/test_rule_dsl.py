@@ -156,6 +156,65 @@ class RuleDslTests(unittest.TestCase):
         self.assertIn("R1", t)
         self.assertGreater(len(t), 40, f"explain 应非空可读：{t!r}")
 
+    # ---- P5：R7 开标前后跨类型时间碰撞 ----
+
+    def test_r7_time_collision_hits_in_dsl(self):
+        """R7 经规则引擎全项目扫描，在 baseline 中命中张卫国（资金+通话+轨迹）。"""
+        store = _make_store()
+        try:
+            out = evaluate(store, parse({"rule": "R7"}))
+            self.assertTrue(out["hit"],
+                            f"R7 应在 baseline 命中，note={out.get('degraded_note')}")
+            r7 = [f for f in out["findings"] if f["rule_id"] == "R7"]
+            self.assertEqual(len(r7), 1)
+            rows = r7[0]["source_rows"]
+            subjects = {r["主体"] for r in rows}
+            self.assertIn("张卫国", subjects)
+            self.assertIn("李志强", subjects)
+            # 单类型主体不碰撞
+            self.assertNotIn("宏业建设", subjects)
+            # 每行锚点回标到项目公示日（统一时间轴）
+            self.assertTrue(all(r["anchor_date"] == "2021-10-01" for r in rows))
+            self.assertTrue(all(r["类型数"] >= 2 for r in rows))
+            # R7 可与既有规则做 DSL 组合
+            combo = evaluate(store, parse({"all": [{"rule": "R6"},
+                                                   {"rule": "R7"}]}))
+            self.assertTrue(combo["hit"])
+        finally:
+            store.close()
+
+    def test_r7_not_hit_when_events_outside_window(self):
+        """时间碰撞夹具：各类型事件都在 ±7 天窗之外 → R7 不命中；NOT(R7) 为真。"""
+        s = Store(db_path=":memory:")
+        try:
+            s.execute("CREATE TABLE obj_bid_project "
+                      "(project_id VARCHAR, title VARCHAR, pub_date VARCHAR)")
+            s.execute("CREATE TABLE obj_transaction "
+                      "(txn_id VARCHAR, from_raw VARCHAR, to_raw VARCHAR, "
+                      "amount DOUBLE, date VARCHAR)")
+            s.execute("CREATE TABLE obj_call "
+                      "(call_id VARCHAR, caller_raw VARCHAR, callee_raw VARCHAR, "
+                      "date VARCHAR)")
+            s.execute("CREATE TABLE obj_trackpoint "
+                      "(track_id VARCHAR, person_raw VARCHAR, "
+                      "location VARCHAR, date VARCHAR)")
+            s.execute("INSERT INTO obj_bid_project VALUES "
+                      "('project_x', '远郊绿化工程', '2021-05-01')")
+            # 资金在窗口外（-61 天）
+            s.execute("INSERT INTO obj_transaction VALUES "
+                      "('txn_x1', '宏业建设', '周某', 66000, '2021-03-01')")
+            # 通话在窗口外（+19 天）
+            s.execute("INSERT INTO obj_call VALUES "
+                      "('call_x1', '周某', '吴某', '2021-05-20')")
+            # 轨迹在窗口内但仅单一类型
+            s.execute("INSERT INTO obj_trackpoint VALUES "
+                      "('track_x1', '周某', '远郊工地', '2021-05-02')")
+            out = evaluate(s, parse({"rule": "R7"}))
+            self.assertFalse(out["hit"])
+            self.assertTrue(evaluate(s, parse({"not": {"rule": "R7"}}))["hit"])
+        finally:
+            s.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

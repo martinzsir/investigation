@@ -505,17 +505,27 @@ class OntologyProfiler:
                 self._deduct(deductions, "object", obj, "no_wan_integer",
                              f"{obj}.{prop} 无万元整数交易（资金信号弱）", "warn")
 
-    # ---- L4：五间（声明化；无 DEFAULT_JIAN_MAP）----
+    # ---- L4：五间（P6：映射来自 packs/wujian，不再读 o.jian/l.jian）----
     def _jian_map(self, mat_objects) -> dict:
-        forward = {j: {"objects": [], "links": []} for j in JIAN_ORDER}
-        for o in self._spec.objects:
-            if o.jian in forward:
-                forward[o.jian]["objects"].append(o.name)
-        for l in self._spec.links:
-            if l.jian in forward:
-                forward[l.jian]["links"].append(l.name)
+        from core.wujian import load_wujian
+        wj = load_wujian(self._pack)
+        order = wj.jian_order if wj is not None else []
+        forward = {j: {"objects": [], "links": []} for j in order}
+        obj_names = {o.name for o in self._spec.objects}
+        lnk_names = {l.name for l in self._spec.links}
+        if wj is not None:
+            for t, js in wj.type_to_jians.items():
+                if t in obj_names:
+                    bucket = "objects"
+                elif t in lnk_names:
+                    bucket = "links"
+                else:
+                    continue  # 词汇引用了底座未声明类型：跳过（缺口语义）
+                for j in js:
+                    if j in forward and t not in forward[j][bucket]:
+                        forward[j][bucket].append(t)
         reverse = []
-        for j in JIAN_ORDER:
+        for j in order:
             objs = forward[j]["objects"]
             reverse.append({
                 "jian": j,
@@ -524,7 +534,8 @@ class OntologyProfiler:
                 "declared": bool(objs or forward[j]["links"]),
                 "has_materialized": any(x in mat_objects for x in objs),
             })
-        return {"forward": forward, "reverse": reverse}
+        return {"forward": forward, "reverse": reverse,
+                "available": wj is not None}
 
     # ---- L5：质量分 ----
     def _score(self, deductions: list[dict]) -> dict:

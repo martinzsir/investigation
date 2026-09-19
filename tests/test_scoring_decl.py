@@ -29,6 +29,17 @@ def _write_scoring(path: Path, dims, ac) -> None:
 class ScoringDeclTests(unittest.TestCase):
     """R7: scoring.json 声明校验。"""
 
+    def setUp(self):
+        # P6：间类权重来自五间词汇——挂载真实 packs/wujian 供 jian_cov 计算
+        from core.wujian import build_wujian, register_wujian, reset_wujian
+        root = Path(__file__).resolve().parent.parent
+        reset_wujian()
+        register_wujian(build_wujian(root / "packs" / "wujian", "default"))
+
+    def tearDown(self):
+        from core.wujian import reset_wujian
+        reset_wujian()
+
     def test_default_pack_loads(self):
         """default 包 scoring.json 装载成功，权重和=1.0。"""
         scoring = load_scoring("default")

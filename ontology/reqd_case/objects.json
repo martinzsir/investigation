@@ -6,6 +6,7 @@
       "name": "person",
       "title": "自然人（电诈）",
       "pk": "person_id",
+      "key": {"column": "person_id", "strategy": "proxy", "prefix": "person"},
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
@@ -19,6 +20,7 @@
       "name": "account",
       "title": "账户（电诈）",
       "pk": "account_id",
+      "key": {"column": "account_id", "strategy": "proxy", "prefix": "account"},
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
@@ -29,6 +31,7 @@
       "name": "transaction",
       "title": "交易（电诈流水）",
       "pk": "txn_id",
+      "key": {"column": "txn_id", "strategy": "proxy", "prefix": "txn"},
       "kind": "event",
       "name_property": "from_raw",
       "properties": {
@@ -44,6 +47,7 @@
       "name": "call",
       "title": "通话（电诈）",
       "pk": "call_id",
+      "key": {"column": "call_id", "strategy": "proxy", "prefix": "call"},
       "kind": "event",
       "name_property": "caller_raw",
       "properties": {
@@ -58,6 +62,7 @@
       "name": "call_old",
       "title": "通话（旧版变体，缺对端列）",
       "pk": "call_old_id",
+      "key": {"column": "call_old_id", "strategy": "proxy", "prefix": "call_old"},
       "kind": "event",
       "name_property": "caller_raw",
       "properties": {
@@ -71,6 +76,7 @@
       "name": "case_ledger",
       "title": "案件台账（电诈）",
       "pk": "case_id",
+      "key": {"column": "case_id", "strategy": "proxy", "prefix": "case"},
       "kind": "entity",
       "name_property": "case_no",
       "properties": {
@@ -84,6 +90,7 @@
       "name": "cp_split",
       "title": "对方当事人（source_sql 上游拆分路径）",
       "pk": "cp_id",
+      "key": {"column": "cp_id", "strategy": "proxy", "prefix": "cp"},
       "kind": "entity",
       "name_property": "cp_name",
       "properties": {
@@ -96,6 +103,7 @@
       "name": "cp_whole",
       "title": "对方当事人（composite 整列降级路径）",
       "pk": "cpw_id",
+      "key": {"column": "cpw_id", "strategy": "proxy", "prefix": "cpw"},
       "kind": "entity",
       "name_property": "cp_no",
       "properties": {

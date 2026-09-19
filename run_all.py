@@ -58,6 +58,10 @@ def main():
 
     store = Store()
     register_all()
+    # P3/P6：自枚举挂载 packs/*——relation/timeline 镜头与 wujian 五间词汇
+    # （间类/cross_levels/同源对）在此注册；拔出目录即对账注销。
+    from core.pack_loader import discover as discover_packs
+    discover_packs()
 
     # REQ-G-010：统一降级/健康度层。全管线"失败被表达成数据"的统一收口——
     # 规则零命中、函数空转、事件发布失败、实体跳过、版本锚缺失、派发失败等落 run_diagnostic，

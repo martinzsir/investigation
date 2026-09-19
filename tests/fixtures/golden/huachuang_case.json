@@ -115,15 +115,16 @@
   },
   "expect": {
     "_note": "期望值由 tests/test_golden.py 实际运行锁定（2026-09-06）；检测器有意调整须显式刷新并在此记录原因。R2（整数转账聚合）与 R1 同属 exclusive_group='integer_amount'，R1 primary 命中 → R2 入 suppressed_log（4 个整数转账组）不进主 findings。R3 通话突增：函数层 top 对 8 次 ≥2× 对端中位数 1（8.0×，非降级）；阈值层 per-subject 样本 20 个（≥min_samples=20）走 relative_median，中位数 1×2 后夹紧到 bounded min=5，is_degraded=false。R5 命中 3 行：华创（王润华/工商内档）、润芳图文（王润芳+王润华关联字段/工商注册样本）、华彩印务（法人王润华清为子串匹配，knowledge_sources 为空 = 人工甄别项）；启晨文具店过期断言自动排除、天边文具行孙志远不在知识包。",
-    "finding_count": 5,
-    "rules_hit": ["R1", "R3", "R4", "R5", "R6"],
-    "source_rows_total": 13,
+    "finding_count": 6,
+    "rules_hit": ["R1", "R3", "R4", "R5", "R6", "R7"],
+    "source_rows_total": 15,
     "by_rule": {
       "R1": {"hits": 1, "source_rows": 1},
       "R3": {"hits": 1, "source_rows": 5},
       "R4": {"hits": 1, "source_rows": 2},
       "R5": {"hits": 1, "source_rows": 3},
-      "R6": {"hits": 1, "source_rows": 2}
+      "R6": {"hits": 1, "source_rows": 2},
+      "R7": {"hits": 1, "source_rows": 2}
     }
   }
 }

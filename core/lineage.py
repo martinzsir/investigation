@@ -150,13 +150,12 @@ def _cross_level_name_single(n: int, pack: str = "default") -> str | None:
     """
     if n <= 0:
         return None
-    try:
-        from core.ontology_loader import load_cross_levels
-        for lv in load_cross_levels(pack):
-            if lv["min_independent_sources"] == n:
-                return lv["name"]
-    except Exception:
-        pass
+    from core.wujian import load_wujian
+    wj = load_wujian(pack)
+    if wj is not None:
+        name = wj.cross_level_name(n)
+        if name:
+            return name
     return {1: "观察", 2: "线索", 3: "可立案依据候选"}.get(n, "观察")
 
 
@@ -205,12 +204,10 @@ def lineage_report(clues: list[LineageClue]) -> dict:
 # ----------------------------------------------------------------------
 
 def _jian_weights(pack: str = "default") -> dict[str, int]:
-    """R7：从 jians.json 读取间类权重 {间类名: weight}。"""
-    try:
-        from core.ontology_loader import load_jians
-        return {j["name"]: j.get("weight", 1) for j in load_jians(pack)}
-    except Exception:
-        return {"内间": 5, "死间": 4, "因间": 3, "反间": 2, "生间": 4}
+    """P6：间类权重来自已挂载五间词汇 {间类名: weight}；无包返回 {}（无兜底）。"""
+    from core.wujian import load_wujian
+    wj = load_wujian(pack)
+    return wj.jian_weights if wj is not None else {}
 
 
 # 计分口径版本：随 scoring.json 消费方式变更而 bump，产物自带该标识可审计。

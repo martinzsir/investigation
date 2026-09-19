@@ -4,7 +4,7 @@
 // - 危险变更（params/enabled/权限/模型结构等改变机器行为）：🔴 红框警示，
 //   变更理由必填（落案件审计链 note），未填禁用确认；
 // - 对话框只承载确认与理由采集；是否危险由 domain 纯函数判定后传入。
-// - S0-4 修「假承诺」：默认文案不承诺「自动触发 RESCAN」（后端仅 RuleWorkshop 危险变更
+// - S0-4 修「假承诺」：默认文案不承诺保存后自动重跑（后端仅 RuleWorkshop 危险变更
 //   真入队）；确会入队的页面经 rescanEnqueued 显式声明，其余页面说真话。
 import { computed } from 'vue'
 import { NModal, NButton, NInput } from 'naive-ui'

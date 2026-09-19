@@ -119,7 +119,7 @@ class L0TopologyTests(unittest.TestCase):
         declared = {o["name"] for o in json.loads(
             (ROOT / "ontology/default/objects.json").read_text(encoding="utf-8"))["objects"]}
         self.assertEqual(set(self.inv), declared)
-        self.assertEqual(len(self.inv), 12)
+        self.assertEqual(len(self.inv), 13)  # + image_evidence(P8)
 
     def test_ac02_语义度为非runtime链接端点计数(self):
         # M1 新增 tipoff_from_reporter 后 person=8（沙盒基线 7 为修复前口径）

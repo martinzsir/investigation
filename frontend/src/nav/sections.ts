@@ -22,6 +22,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'verdict', label: '实体裁决', mvp: 2 },
       { key: 'miaosuan', label: '庙算工作台', mvp: 5 },
       { key: 'graph', label: '知识图谱', mvp: 5 },
+      { key: 'vlm', label: '图像研判', mvp: 8 },
     ],
   },
   {

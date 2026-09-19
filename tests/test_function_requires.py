@@ -75,11 +75,11 @@ class FunctionRequiresTests(unittest.TestCase):
                 _load_functions(p, objects, links, required=False)
 
     def test_meta_tc_04_all_py_functions_have_requires(self):
-        """META-TC-04: 7 个 py 函数均声明 requires。"""
+        """META-TC-04: 13 个 py 函数均声明 requires（+timeline_* P5）。"""
         invalidate_pack_cache()
         pack = load_pack("default")
         py_fns = {n: f for n, f in pack.functions.items() if f.impl == "py"}
-        self.assertEqual(len(py_fns), 7)
+        self.assertEqual(len(py_fns), 13)
         for name, f in py_fns.items():
             self.assertIn("requires", f.to_dict(),
                           f"{name} 应声明 requires")

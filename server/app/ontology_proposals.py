@@ -24,6 +24,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from server.app.meta.repo_sqlite import connect_sqlite
+
 DRAFT = "draft"
 IMPACT_READY = "impact_ready"
 PUBLISHED = "published"
@@ -63,9 +65,7 @@ class OntologyProposalStore:
             con.execute(_DDL)
 
     def _conn(self) -> sqlite3.Connection:
-        con = sqlite3.connect(str(self.path))
-        con.row_factory = sqlite3.Row
-        return con
+        return connect_sqlite(self.path)
 
     @staticmethod
     def _row(r: sqlite3.Row) -> dict:

@@ -65,8 +65,6 @@
       "title": "时间窗碰撞",
       "from_obj": "bid_project",
       "to_obj": "transaction",
-      "jian": "反间",
-      "jian_source": "银行流水(过桥)",
       "properties": {"amount": "decimal", "offset_days": "integer"},
       "endpoints": {
         "from": {"col": "title"},
@@ -114,6 +112,33 @@
       "from_obj": "osint_article",
       "to_obj": "person",
       "properties": {"source_name": "string", "pub_date": "date"}
+    },
+    {
+      "name": "image_for_person",
+      "title": "图像证据指向人员",
+      "from_obj": "image_evidence",
+      "to_obj": "person",
+      "runtime": true,
+      "_note": "P8 运行期链接：人验通过创建 obj_image_evidence 时，subject_type=person 同步写入；端点列 image_evidence_id/person_id。",
+      "properties": {}
+    },
+    {
+      "name": "image_for_org",
+      "title": "图像证据指向组织",
+      "from_obj": "image_evidence",
+      "to_obj": "org",
+      "runtime": true,
+      "_note": "P8 运行期链接：subject_type=org 时写入；端点列 image_evidence_id/org_id。",
+      "properties": {}
+    },
+    {
+      "name": "image_for_project",
+      "title": "图像证据指向项目",
+      "from_obj": "image_evidence",
+      "to_obj": "bid_project",
+      "runtime": true,
+      "_note": "P8 运行期链接：subject_type=bid_project 时写入；端点列 image_evidence_id/project_id。",
+      "properties": {}
     }
   ]
 }

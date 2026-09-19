@@ -29,6 +29,18 @@ from core.registry import LineageClue
 from server.app import ontology_meta
 
 
+def setUpModule():
+    """P6：等级序/间类权重来自五间词汇——整模块挂载真实 packs/wujian。"""
+    from core.wujian import build_wujian, register_wujian, reset_wujian
+    reset_wujian()
+    register_wujian(build_wujian(ROOT / "packs" / "wujian", "default"))
+
+
+def tearDownModule():
+    from core.wujian import reset_wujian
+    reset_wujian()
+
+
 def _clue(*, cid: str, jians: list[str], rows: int = 0,
           assumptions: list[str] | None = None) -> LineageClue:
     return LineageClue(

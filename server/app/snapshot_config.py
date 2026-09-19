@@ -116,8 +116,19 @@ def save_config_json(snap_dir: Path, pack_id: str, base_dir: Path,
                      filename: str, data, *, ctx: WebContext,
                      case_id: str, op: str, p: Principal,
                      detail: dict | None = None) -> None:
-    """校验通过后原子写配置文件 + 记 ops 审计。"""
-    validate_snapshot(snap_dir, pack_id, base_dir)
+    """校验通过后原子写配置文件 + 记 ops 审计。
+
+    校验对象是**新内容**：临时副本整包 + 上游层后，把 data 写进副本的
+    filename 再过 load_pack 全量强校验（与 etl._write_validated 同范式）——
+    只校验旧快照会让悬空引用/不可达收紧漏网（D1 兜底失效）。
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tmp_root = Path(td)
+        shutil.copytree(snap_dir, tmp_root / pack_id)
+        copy_layer_dirs(snap_dir, base_dir, tmp_root)
+        (tmp_root / pack_id / filename).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        load_pack(pack_id, base_dir=tmp_root)
     atomic_write_json(snap_dir / filename, data)
     ctx.repo.record_ops(op, case_id,
                         {"file": filename, "by": p.operator,

@@ -32,6 +32,15 @@ export function saveBlobAs(blob: Blob, filename: string): void {
 }
 
 export const evidenceApi = {
+  /** GET /cases/{cid}/evidence —— 案件级书证清单（全部线索；P8 VLM 选图） */
+  async listCase(caseId: string): Promise<EvidencePage> {
+    const res = await api.get<EvidencePage>(
+      `/cases/${encodeURIComponent(caseId)}/evidence`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
   /** GET .../evidence —— 本线索书证清单（元数据，无 state.sqlite 时为空清单） */
   async list(caseId: string, clueId: string): Promise<EvidencePage> {
     const res = await api.get<EvidencePage>(base(caseId, clueId))

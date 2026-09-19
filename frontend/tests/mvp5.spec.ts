@@ -111,13 +111,13 @@ describe('MVP-5 图谱 graphModel', () => {
     available: true,
     truncated: { nodes: true, edges: true, dropped_edges: 7 },
     nodes: [
-      { id: 'person:1', label: '张三', type: 'person', type_title: '人员', jian: [] },
-      { id: 'person:2', label: '李四', type: 'person', type_title: '人员', jian: [] },
-      { id: 'person:3', label: '王五', type: 'person', type_title: '人员', jian: [] },
+      { id: 'person:1', label: '张三', type: 'person', type_title: '人员', jian: [], hit: false, clue_ids: [] },
+      { id: 'person:2', label: '李四', type: 'person', type_title: '人员', jian: [], hit: false, clue_ids: [] },
+      { id: 'person:3', label: '王五', type: 'person', type_title: '人员', jian: [], hit: false, clue_ids: [] },
     ],
     edges: [
-      { source: 'person:1', target: 'person:2', label: '通话', type: 'call' },
-      { source: 'person:1', target: 'person:3', label: '转账', type: 'transfer' },
+      { source: 'person:1', target: 'person:2', label: '通话', type: 'call', hit: false, clue_ids: [], props: {} },
+      { source: 'person:1', target: 'person:3', label: '转账', type: 'transfer', hit: false, clue_ids: [], props: {} },
     ],
   }
   it('可用判定/区间钳制/横幅文案', () => {
@@ -131,7 +131,7 @@ describe('MVP-5 图谱 graphModel', () => {
   it('降级关系表格：端点缺失补 id-only；度数排序', () => {
     const rows = edgesToRows(g.edges, g.nodes)
     expect(rows[0]).toMatchObject({ sourceLabel: '张三', targetLabel: '李四', relation: '通话' })
-    const orphan = edgesToRows([{ source: 'person:1', target: 'x:9', label: '转', type: 't' }], g.nodes)
+    const orphan = edgesToRows([{ source: 'person:1', target: 'x:9', label: '转', type: 't', hit: false, clue_ids: [], props: {} }], g.nodes)
     expect(orphan[0].targetLabel).toBe('x:9')
     const deg = nodesByDegree(g as never)
     expect(deg[0].node.id).toBe('person:1')

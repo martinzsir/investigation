@@ -1,0 +1,58 @@
+{
+  "pack_id": "relation",
+  "version": "0.1.0",
+  "_note": "P4 关系研判镜头包（首个真实镜头包）：经 core.pack_loader 自枚举挂载，零注册代码。计算全部走 ontology Function（relation_neighborhood / relation_common_neighbors / relation_paths，语义层只读图算法），镜头只做编排与线索化，不自己写 SQL。",
+  "skills": [
+    {
+      "skill_id": "relation_neighborhood",
+      "name": "关系圈层镜头",
+      "stage": "用间",
+      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
+      "produces_dims": ["关系"],
+      "mode": "deterministic",
+      "enabled": true,
+      "params_schema": {
+        "target_subject": {"type": "string", "required": true, "description": "目标主体（raw_name 或代理键）"},
+        "target_type": {"type": "string", "description": "auto/person/account/org/bid_project，同名歧义时显式消歧"},
+        "depth": {"type": "integer", "description": "邻域跳数 1-3，缺省 2"},
+        "edge_kinds": {"type": "string", "description": "all/fund/contact/org 边类别收窄，缺省 all"}
+      },
+      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "handler": "impl:neighborhood_lens"
+    },
+    {
+      "skill_id": "relation_common_neighbors",
+      "name": "共同关系镜头",
+      "stage": "用间",
+      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
+      "produces_dims": ["关系"],
+      "mode": "deterministic",
+      "enabled": true,
+      "params_schema": {
+        "subject_a": {"type": "string", "required": true},
+        "subject_b": {"type": "string", "required": true},
+        "edge_kinds": {"type": "string", "description": "all/fund/contact/org，缺省 all"}
+      },
+      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "handler": "impl:common_neighbors_lens"
+    },
+    {
+      "skill_id": "relation_paths",
+      "name": "关系路径镜头",
+      "stage": "用间",
+      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
+      "produces_dims": ["关系"],
+      "mode": "deterministic",
+      "enabled": true,
+      "params_schema": {
+        "subject_a": {"type": "string", "required": true},
+        "subject_b": {"type": "string", "required": true},
+        "depth": {"type": "integer", "description": "最大跳数 1-3，缺省 2"},
+        "max_paths": {"type": "integer", "description": "路径枚举上限 1-100，缺省 20"},
+        "edge_kinds": {"type": "string", "description": "all/fund/contact/org，缺省 all"}
+      },
+      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "handler": "impl:paths_lens"
+    }
+  ]
+}

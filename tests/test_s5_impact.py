@@ -53,7 +53,7 @@ _SCHEMA_CASES = [
     ("derived_properties", DEFAULT_PACK / "derived_properties.json"),
     ("dimensions", DEFAULT_PACK / "dimensions.json"),
     ("enum_space", DEFAULT_PACK / "enum_space.json"),
-    ("jians", DEFAULT_PACK / "jians.json"),
+    ("jians", ROOT / "packs" / "wujian" / "jians.json"),
     ("llm_policy", DEFAULT_PACK / "llm_policy.json"),
     ("scoring", DEFAULT_PACK / "scoring.json"),
     ("states", DEFAULT_PACK / "states.json"),
@@ -202,7 +202,7 @@ class S5ImpactCoreTest(unittest.TestCase):
                                  clues_artifact=None)
         self.assertEqual(fp1, fp2)
         # 下游文件变动 → 指纹变化（E4-3 依据）
-        p = self.pack_dir / "jians.json"
+        p = self.pack_dir / "scoring.json"
         d = json.loads(p.read_text(encoding="utf-8"))
         d["_note"] = d.get("_note", "") + " [s5-test-touch]"
         p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
@@ -382,7 +382,7 @@ class S5ProposalFlowTest(unittest.TestCase):
         self.assertIsNotNone(r.json()["data"]["impact"])
 
         # E4-3：评估后下游变化 → 发布拒绝（指纹基准变化）
-        jp = self.snap / "jians.json"
+        jp = self.snap / "scoring.json"
         jd = json.loads(jp.read_text(encoding="utf-8"))
         jd["_note"] = jd.get("_note", "") + " [s5-post-impact]"
         jp.write_text(json.dumps(jd, ensure_ascii=False), encoding="utf-8")

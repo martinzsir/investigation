@@ -234,8 +234,10 @@ function overrideTooltip(key: string): string {
 // ---- 保存 ----
 function buildDoc(): DataElementsDoc {
   const doc = layerDocs.value[activeLayer.value]
-  const elements = upsertElement(doc, (form.value as ElementForm).key.trim(), pendingIsDelete.value ? null : builtSpec.value)
-  return { ...doc, elements }
+  const updated = upsertElement(doc, (form.value as ElementForm).key.trim(), pendingIsDelete.value ? null : builtSpec.value)
+  // formToSpec 保证产出条目含 name/type，服务端条目本就符合契约，
+  // 宽松 DataElementSpec 在边界收窄为 API 契约类型
+  return { ...doc, elements: updated.elements } as DataElementsDoc
 }
 
 function askSaveDelete(): void {

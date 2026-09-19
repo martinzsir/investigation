@@ -280,11 +280,15 @@ def _run_param_names(fn) -> set[str]:
 
 
 # ----------------------------------------------------------------------
-# 自动注册（导入本模块即生效）
+# 自动注册（内置包引导；P3 起外部镜头包走 core.pack_loader 自枚举）
 # ----------------------------------------------------------------------
 
 def register_all(registry: SkillRegistry | None = None) -> SkillRegistry:
-    """把五个子技能注册到 registry。幂等，可重复调用。"""
+    """把五个内置子技能注册到 registry。幂等，可重复调用。
+
+    P3：内置规格新契约字段（mode/params_schema/scope_reads 等）全走默认值，
+    注册时经 SkillSpec.validate() 校验通过，与 packs/* 外部包同一注册路径。
+    """
     reg = registry or DEFAULT_REGISTRY
 
     # 延迟导入：避免循环引用（core.registry <-> skills）

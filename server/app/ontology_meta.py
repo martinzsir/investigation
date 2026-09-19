@@ -12,12 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from core.ontology_loader import (
-    load_cross_levels,
     load_dimension_declarations,
-    load_jians,
     load_pack,
     load_states,
 )
+from core.wujian import load_wujian
 
 
 def resolve_base(pack: str, base_dir: str | Path | None) -> Path | None:
@@ -30,25 +29,26 @@ def resolve_base(pack: str, base_dir: str | Path | None) -> Path | None:
 
 def jian_clearances(pack: str = "default",
                     base_dir: str | Path | None = None) -> dict[str, int]:
-    """{间类全名: default_clearance}。"""
-    base = resolve_base(pack, base_dir)
-    return {j["name"]: int(j.get("default_clearance", 0))
-            for j in load_jians(pack, base)}
+    """{间类全名: default_clearance}。P6 词汇全局挂载；无包返回 {}。"""
+    wj = load_wujian(pack)
+    return wj.jian_clearances if wj is not None else {}
 
 
 def jian_names(pack: str = "default",
                base_dir: str | Path | None = None) -> list[str]:
-    base = resolve_base(pack, base_dir)
-    return [j["name"] for j in load_jians(pack, base)]
+    """间类名有序列表。P6 词汇全局挂载；无包返回 []。"""
+    wj = load_wujian(pack)
+    return wj.jian_order if wj is not None else []
 
 
 def cross_level_names(pack: str = "default",
                       base_dir: str | Path | None = None) -> list[str]:
-    """交叉等级名（按 min_independent_sources 升序，红线 1/2/3 由 loader 钉死）。"""
-    base = resolve_base(pack, base_dir)
-    levels = load_cross_levels(pack, base)
-    return [lv["name"] for lv in
-            sorted(levels, key=lambda x: x["min_independent_sources"])]
+    """交叉等级名（按 min_independent_sources 升序，红线 1/2/3 由词汇校验钉死）。"""
+    wj = load_wujian(pack)
+    if wj is None:
+        return []
+    return [lv.name for lv in sorted(
+        wj.cross_levels, key=lambda x: x.min_independent_sources)]
 
 
 #: 未声明/未知等级（旧产物无 cross_level、异常通道"待核实"）的排序位——垫底。

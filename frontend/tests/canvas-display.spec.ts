@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { setTransport } from '../src/api/transport'
-import { FakeTransport, okEnvelope } from './helpers'
+import { FakeTransport, okEnvelope, errEnvelope, type FakeRoute } from './helpers'
 import ResearchCanvas from '../src/components/research/ResearchCanvas.vue'
 import type { CanvasEnvelope } from '../src/domain/canvas'
 
@@ -109,10 +109,11 @@ function envelope(): CanvasEnvelope {
 
 let wrapper: VueWrapper | null = null
 
-function mountCanvas() {
+function mountCanvas(env: CanvasEnvelope = envelope(), routes: FakeRoute[] = []) {
   setTransport(new FakeTransport([
     { match: (r) => r.method === 'GET' && r.path === PATH,
-      respond: () => okEnvelope(envelope()) },
+      respond: () => okEnvelope(env) },
+    ...routes,
   ]))
   wrapper = mount({
     components: { NMessageProvider, NDialogProvider, ResearchCanvas },
@@ -497,6 +498,95 @@ describe('P3 研判视角：证据强度三层', () => {
     const raw = localStorage.getItem('canvas-view:c1:clue-1')
     expect(raw).toBeTruthy()
     expect(JSON.parse(raw ?? '{}').perspective).toBe('tier')
+  })
+})
+
+// ======================================================================
+// 书证节点抽屉：props 登记信息直显（seed/reconcile 同源）
+// ======================================================================
+describe('书证节点抽屉', () => {
+  function evidenceEnvelope(): CanvasEnvelope {
+    const env = envelope()
+    env.doc.nodes.push({
+      id: 'evidence:ev_1', kind: 'evidence', ref: 'ev_1',
+      label: 'invoide.png', system: true, adopted: false, stale: false,
+      pinned: false, x: 480, y: 208,
+      props: {
+        material_id: 'ev_1', material_type: '缴款单',
+        uploaded_by: '王检察官', uploaded_at: '2026-09-19T18:38:51',
+      },
+    } as never)
+    return env
+  }
+
+  it('点击书证节点：抽屉展示材料类型/上传人/上传时间/材料 ID', async () => {
+    mountCanvas(evidenceEnvelope())
+    await flushPromises()
+    await clickNode('evidence:ev_1')
+    const drawer = wrapper!.findComponent({ name: 'CanvasNodeDrawer' })
+    expect(drawer.exists()).toBe(true)
+    const card = drawer.find('[data-testid="evidence-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('缴款单')
+    expect(card.text()).toContain('王检察官')
+    expect(card.text()).toContain('2026-09-19T18:38:51')
+    expect(card.text()).toContain('ev_1')
+  })
+
+  const FINDINGS_PATH = '/cases/c1/clues/clue-1/vlm/findings'
+
+  function findingsRoute(): FakeRoute {
+    return {
+      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+      respond: () => okEnvelope({
+        findings: {
+          ev_1: {
+            pending: [{
+              proposal_id: 'pp-1', title: '缴款单金额与流水不符',
+              detail: '票面 5 万元，同期流水无对应存入', severity: 'warn',
+              image_uri: 'evidence/ev_1/a.png', model: 'qwen-vl-max',
+              model_score: 0.86, stale: false, created_at: '2026-09-19 20:00',
+            }],
+            verified: [{
+              image_evidence_id: 'ie_1', title: '缴款单金额与流水不符',
+              detail: '票面 5 万元', severity: 'warn',
+              image_uri: 'evidence/ev_1/a.png', model: 'qwen-vl-max',
+              model_score: 0.86, verifier: '王检察官',
+              verify_conclusion: '经比对原件属实',
+              subject_type: 'person', subject_id: 'p1',
+              clue_id: 'clue-1', created_at: '2026-09-19 20:10',
+            }],
+          },
+        },
+      }),
+    }
+  }
+
+  it('书证节点抽屉渲染 findings：AI 草案 + 已人验证据', async () => {
+    mountCanvas(evidenceEnvelope(), [findingsRoute()])
+    await flushPromises()
+    await clickNode('evidence:ev_1')
+    await flushPromises()
+    const block = wrapper!.find('[data-testid="evidence-findings"]')
+    expect(block.exists()).toBe(true)
+    expect(block.find('[data-testid="finding-pending"]').exists()).toBe(true)
+    expect(block.find('[data-testid="finding-verified"]').exists()).toBe(true)
+    expect(block.text()).toContain('缴款单金额与流水不符')
+    expect(block.text()).toContain('把握度 0.86')
+    expect(block.text()).toContain('经比对原件属实')
+    expect(block.text()).toContain('王检察官')
+  })
+
+  it('findings 拉取失败：抽屉软提示，不阻塞登记信息', async () => {
+    mountCanvas(evidenceEnvelope(), [{
+      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+      respond: () => errEnvelope(500, 'INTERNAL', 'boom'),
+    }])
+    await flushPromises()
+    await clickNode('evidence:ev_1')
+    await flushPromises()
+    expect(wrapper!.find('[data-testid="findings-error"]').exists()).toBe(true)
+    expect(wrapper!.find('[data-testid="evidence-card"]').exists()).toBe(true)
   })
 })
 

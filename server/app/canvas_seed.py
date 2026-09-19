@@ -224,6 +224,97 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
     return {"nodes": nodes, "edges": edges}
 
 
+def reconcile_canvas(doc: dict[str, Any], *,
+                     verify_items: list[dict[str, Any]] | None = None,
+                     materials: list[dict[str, Any]] | None = None,
+                     ) -> tuple[dict[str, Any], int, int]:
+    """GET 幂等增量补种：补齐 seed 后新出现的 verify_item/evidence 节点
+    与 verify_item-[挂接]→evidence 边。
+
+    只增不改删：节点/边形状与过滤口径（status=建议 不成节点，AC-105-2）
+    与 seed_canvas 同源；不动既有节点/边/坐标，不重排。新节点 y 按 doc
+    内同列已有节点计数排布（fact/verify_item 共享 _fact_col 口径）。
+    返回 (doc, 新增节点数, 新增边数)；无缺失时原 doc 原样返回。
+    """
+    nodes = list(doc.get("nodes") or [])
+    edges = list(doc.get("edges") or [])
+    node_ids = {str(n.get("id") or "") for n in nodes}
+    edge_ids = {str(e.get("id") or "") for e in edges}
+
+    added_nodes = 0
+    added_edges = 0
+    fact_col = sum(1 for n in nodes
+                   if n.get("kind") in ("fact", "verify_item"))
+    ev_col = sum(1 for n in nodes if n.get("kind") == "evidence")
+
+    # ---- 缺失核查项（同 seed：已采纳/人工；建议不成节点）----
+    for it in verify_items or []:
+        item_id = str(it.get("item_id") or "")
+        if not item_id:
+            continue
+        node_id = sys_node_id("verify_item", item_id)
+        if node_id in node_ids or str(it.get("status") or "") == "建议":
+            continue
+        text = str(it.get("text") or "")
+        nodes.append({
+            "id": node_id, "kind": "verify_item", "ref": item_id,
+            "label": _truncate(text) or "待核实",
+            "system": True, "pinned": False,
+            "x": _X_FACT, "y": fact_col * _Y_GAP,
+            "adopted": True,
+            "props": {
+                "text": text, "status": str(it.get("status") or ""),
+                "kind": str(it.get("kind") or ""),
+                "origin": str(it.get("origin") or ""),
+                "channel": str(it.get("channel") or ""),
+                "ref_function": str(it.get("ref_function") or ""),
+            },
+        })
+        node_ids.add(node_id)
+        fact_col += 1
+        added_nodes += 1
+
+    # ---- 缺失书证 + 挂接边（两端点均在 doc 才补，同 seed 口径）----
+    for m in materials or []:
+        mid = str(m.get("material_id") or "")
+        if not mid:
+            continue
+        node_id = sys_node_id("evidence", mid)
+        if node_id not in node_ids:
+            nodes.append({
+                "id": node_id, "kind": "evidence", "ref": mid,
+                "label": _truncate(str(m.get("orig_name") or mid)),
+                "system": True, "pinned": False,
+                "x": _X_EVIDENCE, "y": ev_col * _Y_GAP,
+                "props": {
+                    "material_id": mid,
+                    "material_type": str(m.get("material_type") or ""),
+                    "uploaded_by": str(m.get("uploaded_by") or ""),
+                    "uploaded_at": str(m.get("uploaded_at") or ""),
+                },
+            })
+            node_ids.add(node_id)
+            ev_col += 1
+            added_nodes += 1
+        owner = str(m.get("item_id") or "")
+        if not owner:
+            continue
+        src = sys_node_id("verify_item", owner)
+        if src not in node_ids:
+            continue
+        eid = f"e:{src}--挂接--{node_id}"
+        if eid in edge_ids:
+            continue
+        edges.append({"id": eid, "source": src, "target": node_id,
+                      "rel": "挂接", "system": True})
+        edge_ids.add(eid)
+        added_edges += 1
+
+    if not added_nodes and not added_edges:
+        return doc, 0, 0
+    return {"nodes": nodes, "edges": edges}, added_nodes, added_edges
+
+
 # ----------------------------------------------------------------------
 # PATCH 校验（M1：只允许系统节点坐标/钉住变动）
 # ----------------------------------------------------------------------

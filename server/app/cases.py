@@ -67,12 +67,14 @@ class CaseService:
     def snapshot_dir(self, case_id: str, pack_id: str) -> Path:
         return self.snapshot_ontology_root(case_id) / pack_id
 
-    @staticmethod
-    def fingerprint(snapshot_dir: Path) -> str:
+    def fingerprint(self, snapshot_dir: Path) -> str:
         """声明指纹（sha1 前 12 位）：快照内容的版本凭据。
 
         S0-3 F3.3 扩容：data_elements.json + _shared/_industry 上游层目录
-        （相对路径 + 内容，排序保证确定性）一并纳入。
+        （相对路径 + 内容，排序保证确定性）一并纳入：快照内复制件 +
+        建案源 ontology 根双份计入（全域/行业层是跨案件共享口径，源头
+        变了所有案件的版本凭据都应变化；快照复制件 Web 可写，改了同样
+        必须动版本）。
         """
         h = hashlib.sha1()
         for name in _FINGERPRINT_FILES:
@@ -80,15 +82,18 @@ class CaseService:
             if p.exists():
                 h.update(name.encode())
                 h.update(p.read_bytes())
-        ontology_root = snapshot_dir.parent
-        for layer in _FINGERPRINT_LAYER_DIRS:
-            layer_dir = ontology_root / layer
-            if not layer_dir.is_dir():
-                continue
-            for f in sorted(layer_dir.rglob("*")):
-                if f.is_file():
-                    h.update(f.relative_to(ontology_root).as_posix().encode())
-                    h.update(f.read_bytes())
+        # 上游层双份计入（去重同一路径）：快照内复制件（Web 可写，改了
+        # 必须动版本）+ 建案源 ontology 根的上游层（全域/行业层是跨案件
+        # 共享口径，源头变了所有案件的版本凭据都应变化）。
+        for base in dict.fromkeys((snapshot_dir.parent, self.ontology_root)):
+            for layer in _FINGERPRINT_LAYER_DIRS:
+                layer_dir = base / layer
+                if not layer_dir.is_dir():
+                    continue
+                for f in sorted(layer_dir.rglob("*")):
+                    if f.is_file():
+                        h.update(f.relative_to(base).as_posix().encode())
+                        h.update(f.read_bytes())
         return h.hexdigest()[:12]
 
     def archive_snapshot(self, case_id: str, version: str) -> Path:

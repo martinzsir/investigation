@@ -18,9 +18,75 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 from typing import Any, Callable
+
+
+# 代码块围栏（语言标记大小写不一/可能缺省，如 ```JSON、``` json）
+_FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?\n?(.*?)```",
+                       re.DOTALL)
+
+
+def extract_json(content: str) -> Any | None:
+    """从模型文本回复中尽力提取 JSON 对象/数组。
+
+    三级尝试，全部失败返回 None（调用方可据此做格式纠偏重问）：
+      1. 整段直接 json.loads（裸 JSON）；
+      2. 逐个 ```围栏``` 代码块（语言标记大小写不敏感、可缺省）；
+      3. 花括号/方括号配平扫描（跳过字符串内符号与转义），
+         覆盖“散文 + JSON”且未围栏的回复。
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None
+    # 1) 整段
+    try:
+        return json.loads(content.strip())
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 2) 围栏代码块（取第一个能解析成功的块）
+    for m in _FENCE_RE.finditer(content):
+        body = m.group(2).strip()
+        if not body:
+            continue
+        try:
+            return json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    # 3) 配平扫描：从首个 { 或 [ 出发，按字符串感知匹配收尾符号
+    start = min(
+        (i for i in (content.find("{"), content.find("[")) if i >= 0),
+        default=-1)
+    if start >= 0:
+        pairs = {"{": "}", "[": "]"}
+        stack: list[str] = []
+        in_str = False
+        esc = False
+        for i in range(start, len(content)):
+            ch = content[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch in pairs:
+                stack.append(pairs[ch])
+            elif ch in ("}", "]"):
+                if not stack or ch != stack[-1]:
+                    break  # 结构已坏，无需继续
+                stack.pop()
+                if not stack:
+                    try:
+                        return json.loads(content[start:i + 1])
+                    except (json.JSONDecodeError, ValueError):
+                        break
+    return None
 
 
 # Qwen3 默认模型名（可被构造参数覆盖）
@@ -158,29 +224,44 @@ class LLMClient:
         except Exception as e:
             yield {"error": str(e)}
 
-    def chat_json(self, messages: list[dict], **kwargs) -> dict[str, Any]:
+    # 首次解析失败后的格式纠偏指令（只针对非/坏 JSON 重问一次）
+    _JSON_REPAIR_HINT = (
+        "上一次输出无法被 JSON 解析器解析。请严格只输出一个符合前述结构的 "
+        "JSON 对象：不要代码块围栏（```）、不要任何解释或前后缀文字、"
+        "不要省略 JSON 闭合括号。")
+
+    def chat_json(self, messages: list[dict], *, repair_retry: bool = True,
+                  **kwargs) -> dict[str, Any]:
         """调用 chat 并解析 JSON 结果。
 
-        在 system message 中追加"以 JSON 格式输出"指令；
-        尝试从 content 中提取 JSON（支持 ```json ... ``` 包裹）。
+        - 提取经 extract_json()：兼容裸 JSON、大小写/缺省语言标记的
+          ```围栏```、散文包裹的 JSON；
+        - repair_retry=True 时，首次解析失败只做一次格式纠偏重问
+          （模型偶发跑偏不直接打回用户）；
+        - 最终仍失败时 result.parsed=None，并附 parse_error（长度+片段）
+          供上层诊断（不吞掉真实回包）。
         """
         resp = self.chat(messages, **kwargs)
         if not resp.get("ok"):
             return resp
-        content = resp["result"]["content"]
-        # 尝试提取 JSON
-        json_str = content
-        if "```json" in json_str:
-            start = json_str.index("```json") + 7
-            end = json_str.rfind("```")
-            json_str = json_str[start:end].strip()
-        elif "```" in json_str:
-            start = json_str.index("```") + 3
-            end = json_str.rfind("```")
-            json_str = json_str[start:end].strip()
-        try:
-            parsed = json.loads(json_str)
-            resp["result"]["parsed"] = parsed
-        except (json.JSONDecodeError, ValueError):
-            resp["result"]["parsed"] = None
+        content = resp["result"].get("content", "")
+        parsed = extract_json(content)
+        if parsed is None and repair_retry:
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": self._JSON_REPAIR_HINT},
+            ]
+            retry_resp = self.chat(retry_messages, **kwargs)
+            if retry_resp.get("ok"):
+                content = retry_resp["result"].get("content", "")
+                parsed = extract_json(content)
+                resp["result"]["raw_retry"] = retry_resp["result"].get("raw")
+        result = resp["result"]
+        result["parsed"] = parsed
+        if parsed is None:
+            preview = str(content or "")[:200].replace("\n", " ")
+            result["parse_error"] = (
+                f"模型回包无法提取 JSON（{len(str(content or ''))} 字符，"
+                f"片段：{preview}）")
         return resp

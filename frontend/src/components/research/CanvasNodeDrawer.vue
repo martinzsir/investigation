@@ -35,6 +35,7 @@ import {
 } from '../../domain/canvas'
 import type { VerifySuggestion } from '../../domain/canvas-verify-suggest'
 import { VERIFY_CHANNEL_LABELS } from '../../domain/canvas-verify-suggest'
+import type { VlmMaterialFindings } from '../../api/endpoints/vlm'
 import TraceabilityPanel from './TraceabilityPanel.vue'
 
 const props = withDefaults(
@@ -68,6 +69,11 @@ const props = withDefaults(
     toVerifyError?: string | null
     /** M4 P3：「下一步可核查」建议列表（仅 fact/object/source_row 有值） */
     verifySuggestions?: VerifySuggestion[]
+    /** P8 回流：书证节点的 AI findings（pending 草案 + verified 人验证据） */
+    evidenceFindings?: VlmMaterialFindings | null
+    /** P8 回流：findings 拉取态（仅书证节点消费） */
+    findingsLoading?: boolean
+    findingsError?: boolean
   }>(),
   {
     uiState: 'collapsed',
@@ -88,6 +94,9 @@ const props = withDefaults(
     toVerifying: false,
     toVerifyError: null,
     verifySuggestions: () => [],
+    evidenceFindings: null,
+    findingsLoading: false,
+    findingsError: false,
   },
 )
 
@@ -134,6 +143,7 @@ const isFact = computed(() => props.node?.kind === 'fact')
 const isObject = computed(() => props.node?.kind === 'object')
 const isRow = computed(() => props.node?.kind === 'source_row')
 const isFile = computed(() => props.node?.kind === 'source_file')
+const isEvidence = computed(() => props.node?.kind === 'evidence')
 const isManual = computed(() => (props.node ? isManualNode(props.node) : false))
 const manualTitle = computed(() =>
   String((props.node?.props as Record<string, unknown> | undefined)?.title ?? ''))
@@ -873,6 +883,83 @@ function switchAudit(v: 'business' | 'audit'): void {
           <p class="dim leaf-line">已到达数据源文件，溯源结束。</p>
         </template>
 
+        <!-- ============ 书证节点：材料登记信息（seed/reconcile props 直显） ============ -->
+        <template v-else-if="isEvidence">
+          <div class="file-card" data-testid="evidence-card">
+            <table class="kv">
+              <tbody>
+                <tr><th>材料类型</th>
+                  <td>{{ String(node.props?.material_type || '—') }}</td></tr>
+                <tr><th>上传人</th>
+                  <td>{{ String(node.props?.uploaded_by || '—') }}</td></tr>
+                <tr><th>上传时间</th>
+                  <td>{{ String(node.props?.uploaded_at || '—') }}</td></tr>
+                <tr><th>材料 ID</th>
+                  <td class="mono">{{ String(node.props?.material_id ?? '—') }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="dim">
+            挂接关系见画布「挂接」连线；原件查看与 AI 图像分析在核查工作台书证面板。
+          </p>
+
+          <!-- P8 回流：AI findings（pending 草案 + verified 人验证据） -->
+          <div class="fnd-block" data-testid="evidence-findings">
+            <p v-if="findingsLoading" class="dim">正在加载 AI 图像分析…</p>
+            <p v-else-if="findingsError" class="dim" data-testid="findings-error">
+              AI 图像分析加载失败（可在核查工作台书证面板查看）
+            </p>
+            <template v-else-if="evidenceFindings">
+              <template v-if="evidenceFindings.pending.length">
+                <h4>AI 草案（待核）</h4>
+                <div
+                  v-for="p in evidenceFindings.pending"
+                  :key="p.proposal_id"
+                  class="fnd-item"
+                  data-testid="finding-pending"
+                >
+                  <div class="fnd-head">
+                    <NTag size="small" type="warning">AI 草案</NTag>
+                    <NTag v-if="p.stale" size="small" type="error">图已过期</NTag>
+                    <NTag v-if="p.severity === 'warn'" size="small" type="warning">
+                      需关注
+                    </NTag>
+                    <span
+                      v-if="p.model_score !== null && p.model_score !== undefined"
+                      class="dim"
+                    >· 把握度 {{ p.model_score.toFixed(2) }}</span>
+                  </div>
+                  <p class="fnd-title">{{ p.title }}</p>
+                  <p v-if="p.detail" class="dim">{{ p.detail }}</p>
+                </div>
+              </template>
+              <template v-if="evidenceFindings.verified.length">
+                <h4>已人验证据</h4>
+                <div
+                  v-for="v in evidenceFindings.verified"
+                  :key="v.image_evidence_id"
+                  class="fnd-item"
+                  data-testid="finding-verified"
+                >
+                  <div class="fnd-head">
+                    <NTag size="small" type="success">已人验</NTag>
+                    <span class="dim">{{ v.verifier }}</span>
+                  </div>
+                  <p class="fnd-title">{{ v.verify_conclusion }}</p>
+                  <p v-if="v.detail" class="dim">{{ v.detail }}</p>
+                </div>
+              </template>
+              <p
+                v-if="!evidenceFindings.pending.length
+                  && !evidenceFindings.verified.length"
+                class="dim"
+              >
+                暂无 AI 图像分析记录（可在核查工作台书证面板发起）
+              </p>
+            </template>
+          </div>
+        </template>
+
         <!-- ============ M4 RC-204：扩展查询结果节点 ============ -->
         <template v-else-if="isFunctionResult">
           <section class="fr-block" data-testid="function-result-block">
@@ -1348,6 +1435,38 @@ function switchAudit(v: 'business' | 'audit'): void {
 }
 .retry {
   margin-top: 8px;
+}
+
+/* ==================== P8 回流：书证节点 AI findings ==================== */
+.fnd-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--sun-border);
+}
+.fnd-block h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.fnd-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--sun-border);
+  border-radius: 6px;
+}
+.fnd-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fnd-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ==================== M4 RC-105/RC-204 ==================== */

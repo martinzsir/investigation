@@ -18,7 +18,6 @@ import {
   RemoveOutline,
   ScanOutline,
   DocumentOutline,
-  GitNetworkOutline,
 } from '@vicons/ionicons5'
 
 defineProps<{

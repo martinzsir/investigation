@@ -39,8 +39,8 @@ from core.ontology_loader import load_pack
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "proposal.schema.json"
 
 KINDS = ("rule_draft", "parameter_draft", "alignment_review", "explanation",
-         "verify_item", "verify_request")
-STATUSES = ("draft", "approved", "rejected", "expired")
+         "verify_item", "verify_request", "image_draft")
+STATUSES = ("draft", "approved", "rejected", "expired", "stale")
 
 # REQ-V-014 核查类提案（verify_item/verify_request）candidate 字段白名单：
 # 提案是"只读建议信封"，候选字段全为标量 str；审批通过后由 server 桥接成
@@ -50,6 +50,11 @@ _VERIFY_REQUEST_FIELDS = frozenset({
     "target", "material", "legal_instrument", "handler",
     "due_date", "note", "clue_id", "item_id"})
 _DUE_DATE_SHAPE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# P8 VLM 图像草案 candidate 字段白名单：一条图像发现（标题/详情/严重度）；
+# 模型名/prompt 版本/模型分/图像 URI 在提案 input（元数据），模型分仅排序。
+_IMAGE_DRAFT_FIELDS = frozenset({"title", "detail", "severity"})
+_IMAGE_DRAFT_SEVERITIES = frozenset({"info", "warn"})
 
 # AC5：rule_draft 禁止的写回类字段名（递归键名扫描，小写精确匹配）
 _FORBIDDEN_WRITEBACK_KEYS = frozenset({
@@ -240,6 +245,10 @@ def validate_proposal(p: dict, pack: str = "default", conn=None) -> list[str]:
     if kind in ("verify_item", "verify_request"):
         errors.extend(_validate_verify_candidate(kind, cand))
 
+    # ---- P8：VLM 图像草案形状（标题/详情必填、severity 枚举）----
+    if kind == "image_draft":
+        errors.extend(_validate_image_draft_candidate(cand))
+
     # ---- AC7：confidence 仅排序提示 ----
     for path, key, _v in _iter_keys(p, "$"):
         if str(key) == _CONFIDENCE_KEY:
@@ -287,6 +296,31 @@ def _validate_verify_candidate(kind: str, cand: dict) -> list[str]:
             and not _DUE_DATE_SHAPE_RE.match(due.strip()):
         errors.append(
             f"[AC8 形状] due_date={due!r} 非法（应为 YYYY-MM-DD）")
+    return errors
+
+
+def _validate_image_draft_candidate(cand: dict) -> list[str]:
+    """P8 图像草案候选形状：title/detail 必填非空 str，severity ∈ info|warn。"""
+    errors: list[str] = []
+    if not isinstance(cand, dict):
+        errors.append("[P8 形状] image_draft candidate 必须是对象")
+        return errors
+    unknown = sorted(set(cand) - _IMAGE_DRAFT_FIELDS - {"_sort_hint"})
+    if unknown:
+        errors.append(
+            f"[P8 形状] image_draft 候选含白名单外字段 {unknown}"
+            f"（允许：{sorted(_IMAGE_DRAFT_FIELDS)}）")
+    for name in ("title", "detail"):
+        v = cand.get(name)
+        if not isinstance(v, str) or not v.strip():
+            errors.append(
+                f"[P8 形状] image_draft 候选必须给非空字符串 {name!r}")
+    sev = cand.get("severity")
+    if sev is not None and (
+            not isinstance(sev, str) or sev not in _IMAGE_DRAFT_SEVERITIES):
+        errors.append(
+            f"[P8 形状] severity={sev!r} 非法（允许："
+            f"{sorted(_IMAGE_DRAFT_SEVERITIES)}）")
     return errors
 
 

@@ -50,7 +50,6 @@ import uuid
 from datetime import datetime
 from urllib.parse import quote as _url_quote
 
-import duckdb
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -92,6 +91,7 @@ from server.app.evidence_builder import _make_source_ref
 from server.app.routers.cases import _get_owned_case
 from server.app.routers.clues import _aggregate_cross_rows
 from server.app.security import Principal
+from server.app.store.backend import open_local_conn
 from server.app.store.state_store import (
     CanvasVersionConflict,
     StateStore,
@@ -177,6 +177,29 @@ def get_canvas(case_id: str, clue_id: str,
     try:
         existing = state.get_canvas(clue_id)
         if existing is not None:
+            # ---- 增量补种（只增不改删）：seed 后新上传的书证/新核查项
+            # 与挂接边补进文档；无缺失零副作用（不写库/不 bump/不审计）。
+            merged, n_nodes, n_edges = canvas_seed.reconcile_canvas(
+                existing["doc"],
+                verify_items=state.list_verify_items(clue_id),
+                materials=state.list_evidence(clue_id))
+            if n_nodes or n_edges:
+                try:
+                    existing = state.update_canvas_doc(
+                        clue_id, merged, operator=p.operator,
+                        updated_at=_now(),
+                        expected_version=int(existing["version"]))
+                except CanvasVersionConflict:
+                    # 并发他人已补种：彼时 diff 已空，回读返回
+                    existing = state.get_canvas(clue_id)
+                else:
+                    _audit(state, case_id=case_id, version=version,
+                           operator=p.operator, action="canvas.reconcile",
+                           before=None,
+                           after={"action": "canvas.reconcile",
+                                  "clue_id": clue_id,
+                                  "added_nodes": n_nodes,
+                                  "added_edges": n_edges})
             return ok(_payload(existing, seeded=False, semantic_ready=ready),
                       data_version=version)
 
@@ -1536,7 +1559,7 @@ def canvas_chat_suggestion(case_id: str, clue_id: str,
         raise APIError(ERR_VALIDATION, "建议内容不超过 500 字", 400)
 
     # 打开全局提案库（与 MCP review.submit_proposal 同库）
-    pconn = duckdb.connect(ctx.proposals_db)
+    pconn = open_local_conn(ctx.proposals_db)
     try:
         store = ProposalStore(pconn, pack="default")
         proposal_id = "pp-" + uuid.uuid4().hex[:16]

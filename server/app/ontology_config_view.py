@@ -14,12 +14,11 @@ from typing import Any
 
 from core.ontology_loader import (
     load_dimension_declarations,
-    load_cross_levels,
-    load_jians,
     load_pack,
     load_scoring,
     load_states,
 )
+from core.wujian import load_wujian
 
 from server.app.ontology_meta import resolve_base
 
@@ -57,11 +56,26 @@ def assemble_ontology_config(*, pack: str,
             action["only_from"] = list(spec_action.only_from)
         actions.append(action)
 
+    # P6：兵法五间/交叉等级来自全局五间词汇（packs/wujian），无包则下发空骨架，
+    # 前端据此把五间页渲染为"词汇未安装"缺口（配置端点恒可用，不报错）。
+    wj = load_wujian(pack)
+    jians_out = [{
+        "name": jd.name,
+        "default_clearance": jd.default_clearance,
+        "weight": jd.weight,
+        "source_object_types": list(jd.source_object_types),
+    } for jd in wj.jians] if wj is not None else []
+    levels_out = [{
+        "min_independent_sources": lv.min_independent_sources,
+        "name": lv.name,
+    } for lv in wj.cross_levels] if wj is not None else []
+
     return {
         "pack": pack,
         # 兵法五间（线索 jian_types；内间权限过滤口径）
-        "jians": load_jians(pack, base),
-        "cross_levels": load_cross_levels(pack, base),
+        "wujian_available": wj is not None,
+        "jians": jians_out,
+        "cross_levels": levels_out,
         # 侦查五维/数据通道（线索 detail.dimension；雷达/房间色板口径）
         "dimensions": load_dimension_declarations(pack, base),
         "states": states_decl["states"],

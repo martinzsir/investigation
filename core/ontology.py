@@ -64,6 +64,23 @@ TYPE_SQL = {
 }
 TYPE_NAMES = tuple(TYPE_SQL)
 OBJECT_KINDS = ("entity", "event")   # entity=实体型（按 name_property 发代理键）；event=事件型（按行）
+KEY_STRATEGIES = ("proxy", "natural", "composite")  # P1 主键策略枚举
+
+
+@dataclass
+class ObjectKey:
+    """P1 主键一等声明：主键列名、类型、策略、前缀、参与哈希的属性。
+
+    替代旧的隐式反解（pk.split("_")[0] / pk==name_property 推断）。
+    - proxy：哈希代理键，键 = prefix + sha1(...)[:12]；prefix 硬编码固化
+    - natural：自然键直通，键 = key.column 源列原值（如 clue/decision）
+    - composite：多属性拼接不 hash（本期仅留 schema 位，不实现）
+    """
+    column: str                         # 主键列名（= 现有 pk）
+    type: str = "string"                # Palantir：主键必须 string
+    strategy: str = "proxy"             # proxy | natural | composite
+    prefix: str = ""                    # 仅 proxy 需要；5 个不一致前缀按现值固化
+    properties: tuple[str, ...] = ()    # 参与哈希的属性（proxy 事件型按行、实体型按 name_property）
 
 
 @dataclass
@@ -71,14 +88,15 @@ class ObjectType:
     """对象类型声明（类型层）：现实实体是什么、有哪些带类型的属性。"""
     name: str                          # 语义表名（不带 obj_ 前缀）
     title: str                         # 中文名
-    pk: str                            # 代理键列名
+    pk: str                            # 代理键列名（P1 起为 key.column 的只读别名）
     kind: str                          # entity | event（见 OBJECT_KINDS）
     name_property: str                 # 身份/展示属性名（旧 name_col；event 仅作列序）
     properties: dict[str, str] = field(default_factory=dict)  # 属性名 → 值类型（TYPE_NAMES）
     runtime: bool = False              # True=运行期对象（Action 副作用创建，编译器不物化）
+    # P1：主键一等声明。装载期 key.column 与 pk 不一致硬失败；
+    # key 缺失时回落 pk（兼容存量快照），告警但不中断。
+    key: ObjectKey | None = None
     enum_values: dict[str, list[str]] = field(default_factory=dict)  # REQ-041: enum 属性 → 允许值白名单
-    jian: str = ""                     # REQ-G-013：五间归类（生间/内间/反间/死间/生间），声明在类型层
-    jian_source: str = ""              # REQ-G-013：该数据源展示名（如 银行流水）；空则回落 title
     # REQ-P-034：元数据/内容属性排除声明——不参与实体连接与画像（content_raw/status/title 等治理字段）
     metadata_props: tuple[str, ...] = ()
     # REQ-D-013：复合列显式降级声明（properties 值为 {"type": "string", "composite": true}）
@@ -140,8 +158,6 @@ class LinkType:
     to_obj: str                        # 终点对象
     properties: dict[str, str] = field(default_factory=dict)  # 边属性名 → 值类型
     runtime: bool = False              # True=运行期链接（Action 副作用写入，不参与编译）
-    jian: str = ""                     # REQ-G-013：五间归类（链接维度，如过桥→反间）
-    jian_source: str = ""              # REQ-G-013：数据源展示名；空则回落 title
     # REQ-G-015：图导出端点列名形式化。{"from": {"col","ref"?:{object,key,name}},
     #   "to": {...}, "extra"?: [直传列名]}；导出器据此通用生成边 SQL，新增链接无需改导出脚本。
     endpoints: dict = field(default_factory=dict)
@@ -525,7 +541,8 @@ def ensure_runtime_tables(conn, pack: "str | object" = "default") -> None:
     """
     按 runtime 类型声明建 obj_*/lnk_* 空表（CREATE IF NOT EXISTS）。
     Action 副作用（core.action_executor）的唯一建表入口；build_ontology 编译后也会调用。
-    runtime 链接端点列约定：<from_obj>_id / <to_obj>_id（loader 已校验端点 pk 同形）。
+    runtime 链接端点建表列跟随端点对象实际主键列（P1 后主键权威是 key.column，
+    缺失回落 pk；loader 已校验非空）。
     """
     from core.ontology_loader import load_pack
     spec = load_pack(pack) if isinstance(pack, str) else pack
@@ -536,12 +553,14 @@ def ensure_runtime_tables(conn, pack: "str | object" = "default") -> None:
         defs += [f'"{p}" {TYPE_SQL[t]}' for p, t in otype.properties.items()]
         defs.append('"source_rows" VARCHAR')
         conn.execute(f'CREATE TABLE IF NOT EXISTS obj_{otype.name} ({", ".join(defs)})')
+    key_col = {o.name: (o.key.column if getattr(o, "key", None) else o.pk)
+               for o in spec.objects}
     for ltype in spec.links:
         if not ltype.runtime:
             continue
         conn.execute(
             f'CREATE TABLE IF NOT EXISTS lnk_{ltype.name} '
-            f'("{ltype.from_obj}_id" VARCHAR, "{ltype.to_obj}_id" VARCHAR)')
+            f'("{key_col[ltype.from_obj]}" VARCHAR, "{key_col[ltype.to_obj]}" VARCHAR)')
 
 
 def _guess_source_table(source_sql: str) -> str:
@@ -1125,15 +1144,34 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
     # REQ-D-015 业务键去重：归并后、代理键分配前按业务键（非全行比对）去重
     if b.dedup_key:
         rows = _apply_dedup_key(otype, b, rows, cols, stats)
-    prefix = otype.pk.split("_")[0]
+    # P1：主键策略改读 key 声明，消除 pk.split("_")[0] 隐式反解。
+    # key 缺失（存量快照）回落旧逻辑：prefix=pk 下划线前缀、natural=pk==name_property。
+    has_key = otype.key is not None
+    if has_key and otype.key.strategy == "proxy":
+        prefix = otype.key.prefix or otype.pk.split("_")[0]
+    else:
+        prefix = otype.pk.split("_")[0]
+    is_natural = (otype.key.strategy == "natural") if has_key else (otype.pk == otype.name_property)
     if otype.kind == "event":
         rows = sorted(rows, key=lambda r: tuple(str(v) for v in r))
         # REQ-D-013 AC-5：composite 属性不参与事件去重哈希（仅复合列差异的两行同内容）
         exclude_idx = tuple(cols.index(p) for p in otype.composite_props
                             if p in cols)
         keys = _event_proxy_keys(rows, prefix, exclude_idx)
-    elif otype.pk == otype.name_property:
-        keys = [r[0] for r in rows]          # 自引用自然键，直通不重映射
+    elif is_natural:
+        # P1：自然键直通 + 唯一性断言（重复主键硬失败，报出重复值）
+        keys = [r[0] for r in rows]
+        seen_nk: set = set()
+        dup: list = []
+        for k in keys:
+            if k in seen_nk:
+                dup.append(k)
+            seen_nk.add(k)
+        if dup:
+            raise ValueError(
+                f"obj_{otype.name} 自然键 '{otype.key.column if has_key else otype.pk}' "
+                f"存在重复值 {dup[:5]}{'...' if len(dup) > 5 else ''} "
+                f"（P1 自然键唯一性断言：自然键直通对象源表不得有重复主键）")
     else:
         # 实体型：身份列（name_property）为 NULL 的行没有身份——无法参与任何
         # 身份 JOIN，且会让下方 sorted() 代理键分配抛 TypeError（NULL 与 str 不可

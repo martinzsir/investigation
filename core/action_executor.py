@@ -64,6 +64,112 @@ def _now() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+#: subject_type → (runtime link 表, 主体端点列)
+IMAGE_SUBJECT_LINKS = {
+    "person": ("lnk_image_for_person", "person_id"),
+    "org": ("lnk_image_for_org", "org_id"),
+    "bid_project": ("lnk_image_for_project", "project_id"),
+}
+
+
+def _ensure_image_evidence_columns(conn) -> None:
+    """旧 obj_image_evidence 幂等补列（information_schema 探测 → ALTER ADD）。
+
+    ensure_runtime_tables 只 CREATE IF NOT EXISTS，不补列；文案三列
+    （title/detail/severity）加入前已建表的库在此零脚本迁移。
+    """
+    existing = {r[0] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name='obj_image_evidence'").fetchall()}
+    for col in ("title", "detail", "severity"):
+        if col not in existing:
+            conn.execute(
+                f'ALTER TABLE obj_image_evidence ADD COLUMN "{col}" VARCHAR')
+
+
+def persist_image_evidence(conn, pack: str, *, image_uri: str, model: str,
+                           prompt_version: str, model_score,
+                           title: str = "", detail: str = "",
+                           severity: str = "",
+                           verifier: str, verify_conclusion: str,
+                           subject_type: str, subject_id: str,
+                           draft_id: str = "", clue_id: str = "") -> dict:
+    """写 obj_image_evidence + 按 subject_type 写 lnk_image_for_*（唯一实现）。
+
+    ActionExecutor（DuckDB 路径）与 Web Worker（人验端点）共用本函数，
+    保证两条路径产物同构。runtime 表 DDL 由 objects/links 类型声明经
+    ensure_runtime_tables 生成；模型分独立字段（不参与确定性计分）。
+    title/detail/severity 为 AI 草案 finding 文案（candidate 同构，可空）。
+
+    幂等：draft_id 非空且已有该 draft 的证据 → 原样返回既有记录，不重复写。
+    subject_type/subject_id 非法 → ValueError（fail-closed）。
+    """
+    import uuid as _uuid
+
+    from core.ontology import ensure_runtime_tables, json_dumps
+
+    subject_type = str(subject_type or "").strip()
+    subject_id = str(subject_id or "").strip()
+    link_spec = IMAGE_SUBJECT_LINKS.get(subject_type)
+    if link_spec is None:
+        raise ValueError(
+            f"subject_type={subject_type!r} 非法（允许 person/org/bid_project）")
+    if not subject_id:
+        raise ValueError("subject_id 不得为空")
+
+    ensure_runtime_tables(conn, pack)
+    _ensure_image_evidence_columns(conn)
+
+    # 幂等：同草案只落一次证据
+    draft_id = str(draft_id or "").strip()
+    if draft_id:
+        row = conn.execute(
+            "SELECT image_evidence_id FROM obj_image_evidence "
+            "WHERE draft_id=? LIMIT 1", [draft_id]).fetchone()
+        if row is not None:
+            return {"image_evidence_id": row[0], "persisted": True,
+                    "duplicate": True}
+
+    score_val: float | None
+    if model_score is None or str(model_score).strip() == "":
+        score_val = None
+    else:
+        try:
+            score_val = float(model_score)
+        except (TypeError, ValueError):
+            raise ValueError(f"model_score={model_score!r} 非数值")
+
+    image_evidence_id = f"imgev_{_uuid.uuid4().hex[:12]}"
+    created_at = _now()
+    source_rows = json_dumps([
+        "action:verify_image",
+        f"clue:{clue_id}",
+        f"draft:{draft_id}",
+    ])
+    conn.execute(
+        """INSERT INTO obj_image_evidence
+           (image_evidence_id, image_uri, model, prompt_version, model_score,
+            title, detail, severity,
+            verifier, verify_conclusion, subject_type, draft_id, created_at,
+            source_rows)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [image_evidence_id, str(image_uri or ""), str(model or ""),
+         str(prompt_version or ""), score_val,
+         str(title or ""), str(detail or ""), str(severity or ""),
+         str(verifier or ""),
+         str(verify_conclusion or ""), subject_type, draft_id, created_at,
+         source_rows],
+    )
+    link_table, subject_col = link_spec
+    conn.execute(
+        f'INSERT INTO "{link_table}" (image_evidence_id, "{subject_col}") '
+        "VALUES (?, ?)",
+        [image_evidence_id, subject_id],
+    )
+    return {"image_evidence_id": image_evidence_id, "persisted": True,
+            "created_at": created_at, "link_table": link_table}
+
+
 class ActionExecutor:
     def __init__(self, store=None, pack: str = "default", access=None,
                  health=None, sink=None):
@@ -183,6 +289,8 @@ class ActionExecutor:
         applied: list[dict] = []
         if "create_decision" in spec.side_effects:
             applied.append(self._create_decision(spec, clue, operator, params, json_dumps))
+        if "create_image_evidence" in spec.side_effects:
+            applied.append(self._create_image_evidence(spec, clue, operator, params))
         return {"action": spec.name, "clue_id": clue.clue_id,
                 "status": clue.status, "side_effects": applied}
 
@@ -393,3 +501,30 @@ class ActionExecutor:
         )
         return {"decision_id": decision_id, "persisted": True,
                 "created_at": created_at}
+
+    # ---- 副作用：创建图像证据（P8 人验；MCP/CLI 轨道 DuckDB 写法）----
+    def _create_image_evidence(self, spec, clue, operator, params) -> dict:
+        # 双轨设计：Web 人验不经 ActionExecutor（vlm 路由直接写 state.sqlite
+        # image_evidence，经 graph/报告读出）；MCP/CLI 轨道无 sink，写内核
+        # DuckDB runtime 表（obj_image_evidence/lnk_image_for_*）。
+        # worker sink 路径未接线，误入即 fail-closed 报错（不静默丢失）。
+        if self.sink is not None:
+            raise RuntimeError(
+                "create_image_evidence 不支持 state.sqlite sink 路径"
+                "（Web 人验请走 vlm 人验端点；MCP/CLI 走无 sink 轨道）")
+        if self.store is None or not hasattr(self.store, "conn"):
+            return {"image_evidence_id": None, "persisted": False,
+                    "note": "无 store，图像证据未持久化"}
+        return persist_image_evidence(
+            self.store.conn, self.pack,
+            image_uri=params.get("image_uri", ""),
+            model=params.get("model", ""),
+            prompt_version=params.get("prompt_version", ""),
+            model_score=params.get("model_score"),
+            verifier=operator,
+            verify_conclusion=params.get("verify_conclusion", ""),
+            subject_type=params.get("subject_type", ""),
+            subject_id=params.get("subject_id", ""),
+            draft_id=params.get("draft_id", ""),
+            clue_id=clue.clue_id,
+        )

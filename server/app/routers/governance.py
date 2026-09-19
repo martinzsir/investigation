@@ -120,7 +120,8 @@ def list_actions(case_id: str,
             "side_effects": sorted(ALLOWED_SIDE_EFFECTS),
             "derive": DERIVE_RULES,
         },
-        "state_names": sorted(_state_name_set(states_data)),
+        "state_names": [s.get("name") for s in states_data.get("states", [])
+                        if s.get("name")],
     }, data_version=ctx.repo.current_version(case_id))
 
 

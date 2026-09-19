@@ -420,5 +420,85 @@ class TestREQ037Plan(unittest.TestCase):
         self.assertIn("Params:", explain)
 
 
+# ======================================================================
+# chat_json 健壮性：围栏变体 / 散文包裹 / 一次格式纠偏重问 / 失败诊断
+# （VLM 通道真实故障：模型偶发输出大写 ```JSON 围栏，旧切片逻辑解析失败）
+# ======================================================================
+class TestChatJsonRobustness(unittest.TestCase):
+
+    @staticmethod
+    def _client_with_contents(contents):
+        """按调用顺序依次返回指定 content 的 fake_invoke（含调用计数）。"""
+        calls = {"n": 0}
+
+        def _invoke(**_kw):
+            i = min(calls["n"], len(contents) - 1)
+            calls["n"] += 1
+            return {"content": contents[i]}
+
+        client = LLMClient(model="qwen-plus", fake_invoke=_invoke)
+        return client, calls
+
+    def test_extract_json_variants(self):
+        from core.llm.llm_client import extract_json
+        payload = {"findings": [{"title": "t"}], "summary": "s"}
+        raw = json.dumps(payload, ensure_ascii=False)
+        variants = [
+            "```json\n" + raw + "\n```",                 # 标准围栏
+            "```JSON\n" + raw + "\n```",                 # 大写语言标记
+            "``` json\n" + raw + "\n```",                # 语言标记带空格
+            raw,                                          # 裸 JSON
+            "分析如下：\n```json\n" + raw + "\n```\n完",  # 围栏+前后散文
+            "好的\n" + raw + "\n以上",                    # 散文+未围栏 JSON
+        ]
+        for text in variants:
+            self.assertEqual(extract_json(text), payload,
+                             f"变体解析失败：{text[:40]}")
+        # 字符串内的伪括号不得干扰配平
+        tricky = '{"a": "f } [ }", "b": [1, 2]}'
+        self.assertEqual(extract_json(tricky),
+                         {"a": "f } [ }", "b": [1, 2]})
+        # 空回包 / 真截断 → None（交由纠偏重问）
+        self.assertIsNone(extract_json("   "))
+        self.assertIsNone(extract_json('```json\n{"findings": ['))
+
+    def test_uppercase_fence_parses_without_retry(self):
+        """大写 ```JSON 围栏曾直接导致 VLM 解析失败：一次调用即成功。"""
+        raw = json.dumps({"findings": []})
+        client, calls = self._client_with_contents(
+            ["```JSON\n" + raw + "\n```"])
+        resp = client.chat_json([{"role": "user", "content": "x"}])
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["result"]["parsed"], {"findings": []})
+        self.assertEqual(calls["n"], 1)  # 不应触发纠偏重问
+
+    def test_repair_retry_recovers_prose_then_json(self):
+        """首次散文偏航 → 纠偏重问后裸 JSON：解析成功，恰好两次调用。"""
+        good = json.dumps({"findings": [{"title": "t"}]}, ensure_ascii=False)
+        client, calls = self._client_with_contents(
+            ["我无法分析这张图片。", good])
+        resp = client.chat_json([{"role": "user", "content": "x"}])
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(resp["result"]["parsed"]["findings"][0]["title"], "t")
+        # 纠偏重问携带格式约束指令
+        self.assertNotIn("parse_error", resp["result"])
+
+    def test_persistent_failure_surfaces_diagnostic(self):
+        """重问后仍非 JSON：parsed=None 且 parse_error 带长度/片段。"""
+        client, calls = self._client_with_contents(["不是JSON", "也不是JSON"])
+        resp = client.chat_json([{"role": "user", "content": "x"}])
+        self.assertEqual(calls["n"], 2)
+        self.assertIsNone(resp["result"]["parsed"])
+        self.assertIn("无法提取 JSON", resp["result"]["parse_error"])
+        self.assertIn("也不是JSON", resp["result"]["parse_error"])
+
+    def test_repair_retry_can_be_disabled(self):
+        client, calls = self._client_with_contents(["不是JSON"])
+        resp = client.chat_json([{"role": "user", "content": "x"}],
+                                repair_retry=False)
+        self.assertEqual(calls["n"], 1)
+        self.assertIsNone(resp["result"]["parsed"])
+
+
 if __name__ == "__main__":
     unittest.main()

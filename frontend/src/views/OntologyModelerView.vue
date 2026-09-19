@@ -334,7 +334,7 @@ const objViews = computed<ObjView[]>(() => {
 })
 
 /** 对比时剥离工作过程字段（无——这里仅防御未来误加） */
-function stripVolatile(o: ObjectType): unknown {
+function stripVolatile(o: ObjectType | LinkType): unknown {
   return o
 }
 
@@ -407,7 +407,7 @@ function confirmCreate(): void {
 const metaOpen = ref(false)
 
 /** R2：界面未覆盖字段计数（对象级已知字段之外的键） */
-const KNOWN_OBJ_FIELDS = ['name', 'title', 'pk', 'kind', 'name_property', 'jian', 'jian_source', 'properties']
+const KNOWN_OBJ_FIELDS = ['name', 'title', 'pk', 'key', 'kind', 'name_property', 'jian', 'jian_source', 'properties', 'runtime', 'metadata_props']
 const uncoveredFields = computed<string[]>(() => {
   const o = selectedObj.value
   if (!o) return []
@@ -651,7 +651,8 @@ function validatePayload(p: { objects: ObjectType[]; links: LinkType[] }): strin
     // pk / name_property 保存前必须齐备（schema required，建后可补——PRD F1.1）
     const props = Object.keys(o.properties ?? {})
     if (!o.pk) errs.push(`对象 ${o.name} 未指定 pk（保存前必须齐备）`)
-    else if (!props.includes(o.pk)) errs.push(`对象 ${o.name} 的 pk=${o.pk} 不在已声明属性中`)
+    // P1：与后端 loader 对齐——pk 不得出现在 properties 中（主键是独立列，非业务属性）
+    else if (props.includes(o.pk)) errs.push(`对象 ${o.name} 的 pk=${o.pk} 不得出现在已声明属性中`)
     if (!o.name_property) errs.push(`对象 ${o.name} 未指定 name_property（保存前必须齐备）`)
     else if (!props.includes(o.name_property)) errs.push(`对象 ${o.name} 的 name_property=${o.name_property} 不在已声明属性中`)
     // composite 仅 string（与 ModelDesignerView 同口径）

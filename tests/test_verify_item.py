@@ -1010,10 +1010,13 @@ class VerifyProvisionViewTest(unittest.TestCase):
             data = self._detail(state_store=st)
         self.assertIn("verify", data)
         items = data["verify"]["items"]
+        # R1 手册建议（01:18 修红批加 R1 playbook）随供给渲染为 suggested 项；
+        # image playbook 的 {subject} 无有效主体跳过，落 2 条
         self.assertEqual({i["kind"] for i in items},
-                         {"inference", "pending_hypothesis"})
-        self.assertTrue(all(i["origin"] == "auto" for i in items))
+                         {"inference", "pending_hypothesis", "suggested"})
+        self.assertEqual({i["origin"] for i in items}, {"auto", "suggested"})
         self.assertEqual(data["verify"]["progress"]["pending"], 2)
+        self.assertEqual(data["verify"]["progress"]["suggested"], 2)
         # 三栏证据同源回显：推断文本逐字
         inf = [e for e in data["evidence"] if e["kind"] == "inference"]
         self.assertEqual([e["text"] for e in inf],
@@ -1031,7 +1034,9 @@ class VerifyProvisionViewTest(unittest.TestCase):
                 operator="王峰", updated_at="2026-09-11 10:00:00")
             second = self._detail(state_store=st)
         rows = {i["kind"]: i for i in second["verify"]["items"]}
-        self.assertEqual(len(second["verify"]["items"]), 2)
+        # 2 auto + 2 suggested：稳定键幂等，复跑不翻倍；建议项不进门禁计数
+        self.assertEqual(len(second["verify"]["items"]), 4)
+        self.assertEqual(second["verify"]["progress"]["suggested"], 2)
         self.assertEqual(rows["inference"]["status"], "已证实")
         self.assertEqual(rows["inference"]["conclusion"], "复核无误")
         self.assertEqual(rows["inference"]["operator"], "王峰")

@@ -270,12 +270,14 @@ class VerifyApiTest(unittest.TestCase):
             "falsification": "有合法对价则证伪"}])
         data = self._get_items().json()["data"]
         it = data["items"][0]
-        # 方案契约字段齐全（REQ-V-011 起新增 evidence 回显键）
+        # 方案契约字段齐全（REQ-V-011 起新增 evidence 回显键；
+        # REQ-V-017 起新增 replay 回显键——未复跑投影 None）
         self.assertEqual(set(it), {
             "item_id", "kind", "text", "origin", "status", "conclusion",
             "operator", "updated_at", "channel", "ref_function",
-            "external", "falsification", "evidence"})
+            "external", "falsification", "evidence", "replay"})
         self.assertEqual(it["evidence"], [])  # 未挂接书证 → 空列表
+        self.assertIsNone(it["replay"])  # 未复跑 → None
         # 内部列不外泄
         self.assertNotIn("item_key", it)
         self.assertNotIn("case_id", it)

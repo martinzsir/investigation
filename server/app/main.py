@@ -54,6 +54,7 @@ from server.app.routers import ontology_generic as ontology_generic_router
 from server.app.routers import derived as derived_router
 from server.app.routers import evidence as evidence_router
 from server.app.routers import proposals as proposals_router
+from server.app.routers import vlm as vlm_router
 from server.app.routers import canvas as canvas_router
 from server.app.routers import users as users_router
 from server.app.store import StoreFactory
@@ -66,6 +67,12 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app = FastAPI(title="孙武侦查官 Web 服务", version=SERVICE_VERSION)
     app.state.ctx = ctx
 
+    # P3/P6：启动时自枚举 packs/*——挂载 wujian 五间词汇与 relation/timeline 镜头。
+    try:
+        from core.pack_loader import discover as discover_packs
+        discover_packs()
+    except Exception:
+        pass  # 词汇/镜头缺失时各读面降级为缺口，不阻断服务启动
     # S2：CORS 默认关闭；白名单仅来自显式参数或 SUNZI_CORS_ORIGINS
     if cors_origins is None:
         cors_origins = [
@@ -131,6 +138,7 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(derived_router.router, prefix=API_PREFIX)
     app.include_router(evidence_router.router, prefix=API_PREFIX)
     app.include_router(proposals_router.router, prefix=API_PREFIX)
+    app.include_router(vlm_router.router, prefix=API_PREFIX)
     app.include_router(canvas_router.router, prefix=API_PREFIX)
     app.include_router(governance_router.router, prefix=API_PREFIX)
     app.include_router(ontology_generic_router.router, prefix=API_PREFIX)

@@ -206,7 +206,7 @@ GROUPS = {
     # ---- 六项解耦（运行时地基 + 声明化）----
     "rtcontext":  ("R1/R2 RuntimeContext+ReadOnlyStore+load_pack 缓存", [sys.executable, "-m", "unittest", "tests.test_runtime_context"]),
     "fnrequires": ("R3/R4 FunctionSpec.requires 声明+py 函数表名参数化", [sys.executable, "-m", "unittest", "tests.test_function_requires"]),
-    "jiansdecl":  ("R5/R9 五间声明化 jians.json", [sys.executable, "-m", "unittest", "tests.test_jians_decl"]),
+    "jiansdecl":  ("P6 五间词汇 packs/wujian 装载校验", [sys.executable, "-m", "unittest", "tests.test_jians_decl"]),
     "statesdecl": ("R6/R10 状态机声明化 states.json", [sys.executable, "-m", "unittest", "tests.test_states_decl"]),
     "scoringdecl":("R7/R12/R13 计分声明化 scoring.json+score_basis", [sys.executable, "-m", "unittest", "tests.test_scoring_decl"]),
     "scoringv3":  ("P1-3/P0-1/P1-0c 计分 v3（对数曲线+等级主序+0 间类兜底）", [sys.executable, "-m", "unittest", "tests.test_scoring_v3"]),
@@ -228,6 +228,17 @@ GROUPS = {
     "verifyreplay": ("REQ-V-016 核查方向→只读 Function 映射（playbook 唯一数据源/关键词兜底/fail-closed）+ REQ-V-017 一键复跑回填（replay_json 列/op=replay/审计留痕）", [sys.executable, "-m", "unittest", "tests.test_verify_replay"]),
     "canvas":       ("线索研判画布 M1/M2/M3/M4/M5/M6（RC-101 种子成图/RC-205 自动保存/RC-207 降级/RC-102 规则双视图/RC-103 逐层溯源/RC-104 字段遮蔽/RC-201 钉住布局/RC-202 人工节点/RC-203 连线矩阵/RC-206 快照回滚/RC-105 手册建议采纳与待核实生成/RC-204 白名单 Function 扩展查询/RC-302 引用强制校验/RC-301 画布只读问答/RC-304 报告生成/RC-305 报告阅读/RC-306 MD/Word 导出）", [sys.executable, "-m", "unittest", "tests.test_canvas_seed", "tests.test_canvas_expand", "tests.test_canvas_edit", "tests.test_canvas_infer", "tests.test_canvas_api", "tests.test_canvas_citation_guard", "tests.test_canvas_chat", "tests.test_canvas_report"]),
     "sunzireport":  ("sunzi-report skill 十段报告（第九段数据源清单确定性采集/渲染，sections 越界忽略）", [sys.executable, "-m", "unittest", "tests.test_sunzi_report_skill"]),
+    # ---- P3 镜头契约/失败隔离/自枚举 ----
+    "skillisolation": ("P3 镜头失败隔离/enabled 短路/params 核对/evidence_refs 契约/作用域", [sys.executable, "-m", "unittest", "tests.test_skill_isolation"]),
+    "packenum":     ("P3 镜头包自枚举（packs/* 挂载/拔出/坏包不连坐/内置引导）", [sys.executable, "-m", "unittest", "tests.test_pack_enum"]),
+    "relationfn":   ("P4 关系研判 Function（N跳邻域/共同邻居/路径枚举，语义层统一图+结构降级）", [sys.executable, "-m", "unittest", "tests.test_relation_functions"]),
+    "relationpack": ("P4 关系镜头包 packs/relation（自枚举挂载/线索化/证据可校验/作用域）", [sys.executable, "-m", "unittest", "tests.test_relation_pack"]),
+    # ---- P5 时间研判镜头（统一时间轴，第二个确定性样本） ----
+    "timelinefn":   ("P5 时间研判 Function（事件序列邻接/周期节奏聚集/开标前后跨类型时间窗碰撞，结构降级）", [sys.executable, "-m", "unittest", "tests.test_timeline_functions"]),
+    "timelinepack": ("P5 时间镜头包 packs/timeline（自枚举挂载/线索化/time_window+aggregate 证据可校验/作用域）", [sys.executable, "-m", "unittest", "tests.test_timeline_pack"]),
+    "wujianopt":   ("P6 验收① 无五间包底座独立装载（关系/时间镜头可用/消费点降级）", [sys.executable, "-m", "unittest", "tests.test_wujian_optional"]),
+    # ---- P8 多模态图像研判（VLM 草案通道，人验闭环） ----
+    "vlmpack":     ("P8 多模态图像研判（纯字节 EXIF 剥离/敏感类别 block/草案不落生产/降级有痕/TTL stale/人验后入图入报告）", [sys.executable, "-m", "unittest", "tests.test_vlm_pack"]),
 }
 
 

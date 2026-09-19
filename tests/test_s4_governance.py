@@ -138,14 +138,15 @@ class S4GovernanceTest(unittest.TestCase):
         self.assertEqual(
             names,
             ["verify", "reset", "exclude", "confirm", "file",
-             "review_merge", "review_reject"])
+             "review_merge", "review_reject", "verify_image"])
         self.assertEqual(data["enums"]["requires_role"], ["any", "human"])
         self.assertEqual(set(data["enums"]["side_effects"]),
                          {"set_clue_status", "create_decision",
-                          "merge_entity", "dismiss_review"})
+                          "merge_entity", "dismiss_review",
+                          "create_image_evidence"})
         self.assertEqual(data["enums"]["derive"], ["reverse_reach"])
         self.assertEqual(data["state_names"],
-                         ["待查", "已固证", "已立案", "已排除", "查证中"])
+                         ["待查", "查证中", "已排除", "已固证", "已立案"])
         f = self._find(data["actions"], "file")
         self.assertTrue(f["terminal"])
         self.assertEqual(f["requires_role"], "human")

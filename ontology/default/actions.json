@@ -85,6 +85,27 @@
       "terminal": false,
       "side_effects": ["dismiss_review", "create_decision"],
       "description": "W-021：人工驳回实体候选（不合并）；驳回后不再入队"
+    },
+    {
+      "name": "verify_image",
+      "title": "图像核验通过（人验）",
+      "target_status": "已固证",
+      "derive": "reverse_reach",
+      "only_from": ["查证中"],
+      "parameters": [
+        {"name": "image_uri", "type": "string", "required": true, "description": "图像文件 URI（已入卷）"},
+        {"name": "model", "type": "string", "required": true, "description": "VLM 模型名（独立字段）"},
+        {"name": "prompt_version", "type": "string", "required": true, "description": "prompt 版本（独立字段）"},
+        {"name": "model_score", "type": "string", "required": false, "description": "模型分（独立字段，仅供排序，不参与确定性计分）"},
+        {"name": "subject_type", "type": "string", "required": true, "description": "挂接主体类型 person/org/bid_project"},
+        {"name": "subject_id", "type": "string", "required": true, "description": "挂接主体主键"},
+        {"name": "verify_conclusion", "type": "string", "required": true, "description": "人工核验结论（比对原件的事实陈述）"},
+        {"name": "draft_id", "type": "string", "required": false, "description": "来源 VLM 草案提案 ID（溯源）"}
+      ],
+      "requires_role": "human",
+      "terminal": false,
+      "side_effects": ["set_clue_status", "create_image_evidence"],
+      "description": "P8 人验闸门：正兵比对原件确认 VLM 草案成立后执行；线索固证 + ActionExecutor 创建 obj_image_evidence 并按 subject_type 写 lnk_image_for_person/org/bid_project；模型输出不绕过本动作不能成证据"
     }
   ]
 }

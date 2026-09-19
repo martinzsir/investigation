@@ -16,6 +16,8 @@
 #   SUNZI_WORKERS  Worker 并发数（默认 2）
 #   SUNZI_META_DB  元数据 SQLite（默认 meta/meta.db）
 #   SUNZI_CASES_ROOT 案件根目录（默认 cases）
+#   DASHSCOPE_API_KEY 云档 LLM 密钥（默认从 scripts/spike/.env 补载，
+#                     文件不存在或已显式 export 时跳过；仅本机开发用途）
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -25,6 +27,18 @@ PORT="${SUNZI_PORT:-8000}"
 WORKERS="${SUNZI_WORKERS:-2}"
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
+
+# 云档 LLM 密钥：调用环境未显式提供时，从本机开发 .env 补载
+# （scripts/spike/.env 已 gitignore；生产/CI 无此文件即跳过，零副作用）
+if [ -z "${DASHSCOPE_API_KEY:-}" ] && [ -f scripts/spike/.env ]; then
+    _key_line="$(grep -E '^DASHSCOPE_API_KEY=' scripts/spike/.env | tail -n 1 || true)"
+    if [ -n "$_key_line" ]; then
+        _v="${_key_line#DASHSCOPE_API_KEY=}"
+        _v="${_v%\"}"; _v="${_v#\"}"; _v="${_v%\'}"; _v="${_v#\'}"
+        export DASHSCOPE_API_KEY="$_v"
+        echo "[start_dev] 已从 scripts/spike/.env 补载 DASHSCOPE_API_KEY"
+    fi
+fi
 
 API_LOG="$LOG_DIR/api.log"
 WORKER_LOG="$LOG_DIR/worker.log"

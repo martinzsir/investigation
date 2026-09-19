@@ -271,7 +271,8 @@ class TestActionRegistry(unittest.TestCase):
     def test_注册表完整(self):
         self.assertEqual(set(self.actions),
                          {"verify", "reset", "exclude", "confirm", "file",
-                          "review_merge", "review_reject"})
+                          "review_merge", "review_reject",
+                          "verify_image"})  # + P8 图像人验闸门
 
     def test_allowed_from反向派生自状态机(self):
         T = ClueStatusMachine._TRANSITIONS
@@ -350,16 +351,23 @@ class TestFunctionLayer(unittest.TestCase):
         build_ontology(self.s.conn)
         from core.functions import FunctionExecutor
         self.fx = FunctionExecutor(self.s)
+        # P6：五间词汇改由 packs/wujian 经 discover 注册（生产链路在 run_all
+        # discover_packs 完成）；本类直调 Function，显式挂词汇。
+        from core.wujian import build_wujian, register_wujian
+        register_wujian(build_wujian(ROOT / "packs" / "wujian"))
 
-    def test_目录11个函数且全部只读(self):
+    def test_目录17个函数且全部只读(self):
         cat = self.fx.catalog()
-        self.assertEqual(len(cat), 11)
+        self.assertEqual(len(cat), 17)  # + timeline_*(P5)
         self.assertTrue(all(f["readonly"] for f in cat))
         names = {f["name"] for f in cat}
         self.assertIn("jian_cross_level", names)
         self.assertIn("tipoff_cross_reference", names)   # 新增：内间交叉
         self.assertIn("call_pair_coverage", names)         # 新增：全量对端覆盖诊断
         self.assertIn("location_colocated", names)         # REQ-G-021：地点同框
+        self.assertIn("relation_neighborhood", names)      # P4：N 跳邻域
+        self.assertIn("relation_common_neighbors", names)  # P4：共同邻居
+        self.assertIn("relation_paths", names)             # P4：路径枚举
 
     def test_sql函数返回行(self):
         r = self.fx.invoke("quarter_end_integer_deposits")
@@ -418,9 +426,9 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn("decision", names)  # runtime 对象也在目录
         self.assertIn("tipoff", names)      # 新增：举报材料（内间）
         self.assertIn("osint_article", names)  # 新增：公开OSINT文章（死间）
-        self.assertEqual(len(pack.links), 10)  # + tipoff_targets_person, osint_mentions, tipoff_from_reporter(REQ-P-032)
-        self.assertEqual(len(pack.functions), 11)  # + tipoff_cross_reference, call_pair_coverage, location_colocated(REQ-G-021)
-        self.assertEqual(len(pack.rules), 6)   # 规则手册 R1-R6（rules.json 第六段）
+        self.assertEqual(len(pack.links), 13)  # + tipoff_targets_person, osint_mentions, tipoff_from_reporter(REQ-P-032), image_for_*(P8)
+        self.assertEqual(len(pack.functions), 17)  # + tipoff_cross_reference, call_pair_coverage, location_colocated(REQ-G-021), relation_*(P4), timeline_*(P5)
+        self.assertEqual(len(pack.rules), 7)   # 规则手册 R1-R6（rules.json 第六段）+ R7(P5)
 
     def test_runtime对象不参与编译(self):
         s = make_store()
@@ -702,10 +710,16 @@ class TestRulebook(unittest.TestCase):
     def setUp(self):
         self.s = make_store()
         build_ontology(self.s.conn)
+        from core.functions import FunctionExecutor
+        self.fx = FunctionExecutor(self.s)
+        # P6：五间词汇显式挂载（同 TestFunctionLayer.setUp 注释）
+        from core.wujian import build_wujian, register_wujian
+        register_wujian(build_wujian(ROOT / "packs" / "wujian"))
 
     def test_默认包规则装载(self):
         pack = load_pack("default")
-        self.assertEqual(set(pack.rules), {"R1", "R2", "R3", "R4", "R5", "R6"})
+        self.assertEqual(set(pack.rules),
+                         {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
         r1 = pack.rules["R1"]
         self.assertEqual(r1.function, "quarter_end_integer_deposits")
         self.assertEqual(r1.params["quarter_end_window_days"], 15)

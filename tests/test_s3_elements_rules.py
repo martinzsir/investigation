@@ -279,6 +279,8 @@ class S3ElementsRulesTest(unittest.TestCase):
         meta_path = self.snap_dir / "pack_meta.json"
         meta = (json.loads(meta_path.read_text(encoding="utf-8"))
                 if meta_path.is_file() else {})
+        # loader AC-3：pack_meta.json 一旦存在必须带 schema_version（fail-closed）
+        meta.setdefault("schema_version", 2)
         meta["industry"] = industry
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                              encoding="utf-8")

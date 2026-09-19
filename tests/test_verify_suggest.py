@@ -202,16 +202,22 @@ class VerifyPlaybookLoaderTest(unittest.TestCase):
             [(p["id"], p["text"], p["channel"]) for p in demo])
 
     def test_core_pack_shape(self):
-        """内核包 3 条：function×2 + external×1；引用的函数均存在。"""
+        """内核包 6 条：R6 function×2 + external×1 + R1 function×1 + external×2
+        （r1_image_original_match 为 P8 图像核验 external）；引用的函数均存在
+        （与 demoF/demoW 快照同构，防漂移基准）。"""
         pbs = load_verify_playbooks("default")
         self.assertEqual([p["id"] for p in pbs],
                          ["r6_fund_tw_rerun", "r6_call_window",
-                          "r6_bid_archive"])
+                          "r6_bid_archive", "r1_quarter_end_deposit_rerun",
+                          "r1_deposit_slip_archive",
+                          "r1_image_original_match"])
         self.assertEqual([p["channel"] for p in pbs],
-                         ["function", "function", "external"])
+                         ["function", "function", "external",
+                          "function", "external", "external"])
         self.assertEqual(
             [p["function"] for p in pbs],
-            ["time_window_collision", "call_frequency_spike", ""])
+            ["time_window_collision", "call_frequency_spike", "",
+             "quarter_end_integer_deposits", "", ""])
         self.assertEqual(pbs[2]["external"]["material"],
                          "中标项目招投标底档及资金审批联签单")
 
@@ -242,10 +248,29 @@ class VerifySuggestRenderTest(unittest.TestCase):
         self.assertIn("2", first["text"])
         self.assertEqual(first["ref_function"], "time_window_collision")
 
-    def test_non_r6_rule_no_suggestions(self):
-        raw = _synthetic_r6_raw(rule_id="R1", assumption=["H1"])
+    def test_rule_without_playbooks_no_suggestions(self):
+        """无手册条目的规则（R2）→ 零建议零跳过（确定性空）。"""
+        raw = _synthetic_r6_raw(rule_id="R2", assumption=["H1"])
         items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
         self.assertEqual((items, skipped), ([], []))
+
+    def test_r1_rule_renders_quarter_end_suggestions(self):
+        """R1 已有手册条目（季末整数存款）：function×1 + external×1；
+        文本无槽位（无需主体统计）、无假设约束（假设门直通）。
+        P8 的 r1_image_original_match（external，{subject} 槽位）在无有效
+        主体时合法 skip（D3 留痕），不落建议项。"""
+        raw = _synthetic_r6_raw(rule_id="R1", assumption=["H1"])
+        items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        self.assertEqual(skipped, [{"playbook_id": "r1_image_original_match",
+                                    "reason": "过滤后无有效主体"}])
+        self.assertEqual([i["playbook_id"] for i in items],
+                         ["r1_quarter_end_deposit_rerun",
+                          "r1_deposit_slip_archive"])
+        self.assertEqual([i["channel"] for i in items],
+                         ["function", "external"])
+        self.assertEqual(items[0]["ref_function"],
+                         "quarter_end_integer_deposits")
+        self.assertEqual(items[1]["external"]["target"], "开户银行")
 
     def test_assumption_gate(self):
         """假设不交集：H1/H4 项不出，无假设约束的 external 项照出。"""

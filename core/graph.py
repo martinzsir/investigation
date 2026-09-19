@@ -15,6 +15,7 @@ L4 图库层：LadybugDB 真实集成（第 2 步：Q2 过桥 Cypher 化 + SQL �
 from __future__ import annotations
 
 import csv
+import re
 import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -275,3 +276,280 @@ def compare_engines(cypher_paths: List[OverpassPath],
         ],
         "note": "双轨一致才可信；不一致须正兵复核，AI 不自动采信任一侧",
     }
+
+
+# ----------------------------------------------------------------------
+# P4：语义层统一关系图（跨边类型：资金/通话/持有/中标/同框）
+#
+# 与 LadybugDB 轨的关系：语义层图始终可用（纯离线、只读语义表），为关系研判
+# 镜头的主轨，结果标 engine="semantic"；Ladybug 多关系 Cypher 后端为后续增强，
+# 本节不依赖图库。缺边表/缺列按 REQ-G-003 结构降级：该边跳过并进 gaps，不崩。
+# ----------------------------------------------------------------------
+
+# link 名 → (起点列, 终点列, 行键列, 边类别)。列名以 bindings.json build_sql
+# 实际输出为准（default 与 reqd_case 同构）。关系网络按无向遍历（资金/通话
+# 关联本身是关系，反向追溯同样成立），SEdge 保留原方向供展示。
+SEMANTIC_EDGE_SPECS: Dict[str, tuple] = {
+    "transfers":   ("from_account_id", "to_account_id", "txn_id",     "fund"),
+    "calls_to":    ("from_person",     "to_person",     "call_id",    "contact"),
+    "owns":        ("account_id",      "owner_person",  "account_id", "org"),
+    "involved_in": ("org_id",          "project_id",    "org_id",     "org"),
+    "co_located":  ("person_1",        "person_2",      "track_id_1", "contact"),
+}
+
+# 代理键前缀 → 对象类型（与 objects.json key.prefix 固化一致）
+NODE_PREFIX_TYPE: Dict[str, str] = {
+    "person": "person",
+    "account": "account",
+    "org": "org",
+    "project": "bid_project",
+}
+
+# 对象类型 → 名称属性（取节点展示名）
+NODE_NAME_PROP: Dict[str, str] = {
+    "person": "raw_name",
+    "account": "raw_name",
+    "org": "raw_name",
+    "bid_project": "title",
+}
+
+# 对象类型 → 物化表主键列名（objects.json key.column 固化值；obj_* 表无统一
+# "pk" 列，名称解析与证据引用 key_column 都按此映射取真实列）
+NODE_PK_COLUMN: Dict[str, str] = {
+    "person": "person_id",
+    "account": "account_id",
+    "org": "org_id",
+    "bid_project": "project_id",
+}
+
+EDGE_KINDS = ("all", "fund", "contact", "org")
+
+# 主体标识符白名单（自由文本入参第二道闸：查询本身参数化，此处先挡异常输入）
+# 允许：中文、字母、数字、空格、_ - · * （）() 及代理键下划线；长度 ≤128
+_SUBJECT_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9 _\-·*（）()]{1,128}$")
+
+
+@dataclass
+class SEdge:
+    """语义层一条边（统一图形态）。"""
+    src: str            # 起点节点 pk
+    dst: str            # 终点节点 pk
+    edge: str           # link 名（transfers/calls_to/...）
+    edge_pk: str        # 边表行键值（证据溯源）
+    key_column: str     # 边表行键列
+    kind: str           # fund/contact/org
+    reversed_traversal: bool = False   # 本次遍历是否沿原边反向
+
+    def ref(self) -> dict:
+        return {"kind": "edge", "ref": f"lnk_{self.edge}#{self.edge_pk}",
+                "key_column": self.key_column}
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class SemanticGraph:
+    """跨边类型统一关系图（无向邻接）。"""
+    adj: Dict[str, List[SEdge]] = field(default_factory=dict)
+    gaps: List[dict] = field(default_factory=list)   # 结构降级缺口（缺表/缺列）
+    loaded_links: List[str] = field(default_factory=list)
+
+    def add_edge(self, e: SEdge) -> None:
+        self.adj.setdefault(e.src, []).append(e)
+        self.adj.setdefault(e.dst, []).append(SEdge(
+            src=e.dst, dst=e.src, edge=e.edge, edge_pk=e.edge_pk,
+            key_column=e.key_column, kind=e.kind, reversed_traversal=True))
+
+    def nodes(self) -> set:
+        return set(self.adj)
+
+    def neighborhood(self, start: str, depth: int
+                     ) -> tuple[Dict[str, int], Dict[str, list]]:
+        """BFS：返回 (节点→跳数, 节点→首达边链)。depth 内可达节点。"""
+        hops = {start: 0}
+        first_path: Dict[str, list] = {start: []}
+        frontier = [start]
+        for d in range(1, depth + 1):
+            nxt = []
+            for node in frontier:
+                for e in self.adj.get(node, []):
+                    if e.dst not in hops:
+                        hops[e.dst] = d
+                        first_path[e.dst] = first_path[node] + [e]
+                        nxt.append(e.dst)
+            frontier = nxt
+        return hops, first_path
+
+    def one_hop(self, node: str) -> Dict[str, SEdge]:
+        """一跳邻居 → 首条关联边（多关联取一条，全部边由调用方另查）。"""
+        out: Dict[str, SEdge] = {}
+        for e in self.adj.get(node, []):
+            out.setdefault(e.dst, e)
+        return out
+
+    def common_neighbors(self, a: str, b: str) -> Dict[str, tuple]:
+        """共同邻居：{邻居pk: (从a到达边, 从b到达边)}。"""
+        na, nb = self.one_hop(a), self.one_hop(b)
+        return {n: (na[n], nb[n]) for n in na.keys() & nb.keys()}
+
+    def paths(self, a: str, b: str, depth: int,
+              max_paths: int = 20) -> List[List[SEdge]]:
+        """两节点间简单路径枚举（DFS + 环剪枝 + 条数上限防爆）。"""
+        results: List[List[SEdge]] = []
+
+        def dfs(node: str, chain: List[SEdge], visited: set) -> None:
+            if len(results) >= max_paths:
+                return
+            if len(chain) >= depth:
+                return
+            for e in self.adj.get(node, []):
+                if e.dst in visited or len(results) >= max_paths:
+                    continue
+                if e.dst == b:
+                    results.append(chain + [e])
+                    continue
+                dfs(e.dst, chain + [e], visited | {e.dst})
+
+        dfs(a, [], {a})
+        return results
+
+
+def _table_name(ctx, prefix: str, name: str) -> str:
+    """表名经 RuntimeContext 派生（换包不崩）；无 ctx 时回落默认前缀。"""
+    if ctx is not None:
+        return ctx.link(name) if prefix == "lnk_" else ctx.table(name)
+    return f"{prefix}{name}"
+
+
+def load_semantic_graph(store, ctx=None, edge_kinds: str = "all",
+                        only_links: Optional[List[str]] = None
+                        ) -> SemanticGraph:
+    """
+    从语义边表加载统一关系图。
+
+    缺边表/缺列（CatalogException/BinderException）= 该数据源未接入，
+    边跳过并写入 g.gaps（REQ-G-002/003 结构降级），其余边照常加载。
+    端点外键为 NULL（LEFT JOIN 未命中归一）的边跳过。
+    """
+    if edge_kinds not in EDGE_KINDS:
+        raise ValueError(f"edge_kinds={edge_kinds!r}，允许 {EDGE_KINDS}")
+    g = SemanticGraph()
+    for link_name, (src_col, dst_col, key_col, kind) in SEMANTIC_EDGE_SPECS.items():
+        if only_links is not None and link_name not in only_links:
+            continue
+        if edge_kinds != "all" and kind != edge_kinds:
+            continue
+        table = _table_name(ctx, "lnk_", link_name)
+        try:
+            rows = store.query(
+                f'SELECT "{key_col}", "{src_col}", "{dst_col}" FROM "{table}"')
+        except Exception as e:
+            # 结构降级：语义表/列缺失。其余真实错误（权限/只读护栏）照抛——
+            # 只吞 Catalog/Binder 且消息指向语义表的异常。
+            msg = str(e)
+            is_structural = (
+                type(e).__name__ in ("CatalogException", "BinderException")
+                and ("obj_" in msg or "lnk_" in msg or "does not exist" in msg))
+            if not is_structural:
+                raise
+            g.gaps.append({"link": link_name, "table": table,
+                           "reason": f"{type(e).__name__}: {msg.splitlines()[0][:120]}"})
+            continue
+        n_edges = 0
+        for r in rows:
+            src, dst, pk = r[src_col], r[dst_col], r[key_col]
+            if not src or not dst or not pk:
+                continue
+            g.add_edge(SEdge(src=src, dst=dst, edge=link_name, edge_pk=str(pk),
+                             key_column=key_col, kind=kind))
+            n_edges += 1
+        g.loaded_links.append(link_name)
+    return g
+
+
+def node_type_of(pk: str) -> Optional[str]:
+    """代理键前缀 → 对象类型（无法识别返回 None）。"""
+    prefix = pk.split("_", 1)[0] if "_" in pk else ""
+    return NODE_PREFIX_TYPE.get(prefix)
+
+
+def load_node_names(store, pks: set, ctx=None) -> Dict[str, str]:
+    """批量解析节点展示名（按前缀分组，参数化查询 obj_* 主键列+名称列）。"""
+    groups: Dict[str, set] = {}
+    for pk in pks:
+        t = node_type_of(pk)
+        if t:
+            groups.setdefault(t, set()).add(pk)
+    names: Dict[str, str] = {}
+    for obj_type, keys in groups.items():
+        name_prop = NODE_NAME_PROP[obj_type]
+        pk_col = NODE_PK_COLUMN[obj_type]
+        table = _table_name(ctx, "obj_", obj_type)
+        try:
+            placeholders = ", ".join(["?"] * len(keys))
+            rows = store.query(
+                f'SELECT "{pk_col}" AS pk, "{name_prop}" FROM "{table}" '
+                f'WHERE "{pk_col}" IN ({placeholders})', tuple(keys))
+        except Exception as e:
+            if type(e).__name__ in ("CatalogException", "BinderException"):
+                continue
+            raise
+        for r in rows:
+            names[r["pk"]] = r[name_prop]
+    return names
+
+
+def resolve_subject(store, target: str, target_type: str = "auto",
+                    ctx=None) -> Optional[dict]:
+    """
+    主体名/pk → {"pk","type","name"}。
+
+    target 先经标识符白名单（防注入；查询本身参数化）。
+    target_type=auto 时按 pk 精确命中优先，其次四类实体名称列精确匹配；
+    多类型同名命中（如人名与账户名相同）→ ValueError 列候选，要求显式消歧。
+    """
+    target = (target or "").strip()
+    if not target:
+        return None
+    if not _SUBJECT_RE.match(target):
+        raise ValueError(
+            f"主体标识 {target!r} 含非法字符（允许中英文/数字/空格/_-·*（），"
+            f"长度 ≤128）")
+    # 直接是代理键
+    direct_type = node_type_of(target)
+    if direct_type and (target_type in ("auto", direct_type)):
+        name_prop = NODE_NAME_PROP[direct_type]
+        pk_col = NODE_PK_COLUMN[direct_type]
+        table = _table_name(ctx, "obj_", direct_type)
+        rows = store.query(
+            f'SELECT "{pk_col}" AS pk, "{name_prop}" AS nm FROM "{table}" '
+            f'WHERE "{pk_col}" = ?', (target,))
+        if rows:
+            return {"pk": rows[0]["pk"], "type": direct_type,
+                    "name": rows[0]["nm"]}
+    candidates: List[dict] = []
+    types_ = [target_type] if target_type in NODE_NAME_PROP else list(NODE_NAME_PROP)
+    for obj_type in types_:
+        name_prop = NODE_NAME_PROP[obj_type]
+        pk_col = NODE_PK_COLUMN[obj_type]
+        table = _table_name(ctx, "obj_", obj_type)
+        try:
+            rows = store.query(
+                f'SELECT "{pk_col}" AS pk, "{name_prop}" AS nm FROM "{table}" '
+                f'WHERE "{name_prop}" = ?', (target,))
+        except Exception as e:
+            if type(e).__name__ in ("CatalogException", "BinderException"):
+                continue
+            raise
+        for r in rows:
+            candidates.append({"pk": r["pk"], "type": obj_type, "name": r["nm"]})
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        kinds = sorted({c["type"] for c in candidates})
+        if len(kinds) > 1:
+            raise ValueError(
+                f"主体 {target!r} 在多类实体中同名命中 {kinds}，"
+                f"请用 target_type 显式消歧")
+    return candidates[0]

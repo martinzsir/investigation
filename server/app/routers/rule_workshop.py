@@ -206,7 +206,14 @@ def edit_rule(case_id: str, rule_id: str, body: RuleEditIn,
         copy_layer_dirs(snap_dir, base_dir, tmp_root)
         _atomic_write_json(tmp_root / pack_id / "rules.json", data)
         try:
-            load_pack(pack_id, base_dir=tmp_root)
+            tmp_pack = load_pack(pack_id, base_dir=tmp_root)
+            # P6：jian_types 白名单由五间词汇校验（loader 不再认识间类）；
+            # 无词汇包时标签不透明放行，合法词汇内每个规则标签都须在内
+            from core.wujian import load_wujian
+            wj = load_wujian(pack_id)
+            if wj is not None:
+                for _rid, rspec in tmp_pack.rules.items():
+                    wj.validate_rule_jian_types(rspec.jian_types)
         except Exception as e:
             raise APIError(ERR_VALIDATION, f"规则校验失败，未落盘：{e}", 400)
 

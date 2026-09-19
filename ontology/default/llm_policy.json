@@ -1,9 +1,10 @@
 {
   "schema_version": 2,
   "pack": "default",
-  "description": "LLM 使用策略（REQ-038）：内核纯离线。network=isolated 拒绝一切模型调用（allowed_models 白名单仅在显式启用出网时生效，isolated 下双保险）；出网文本必须脱敏（证件/手机号遮蔽、精确轨迹与通话正文整段丢弃、人名 tokenize）；prompt 不留存、原始上下文永不入库；LLM 不可用时仅允许确定性计算（fallback=deterministic_only）。llm_enabled 为 REQ-040 一键总开关（false=关闭全部 LLM 能力，草案器零模型调用并回落确定性路径，降级落 llm_call_log+AuditChain）；mode=shadow 影子模式：LLM 草案只产 draft 提案/日志/审计，永不进入生产 finding 集合、不写语义层。",
+  "description": "LLM 使用策略（REQ-038）：内核纯离线。network=isolated 拒绝一切模型调用（allowed_models/allowed_vision_models 白名单仅在显式启用出网时生效，isolated 下双保险）；出网文本必须脱敏（证件/手机号遮蔽、精确轨迹与通话正文整段丢弃、人名 tokenize）；prompt 不留存、原始上下文永不入库；LLM 不可用时仅允许确定性计算（fallback=deterministic_only）。llm_enabled 为 REQ-040 一键总开关（false=关闭全部 LLM 能力，草案器零模型调用并回落确定性路径，降级落 llm_call_log+AuditChain）；mode=shadow 影子模式：LLM 草案只产 draft 提案/日志/审计，永不进入生产 finding 集合、不写语义层。P8：视觉模型白名单与文本白名单物理隔离（allowed_vision_models）；图像 PII 默认 face/id_document=block（禁传，不打码）、exif=strip（纯字节剥离，无 Pillow 依赖）；retention 区分 prompt 不留存与证据按卷留存。",
   "network": "isolated",
   "allowed_models": ["text-embedding-v3", "qwen-plus"],
+  "allowed_vision_models": ["qwen-vl-max", "qwen-vl-plus"],
   "llm_enabled": true,
   "mode": "shadow",
   "canvas_chat_mode": "direct",
@@ -15,9 +16,17 @@
     "call_content": "drop",
     "name": "tokenize"
   },
+  "image_pii": {
+    "face": "block",
+    "id_document": "block",
+    "exif": "strip",
+    "_note": "P8 图像通道（与文本 pii_redaction 分离）：face/id_document 默认 block=含敏感区域即拒传（fail-closed，不做打码、不依赖 Pillow）；exif=strip 出网前纯字节剥离 EXIF/元数据块；策略值 mask 保留给日后引入 Pillow 的批次"
+  },
   "retention": {
     "prompt_days": 0,
-    "raw_context": "never_store"
+    "raw_context": "never_store",
+    "evidence": "case_retention",
+    "_note": "P8：prompt/原始上下文不留存（0/never_store）；人验通过的 image_evidence 按案卷留存（case_retention=随卷归档，不受 prompt_days 约束）"
   },
   "fallback": "deterministic_only",
   "deployments": {
@@ -25,6 +34,7 @@
       "enabled": true,
       "base_url": "http://127.0.0.1:11434/v1",
       "allowed_models": ["qwen3:8b"],
+      "allowed_vision_models": [],
       "redaction": "relaxed",
       "endpoints": {
         "allow_loopback": true,
@@ -35,6 +45,7 @@
       "enabled": true,
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "allowed_models": ["qwen-plus"],
+      "allowed_vision_models": ["qwen-vl-max"],
       "redaction": "strict",
       "require_clearance": true,
       "min_clearance": 2,

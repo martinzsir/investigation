@@ -31,6 +31,18 @@ from core.threshold import (                              # noqa: E402
 from tests.test_ontology_version import make_store        # noqa: E402
 
 
+def setUpModule():
+    """P6：L4 五间映射来自 packs/wujian 词汇——整模块挂载。"""
+    from core.wujian import build_wujian, register_wujian, reset_wujian
+    reset_wujian()
+    register_wujian(build_wujian(ROOT / "packs" / "wujian", "default"))
+
+
+def tearDownModule():
+    from core.wujian import reset_wujian
+    reset_wujian()
+
+
 def _profiler(**kw):
     s = make_store()
     # 删除公开OSINT表让 osint_article 保持未物化（test_ac02 验证未物化对象占位）
