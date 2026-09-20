@@ -100,24 +100,43 @@ def _clue_from_qi_zheng(spec: SkillSpec, result: dict) -> list[LineageClue]:
     """奇正分工：奇兵/正兵任务清单 → 一条线索（待固证）。
 
     方案 A+C：从 Q1_result 提取资金主体拼入标题，basis 补项目名摘要。
+    Q1（time_window_collision）输出英文投影列：owner_raw/title/amount/
+    offset_days/pub_date，此处做业务化呈现（不再依赖旧版中文列名）。
     """
     qz = result.get("奇正分工", {})
     q1_rows = qz.get("Q1_result") or []
     # C：提取首个资金主体做标题前缀
     subject = ""
     if q1_rows and isinstance(q1_rows[0], dict):
-        subject = str(q1_rows[0].get("资金主体") or "")
+        subject = str(q1_rows[0].get("owner_raw")
+                      or q1_rows[0].get("资金主体") or "")
     title = "奇正分工方案" + (f" · {subject}" if subject else "")
-    # A：basis 副标题补 Q1 碰撞摘要
+    # A：basis 副标题补 Q1 碰撞摘要（项目 · 公示日 · 偏移 · 金额）
     basis = ""
     if q1_rows and isinstance(q1_rows[0], dict):
         r0 = q1_rows[0]
-        proj = r0.get("项目") or ""
-        amt = r0.get("金额") or ""
-        if proj and amt:
-            basis = f"时间窗碰撞：{proj} · 金额 {amt}"
-        elif proj:
-            basis = f"时间窗碰撞：{proj}"
+        proj = r0.get("title") or r0.get("项目") or ""
+        parts = [f"时间窗碰撞：{proj}"] if proj else []
+        pub = r0.get("pub_date")
+        off = r0.get("offset_days")
+        if pub is not None and off is not None:
+            try:
+                n = int(off)
+                when = "公示当天" if n == 0 else (
+                    f"公示日后 {n} 天" if n > 0 else f"公示日前 {abs(n)} 天")
+                parts.append(f"{pub} {when}")
+            except (TypeError, ValueError):
+                pass
+        amt = r0.get("amount") or r0.get("金额")
+        if amt:
+            try:
+                num = float(amt)
+                if num and num % 10000 == 0:
+                    amt = f"{num / 10000:g} 万元"
+            except (TypeError, ValueError):
+                pass
+            parts.append(f"金额 {amt}")
+        basis = " · ".join(parts)
     jian_types = list(spec.consumes_jian)
     detail = {
         "奇兵": qz.get("奇兵(AI)") or qz.get("奇兵") or [],

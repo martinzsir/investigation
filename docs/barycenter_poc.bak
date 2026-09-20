@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""画布分层布局交叉数实测：当前启发式 vs barycenter 中位数迭代。
+
+不依赖 duckdb / G6，纯 Python 复刻 frontend/src/domain/canvas-layout.ts 的
+分层规则，构造典型种子图拓扑，统计「跨列长边交叉」数量。
+"""
+
+RANK_X = {
+    "rule": 0,
+    "fact": 260,
+    "verify_item": 260,
+    "object": 480,
+    "evidence": 480,
+    "hypothesis": 480,
+    "note": 480,
+    "function_result": 480,
+    "source_row": 720,
+    "source_file": 960,
+}
+GAP = 104.0
+
+
+def build_case(n_fact=8, n_row=10, shuffle_seed=7):
+    """构造典型种子图：1 rule -> N fact -> M source_row -> 1 source_file。
+
+    fact 与 source_row 之间按「事实 i 命中行 j」随机连边（模拟真实命中关系，
+    非一一对应），这是产生交叉的主要来源。
+    """
+    import random
+
+    rnd = random.Random(shuffle_seed)
+    nodes = [{"id": "R1", "kind": "rule", "y": 0.0}]
+    edges = []
+    for i in range(n_fact):
+        nodes.append({"id": f"F{i}", "kind": "fact", "y": float(i * 100)})
+        edges.append(("R1", f"F{i}"))
+    for j in range(n_row):
+        nodes.append({"id": f"S{j}", "kind": "source_row", "y": float(j * 100)})
+        edges.append((f"S{j}", "SF1"))
+    nodes.append({"id": "SF1", "kind": "source_file", "y": 0.0})
+    # fact -> source_row 命中边：每个事实命中 2 行，行号打散
+    rows = list(range(n_row))
+    for i in range(n_fact):
+        rnd.shuffle(rows)
+        for j in rows[:2]:
+            edges.append((f"F{i}", f"S{j}"))
+    return nodes, edges
+
+
+def current_layout(nodes, edges):
+    """复刻 canvas-layout.ts：列内按 (y, 度数, id) 排序后依次落槽。"""
+    deg = {}
+    for a, b in edges:
+        deg[a] = deg.get(a, 0) + 1
+        deg[b] = deg.get(b, 0) + 1
+    cols = {}
+    for n in nodes:
+        cols.setdefault(RANK_X[n["kind"]], []).append(n)
+    pos = {}
+    for x, group in cols.items():
+        ordered = sorted(
+            group,
+            key=lambda n: (n["y"], -(deg.get(n["id"], 0)), n["id"]),
+        )
+        for idx, n in enumerate(ordered):
+            pos[n["id"]] = (x, idx * GAP)
+    return pos
+
+
+def barycenter_layout(nodes, edges, iterations=8):
+    """Sugiyama 第②步：barycenter 中位数迭代，最小化跨层交叉。
+
+    同一列内按「邻居在上一列的平均位序」重排，双向扫描若干轮。
+    纯函数、确定性（同输入必同输出）。
+    """
+    deg = {}
+    adj = {}
+    for a, b in edges:
+        deg[a] = deg.get(a, 0) + 1
+        deg[b] = deg.get(b, 0) + 1
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+
+    cols = {}
+    for n in nodes:
+        cols.setdefault(RANK_X[n["kind"]], []).append(n)
+    xs = sorted(cols)
+
+    # 初始位序沿用现有规则（y, 度数, id），保证与现状同起点
+    order = {}
+    for x in xs:
+        ordered = sorted(
+            cols[x], key=lambda n: (n["y"], -(deg.get(n["id"], 0)), n["id"])
+        )
+        order[x] = [n["id"] for n in ordered]
+
+    rank_of = {}
+    for x in xs:
+        for i, nid in enumerate(order[x]):
+            rank_of[nid] = i
+
+    for _ in range(iterations):
+        direction = xs if _ % 2 == 0 else list(reversed(xs))
+        for x in direction:
+            keys = []
+            for nid in order[x]:
+                neigh = [
+                    rank_of[m]
+                    for m in adj.get(nid, ())
+                    if m in rank_of and RANK_X[_kind_of(nodes, m)] != x
+                ]
+                bc = sum(neigh) / len(neigh) if neigh else rank_of[nid]
+                # 中位数更稳健：用邻居位序的中位数
+                if neigh:
+                    s = sorted(neigh)
+                    mid = len(s) // 2
+                    bc = (
+                        s[mid]
+                        if len(s) % 2
+                        else (s[mid - 1] + s[mid]) / 2
+                    )
+                keys.append((bc, rank_of[nid], nid))
+            keys.sort()
+            order[x] = [k[2] for k in keys]
+            for i, nid in enumerate(order[x]):
+                rank_of[nid] = i
+
+    pos = {}
+    for x in xs:
+        for i, nid in enumerate(order[x]):
+            pos[nid] = (x, i * GAP)
+    return pos
+
+
+_kind_cache = {}
+
+
+def _kind_of(nodes, nid):
+    if nid not in _kind_cache:
+        for n in nodes:
+            _kind_cache[n["id"]] = n["kind"]
+    return _kind_cache.get(nid, "fact")
+
+
+def count_crossings(nodes, edges, pos):
+    """统计跨列长边交叉数：两端 x 不同的边，按端点 y 序做逆序对计数。"""
+    kind = {n["id"]: n["kind"] for n in nodes}
+    long_edges = [
+        (a, b) for a, b in edges if RANK_X[kind[a]] != RANK_X[kind[b]]
+    ]
+    total = 0
+    # 按列对分组
+    pairs = {}
+    for a, b in long_edges:
+        xa, xb = RANK_X[kind[a]], RANK_X[kind[b]]
+        key = (min(xa, xb), max(xa, xb))
+        pairs.setdefault(key, []).append((a, b))
+
+    for (xa, xb), es in pairs.items():
+        # 统一方向：按 x 小的为源
+        seq = []
+        for a, b in es:
+            if RANK_X[kind[a]] == xa:
+                src, dst = a, b
+            else:
+                src, dst = b, a
+            # src 在 xa 列的 y 序，dst 在 xb 列的 y 序
+            seq.append((pos[src][1], pos[dst][1]))
+        # 按 src 排序后，dst 序列的逆序对数 = 交叉数
+        seq.sort()
+        ys = [d for _, d in seq]
+        n = len(ys)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if ys[i] > ys[j]:
+                    total += 1
+    return total
+
+
+def main():
+    print(f"{'场景':<28}{'现状':>8}{'barycenter':>14}{'下降':>10}")
+    print("-" * 60)
+    cases = [
+        ("小图  4事实/5行", dict(n_fact=4, n_row=5, shuffle_seed=1)),
+        ("中图  8事实/10行", dict(n_fact=8, n_row=10, shuffle_seed=7)),
+        ("中图  8事实/12行", dict(n_fact=8, n_row=12, shuffle_seed=11)),
+        ("大图  12事实/16行", dict(n_fact=12, n_row=16, shuffle_seed=3)),
+        ("大图  15事实/20行", dict(n_fact=15, n_row=20, shuffle_seed=5)),
+    ]
+    tot_a = tot_b = 0
+    for name, kw in cases:
+        _kind_cache.clear()
+        nodes, edges = build_case(**kw)
+        p1 = current_layout(nodes, edges)
+        p2 = barycenter_layout(nodes, edges)
+        c1 = count_crossings(nodes, edges, p1)
+        c2 = count_crossings(nodes, edges, p2)
+        tot_a += c1
+        tot_b += c2
+        delta = f"-{(c1 - c2) / c1 * 100:.0f}%" if c1 else "-"
+        print(f"{name:<28}{c1:>8}{c2:>14}{delta:>10}")
+    print("-" * 60)
+    print(f"{'合计':<28}{tot_a:>8}{tot_b:>14}{f'-{(tot_a-tot_b)/tot_a*100:.0f}%':>10}")
+
+    # 确定性验证：同输入跑两次结果一致
+    _kind_cache.clear()
+    nodes, edges = build_case(n_fact=8, n_row=10, shuffle_seed=7)
+    a = barycenter_layout(nodes, edges)
+    b = barycenter_layout(nodes, edges)
+    print(f"\n确定性校验（同输入两次一致）：{a == b}")
+    # 收敛性：迭代次数对结果的影响
+    for it in (1, 2, 4, 8, 16):
+        p = barycenter_layout(nodes, edges, iterations=it)
+        print(f"  迭代 {it:>2} 轮 → 交叉 {count_crossings(nodes, edges, p)}")
+
+
+if __name__ == "__main__":
+    main()

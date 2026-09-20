@@ -87,7 +87,14 @@ def resolve_source_row(
         row_uri = f"{dataset}@local#row/{rowid}"
 
     # ---- 属性名 → 中文名映射 ----
+    # 实体行走 objects 属性；链接投影行（如 lnk_time_window 的
+    # title/owner_raw/amount/offset_days/pub_date）objects.json 查不到，
+    # 回落 links.json 的 field_labels 声明。
     name_map = _build_name_map(obj_type, pack_id, base_dir)
+    if not name_map:
+        link = _match_link(row_data.keys(), pack_id, base_dir)
+        if link:
+            name_map = dict(link.get("field_labels") or {})
 
     # ---- 组装字段表 ----
     # 遮蔽由前端 MaskedField 按 policy+mask 唯一执行（避免服务端 mask_partial
@@ -101,7 +108,8 @@ def resolve_source_row(
             continue
         display_name = name_map.get(raw_name, raw_name)
         policy = _field_policy(pe, obj_type, raw_name, access)
-        field_value = "" if policy == "denied" else _stringify(value)
+        field_value = "" if policy == "denied" else _stringify(
+            format_field_value(raw_name, value))
         fields.append({
             "name": display_name,
             "raw": raw_name,
@@ -253,6 +261,82 @@ def _build_name_map(obj_type: str | None, pack_id: str,
     return {}  # 属性名直接用作展示名（英文 raw 名 → hover 显示）
 
 
+def _link_projected_fields(link: dict) -> set[str]:
+    """链接投影行可能出现的全部列：endpoints 端点列 + extra + properties
+    + field_labels 显式声明列（含 join 带入的对端列，如 pub_date）。"""
+    cols: set[str] = set()
+    ep = link.get("endpoints") or {}
+    for side in ("from", "to"):
+        col = (ep.get(side) or {}).get("col")
+        if col:
+            cols.add(col)
+    cols.update(ep.get("extra") or [])
+    cols.update((link.get("properties") or {}).keys())
+    cols.update((link.get("field_labels") or {}).keys())
+    return cols
+
+
+def _match_link(field_names, pack_id: str,
+                base_dir: Path | None) -> dict | None:
+    """按行字段集反查链接投影（lnk_* 经 Function SELECT 出的行）。
+
+    实体属性反查失败时使用：行字段全部能被某链接的投影列集合覆盖即命中；
+    多链接候选时取覆盖字段最多者。要求至少覆盖 2 个字段，避免单字段误匹配。
+    """
+    fields = set(field_names) - _INTERNAL_FIELDS
+    if not fields:
+        return None
+    links = _load_links_raw(pack_id, base_dir).get("links", [])
+    best, best_score = None, 1  # 阈值：重合列数 > 1（即 ≥2）才命中
+    for link in links:
+        proj = _link_projected_fields(link)
+        covered = len(fields & proj)
+        if fields <= proj and covered > best_score:
+            best, best_score = link, covered
+    return best
+
+
+def display_labels_for_row(row: dict[str, Any], *, pack_id: str = "default",
+                           base_dir: Path | None = None) -> dict[str, str]:
+    """供证据文本等读侧复用的字段中文 label 映射。
+
+    先试链接投影（field_labels），再回落空 map（调用方按 raw 名兜底）。
+    """
+    if not isinstance(row, dict):
+        return {}
+    link = _match_link(row.keys(), pack_id, base_dir)
+    if link:
+        return dict(link.get("field_labels") or {})
+    return {}
+
+
+def format_field_value(raw_name: str, value: Any) -> Any:
+    """按字段语义格式化展示值（不改真值，仅展示层）。
+
+    - offset_days：整数偏移 → 带正负号与"天"（+5 天 / -3 天 / 0 天）
+    - amount：整万金额追加"万元"口径（100000 → 100000（10 万元））
+    其余原样返回。
+    """
+    if value is None or value == "":
+        return value
+    if raw_name == "offset_days":
+        try:
+            n = int(value)
+            return f"{n:+d} 天"
+        except (TypeError, ValueError):
+            return value
+    if raw_name == "amount":
+        try:
+            num = float(value)
+            if num and num % 10000 == 0:
+                wan = num / 10000
+                wan_s = f"{wan:.0f}" if wan == int(wan) else str(wan)
+                return f"{value}（{wan_s} 万元）"
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
 def _field_policy(pe: PolicyEngine | None, obj_type: str | None,
                   prop: str, access: AccessContext | None) -> str:
     """字段策略：visible / masked / denied。"""
@@ -302,3 +386,9 @@ def _load_bindings(pack_id: str, base_dir: Path | None) -> dict:
 
 def _load_objects(pack_id: str, base_dir: Path | None) -> dict:
     return _load_json("objects.json", pack_id, base_dir)
+
+
+def _load_links_raw(pack_id: str, base_dir: Path | None) -> dict:
+    """直接读 links.json 原文（含 field_labels 等展示层扩展键，
+    语义层 LinkType 不装载这些键，读侧自行消费）。"""
+    return _load_json("links.json", pack_id, base_dir)

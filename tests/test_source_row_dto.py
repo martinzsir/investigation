@@ -19,7 +19,8 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.access import AccessContext                            # noqa: E402
-from server.app.source_row_dto import resolve_source_row        # noqa: E402
+from server.app.source_row_dto import (                          # noqa: E402
+    resolve_source_row, format_field_value)
 
 
 class TestSourceRowDto(unittest.TestCase):
@@ -140,6 +141,38 @@ class TestSourceRowDto(unittest.TestCase):
         result = resolve_source_row(source_row=sr, pack_id="default")
         rel = next(f for f in result["fields"] if f["raw"] == "relation")
         self.assertEqual(rel["value"], "")
+
+    # ---- 链接投影行（lnk_time_window 经 Function SELECT 的行）----
+    def test_link_projected_row_chinese_labels(self):
+        """时间窗碰撞行：objects.json 查不到的投影列回落 links.json
+        field_labels 中文化（title/owner_raw/amount/offset_days/pub_date）。"""
+        from server.app.source_row_dto import (
+            display_labels_for_row, format_field_value)
+        sr = {"title": "城东管网", "owner_raw": "张卫国", "amount": 100000,
+              "offset_days": 5, "pub_date": "2020-03-25"}
+        labels = display_labels_for_row(sr, pack_id="default")
+        self.assertEqual(labels.get("title"), "项目名称")
+        self.assertEqual(labels.get("owner_raw"), "资金主体")
+        self.assertEqual(labels.get("offset_days"), "公示日偏移（天）")
+
+        result = resolve_source_row(source_row=sr, pack_id="default")
+        by_raw = {f["raw"]: f for f in result["fields"]}
+        self.assertEqual(by_raw["title"]["name"], "项目名称")
+        self.assertEqual(by_raw["title"]["value"], "城东管网")
+        # 值语义格式化：偏移带正负号、整万金额带万元口径
+        self.assertEqual(by_raw["offset_days"]["value"], "+5 天")
+        self.assertIn("10 万元", by_raw["amount"]["value"])
+
+    def test_format_field_value_rules(self):
+        """offset_days/amount 语义格式化；其余字段原样。"""
+        self.assertEqual(format_field_value("offset_days", -3), "-3 天")
+        self.assertEqual(format_field_value("offset_days", 0), "+0 天")
+        self.assertIn("5 万元", format_field_value("amount", 50000))
+        # 非整万不动
+        self.assertEqual(format_field_value("amount", 12345), 12345)
+        # 无关字段原样
+        self.assertEqual(format_field_value("pub_date", "2020-03-25"),
+                         "2020-03-25")
 
 
 if __name__ == "__main__":

@@ -774,7 +774,7 @@ class TestRulebook(unittest.TestCase):
         from core.functions import invoke_function
         rows = invoke_function(self.s, "time_window_collision")["rows"]
         # 链接为邻接边；整数资金+排除公司过滤后仍为 张卫国 -3 / 宏业建设 0
-        self.assertEqual([(r["资金主体"], r["偏移天数"]) for r in rows],
+        self.assertEqual([(r["owner_raw"], r["offset_days"]) for r in rows],
                          [("张卫国", -3), ("宏业建设", 0)])
 
     def test_非enum字符串参数硬失败(self):

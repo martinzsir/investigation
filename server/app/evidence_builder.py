@@ -19,7 +19,9 @@ import json
 from typing import Any
 
 from core.hypotheses import MiaoSuan
-from server.app.source_row_dto import dataset_of_row
+from server.app.source_row_dto import (
+    dataset_of_row, display_labels_for_row, format_field_value,
+)
 
 
 def build_evidence(
@@ -230,15 +232,19 @@ def _fact_text(sr: dict[str, Any]) -> str:
                 f"{sr.get('行数', '?')} 行非空支撑）")
     _INTERNAL = {"row_uri", "knowledge_sources", "knowledge_version",
                  "matched_person", "source_row_id", "数据源"}
+    # 链接投影行（如时间窗碰撞）字段名经 links.json field_labels 中文化，
+    # 值做语义格式化（偏移天数带正负、整万金额带万元口径）。
+    labels = display_labels_for_row(sr)
     parts = []
     for k, v in sr.items():
         if k in _INTERNAL:
             continue
         if v is None or v == "":
             continue
+        v = format_field_value(k, v)
         if isinstance(v, (list, dict)):
             v = json.dumps(v, ensure_ascii=False, default=str)
-        parts.append(f"{k}: {v}")
+        parts.append(f"{labels.get(k, k)}: {v}")
     return " · ".join(parts) if parts else "（空行）"
 
 

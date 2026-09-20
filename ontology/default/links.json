@@ -70,6 +70,13 @@
         "from": {"col": "title"},
         "to": {"col": "owner_raw"},
         "extra": ["offset_days"]
+      },
+      "field_labels": {
+        "title": "项目名称",
+        "owner_raw": "资金主体",
+        "amount": "金额（元）",
+        "offset_days": "公示日偏移（天）",
+        "pub_date": "公示日期"
       }
     },
     {
