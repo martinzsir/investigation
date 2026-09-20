@@ -30,12 +30,14 @@ export const DEFAULT_ONTOLOGY_CONFIG: OntologyConfig = {
     { min_independent_sources: 2, name: '线索' },
     { min_independent_sources: 3, name: '可立案依据候选' },
   ],
+  // dimensions：code = 机器标识符（产物/规则引用），name = 展示名（UI）。
+  // 缺省回落与后端 load_dimension_declarations 同口径（缺 code 时取 name）。
   dimensions: [
-    { name: '资金', note: '银行流水/资金往来异常', source_object_types: ['transaction'] },
-    { name: '通讯', note: '通话/联系频次与对象', source_object_types: ['call'] },
-    { name: '行为', note: '轨迹同框/行为模式', source_object_types: ['trackpoint'] },
-    { name: '关系', note: '工商/社会关系网络', source_object_types: ['person', 'org'] },
-    { name: '时间', note: '时间耦合/先后顺序（跨对象属性）', source_object_types: ['transaction', 'call', 'trackpoint'] },
+    { code: 'fund', name: '资金', note: '银行流水/资金往来异常', source_object_types: ['transaction'] },
+    { code: 'comm', name: '通讯', note: '通话/联系频次与对象', source_object_types: ['call'] },
+    { code: 'behavior', name: '行为', note: '轨迹同框/行为模式', source_object_types: ['trackpoint'] },
+    { code: 'relation', name: '关系', note: '工商/社会关系网络', source_object_types: ['person', 'org'] },
+    { code: 'time', name: '时间', note: '时间耦合/先后顺序（跨对象属性）', source_object_types: ['transaction', 'call', 'trackpoint'] },
   ],
   states: [
     { name: '待查', label: '待查', tone: 'warning', terminal: false, requires_role: 'any', requires_basis: false, sla_days: 3 },

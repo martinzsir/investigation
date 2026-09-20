@@ -111,15 +111,18 @@ class TimelinePackTests(unittest.TestCase):
             params={"project": "查无此项目"}), [])
 
     def test_params_validated_against_schema(self):
+        # 未声明参数：硬失败（auto_fill 不处理未知参数）
         with self.assertRaises(ValueError):
             skill_invoke(self.reg, "timeline_sequence",
                          store=self.store, params={"bogus": 1})
-        with self.assertRaises(ValueError):
-            skill_invoke(self.reg, "timeline_sequence",
-                         store=self.store, params={})
-        with self.assertRaises(ValueError):
-            skill_invoke(self.reg, "timeline_cross_collision",
-                         store=self.store, params={})
+        # 必填缺失：skill_invoke 会按 auto_from 自动补齐靶心（定向镜头批量
+        # 调度口径），不再抛 ValueError；此处验证补齐后可正常执行。
+        seq = skill_invoke(self.reg, "timeline_sequence",
+                           store=self.store, params={})
+        self.assertIsInstance(seq, list)
+        coll = skill_invoke(self.reg, "timeline_cross_collision",
+                            store=self.store, params={})
+        self.assertIsInstance(coll, list)
 
     def test_scope_enforced_on_pack_lens(self):
         from core.access import AccessContext

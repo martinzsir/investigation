@@ -234,8 +234,13 @@ const entityOptions = computed<{ label: string; value: string }[]>(() =>
   entityCandidates(props.sourceRows).map((v) => ({ label: v, value: v })),
 )
 
+// 下拉 value 用 code（机器标识符，与 rules/产物口径一致），label 用 name（展示）。
+// 旧声明无 code 时回落 name，与后端 load_dimension_declarations 同口径。
 const dimensionOptions = computed<{ label: string; value: string }[]>(() =>
-  (ontologyCfg.value.dimensions ?? []).map((d) => ({ label: d.name, value: d.name })),
+  (ontologyCfg.value.dimensions ?? []).map((d) => ({
+    label: d.name,
+    value: d.code || d.name,
+  })),
 )
 
 const entity = ref('')

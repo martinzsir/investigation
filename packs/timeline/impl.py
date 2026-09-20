@@ -200,33 +200,41 @@ def cross_collision_lens(miao=None, store=None, ctx=None, params=None,
                  "key_column": "project_id"}]
         for e in events[:_EVENT_REF_LIMIT]:
             refs.append(_event_ref(e))
+        # event_types 为英文语义名（transaction/call/trackpoint），
+        # 与 ontology 对象名一致；显示层做中文化
+        event_types = row["event_types"]
         tw = _time_window_ref(
             store, project["pk"], window_days, anchor_iso,
-            has_fund="资金" in row["事件类型"])
+            has_fund="transaction" in event_types)
         if tw is not None:
             refs.append(tw)
         refs.append({"kind": "aggregate", "metric": "碰撞事件数",
-                     "value": row["事件数"]})
+                     "value": row["event_count"]})
         refs.append({"kind": "aggregate", "metric": "碰撞类型数",
-                     "value": row["类型数"]})
+                     "value": row["type_count"]})
+        _TYPE_LABEL = {"transaction": "资金", "call": "通话",
+                       "trackpoint": "轨迹"}
+        type_labels = [_TYPE_LABEL.get(t, t) for t in event_types]
         clues.append(LineageClue(
             skill_id="timeline_cross_collision",
-            title=f"{row['主体']} 在{project['name']}公示日前后 {window_days} 天"
-                  f"跨类型碰撞：{row['事件类型']}",
+            title=f"{row['subject_raw']} 在{project['name']}公示日前后 "
+                  f"{window_days} 天跨类型碰撞：{'、'.join(type_labels)}",
             evidence_refs=refs,
             detail={
                 "function": "timeline_cross_collision",
                 "source_type": _SOURCE_TYPE,
-                "hypothesis": f"{row['主体']} 在项目公示日前后 {window_days} 天内"
-                              f"出现 {row['事件类型']} 跨类型事件（偏移 "
-                              f"{row['最早偏移']:+d}~{row['最晚偏移']:+d} 天），"
+                "hypothesis": f"{row['subject_raw']} 在项目公示日前后 "
+                              f"{window_days} 天内出现 "
+                              f"{'、'.join(type_labels)} 跨类型事件（偏移 "
+                              f"{row['first_offset']:+d}~"
+                              f"{row['last_offset']:+d} 天），"
                               f"时间协同待正兵核查；只报候选事实，定性权属正兵",
                 "evidence_level": "观察",
                 "collision_index": i,
                 "project": project,
                 "anchor_date": anchor_iso,
                 "window_days": window_days,
-                "主体": row["主体"],
+                "主体": row["subject_raw"],
                 "events": events,
                 "diagnostics": r.get("diagnostics", {}),
                 "degraded": bool(r.get("degraded")),

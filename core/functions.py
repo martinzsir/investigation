@@ -185,7 +185,10 @@ def _call_frequency_spike(store, params: dict, ctx=None) -> dict:
                 "threshold_used": f"绝对频次阈值 absolute_threshold = {threshold}"}
     return {"hit": hit, "basis": basis, "diagnostics": diag,
             "subject": top["caller_raw"],
-            "pairs": [{"主体": r["caller_raw"], "对端": r["callee_raw"], "次数": r["c"]}
+            # 输出列名用语义属性名（与 call 对象的 name_property 口径一致），
+            # 不用中文业务列名——后者靠猜语义，换领域即失效。
+            "pairs": [{"caller_raw": r["caller_raw"],
+                       "callee_raw": r["callee_raw"], "times": r["c"]}
                       for r in pairs[:5]]}
 
 
@@ -544,8 +547,18 @@ def _org_interest_links(store, params: dict, ctx=None) -> dict:
 # ---- 资金链路：两跳过桥（SQL 轨，与图库 Cypher 轨互为校验）----
 @register_function("overpass_two_hop")
 def _overpass_two_hop(store, params: dict) -> dict:
-    from core.graph import overpass_two_hop_sql
-    paths = overpass_two_hop_sql(store)
+    """两跳过桥（SQL 轨）。store 是 ReadOnlyStore，不得访问 execute/conn。
+
+    语义层 lnk_transfers 缺失时不回落直查 L2 源表（REQ-003），返回空集并自报
+    degraded —— FunctionExecutor 捕获后落 function_empty_degraded 健康度诊断，
+    与其余 py Function 的降级口径一致（不静默、不崩、不绕过红线）。
+    """
+    from core.graph import has_semantic_flow, overpass_two_hop_sql
+    if not has_semantic_flow(store):
+        return {"rows": [], "subject": "", "degraded": True,
+                "degraded_reason": "语义层 lnk_transfers 缺失；"
+                                   "py Function 只读通道不直查 L2 业务源表（REQ-003）"}
+    paths = overpass_two_hop_sql(store, allow_unsafe_fallback=False)
     subject = paths[0].source if paths else ""
     return {"rows": [p.to_dict() for p in paths], "subject": subject}
 
@@ -785,7 +798,7 @@ def _collect_subject_events(store, target: str, ctx=None
             else:
                 role, peer = "转入", r["from_raw"]
             events.append({
-                "type": "资金", "src_object": "transaction",
+                "type": "transaction", "src_object": "transaction",
                 "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
                 "role": role,
                 "brief": f'{role}→{peer}{_amount_brief(r["amount"])}'})
@@ -811,7 +824,7 @@ def _collect_subject_events(store, target: str, ctx=None
             else:
                 role, peer = "被叫", r["caller_raw"]
             events.append({
-                "type": "通话", "src_object": "call",
+                "type": "call", "src_object": "call",
                 "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
                 "role": role, "brief": f"{role}→{peer}"})
 
@@ -831,7 +844,7 @@ def _collect_subject_events(store, target: str, ctx=None
             if not r["event_pk"] or not r["d"]:
                 continue
             events.append({
-                "type": "轨迹", "src_object": "trackpoint",
+                "type": "trackpoint", "src_object": "trackpoint",
                 "event_pk": str(r["event_pk"]), "date": r["d"].isoformat(),
                 "role": "出现",
                 "brief": f'出现于 {r["location"] or "未知地点"}'})
@@ -1039,13 +1052,13 @@ def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
                 if not r["event_pk"] or not r["d"]:
                     continue
                 off = (r["d"] - anchor).days
-                _add(r["from_raw"], "资金", {
-                    "type": "资金", "src_object": "transaction",
+                _add(r["from_raw"], "transaction", {
+                    "type": "transaction", "src_object": "transaction",
                     "event_pk": str(r["event_pk"]),
                     "date": r["d"].isoformat(), "offset_days": off,
                     "role": "转出", "brief": f"转出（{off:+d} 天）"})
-                _add(r["to_raw"], "资金", {
-                    "type": "资金", "src_object": "transaction",
+                _add(r["to_raw"], "transaction", {
+                    "type": "transaction", "src_object": "transaction",
                     "event_pk": str(r["event_pk"]),
                     "date": r["d"].isoformat(), "offset_days": off,
                     "role": "转入", "brief": f"转入（{off:+d} 天）"})
@@ -1068,13 +1081,13 @@ def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
                 if not r["event_pk"] or not r["d"]:
                     continue
                 off = (r["d"] - anchor).days
-                _add(r["caller_raw"], "通话", {
-                    "type": "通话", "src_object": "call",
+                _add(r["caller_raw"], "call", {
+                    "type": "call", "src_object": "call",
                     "event_pk": str(r["event_pk"]),
                     "date": r["d"].isoformat(), "offset_days": off,
                     "role": "主叫", "brief": f"主叫（{off:+d} 天）"})
-                _add(r["callee_raw"], "通话", {
-                    "type": "通话", "src_object": "call",
+                _add(r["callee_raw"], "call", {
+                    "type": "call", "src_object": "call",
                     "event_pk": str(r["event_pk"]),
                     "date": r["d"].isoformat(), "offset_days": off,
                     "role": "被叫", "brief": f"被叫（{off:+d} 天）"})
@@ -1097,8 +1110,8 @@ def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
                 if not r["event_pk"] or not r["d"]:
                     continue
                 off = (r["d"] - anchor).days
-                _add(r["person_raw"], "轨迹", {
-                    "type": "轨迹", "src_object": "trackpoint",
+                _add(r["person_raw"], "trackpoint", {
+                    "type": "trackpoint", "src_object": "trackpoint",
                     "event_pk": str(r["event_pk"]),
                     "date": r["d"].isoformat(), "offset_days": off,
                     "role": "出现", "brief": f"轨迹出现（{off:+d} 天）"})
@@ -1116,18 +1129,21 @@ def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
             ev = sorted(bucket["events"],
                         key=lambda x: (x["date"], x["type"], x["event_pk"]))
             offsets = [x["offset_days"] for x in ev]
+            # 输出列名用语义属性名（英文），不用中文业务列名——后者是
+            # 「靠中文猜语义」的病根，换领域即失效。主体列取本体 name_property
+            # 口径（person 为 raw_name，此处统一用 subject_raw 便于下游定位）。
             rows_out.append({
-                "主体": name,
-                "事件类型": "、".join(sorted(bucket["types"])),
-                "类型数": len(bucket["types"]),
-                "事件数": len(ev),
-                "最早偏移": min(offsets),
-                "最晚偏移": max(offsets),
+                "subject_raw": name,
+                "event_types": sorted(bucket["types"]),
+                "type_count": len(bucket["types"]),
+                "event_count": len(ev),
+                "first_offset": min(offsets),
+                "last_offset": max(offsets),
                 "project": pj,
                 "anchor_date": anchor_iso,
                 "events": ev,
             })
-    rows_out.sort(key=lambda x: (x["project"]["pk"], x["主体"]))
+    rows_out.sort(key=lambda x: (x["project"]["pk"], x["subject_raw"]))
     return {
         "hit": bool(rows_out),
         "project": single_pj,

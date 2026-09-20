@@ -51,6 +51,19 @@ _LABEL_LIMIT = 28
 _HISTORICAL_RULE_ID = "unlinked"
 _HISTORICAL_RULE_LABEL = "未关联规则（历史产物）"
 
+# ----------------------------------------------------------------------
+# 节点规模上限（画布成图保护）
+# ----------------------------------------------------------------------
+# 真实案件单条线索的溯源行可达数千、语义层主体可达上万（实测候选枚举 2.5w）。
+# 全量成图会拖垮前端渲染，且人眼根本无法在几千个节点里做研判——画布的价值是
+# **关系概览**，完整明细应去溯源抽屉看。
+#
+# 口径：截断而非丢弃——未成图的行仍可展开补齐（只增不改删，与 reconcile 同源）；
+# meta 如实声明 shown/total，不允许"静默少画"让用户误以为数据只有这些。
+_MAX_ROW_NODES = 60      # source_row 首屏上限
+_MAX_FACT_NODES = 40     # fact 首屏上限
+_ROW_EXPAND_STEP = 120   # 每次"展开更多"追加到的上限
+
 
 def sys_node_id(kind: str, ref: str) -> str:
     """系统节点画布内稳定 id。"""
@@ -68,7 +81,17 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
                 verify_items: list[dict[str, Any]] | None = None,
                 materials: list[dict[str, Any]] | None = None,
                 pack_id: str = "default", base_dir=None,
+                row_limit: int | None = None,
+                fact_limit: int | None = None,
                 ) -> dict[str, Any]:
+    """（续参数说明）
+      row_limit    : source_row 成图上限（缺省 _MAX_ROW_NODES）
+      fact_limit   : fact 成图上限（缺省 _MAX_FACT_NODES）
+
+    返回 doc 含 **meta 键**（截断声明，路由层取出后单独下发、不进用户可编辑
+    的 nodes/edges）：{"truncated": {"source_row": {"shown":n,"total":m}, ...}}。
+    meta 不参与 validate_doc_shape（该校验只看 nodes/edges）。
+    """
     """把线索详情/三栏证据/核查项/书证 → 初始 CanvasDoc。
 
     参数：
@@ -128,9 +151,14 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
     # ---- 数据行层（以 source_rows 为准，与三栏事实同源；去重 by row_uri）----
     row_specs = _row_specs(clue_id, detail, evidence, pack_id=pack_id,
                            base_dir=base_dir)
+    # 规模保护：溯源行是唯一可能爆量的层（实测可达数千）。截断后如实声明
+    # shown/total——不静默少画，让用户知道"还有更多、去溯源抽屉看全量"。
+    row_total = len(row_specs)
+    _row_cap = int(row_limit) if row_limit and row_limit > 0 else _MAX_ROW_NODES
+    shown_rows = row_specs[:_row_cap]
     row_ids: dict[str, str] = {}
     row_y_index: dict[str, int] = {}
-    for spec in row_specs:
+    for spec in shown_rows:
         uri = spec["row_uri"]
         node_id = sys_node_id("source_row", uri)
         row_ids[uri] = node_id
@@ -141,14 +169,21 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
             "props": {
                 "row_uri": uri, "source": spec["source"],
                 "granularity": spec.get("granularity") or "",
+                # 业务发生时间（本体 semantic:event_time 声明的字段值）。
+                # 空串 = 该行无业务时间（本体未声明或该行缺值）→
+                # 业务时间轴应把它归入「无时间」档，而不是猜一个时间。
+                "event_time": spec.get("event_time") or "",
                 "registered": bool(spec.get("registered", False)),
             },
         })
 
     # ---- 事实层（evidence.fact 栏，按栏内序号给稳定 ref）----
     facts = [it for it in evidence if it.get("kind") == "fact"]
+    fact_total = len(facts)
+    _fact_cap = int(fact_limit) if fact_limit and fact_limit > 0 else _MAX_FACT_NODES
+    shown_facts = facts[:_fact_cap]
     fact_ids: list[str] = []
-    for idx, f in enumerate(facts):
+    for idx, f in enumerate(shown_facts):
         ref = fact_ref(clue_id, idx)
         node_id = sys_node_id("fact", ref)
         fact_ids.append(node_id)
@@ -157,7 +192,16 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
             "id": node_id, "kind": "fact", "ref": ref,
             "label": _truncate(text) or "事实",
             "system": True, "pinned": False,
-            "props": {"text": text},
+            "props": {
+                "text": text,
+                # 存下引用的行 uri：溯源行被截断时 fact-[来源行]→row 边会跳过，
+                # 展开补齐后 expand_canvas_rows 据此重连（只增不改删）
+                "source_rows_uris": [
+                    str((sr or {}).get("row_uri") or "")
+                    for sr in (f.get("source_rows") or [])
+                    if str((sr or {}).get("row_uri") or "")
+                ],
+            },
         })
         # rule -[命中]-> fact（含历史占位规则；无规则线索也保留归属链路）
         for rid in rule_ids:
@@ -221,7 +265,125 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
             add_edge(item_nodes[owner], node_id, "挂接")
 
     _apply_positions(nodes)
-    return {"nodes": nodes, "edges": edges}
+    # meta：截断声明（路由层取出单独下发，doc 存储时可一并保留以便 GET 回读
+    # 仍知情；validate_doc_shape 只校验 nodes/edges，不受影响）
+    meta = {
+        "truncated": {
+            "source_row": {"shown": len(shown_rows), "total": row_total},
+            "fact": {"shown": len(shown_facts), "total": fact_total},
+        },
+        "limits": {"row_limit": _row_cap, "fact_limit": _fact_cap},
+        # 完整明细的去处——画布只做关系概览，全量溯源行在详情抽屉
+        "hint": "画布仅渲染关系概览；完整溯源行请见线索详情的溯源抽屉",
+    }
+    return {"nodes": nodes, "edges": edges, "meta": meta}
+
+
+def expand_canvas_rows(doc: dict[str, Any], *,
+                       row_specs: list[dict[str, Any]],
+                       row_limit: int | None = None,
+                       ) -> tuple[dict[str, Any], int, int]:
+    """按需展开溯源行：把未成图的 row 补进画布（只增不改删）。
+
+    与 reconcile_canvas 同源口径——已存在的节点/边/坐标一律不动，只追加缺失的
+    source_row 节点，并重连 fact-[来源行]→row 边（截断时被跳过、现已可连的边）。
+
+    参数 row_specs 须为**全量**（未截断）行清单，由调用方用与 seed 相同的
+    `_row_specs()` 口径重算，否则展开出来的不是同一批行。
+
+    返回 (doc, 新增节点数, 新增边数)；无缺失时原 doc 原样返回。
+    """
+    nodes = list(doc.get("nodes") or [])
+    edges = list(doc.get("edges") or [])
+    node_ids = {str(n.get("id") or "") for n in nodes}
+    edge_ids = {str(e.get("id") or "") for e in edges}
+
+    cap = int(row_limit) if row_limit and row_limit > 0 else _ROW_EXPAND_STEP
+    # 已画的行（按 ref 反查），避免重复加
+    existing_refs = {
+        str(n.get("ref") or "")
+        for n in nodes if n.get("kind") == "source_row"
+    }
+
+    added_nodes = 0
+    added_edges = 0
+    # 目标：把已画行数补到 cap（不是再加 cap 个）
+    room = max(0, cap - len(existing_refs))
+    if room <= 0:
+        return doc, 0, 0
+
+    row_ids: dict[str, str] = {
+        str(n.get("ref") or ""): str(n.get("id") or "")
+        for n in nodes if n.get("kind") == "source_row"
+    }
+    # 新节点纵轴从同列已有节点数继续排（不动既有节点坐标——"只增不改"）
+    row_y = sum(1 for n in nodes if n.get("kind") == "source_row")
+    for spec in row_specs:
+        if room <= 0:
+            break
+        uri = str(spec.get("row_uri") or "")
+        if not uri or uri in existing_refs:
+            continue
+        node_id = sys_node_id("source_row", uri)
+        if node_id in node_ids:
+            continue
+        nodes.append({
+            "id": node_id, "kind": "source_row", "ref": uri,
+            "label": _row_label(spec), "system": True, "pinned": False,
+            # x/y 必填（validate_doc_shape 校验），与 _apply_positions 同口径
+            "x": _X_ROW, "y": row_y * _Y_GAP,
+            "props": {
+                "row_uri": uri, "source": spec.get("source") or "未知数据源",
+                "granularity": str(spec.get("granularity") or ""),
+                "registered": bool(spec.get("registered", False)),
+                # 与 seed 同口径：补齐的行也要带业务时间，否则展开出来的
+                # 行在业务时间轴上会全部落进「无时间」档。
+                "event_time": str(spec.get("event_time") or ""),
+            },
+        })
+        row_y += 1
+        node_ids.add(node_id)
+        row_ids[uri] = node_id
+        added_nodes += 1
+        room -= 1
+
+    # 补边：fact-[来源行]→row（截断时这些边被跳过，现在端点齐了可补）
+    if added_nodes:
+        for n in nodes:
+            if n.get("kind") != "fact":
+                continue
+            for uri in (n.get("props") or {}).get("source_rows_uris") or []:
+                target = row_ids.get(str(uri))
+                if not target:
+                    continue
+                eid = f"e:{n['id']}--来源行--{target}"
+                if eid in edge_ids:
+                    continue
+                edge_ids.add(eid)
+                edges.append({"id": eid, "source": n["id"],
+                              "target": target, "rel": "来源行",
+                              "system": True})
+                added_edges += 1
+
+    if not added_nodes:
+        return doc, 0, 0
+
+    doc = dict(doc)
+    doc["nodes"] = nodes
+    doc["edges"] = edges
+    # 同步 meta：shown 增加，total 不变（仍是全量行数）
+    meta = doc.get("meta")
+    if isinstance(meta, dict):
+        meta = dict(meta)
+        trunc = dict(meta.get("truncated") or {})
+        sr = dict(trunc.get("source_row") or {})
+        sr["shown"] = len(row_ids)
+        sr["total"] = max(int(sr.get("total") or 0), len(row_specs))
+        trunc["source_row"] = sr
+        meta["truncated"] = trunc
+        meta["limits"] = {**(meta.get("limits") or {}), "row_limit": cap}
+        doc["meta"] = meta
+    return doc, added_nodes, added_edges
 
 
 def reconcile_canvas(doc: dict[str, Any], *,
@@ -405,10 +567,40 @@ def validate_patch(old_doc: dict[str, Any], new_doc: Any) -> list[str]:
 # ----------------------------------------------------------------------
 # 辅助
 # ----------------------------------------------------------------------
+def _event_time_keys(pack_id: str = "default", base_dir=None) -> tuple[str, ...]:
+    """业务事件时间属性名（本体 semantic:event_time 声明）。
+
+    画布业务时间轴据此定位「行数据里哪个字段是业务发生时间」。
+    本体未声明 → 返回空元组，调用方回落研判过程时间，绝不硬编码中文列名。
+    """
+    try:
+        from core.ontology_loader import load_semantic_roles
+        roles = load_semantic_roles(pack_id, base_dir)
+        return tuple(roles.get("event_time") or ())
+    except Exception:
+        return ()
+
+
+def _row_event_time(sr: dict[str, Any],
+                    keys: tuple[str, ...]) -> str:
+    """从行数据取业务时间值（ISO 字符串）；取不到返回空串。"""
+    if not isinstance(sr, dict) or not keys:
+        return ""
+    for k in keys:
+        v = sr.get(k)
+        if v is None:
+            continue
+        # 日期对象/字符串都接受；空值跳过
+        s = v.isoformat() if hasattr(v, "isoformat") else str(v).strip()
+        if s:
+            return s
+    return ""
+
+
 def _row_specs(clue_id: str, detail: dict[str, Any],
                evidence: list[dict[str, Any]], *,
                pack_id: str = "default", base_dir=None) -> list[dict[str, Any]]:
-    """收集去重数据行（row_uri, source, granularity, registered）。
+    """收集去重数据行（row_uri, source, granularity, registered, event_time）。
 
     口径：优先 detail.source_rows（assemble_detail 视图行，含回填），
     无视图行时回落三栏 fact.source_rows 引用。行 URI 与
@@ -418,13 +610,17 @@ def _row_specs(clue_id: str, detail: dict[str, Any],
     seen: set[str] = set()
 
     def push(uri: str, source: str, granularity: str = "",
-             registered: bool = False) -> None:
+             registered: bool = False, event_time: str = "") -> None:
         if not uri or uri in seen:
             return
         seen.add(uri)
         specs.append({"row_uri": uri, "source": source,
                       "granularity": granularity,
-                      "registered": registered})
+                      "registered": registered,
+                      "event_time": event_time})
+
+    # 业务时间属性名（本体声明），用于从行数据定位业务发生时间
+    et_keys = _event_time_keys(pack_id, base_dir)
 
     view_rows = detail.get("source_rows")
     if isinstance(view_rows, list) and view_rows:
@@ -434,14 +630,16 @@ def _row_specs(clue_id: str, detail: dict[str, Any],
             ref = _make_source_ref(sr, idx, clue_id, pack_id=pack_id,
                                    base_dir=base_dir)
             push(ref["row_uri"], ref.get("source") or "未知数据源",
-                 granularity=str(sr.get("粒度") or ""))
+                 granularity=str(sr.get("粒度") or ""),
+                 event_time=_row_event_time(sr, et_keys))
     else:
         for f in evidence:
             if f.get("kind") != "fact":
                 continue
             for sr in f.get("source_rows") or []:
                 push(str((sr or {}).get("row_uri") or ""),
-                     str((sr or {}).get("source") or "未知数据源"))
+                     str((sr or {}).get("source") or "未知数据源"),
+                     event_time=_row_event_time(sr or {}, et_keys))
     return specs
 
 

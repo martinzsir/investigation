@@ -72,7 +72,47 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
     det = CoreStore(db_path=str(factory.version_path(case.id, version)))
     try:
         ctx: dict = {}
+        # 零填写（auto）/必填缺失：按 auto_from 推导补齐后再跑。
+        # 先补齐再落盘，保证 lens_runs 产物与 ops 事件记录的是**实际使用的
+        # 参数**（而非空壳），自动推荐了什么依然可审计。
+        #
+        # 触发补齐的两种情况：
+        #   ① 必填参数缺失 → auto_fill_params 推导整组参数
+        #   ② 主体参数已填但缺 target_type → 同名主体（如 张卫国 同在
+        #      person/account）会让 resolve_subject 抛 ValueError → 镜头被
+        #      隔离成 0 线索。此时探测真实类型消歧，不必让用户显式填写。
         try:
+            schema = spec.params_schema or {}
+            missing = any(
+                (ps or {}).get("required") and lens_params.get(k) in (None, "")
+                for k, ps in schema.items())
+            # 主体→消歧类型 参数对（单主体 / 双主体）
+            _PAIRS = (("target_subject", "target_type"),
+                      ("subject_a", "target_type_a"),
+                      ("subject_b", "target_type_b"))
+            needs_disambig = (not missing) and any(
+                subj_key in lens_params and lens_params.get(subj_key)
+                and type_key in schema and not lens_params.get(type_key)
+                for subj_key, type_key in _PAIRS)
+
+            if missing:
+                from core.focus import auto_fill_params
+                combos, _src = auto_fill_params(spec, det, ctx)
+                if combos:
+                    filled = {k: v for k, v in combos[0].items()
+                              if k != "_param_source"}
+                    for k, v in filled.items():
+                        lens_params.setdefault(k, v)
+            elif needs_disambig:
+                from core.focus import _probe_type
+                for subj_key, type_key in _PAIRS:
+                    if (subj_key in lens_params and lens_params.get(subj_key)
+                            and type_key in schema
+                            and not lens_params.get(type_key)):
+                        t = _probe_type(det, lens_params[subj_key],
+                                        pack=spec.pack_id)
+                        if t and t != "auto":
+                            lens_params[type_key] = t
             clues = skill_invoke(reg, sid, store=det, ctx=ctx,
                                  params=lens_params)
         except ValueError as e:

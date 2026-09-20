@@ -411,6 +411,18 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
               <code class="cid">{{ detail.clue_id }}</code>
               <span v-if="detail.skill_id" class="meta-item">规则 {{ detail.skill_id }}</span>
               <span class="meta-item">溯源 {{ detail.source_row_count ?? detail.source_rows?.length ?? 0 }} 行</span>
+              <!-- P4：假设链——血缘第一环（假设→规则→Function→语义表→原始行）。
+                   此前产物里有、接口也返回了，但前端从未渲染，血缘链在界面上是断的。 -->
+              <span
+                v-if="(detail as any).assumption_chain?.length"
+                class="meta-item"
+                data-testid="clue-assumption-chain"
+              >
+                假设链
+                <code v-for="h in (detail as any).assumption_chain" :key="h"
+                  class="assump-chip">{{ h }}</code>
+              </span>
+              <span v-else class="meta-item dim">无假设驱动（自动发现）</span>
               <span v-if="detail.updated_at" class="meta-item">更新 {{ detail.updated_at }}</span>
               <span v-if="detail.status_source" class="meta-item">状态源：{{ detail.status_source === 'state' ? '活状态' : '产物版本' }}</span>
             </div>
@@ -581,6 +593,16 @@ async function onEvidenceUnlink(payload: { material_id: string }): Promise<void>
   font-size: 12px;
   /* 三级色 #5A7484 对底色仅 3.8:1，不达 AA：改用二级色（≈9:1） */
   color: var(--sun-text-secondary);
+}
+/* P4 假设链：与线索 id 同款等宽，但用警示色区分（血缘第一环） */
+.assump-chip {
+  font-family: var(--sun-font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border: 1px solid var(--sun-warn-border, var(--sun-border));
+  border-radius: 3px;
+  color: var(--sun-warn-text);
 }
 .cid {
   font-family: var(--sun-font-mono);

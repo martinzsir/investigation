@@ -21,6 +21,9 @@ import {
   isManualNode,
   isSuggestionNode,
   KIND_LABELS,
+  PROVENANCE_HINTS,
+  PROVENANCE_LABELS,
+  provenanceOf,
   type AdoptUiState,
   type CanvasEdge,
   type CanvasNode,
@@ -185,6 +188,25 @@ const fileDetail = computed<FileDetailDto | null>(() => {
 // ======================================================================
 // M4 RC-105：核查项节点（pb 建议虚节点 / 已采纳核查项）
 // ======================================================================
+// ======================================================================
+// P1-② 人机来源标记
+// ======================================================================
+// 与画布描边同口径（domain/canvas.provenanceOf）：机器派生 / AI 建议 /
+// 人工已采纳 / 人工新增。正兵据此判断「这条内容的可信度由谁背书」。
+const prov = computed(() =>
+  props.node ? provenanceOf(props.node) : ('system' as const),
+)
+const provHint = computed(() => PROVENANCE_HINTS[prov.value])
+/** 徽标色调：待采纳=警示黄，已采纳=成功绿（权威），人工新增=暖橙，机器=默认 */
+const provTagType = computed<'default' | 'warning' | 'success' | 'info'>(() => {
+  switch (prov.value) {
+    case 'suggestion': return 'warning'
+    case 'adopted': return 'success'
+    case 'manual': return 'info'
+    default: return 'default'
+  }
+})
+
 const isVerifyItem = computed(() => props.node?.kind === 'verify_item')
 const isSuggestion = computed(
   () => (props.node ? isSuggestionNode(props.node) : false),
@@ -358,6 +380,18 @@ function switchAudit(v: 'business' | 'audit'): void {
         <div class="node-head">
           <NTag size="small" :bordered="false" class="kind-tag">
             {{ KIND_LABELS[node.kind] }}
+          </NTag>
+          <!-- P1-② 人机来源：正兵先看「这条内容是谁给的」再读内容。
+               悬浮显示该态的完整语义（机器自动派生 / 待采纳 / 已确认 / 人加的）。 -->
+          <NTag
+            size="small"
+            :bordered="false"
+            :type="provTagType"
+            class="prov-tag"
+            :title="provHint"
+            data-testid="drawer-provenance"
+          >
+            {{ PROVENANCE_LABELS[prov] }}
           </NTag>
           <span class="node-label" data-testid="drawer-node-label">{{ node.label }}</span>
           <NTag v-if="node.pinned" size="tiny" type="warning" :bordered="false">

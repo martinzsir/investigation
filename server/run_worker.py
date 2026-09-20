@@ -29,6 +29,28 @@ from server.app.worker.pool import WorkerPool  # noqa: E402
 from server.app.worker.reclaim import VersionReclaimer  # noqa: E402
 
 
+def _bootstrap_packs() -> None:
+    """Worker 启动时挂载 packs/* 镜头（relation/timeline 等）。
+
+    API 进程在 create_app 中调用 discover()，Worker 是独立进程，
+    若不补调则 registry 只有内置五技能，定向镜头一律 LENS_NOT_FOUND。
+    单包失败只拒该包、不连坐（discover 内部容错）。
+    """
+    try:
+        from core.pack_loader import discover as discover_packs
+        report = discover_packs()
+        loaded = report.get("loaded", [])
+        failed = report.get("failed", [])
+        if loaded:
+            print(f"[worker] packs loaded: {', '.join(loaded)}")
+        if failed:
+            for f in failed:
+                print(f"[worker] pack failed: {f['path']} — {f['error']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[worker] discover failed (ignored): "
+              f"{type(e).__name__}: {e}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="孙武 Worker（案件构建后台任务）")
     ap.add_argument("--meta", default="meta/meta.db", help="元数据 SQLite 路径")
@@ -58,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         ctx["template_db"] = args.template
 
     pool = WorkerPool(repo, ctx, max_workers=args.workers)
+
+    # 挂载 packs/* 镜头（relation/timeline 等），否则定向镜头 LENS_NOT_FOUND
+    _bootstrap_packs()
+
     if args.once:
         ran = pool.run_next()
         print("[worker] --once:", "executed one task" if ran else "no task")

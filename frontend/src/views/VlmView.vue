@@ -147,14 +147,19 @@ async function submitDraft(): Promise<void> {
 async function preview(rec: VlmDraftRecord): Promise<void> {
   if (previewUrls.value[rec.proposal_id]) return
   const mid = materialIdFromUri(rec.payload.input.image_uri)
+  if (!mid) {
+    message.error('图像 URI 解析失败（无法定位材料）')
+    return
+  }
   const mat = evidenceItems.value.find((m) => m.material_id === mid)
-  if (!mat || !mat.clue_id) {
+  const clueId = mat?.clue_id
+  if (!mat || !clueId) {
     message.error('未找到书证来源（图像须先上传至某线索）')
     return
   }
   try {
     const blob = await evidenceApi.download(
-      cs.currentCaseId!, mat.clue_id, mid)
+      cs.currentCaseId!, clueId, mid)
     previewUrls.value[rec.proposal_id] = URL.createObjectURL(blob)
   } catch (e) {
     message.error(isApiError(e) ? e.message : presentError(e).title)

@@ -33,7 +33,12 @@ def main() -> int:
         "CREATE OR REPLACE TABLE 银行流水 AS "
         "SELECT * FROM read_parquet('data/银行流水.parquet')"
     )
-    n_rows = store.query("SELECT COUNT(*) AS c FROM 银行流水")[0]["c"]
+    # 本脚本自建临时流表后需确认行数；直查业务源表违反 REQ-003，
+    # 故显式走 unsafe 调试通道（具名 operator + 理由 + 审计落盘）。
+    n_rows = store.query(
+        "SELECT COUNT(*) AS c FROM 银行流水", unsafe=True,
+        operator="scripts.q2_overpass_cypher", reason="Q2 双轨校验前确认自建模流表行数",
+    )[0]["c"]
     print(f"数据：银行流水 {n_rows} 行")
 
     g = GraphBackend("data/ladybug/investigation.lbug")

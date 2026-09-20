@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from server.app import hypotheses_view, profiles_view
+from server.app import hypotheses_store, hypotheses_view, profiles_view
 from server.app.deps import (
     WebContext,
     get_ctx,
@@ -66,6 +66,144 @@ def get_hypotheses(case_id: str,
     finally:
         if store is not None:
             store.close()
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+# ----------------------------------------------------------------------
+# 采样预演（P3）
+# ----------------------------------------------------------------------
+# core/sampling.py 模块完整可用（1% 采样验证假设方向，避免盲投全量算力），
+# 但此前仅 run_all.py 调用，web 端零入口。此处补只读预演接口。
+# 红线：只给方向**建议**，是否投全量由正兵拍板（不自动触发全量扫描）。
+
+class SamplingIn(BaseModel):
+    hypothesis_ids: list[str] = []
+    sample_ratio: float = 0.01
+
+
+@router.post("/cases/{case_id}/sampling/preflight")
+def sampling_preflight(case_id: str, body: SamplingIn,
+                       p: Principal = Depends(get_principal),
+                       ctx: WebContext = Depends(get_ctx)):
+    """采样预演：对指定假设跑小样本，给出方向判定（明确/存疑/否定）。
+
+    判定阈值：命中率 ≥5% 方向明确；1%~5% 存疑（建议扩大到 5% 再验）；
+    <1% 方向否定（建议调整假设，不投全量）。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    ratio = body.sample_ratio
+    if not (0 < ratio <= 1):
+        raise APIError(ERR_VALIDATION, "sample_ratio 必须在 (0, 1] 区间", 400)
+    store = None
+    try:
+        try:
+            store = ctx.factory.for_case(case_id, mode="read")
+        except FileNotFoundError:
+            raise APIError(ERR_NOT_FOUND, "案件未 BUILD，无数据可采样", 404)
+        from core.sampling import SamplingPreflight
+        pre = SamplingPreflight(store, sample_ratio=ratio).run(
+            body.hypothesis_ids)
+        return ok({
+            # 红线条注：预演只给方向建议，不自动触发全量
+            "advisory_only": True,
+            "note": "采样预演只给方向建议，是否投全量由正兵拍板",
+            **pre,
+        }, data_version=ctx.repo.current_version(case_id))
+    finally:
+        if store is not None:
+            store.close()
+
+
+# ----------------------------------------------------------------------
+# 人工假设 CRUD（P1）
+# ----------------------------------------------------------------------
+# 只持久化**人工部分**：自动假设从 findings/rules 派生（每次 BUILD 重算），
+# 落盘会造成产物与数据漂移；人工假设是正兵判断，不该被重扫冲掉。
+# 落盘 cases/<cid>/hypotheses.json（与 lenses.json 同级），不进本体指纹。
+
+class HypothesisIn(BaseModel):
+    """人工假设入参：description + falsification 必填（庙算招牌是自动证伪）。"""
+    description: str
+    falsification: str
+    evidence_needed: list[str] = []
+    data_sources: list[str] = []
+    procedure: str = ""
+    dimension: list[str] = []
+    jian_types: list[str] = []
+
+
+class ReorderIn(BaseModel):
+    order: list[str]
+
+
+def _manual_payload(ctx: WebContext, case_id: str) -> dict:
+    return hypotheses_store.load_manual(ctx.factory.case_dir(case_id))
+
+
+@router.get("/cases/{case_id}/hypotheses/manual")
+def list_manual_hypotheses(case_id: str,
+                           p: Principal = Depends(get_principal),
+                           ctx: WebContext = Depends(get_ctx)):
+    """人工假设清单（含审计链）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    return ok(_manual_payload(ctx, case_id),
+              data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/hypotheses/manual",
+             status_code=201)
+def add_manual_hypothesis(case_id: str, body: HypothesisIn,
+                          p: Principal = Depends(get_principal),
+                          ctx: WebContext = Depends(get_ctx)):
+    """新增人工假设（证伪条件必填）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    try:
+        data = hypotheses_store.add_manual(
+            ctx.factory.case_dir(case_id), body.model_dump(), p.username)
+    except hypotheses_store.HypothesesError as e:
+        raise APIError(ERR_VALIDATION, str(e), 400)
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+@router.put("/cases/{case_id}/hypotheses/manual/{hid}")
+def update_manual_hypothesis(case_id: str, hid: str, body: HypothesisIn,
+                             p: Principal = Depends(get_principal),
+                             ctx: WebContext = Depends(get_ctx)):
+    """修改人工假设（自动生成的假设不可改）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    try:
+        data = hypotheses_store.update_manual(
+            ctx.factory.case_dir(case_id), hid, body.model_dump(), p.username)
+    except hypotheses_store.HypothesesError as e:
+        raise APIError(ERR_VALIDATION, str(e), 400)
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+@router.delete("/cases/{case_id}/hypotheses/manual/{hid}")
+def remove_manual_hypothesis(case_id: str, hid: str,
+                             p: Principal = Depends(get_principal),
+                             ctx: WebContext = Depends(get_ctx)):
+    """删除人工假设。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    try:
+        data = hypotheses_store.remove_manual(
+            ctx.factory.case_dir(case_id), hid, p.username)
+    except hypotheses_store.HypothesesError as e:
+        raise APIError(ERR_VALIDATION, str(e), 400)
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+@router.post("/cases/{case_id}/hypotheses/manual/reorder")
+def reorder_manual_hypotheses(case_id: str, body: ReorderIn,
+                              p: Principal = Depends(get_principal),
+                              ctx: WebContext = Depends(get_ctx)):
+    """重排人工假设顺序。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    try:
+        data = hypotheses_store.reorder(
+            ctx.factory.case_dir(case_id), body.order, p.username)
+    except hypotheses_store.HypothesesError as e:
+        raise APIError(ERR_VALIDATION, str(e), 400)
     return ok(data, data_version=ctx.repo.current_version(case_id))
 
 

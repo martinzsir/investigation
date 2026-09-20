@@ -23,7 +23,7 @@ const cs = useCaseStore()
 const router = useRouter()
 const route = useRoute()
 const message = useMessage()
-const { config: ontologyCfg } = useCaseOntologyConfig()
+const { config: ontologyCfg, dimLabel } = useCaseOntologyConfig()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -84,7 +84,10 @@ const rooms = computed<Record<string, number>>(() => {
   for (const r of dimensionNames.value) acc[r] = 0
   for (const c of clues.value) {
     for (const d of c.dimension ?? []) {
-      if (dimensionNames.value.includes(d)) acc[d] = (acc[d] ?? 0) + 1
+      // 线索 dimension 自 code 化后是机器标识符（fund…），而雷达轴与房间色板
+      // 以中文维度名为键——不翻译则 includes 恒 false，五维雷达全 0。
+      const label = dimLabel(d)
+      if (dimensionNames.value.includes(label)) acc[label] = (acc[label] ?? 0) + 1
     }
   }
   return acc

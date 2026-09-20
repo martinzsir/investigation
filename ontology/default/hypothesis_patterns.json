@@ -1,0 +1,167 @@
+{
+  "schema_version": 2,
+  "_note": "REQ-G-025 庙算假设模式库（反常 → 假设映射知识）。与 dimensions.json / enum_space.json 并列于**本体领域层**——假设回答「什么算可疑」，是领域知识；packs/ 下的镜头才是「怎么查」的研判手段，两者不同维度不可混放。",
+  "_refs": "本文件一律引用**本体标识符**，不写领域文本：dimension 引用 dimensions.json 的 **code**（机器标识符，如 fund/comm/behavior/relation/time；中文 name 仅作展示名）；jian_types 引用 packs/wujian/jians.json 的 name；object_types / evidence_object_types 引用 objects.json 的 name（中文显示名由 jians.json 的 source_names 运行时解析）。装载期做交叉校验，未声明即硬失败。",
+  "_text_fields": "description / falsification / procedure 保持自然语言，这是设计而非疏漏：description 是假设本身（「什么算可疑」这条知识就是这句话，无标识符可替代）；falsification 与 rules.json 的 rule_text 同类——项目既有立场即「判据文本声明为文本，机器不解析」；procedure 是法律程序状态，本体无对应声明（actions.json 是线索处置动作，不是侦查程序）。keywords 天然是文本——它匹配 finding 的文本。",
+  "_match": "rule_ids 为主力关联（rules.json 命中即挂假设，精确、可溯源）；keywords 为可选弱兜底（仅当规则未声明 assumption 时按文本匹配）。两者皆无则该模板永不命中。",
+  "_id_check": "假设 id 被 rules.json 的 assumption 与 verify_playbooks.json 的 match.assumption 反向引用；装载期校验「被引用 ⊆ 已声明」，防悬空引用（新增引用须先在模式库声明）。",
+  "patterns": [
+    {
+      "rule_ids": [
+        "R1"
+      ],
+      "keywords": [
+        "整数",
+        "存入"
+      ],
+      "hypothesis": {
+        "id": "H1",
+        "description": "收受财物（异常整数现金存入）",
+        "evidence_object_types": [
+          "transaction"
+        ],
+        "evidence_notes": [
+          "言词证据"
+        ],
+        "object_types": [
+          "transaction",
+          "bid_project"
+        ],
+        "procedure": "银行调取已批",
+        "falsification": "流水无对价时间耦合则证伪",
+        "dimension": [
+          "fund",
+          "time"
+        ],
+        "jian_types": [
+          "生间"
+        ]
+      }
+    },
+    {
+      "rule_ids": [
+        "R2",
+        "R6"
+      ],
+      "keywords": [
+        "过桥"
+      ],
+      "hypothesis": {
+        "id": "H4",
+        "description": "财物通过第三方过桥",
+        "evidence_object_types": [
+          "transaction",
+          "org"
+        ],
+        "evidence_notes": [
+          "冠字号码溯源"
+        ],
+        "object_types": [
+          "transaction",
+          "org"
+        ],
+        "procedure": "需新增调取授权",
+        "falsification": "若中间方与下游交易有合法商业背景则证伪",
+        "dimension": [
+          "fund",
+          "time"
+        ],
+        "jian_types": [
+          "反间"
+        ]
+      }
+    },
+    {
+      "rule_ids": [
+        "R3"
+      ],
+      "keywords": [
+        "频次",
+        "突增"
+      ],
+      "hypothesis": {
+        "id": "H3",
+        "description": "二人存在密切私下关系（通讯频次突增）",
+        "evidence_object_types": [
+          "call",
+          "trackpoint"
+        ],
+        "evidence_notes": [],
+        "object_types": [
+          "call",
+          "trackpoint"
+        ],
+        "procedure": "通话调取已批",
+        "falsification": "通话/轨迹无异常则证伪",
+        "dimension": [
+          "comm",
+          "behavior"
+        ],
+        "jian_types": [
+          "生间"
+        ]
+      }
+    },
+    {
+      "rule_ids": [
+        "R4"
+      ],
+      "keywords": [
+        "同框"
+      ],
+      "hypothesis": {
+        "id": "H3",
+        "description": "二人存在密切私下关系（通讯频次突增）",
+        "evidence_object_types": [
+          "call",
+          "trackpoint"
+        ],
+        "evidence_notes": [],
+        "object_types": [
+          "call",
+          "trackpoint"
+        ],
+        "procedure": "通话调取已批",
+        "falsification": "通话/轨迹无异常则证伪",
+        "dimension": [
+          "comm",
+          "behavior"
+        ],
+        "jian_types": [
+          "生间"
+        ]
+      }
+    },
+    {
+      "rule_ids": [
+        "R5"
+      ],
+      "keywords": [
+        "利益关联"
+      ],
+      "hypothesis": {
+        "id": "H2",
+        "description": "关联公司因行贿获中标优势（利益关联）",
+        "evidence_object_types": [
+          "bid_project",
+          "org"
+        ],
+        "evidence_notes": [
+          "利益输送链"
+        ],
+        "object_types": [
+          "org",
+          "bid_project"
+        ],
+        "procedure": "档案调取已批",
+        "falsification": "中标评分正常且无关联则证伪",
+        "dimension": [
+          "relation"
+        ],
+        "jian_types": [
+          "因间"
+        ]
+      }
+    }
+  ]
+}

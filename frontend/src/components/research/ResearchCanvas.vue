@@ -26,8 +26,12 @@ import {
   type CanvasDoc,
   type CanvasEdge,
   type CanvasEnvelope,
+  type CanvasMeta,
   type CanvasNode,
   type CanvasSnapshot,
+  PROVENANCE_LABELS,
+  provenanceOf,
+  rowTruncation,
   type ExpandDirection,
   type ExpandEnvelope,
   type ExpandNotice,
@@ -72,9 +76,17 @@ import {
   overviewColumnLayer,
   overviewCountText,
   overviewLinkWidth,
+  evidenceLinkWidth,
   type OverviewModel,
 } from '../../domain/canvas-overview'
 import { createAutosaver } from '../../domain/canvas-autosave'
+import {
+  buildTimeAxis,
+  layoutByTime,
+  timeAxisSummary,
+  type TimeMode,
+} from '../../domain/canvas-layout-time'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 import {
   FOCUS_HOPS_MAX,
   SYNTHETIC_EDGE_PREFIX,
@@ -133,6 +145,36 @@ const errorMsg = ref('')
 const doc = ref<CanvasDoc | null>(null)
 const version = ref(0)
 const semanticReady = ref(true)
+/** 成图规模声明（溯源行截断 shown/total） */
+const canvasMeta = ref<CanvasMeta | null>(null)
+/** 溯源行截断信息（无截断为 null） */
+const rowTrunc = computed(() => rowTruncation(canvasMeta.value ?? undefined))
+const expandingRows = ref(false)
+
+/**
+ * 展开更多溯源行。
+ * row_limit 是**补到**的目标总数（不是再加多少）——每次在当前基础上加一档，
+ * 避免一次拉几千行把前端拖垮。后端幂等，重复调用不重复加。
+ */
+async function expandMoreRows(): Promise<void> {
+  if (!props.caseId || !props.clueId || expandingRows.value) return
+  const cur = rowTrunc.value
+  if (!cur) return
+  const target = Math.min(cur.total, cur.shown + _ROW_EXPAND_STEP)
+  expandingRows.value = true
+  try {
+    const env = await canvasApi.expandRows(
+      props.caseId, props.clueId, target, version.value)
+    absorbReload(env)
+  } catch (e) {
+    errorMsg.value = presentError(e).title
+  } finally {
+    expandingRows.value = false
+  }
+}
+
+/** 每次「展开更多」追加的档位（与后端 _ROW_EXPAND_STEP 同量级） */
+const _ROW_EXPAND_STEP = 120
 const graphFailed = ref(false)
 
 const containerEl = ref<HTMLDivElement | null>(null)
@@ -324,6 +366,9 @@ function toG6Data(d: CanvasDoc): unknown {
           stale: n.stale === true,
           pinned: n.pinned === true,
           manual: n.system !== true,
+          // P1-② 人机来源（四态）：机器派生 / AI 建议 / 人工已采纳 / 人工新增
+          provenance: provenanceOf(n),
+          provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
           // M4 RC-105：未采纳手册建议（虚线态）
           suggestion: isSuggestionNode(n),
           // 简洁视图才给 +/−（完整视图所有节点恒显）
@@ -347,6 +392,11 @@ function toG6Data(d: CanvasDoc): unknown {
           label: e.rel,
           system: e.system === true,
           note: e.note ?? '',
+          // P2-① 边证据强度：只有「命中」边承担证据量语义
+          // （rule→fact：这条命中背后有多少行原始证据）。
+          // 其余边是 1:1 结构关系（来源行/涉及），按行数加粗没有意义。
+          evidenceRows:
+            e.rel === '命中' ? (factEvidenceRows.value.get(e.target) ?? 0) : 0,
         },
       })),
       // P1：传递节点折叠后的合成边（点它可展开被吃掉的那一段）
@@ -437,7 +487,8 @@ const viewMode = ref<ViewMode>(initialPref.mode)
 /** 研判视角（横轴不变，纵向布局策略）：
  *  - process：流程视角，按 RANK_X 分列 + 数据血缘 y 序
  *  - tier：证据强度视角，三横带：已锁死 / 待核实 / 推测 */
-type Perspective = 'process' | 'tier'
+/** 研判视角：流程（默认）/ 证据强度 / 时间轴（研判过程时间线） */
+type Perspective = 'process' | 'tier' | 'time'
 const perspective = ref<Perspective>('process')
 /** 图例收起态（避免遮挡右侧数据源列） */
 const legendCollapsed = ref<boolean>(initialPref.legendCollapsed)
@@ -557,6 +608,22 @@ const factDimension = computed<Map<string, string>>(() => {
   return out
 })
 
+/**
+ * fact 节点 → 其承载的溯源行数（证据强度基数）。
+ * 用于「命中」边的粗细编码：证据行越多，这条 rule→fact 的命中越扎实。
+ * 对数缩放——100 行不该比 10 行粗 10 倍，人眼分辨不了，且会糊成一团。
+ */
+const factEvidenceRows = computed<Map<string, number>>(() => {
+  const out = new Map<string, number>()
+  if (!doc.value) return out
+  for (const n of doc.value.nodes) {
+    if (n.kind !== 'fact') continue
+    const rows = detailModel.value.groupByFact.get(n.id)?.rows.length ?? 0
+    if (rows > 0) out.set(n.id, rows)
+  }
+  return out
+})
+
 const projection = computed(() =>
   doc.value
     ? projectView(doc.value, detailModel.value, {
@@ -586,8 +653,57 @@ const laidOutDoc = computed<CanvasDoc | null>(() => {
   const base = renderDoc.value
   if (!base) return null
   if (perspective.value === 'tier') return layoutByTier(base)
+  if (perspective.value === 'time') {
+    // 业务时间口径需本体已声明；未声明时 layoutByTime 会因全无时间而原样返回，
+    // 这里显式回落 process，保证「没有业务时间就按过程时间排」，不空白。
+    const mode: TimeMode = canUseEventTime.value ? timeMode.value : 'process'
+    return layoutByTime(base, mode)
+  }
   return base
 })
+
+/**
+ * 时间轴口径：process=研判过程时间（节点何时产生）/ event=业务发生时间。
+ * 业务时间需本体声明 semantic:event_time，未声明时强制回落 process——
+ * 绝不靠中文列名猜测「哪个字段是时间」。
+ */
+const timeMode = ref<TimeMode>('process')
+const { hasEventTime } = useCaseOntologyConfig()
+/** 允许使用业务时间口径（本体已声明） */
+const canUseEventTime = computed(() => hasEventTime.value)
+
+/** 时间轴视角摘要（状态栏：起止日期 + 无时间节点数） */
+const timeAxis = computed(() =>
+  doc.value ? buildTimeAxis(doc.value, timeMode.value) : null,
+)
+const timeSummary = computed(() =>
+  timeAxis.value ? timeAxisSummary(timeAxis.value) : null,
+)
+
+/** 状态栏视角名（三态） */
+const perspectiveLabel = computed(() => {
+  switch (perspective.value) {
+    case 'tier': return '证据强度'
+    case 'time': return '时间轴'
+    default: return '流程'
+  }
+})
+
+/** 时间轴口径名 */
+const timeModeLabel = computed(() =>
+  timeMode.value === 'event' ? '业务时间' : '过程时间',
+)
+
+/**
+ * 切换时间轴口径（过程时间 ↔ 业务时间）。
+ * 本体未声明业务时间字段时不允许切到 event——宁可不给，也不猜。
+ */
+function toggleTimeMode(): void {
+  if (!canUseEventTime.value) return
+  timeMode.value = timeMode.value === 'event' ? 'process' : 'event'
+  persistViewPref()
+  pendingRefit = true
+}
 
 /** 证据强度视角下的各带节点数（状态栏摘要） */
 const tierCounts = computed<Record<Tier, number>>(() =>
@@ -922,6 +1038,9 @@ function toG6NodeData(n: CanvasNode): Record<string, unknown> {
     stale: n.stale === true,
     pinned: n.pinned === true,
     manual: n.system !== true,
+    // P1-② 人机来源（卡片 data 重建口径须与 toG6Data 一致）
+    provenance: provenanceOf(n),
+    provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
     suggestion: isSuggestionNode(n),
     toggleable: viewMode.value === 'compact' && isToggleable(n),
     expanded: expandedRoots.value.has(n.id),
@@ -1206,10 +1325,13 @@ function absorbExpand(nodeId: string, env: ExpandEnvelope): void {
 }
 
 function absorbReload(env: { doc: CanvasDoc; version: number;
-                             semantic_ready?: boolean }): void {
+                             semantic_ready?: boolean;
+                             meta?: CanvasMeta }): void {
   doc.value = env.doc
   version.value = env.version
   semanticReady.value = env.semantic_ready !== false
+  // 成图规模声明（溯源行截断）；后端缺失即视为未截断
+  if (env.meta) canvasMeta.value = env.meta
 }
 
 function failExpand(nodeId: string, e: unknown): void {
@@ -1398,13 +1520,20 @@ function onRelayout(): void {
   message.success('已重新排版，钉住节点保持不动')
 }
 
-/** 切换研判视角：process（流程） / tier（证据强度）。
+/** 切换研判视角：process（流程）→ tier（证据强度）→ time（时间轴）→ 循环。
  *  切换时清焦点 + 重排视口；偏好持久化。 */
+const PERSPECTIVE_CYCLE: Perspective[] = ['process', 'tier', 'time']
+
 function onTogglePerspective(): void {
-  perspective.value = perspective.value === 'tier' ? 'process' : 'tier'
+  const i = PERSPECTIVE_CYCLE.indexOf(perspective.value)
+  perspective.value = PERSPECTIVE_CYCLE[(i + 1) % PERSPECTIVE_CYCLE.length]
   persistViewPref()
   // 视角切换 = 整体布局变化，重排视口；附带清焦点（节点跨带位移，路径条不再连贯）
-  if (perspective.value === 'tier') clearFocus()
+  if (perspective.value !== 'process') clearFocus()
+  // 非 preset 布局不感知分带/时间档，退回流程视角
+  if (g6LayoutMode.value !== 'preset' && perspective.value !== 'process') {
+    perspective.value = 'process'
+  }
   pendingRefit = true
 }
 
@@ -1413,8 +1542,8 @@ function onTogglePerspective(): void {
 async function onLayoutModeChange(mode: G6LayoutMode): Promise<void> {
   if (g6LayoutMode.value === mode) return
   g6LayoutMode.value = mode
-  // 非 preset 模式下禁用 tier 视角（G6 内置布局不感知 tier 分带）
-  if (mode !== 'preset' && perspective.value === 'tier') {
+  // 非 preset 模式下禁用 tier/time 视角（G6 内置布局不感知分带与时间档）
+  if (mode !== 'preset' && perspective.value !== 'process') {
     perspective.value = 'process'
   }
   // 销毁旧实例，等 DOM 更新后重建
@@ -2244,11 +2373,37 @@ const lrShow = ref(false)
 const lrLenses = ref<LensSpecItem[]>([])
 const lrBusy = ref(false)
 
-/** 选中主体标签预填同名参数（镜头按 raw_name/代理键解析） */
+/** 选中主体标签——只预填**主体类**参数。
+ *  旧实现把同一个 label 同时灌进 target_subject/subject_a/project，
+ *  导致「查围标时间碰撞」的 project 被填成人名（语义错误）。
+ *  项目类参数改由后端 /params 接口按 obj_bid_project 单独给候选。
+ */
 const lrPrefill = computed<Record<string, unknown>>(() => {
   const id = selectedNodeId.value
   const label = id ? nodeLabel(id) : ''
-  return label ? { target_subject: label, subject_a: label, project: label } : {}
+  return label ? { target_subject: label, subject_a: label } : {}
+})
+
+/** 画布可见主体名（候选规模主力，典型 20-80）。
+ *  只取 kind='object' 的实体节点——rule/fact/source_row 等不是镜头主体，
+ *  混进候选会污染下拉（且与 target_subject 语义不符）。
+ */
+const lrCanvasNodes = computed<string[]>(() => {
+  const out: string[] = []
+  const nodes = graphDoc.value?.nodes ?? doc.value?.nodes ?? []
+  for (const n of nodes as { kind?: string; label?: string }[]) {
+    if (n?.kind !== 'object') continue
+    const nm = n.label?.trim()
+    if (nm && !out.includes(nm)) out.push(nm)
+    if (out.length >= 100) break
+  }
+  return out
+})
+
+/** 画布选中主体名 */
+const lrSelectedNode = computed<string | null>(() => {
+  const id = selectedNodeId.value
+  return id ? nodeLabel(id) || null : null
 })
 
 async function openLensRun(): Promise<void> {
@@ -2364,8 +2519,15 @@ async function mountGraph(): Promise<void> {
           lineWidth: (d: G6Datum) => (d.data?.pinned ? 2.5 : 1.25),
           // M4 RC-105：未采纳手册建议节点虚线描边
           lineDash: (d: G6Datum) => (d.data?.suggestion ? [4, 3] : []),
-          stroke: (d: G6Datum) =>
-            d.data?.manual ? canvasTokens.strokeManual : canvasTokens.stroke,
+          // P1-② 描边按人机来源区分：
+          //   人工新增=褐橙 / 人工已采纳=金（已确认，权威度更高）/
+          //   其余=默认（AI 建议靠 lineDash 虚线区分，不另配色）
+          stroke: (d: G6Datum) => {
+            const pv = d.data?.provenance as string | undefined
+            if (pv === 'manual') return canvasTokens.strokeManual
+            if (pv === 'adopted') return canvasTokens.strokeAdopted
+            return canvasTokens.stroke
+          },
           cursor: 'pointer',
           pointerEvents: 'auto',
           fill: canvasTokens.surface,
@@ -2437,6 +2599,11 @@ async function mountGraph(): Promise<void> {
               return overviewLinkWidth(w)
             }
             if (d.data?.synthetic === true) return 1.8
+            // P2-① 证据强度：命中边线宽 ∝ 溯源行数（对数缩放，1.4→3.0）。
+            // 让「证据扎实的主干」一眼跳出来，稀疏线索自然变细——
+            // 正兵扫一眼就知道哪条命中值得先查。
+            const rows = Number(d.data?.evidenceRows ?? 0)
+            if (rows > 0) return evidenceLinkWidth(rows)
             return d.data?.system === false ? 1.6 : 1.4
           },
           lineDash: (d: G6Datum) => {
@@ -2662,6 +2829,32 @@ function nodeLabel(id: string): string {
         语义层未构建，实体关联暂不可用；数据行溯源仍可使用
       </NAlert>
 
+      <!-- 成图规模声明：溯源行被截断时如实告知（不静默少画） -->
+      <NAlert
+        v-if="rowTrunc"
+        type="info"
+        :show-icon="false"
+        :bordered="false"
+        class="banner"
+        data-testid="canvas-scale-banner"
+      >
+        <div class="scale-banner">
+          <span>
+            溯源行较多，画布已显示 {{ rowTrunc.shown }} / 共 {{ rowTrunc.total }} 条
+            （还有 {{ rowTrunc.hidden }} 条未成图）。完整明细请见线索详情的溯源抽屉。
+          </span>
+          <NButton
+            size="tiny"
+            secondary
+            :loading="expandingRows"
+            data-testid="canvas-expand-rows"
+            @click="expandMoreRows"
+          >
+            展开更多
+          </NButton>
+        </div>
+      </NAlert>
+
       <!-- M3 工具栏（RC-201/202/206）+ M4 RC-204 扩展查询 -->
       <CanvasToolbar
         v-if="!isEmpty"
@@ -2775,8 +2968,25 @@ function nodeLabel(id: string): string {
           </span>
           <span>{{ overviewMode ? '全局概览' : (viewMode === 'compact' ? '简洁' : '完整') }}</span>
           <span
-            :class="{ 'status-active': perspective === 'tier' && !overviewMode }"
-          >视角：{{ perspective === 'tier' ? '证据强度' : '流程' }}</span>
+            :class="{ 'status-active': perspective !== 'process' && !overviewMode }"
+          >视角：{{ perspectiveLabel }}</span>
+          <span v-if="perspective === 'time' && timeSummary" class="tier-breakdown">
+            {{ timeSummary }}
+          </span>
+          <!-- 时间轴口径切换：本体声明了业务时间字段才允许切到「业务时间」 -->
+          <span v-if="perspective === 'time'" class="hop-ctl">
+            <button
+              type="button"
+              class="hop-btn timemode-btn"
+              :class="{ 'timemode-active': timeMode === 'event' }"
+              :disabled="!canUseEventTime"
+              :title="canUseEventTime
+                ? '切换为按业务发生时间排列'
+                : '本体未声明业务时间字段，仅能按研判过程时间排列'"
+              data-testid="toggle-time-mode"
+              @click="toggleTimeMode"
+            >{{ timeModeLabel }}</button>
+          </span>
           <span v-if="perspective === 'tier' && !overviewMode" class="tier-breakdown">
             <b class="mono">{{ tierCounts[1] }}</b>
             <span class="dim">已锁死 ·</span>
@@ -2913,6 +3123,9 @@ function nodeLabel(id: string): string {
       :lenses="lrLenses"
       :busy="lrBusy"
       :prefill="lrPrefill"
+      :case-id="props.caseId"
+      :canvas-nodes="lrCanvasNodes"
+      :selected-node="lrSelectedNode"
       @submit="submitLensRun"
     />
 
@@ -2924,7 +3137,7 @@ function nodeLabel(id: string): string {
       class="lens-switch-modal"
       data-testid="lens-switch-modal"
     >
-      <LensSwitchPanel :case-id="props.caseId" />
+      <LensSwitchPanel :case-id="props.caseId" context="canvas" />
     </NModal>
 
     <!-- RC-202 人工节点表单 -->
@@ -2994,6 +3207,15 @@ function nodeLabel(id: string): string {
 }
 .banner {
   border-radius: 4px;
+}
+/* 成图规模声明：文案 + 展开按钮一行排布 */
+.scale-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .canvas-stage {
   position: relative;
@@ -3102,6 +3324,17 @@ function nodeLabel(id: string): string {
   font-size: 12px;
   cursor: pointer;
   padding: 0;
+}
+/* 时间轴口径切换：文字按钮，宽度自适应（不是 18px 的加减号按钮） */
+.hop-btn.timemode-btn {
+  width: auto;
+  height: auto;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+.hop-btn.timemode-btn.timemode-active {
+  border-color: canvasTokens.strokeAdopted;
+  color: canvasTokens.strokeAdopted;
 }
 .hop-btn:hover:not(:disabled) {
   border-color: var(--sun-border-active);

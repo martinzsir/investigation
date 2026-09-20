@@ -282,6 +282,36 @@ export interface CanvasEnvelope {
   seeded?: boolean
   /** 语义层是否已构建（false → 顶部横幅，M1 对象层跳过） */
   semantic_ready?: boolean
+  /** 成图规模声明（后端截断保护；缺失=未截断） */
+  meta?: CanvasMeta
+}
+
+/**
+ * 画布成图规模声明。
+ * 真实案件单条线索溯源行可达数千，全量成图会拖垮前端渲染——后端首屏只画
+ * 前 N 条，并**如实声明 shown/total**（不静默少画，避免用户误以为数据只有这些）。
+ * 用户点「展开更多」时调 expand-rows 补齐（只增不改删）。
+ */
+export interface CanvasMeta {
+  truncated?: {
+    source_row?: { shown: number; total: number }
+    fact?: { shown: number; total: number }
+  }
+  limits?: { row_limit?: number; fact_limit?: number }
+  hint?: string
+}
+
+/** 取溯源行截断信息（无 meta 视为未截断） */
+export function rowTruncation(meta?: CanvasMeta): {
+  shown: number
+  total: number
+  hidden: number
+} | null {
+  const t = meta?.truncated?.source_row
+  if (!t || typeof t.total !== 'number') return null
+  const shown = typeof t.shown === 'number' ? t.shown : 0
+  const hidden = Math.max(0, t.total - shown)
+  return hidden > 0 ? { shown, total: t.total, hidden } : null
 }
 
 // ======================================================================
@@ -496,6 +526,51 @@ export function isSuggestionNode(n: CanvasNode): boolean {
     n.adopted !== true &&
     isPlaybookRef(n.ref)
   )
+}
+
+// ======================================================================
+// 人机来源标记（P1-②）：画布须能区分「机器说的」和「人确认过的」
+// ======================================================================
+// 正兵在画布上做可信度判断，第一件事是知道这条内容是谁给的：
+// 机器自动派生？AI 建议还没人看？系统建议已被人确认？还是人自己加的？
+// 四态互斥，判定顺序不可调换（manual 最优先，adopted 只在系统节点上成立）。
+export type Provenance = 'system' | 'suggestion' | 'adopted' | 'manual'
+
+export const PROVENANCE_LABELS: Record<Provenance, string> = {
+  system: '机器派生',
+  suggestion: 'AI 建议',
+  adopted: '人工已采纳',
+  manual: '人工新增',
+}
+
+/** PROVENANCE 语义说明（图例/悬浮提示用，讲清每一态意味着什么） */
+export const PROVENANCE_HINTS: Record<Provenance, string> = {
+  system: '规则/事实/数据行等自动成图，未经人工表态',
+  suggestion: '手册或 AI 给出的建议，尚未采纳（虚线）',
+  adopted: '系统建议经正兵确认采纳，已进核查工作台',
+  manual: '正兵手工新增的判断（假设/备注）',
+}
+
+/**
+ * 节点来源判定。
+ * - manual    : system=false → 人工新建（M3 端点产生）
+ * - suggestion: 手册/AI 建议且未采纳
+ * - adopted   : 系统节点但 adopted=true（建议经人确认）
+ * - system    : 其余自动派生
+ */
+export function provenanceOf(n: CanvasNode): Provenance {
+  if (n.system !== true) return 'manual'
+  if (isSuggestionNode(n)) return 'suggestion'
+  if (n.adopted === true) return 'adopted'
+  return 'system'
+}
+
+/**
+ * 边来源判定（两态即可：系统溯源边 / 人工连线）。
+ * 边没有 adopted 概念——人工连线本身就是「人建的」。
+ */
+export function provenanceOfEdge(e: CanvasEdge): 'system' | 'manual' {
+  return e.system === false ? 'manual' : 'system'
 }
 
 /** POST .../canvas/suggestions 响应 data */

@@ -16,6 +16,7 @@ from core.ontology_loader import (
     load_dimension_declarations,
     load_pack,
     load_scoring,
+    load_semantic_roles,
     load_states,
 )
 from core.wujian import load_wujian
@@ -83,4 +84,30 @@ def assemble_ontology_config(*, pack: str,
                         for frm, tos in states_decl["transitions"].items()},
         "actions": actions,
         "scoring": load_scoring(pack, base),
+        # 业务事件时间字段（本体 semantic:event_time 声明）。
+        # 前端据此把时间轴从「研判过程时间」切到「业务发生时间」——
+        # 声明缺失下发空结构，前端回落过程时间（不静默算错）。
+        "time_fields": _assemble_time_fields(pack, base),
+    }
+
+
+def _assemble_time_fields(pack: str, base) -> dict[str, Any]:
+    """业务时间字段索引（按对象分组 + 全量去重）。
+
+    返回语义属性名（英文），与规范化后的 Function 输出列名对齐。
+    源表中文列名 → 语义名的映射在 bindings.json，由接入层完成，
+    这里只给画布提供「哪个属性是业务时间」。
+    """
+    try:
+        roles = load_semantic_roles(pack, base)
+    except Exception:
+        return {"objects": {}, "event_time": []}
+    objects = roles.get("objects") or {}
+    return {
+        "objects": {
+            name: list((r or {}).get("event_time") or [])
+            for name, r in objects.items()
+            if (r or {}).get("event_time")
+        },
+        "event_time": list(roles.get("event_time") or []),
     }

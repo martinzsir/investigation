@@ -197,6 +197,23 @@ class ReviewQueue:
                     m[v] = d.canonical
         return m
 
+    def accepted_mapping_by_type(self) -> Dict[str, Dict[str, str]]:
+        """按实体类型分组的正式映射：{"person": {...}, "org": {...}}。
+
+        修复：accepted_mapping() 把 person 与 org 两类候选混在一个扁平 dict 里，
+        调用方（run_all 导出 entity_mapping.json）把它整体标为 "org"，导致
+        「张卫国/张卫国配偶」被写成 org、「宏业建设」被写成 person，类型全反。
+        本方法按 ReviewDecision.entity_type 分组，类型不再串味。
+        """
+        out: Dict[str, Dict[str, str]] = {"person": {}, "org": {}}
+        for d in self._items.values():
+            if d.status != Decision.ACCEPTED:
+                continue
+            bucket = out.setdefault(d.entity_type, {})
+            for v in d.variants:
+                bucket[v] = d.canonical
+        return out
+
     # ---- 持久化 ----
     def to_json(self, path: str) -> str:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

@@ -7,52 +7,230 @@
       "skill_id": "relation_neighborhood",
       "name": "关系圈层镜头",
       "stage": "用间",
-      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
-      "produces_dims": ["关系"],
+      "consumes_objects": [
+        "person",
+        "account",
+        "org",
+        "bid_project",
+        "transfers",
+        "calls_to",
+        "owns",
+        "involved_in",
+        "co_located"
+      ],
+      "produces_dims": [
+        "relation"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "target_subject": {"type": "string", "required": true, "description": "目标主体（raw_name 或代理键）"},
-        "target_type": {"type": "string", "description": "auto/person/account/org/bid_project，同名歧义时显式消歧"},
-        "depth": {"type": "integer", "description": "邻域跳数 1-3，缺省 2"},
-        "edge_kinds": {"type": "string", "description": "all/fund/contact/org 边类别收窄，缺省 all"}
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person/account/org/bid_project，同名歧义时显式消歧"
+        },
+        "depth": {
+          "type": "integer",
+          "description": "邻域跳数 1-3，缺省 2"
+        },
+        "edge_kinds": {
+          "type": "string",
+          "description": "all/fund/contact/org 边类别收窄，缺省 all"
+        }
       },
-      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
-      "handler": "impl:neighborhood_lens"
+      "scope": {
+        "reads": [
+          "person",
+          "account",
+          "org",
+          "bid_project",
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
+      "handler": "impl:neighborhood_lens",
+      "description": "看一个人的资金、通讯、轨迹上有哪些关联人和账户"
     },
     {
       "skill_id": "relation_common_neighbors",
       "name": "共同关系镜头",
       "stage": "用间",
-      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
-      "produces_dims": ["关系"],
+      "consumes_objects": [
+        "person",
+        "account",
+        "org",
+        "bid_project",
+        "transfers",
+        "calls_to",
+        "owns",
+        "involved_in",
+        "co_located"
+      ],
+      "produces_dims": [
+        "relation"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "subject_a": {"type": "string", "required": true},
-        "subject_b": {"type": "string", "required": true},
-        "edge_kinds": {"type": "string", "description": "all/fund/contact/org，缺省 all"}
+        "subject_a": {
+          "type": "string",
+          "required": true,
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "subject_b": {
+          "type": "string",
+          "required": true,
+          "auto_from": {
+            "source": "focus_subjects",
+            "pair_with": "subject_a",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "edge_kinds": {
+          "type": "string",
+          "description": "all/fund/contact/org，缺省 all"
+        },
+        "target_type_a": {
+          "type": "string",
+          "description": "subject_a 实体类型（person/org/bid_project/account），同名歧义时消歧；缺省 auto"
+        },
+        "target_type_b": {
+          "type": "string",
+          "description": "subject_b 实体类型，同名歧义时消歧；缺省 auto"
+        }
       },
-      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
-      "handler": "impl:common_neighbors_lens"
+      "scope": {
+        "reads": [
+          "person",
+          "account",
+          "org",
+          "bid_project",
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
+      "handler": "impl:common_neighbors_lens",
+      "description": "看两个人之间有没有共同的账户、单位或联系人"
     },
     {
       "skill_id": "relation_paths",
       "name": "关系路径镜头",
       "stage": "用间",
-      "consumes_objects": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"],
-      "produces_dims": ["关系"],
+      "consumes_objects": [
+        "person",
+        "account",
+        "org",
+        "bid_project",
+        "transfers",
+        "calls_to",
+        "owns",
+        "involved_in",
+        "co_located"
+      ],
+      "produces_dims": [
+        "relation"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "subject_a": {"type": "string", "required": true},
-        "subject_b": {"type": "string", "required": true},
-        "depth": {"type": "integer", "description": "最大跳数 1-3，缺省 2"},
-        "max_paths": {"type": "integer", "description": "路径枚举上限 1-100，缺省 20"},
-        "edge_kinds": {"type": "string", "description": "all/fund/contact/org，缺省 all"}
+        "subject_a": {
+          "type": "string",
+          "required": true,
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "subject_b": {
+          "type": "string",
+          "required": true,
+          "auto_from": {
+            "source": "focus_subjects",
+            "pair_with": "subject_a",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "depth": {
+          "type": "integer",
+          "description": "最大跳数 1-3，缺省 2"
+        },
+        "max_paths": {
+          "type": "integer",
+          "description": "路径枚举上限 1-100，缺省 20"
+        },
+        "edge_kinds": {
+          "type": "string",
+          "description": "all/fund/contact/org，缺省 all"
+        },
+        "target_type_a": {
+          "type": "string",
+          "description": "subject_a 实体类型（person/org/bid_project/account），同名歧义时消歧；缺省 auto"
+        },
+        "target_type_b": {
+          "type": "string",
+          "description": "subject_b 实体类型，同名歧义时消歧；缺省 auto"
+        }
       },
-      "scope": {"reads": ["person", "account", "org", "bid_project", "transfers", "calls_to", "owns", "involved_in", "co_located"]},
-      "handler": "impl:paths_lens"
+      "scope": {
+        "reads": [
+          "person",
+          "account",
+          "org",
+          "bid_project",
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
+      "handler": "impl:paths_lens",
+      "description": "看两个人之间经过几步、通过谁连起来"
     }
   ]
 }

@@ -47,7 +47,8 @@
       "name": "业务日期",
       "type": "date",
       "range": {"max": "2025-12-31"},
-      "clean_rule": ["cn_date_norm", "pad_date"]
+      "clean_rule": ["cn_date_norm", "pad_date"],
+      "semantic": "event_time"
     }
   }
 }

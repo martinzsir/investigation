@@ -318,7 +318,7 @@ const LAYOUT_OPTIONS = [
             定向镜头
           </NButton>
         </template>
-        对选中主体定向运行带参镜头（关系圈层/事件序列/时间碰撞等），产出线索进线索列表
+        对选中主体定向运行带参镜头（关系圈层/事件序列/时间碰撞等）；完成后画布顶部提示结果，线索进线索列表
       </NTooltip>
 
       <NTooltip trigger="hover">
@@ -333,7 +333,7 @@ const LAYOUT_OPTIONS = [
             镜头启停
           </NButton>
         </template>
-        本案件批量检测镜头的启停配置（停用后 RESCAN 不再产出该镜头线索）
+        本案件镜头启停配置：保存即自动重建（RESCAN），停用镜头的线索随重建从线索列表移除，重新启用则恢复产出
       </NTooltip>
 
       <NTooltip trigger="hover">

@@ -20,7 +20,7 @@
           "function": {"type": "string"},
           "params": {"type": "object"},
           "hit_when": {"enum": ["rows_nonempty", "result_hit"]},
-          "dimension": {"enum": ["", "资金", "通讯", "行为", "关系", "时间"]},
+          "dimension": {"enum": ["", "fund", "comm", "behavior", "relation", "time", "资金", "通讯", "行为", "关系", "时间"]},
           "jian_types": {
             "type": "array",
             "items": {"enum": ["因间", "内间", "反间", "死间", "生间"]}

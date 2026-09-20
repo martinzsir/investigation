@@ -7,23 +7,54 @@
       "skill_id": "vlm_inspect",
       "name": "视觉图像分析镜头",
       "stage": "用间",
-      "consumes_objects": ["image_evidence"],
-      "produces_dims": ["图像"],
+      "consumes_objects": [
+        "image_evidence"
+      ],
+      "produces_dims": [
+        "图像"
+      ],
       "mode": "draft",
       "enabled": true,
-      "external_services": ["vlm"],
+      "external_services": [
+        "vlm"
+      ],
       "timeout_ms": 30000,
       "result_ttl_s": 86400,
       "params_schema": {
-        "image_uri": {"type": "string", "required": true, "description": "图像文件 URI（cases/<cid>/evidence/ 内已入卷文件）"},
-        "content_class": {"type": "string", "required": true, "description": "图像类别 invoice/receipt/document（face/id_scan 默认 block 禁传）"},
-        "instruction": {"type": "string", "description": "分析要求（自由文本，须无 PII；出网前 PII 复扫）"},
-        "prompt_version": {"type": "string", "description": "prompt 版本；缺省取镜头当前版本"},
-        "subject_type": {"type": "string", "description": "挂接主体类型提示 person/org/bid_project"},
-        "subject_id": {"type": "string", "description": "挂接主体主键提示"}
+        "image_uri": {
+          "type": "string",
+          "required": true,
+          "description": "图像文件 URI（cases/<cid>/evidence/ 内已入卷文件）"
+        },
+        "content_class": {
+          "type": "string",
+          "required": true,
+          "description": "图像类别 invoice/receipt/document（face/id_scan 默认 block 禁传）"
+        },
+        "instruction": {
+          "type": "string",
+          "description": "分析要求（自由文本，须无 PII；出网前 PII 复扫）"
+        },
+        "prompt_version": {
+          "type": "string",
+          "description": "prompt 版本；缺省取镜头当前版本"
+        },
+        "subject_type": {
+          "type": "string",
+          "description": "挂接主体类型提示 person/org/bid_project"
+        },
+        "subject_id": {
+          "type": "string",
+          "description": "挂接主体主键提示"
+        }
       },
-      "scope": {"reads": ["image_evidence"]},
-      "handler": "impl:inspect_lens"
+      "scope": {
+        "reads": [
+          "image_evidence"
+        ]
+      },
+      "handler": "impl:inspect_lens",
+      "description": "对图像证据做视觉分析，产出草案线索（须人工核验才成证据）"
     }
   ]
 }

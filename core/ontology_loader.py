@@ -29,7 +29,7 @@ from core.ontology import (
     ObjectType, ObjectBinding, LinkType, LinkBinding,
     ActionSpec, ParamSpec, FunctionSpec, RuleSpec,
     ObjectKey, TYPE_SQL, TYPE_NAMES, OBJECT_KINDS, KEY_STRATEGIES,
-    CLEAN_RULE_NAMES, reverse_reach, _render_projection,
+    CLEAN_RULE_NAMES, ELEMENT_SEMANTICS, reverse_reach, _render_projection,
     _render_split_projection,
 )
 from core.registry import ClueStatus
@@ -138,7 +138,8 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
     # 已声明的 name（缺省回落内置 5 维）；新增维度在声明文件加一项即被规则引用。
     dim_names = load_dimensions(pack, base_dir)
     rules = _load_rules(root / "rules.json", functions, required=False,
-                        allowed_dimensions=set(dim_names))
+                        allowed_dimensions=set(dim_names),
+                        pack=pack, base_dir=base_dir)
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
     # REQ-V-018：核查手册建议项装载校验（缺失回落 []，零破坏旧包；
@@ -169,33 +170,138 @@ def _as_dim_list(v) -> list[str]:
     return [x for x in v if x]
 
 
+def load_semantic_roles(pack: str = "default",
+                        base_dir: Path | None = None) -> dict:
+    """语义角色索引：让代码**读声明**而不是**猜中文列名**。
+
+    背景（这是本体无关化的同一病根）
+    --------------------------------
+    此前系统靠中文列名猜测语义：
+      - ``core/rule_dsl.py`` 的 ``DATE_KEYS = ("日期","中标公示日","举报日期",...)``
+        猜哪个列是时间；
+      - ``core/focus.py`` 的 ``_SUBJECT_KEYS = ("主体","对方","资金主体",...)``
+        猜哪个列是主体。
+
+    换领域（侦查→金融）时这些中文名全部失效，且**不报错、静默算错**——
+    这正是端到端测试里暴露的那类断点。本函数让下游改为读本体声明。
+
+    角色来源
+    --------
+    - ``event_time``：属性自身声明 ``semantic``，**或**其引用的数据元声明
+      （一处声明、全局继承；属性层可覆盖，用于区分业务时间与采集时间）；
+    - ``subject_name``：对象的 ``name_property``（对象级权威声明，天然是主体名）
+      **加** 显式标注 ``semantic: subject_name`` 的属性。
+
+    返回
+    ----
+    ::
+
+        {
+          "objects": {"transaction": {"event_time": ["date"],
+                                      "subject_name": ["from_raw","to_raw"]}, ...},
+          "event_time": ["date", "pub_date", ...],   # 全量去重（跨对象）
+          "subject_name": ["raw_name", "from_raw", ...],
+        }
+
+    返回的都是**语义属性名**（英文，与规范化后的 Function 输出列名对齐），
+    不是源表原始列名。源表中文列名 → 语义名的映射在 bindings.json。
+
+    装载失败（objects.json 缺失/非法）→ 返回空结构，由调用方决定兜底策略；
+    不在此处静默回落内置中文词表（那正是要根治的行为）。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    obj_path = root / "objects.json"
+    if not obj_path.exists():
+        return {"objects": {}, "event_time": [], "subject_name": []}
+    try:
+        elements = load_data_elements(pack, base_dir)
+    except Exception:
+        elements = {}
+    data = _read_json(obj_path)
+
+    objects: dict[str, dict[str, list[str]]] = {}
+    all_event: list[str] = []
+    all_subject: list[str] = []
+
+    def _add(bucket: list[str], v: str) -> None:
+        if v and v not in bucket:
+            bucket.append(v)
+
+    for o in data.get("objects", []):
+        name = o.get("name")
+        if not name:
+            continue
+        roles: dict[str, list[str]] = {"event_time": [], "subject_name": []}
+        # name_property 天然是主体名（人/组织/账户的显示名）
+        name_prop = o.get("name_property")
+        if name_prop:
+            _add(roles["subject_name"], name_prop)
+            _add(all_subject, name_prop)
+        for prop, decl in (o.get("properties") or {}).items():
+            semantic = None
+            if isinstance(decl, dict):
+                semantic = decl.get("semantic")
+                if semantic is None:
+                    de = decl.get("data_element")
+                    if isinstance(de, str):
+                        semantic = (elements.get(de) or {}).get("semantic")
+            elif isinstance(decl, str) and decl in ELEMENT_SEMANTICS:
+                # 极简写法：属性直接写 semantic 名（罕见，兼容预留）
+                semantic = decl
+            if not semantic or semantic not in ELEMENT_SEMANTICS:
+                continue
+            _add(roles[semantic], prop)
+            _add(all_event if semantic == "event_time" else all_subject, prop)
+        objects[name] = roles
+
+    return {"objects": objects, "event_time": all_event,
+            "subject_name": all_subject}
+
+
 def load_dimension_declarations(pack: str = "default",
                                 base_dir: Path | None = None) -> list[dict]:
-    """返回维度全量声明 [{name, note, source_object_types}, ...]。
+    """返回维度全量声明 [{code, name, note, source_object_types}, ...]。
 
-    dimensions.json 缺失 → 内置默认 5 维（仅 name）；存在 → 校验版本/非空/不重复。
-    与 load_jians 同构：名称列表用 load_dimensions，ontology-config 下发/UI 元数据用本函数。
+    **code 是机器标识符**（rules.json / hypothesis_patterns.json 引用它），
+    **name 是展示名**（UI/报告显示）。此前用中文 name 兼作标识符，换领域时
+    维度改名会同时打断引用链与展示，且无稳定主键——现拆开。
+
+    code 缺失 → 取 name 兜底（旧声明零行为变化）；code 重复硬失败。
+    dimensions.json 缺失 → 内置默认 5 维（code=name=中文，兼容旧包）。
     """
     root = (base_dir or PACK_ROOT) / pack
     p = root / "dimensions.json"
     if not p.exists():
-        return [{"name": n, "note": "", "source_object_types": []}
+        return [{"code": n, "name": n, "note": "", "source_object_types": []}
                 for n in DEFAULT_DIMENSIONS]
     data = _read_json(p)
     dims = data.get("dimensions", [])
     out: list[dict] = []
-    seen: set[str] = set()
+    seen_code: set[str] = set()
+    seen_name: set[str] = set()
     for i, d in enumerate(dims):
-        name = d.get("name") if isinstance(d, dict) else None
+        if not isinstance(d, dict):
+            raise ValueError(f"dimensions.json dimensions[{i}] 必须为对象")
+        name = str(d.get("name") or "").strip()
         if not name:
             raise ValueError(f"dimensions.json dimensions[{i}] 缺 name 字段")
-        if name in seen:
-            raise ValueError(f"dimensions.json 维度名重复：{name}")
-        seen.add(name)
+        # code 缺失回落 name（旧声明兼容）；显式声明则必须非空字符串
+        raw_code = d.get("code")
+        code = str(raw_code).strip() if raw_code not in (None, "") else name
+        if not code:
+            raise ValueError(f"dimensions.json dimensions[{i}].code 不得为空白")
+        if code in seen_code:
+            raise ValueError(f"dimensions.json 维度 code 重复：{code}")
+        if name in seen_name:
+            raise ValueError(f"dimensions.json 维度 name 重复：{name}")
+        seen_code.add(code)
+        seen_name.add(name)
+        sot = d.get("source_object_types", [])
         out.append({
+            "code": code,
             "name": name,
             "note": d.get("note", ""),
-            "source_object_types": d.get("source_object_types", []),
+            "source_object_types": sot if isinstance(sot, list) else [],
         })
     if not out:
         raise ValueError("dimensions.json 声明为空：至少需要一个维度（REQ-G-011）")
@@ -203,8 +309,20 @@ def load_dimension_declarations(pack: str = "default",
 
 
 def load_dimensions(pack: str = "default", base_dir: Path | None = None) -> list[str]:
-    """返回维度名有序列表。dimensions.json 缺失 → 内置默认 5 维；存在 → 校验版本/非空。"""
-    return [d["name"] for d in load_dimension_declarations(pack, base_dir)]
+    """返回维度 **code** 有序列表（机器标识符，供引用与校验）。
+
+    注意：历史版本返回的是中文 name。改为 code 后，rules.json /
+    hypothesis_patterns.json 的 dimension 一律写 code，MiaoSuan.DIMENSIONS
+    与覆盖度计算同口径对齐。展示名用 load_dimension_labels() 翻译。
+    """
+    return [d["code"] for d in load_dimension_declarations(pack, base_dir)]
+
+
+def load_dimension_labels(pack: str = "default",
+                          base_dir: Path | None = None) -> dict[str, str]:
+    """维度 code → 展示名（中文 name）。UI/报告显示用，不参与校验。"""
+    return {d["code"]: d["name"]
+            for d in load_dimension_declarations(pack, base_dir)}
 
 
 # P6：五间词汇（load_jians/load_cross_levels/load_source_independence）已搬出
@@ -387,6 +505,176 @@ def load_derived_properties(pack: str = "default",
             "inputs": d.get("inputs", []),
             "cache_policy": policy,
         })
+    return out
+
+
+def load_hypothesis_patterns(pack: str = "default",
+                             base_dir: Path | None = None) -> list[dict] | None:
+    """庙算假设模式库（反常 → 假设的映射知识）。
+
+    hypothesis_patterns.json 缺失 → None（调用方回落 MiaoSuan.FINDING_PATTERNS
+    内置默认，旧案件包/精简测试包零行为变化）。存在则校验结构后返回。
+
+    归属说明：与 dimensions.json / enum_space.json 同属**本体领域层**——
+    假设回答「什么算可疑」，是领域知识；packs/ 下的镜头才是「怎么查」的
+    研判手段。两者不同维度，不可混放。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "hypothesis_patterns.json"
+    if not p.exists():
+        return None
+    data = _read_json(p)
+    raw = data.get("patterns", [])
+    if not isinstance(raw, list):
+        raise ValueError("hypothesis_patterns.json 的 patterns 必须是数组")
+    # 本体标识符白名单（交叉校验用；与 rules.json 的 dimension 校验同口径：
+    # 模式库只能引用**本体已声明**的维度/间类/对象类型，不得自造）
+    try:
+        dims = {str(d) for d in load_dimensions(pack, base_dir)}
+    except Exception:
+        dims = set()
+    try:
+        from core.wujian import load_wujian
+        wj = load_wujian(pack)
+        jians = set(wj.jian_order) if (wj is not None and wj.jian_order) else set()
+        src_names = dict(getattr(wj, "source_names", None) or {}) if wj else {}
+    except Exception:
+        jians, src_names = set(), {}
+    # 词汇包需 pack_loader.discover() 注册后才可经 load_wujian 取得；本体层读
+    # 声明不该被插件注册时序卡住 → 直接读 jians.json 静态声明兜底（纯展示名
+    # 映射，无运行时依赖）。
+    if not jians or not src_names:
+        try:
+            from core.wujian import DEFAULT_PACKS_DIR
+            jp = DEFAULT_PACKS_DIR / "wujian" / "jians.json"
+            # 注意：用独立变量名 jraw，不可复用 raw（那是 patterns 数组，
+            # 覆盖后循环会遍历到 dict 的 key 字符串 → "必须为对象" 误报）
+            jraw = json.loads(jp.read_text(encoding="utf-8"))
+            if not jians:
+                jians = {str(x.get("name")) for x in (jraw.get("jians") or [])
+                         if x.get("name")}
+            if not src_names:
+                sn = jraw.get("source_names")
+                src_names = dict(sn) if isinstance(sn, dict) else {}
+        except Exception:
+            pass
+    # 对象类型交叉校验：**直接读 objects.json 取名字**，不可调 load_pack()——
+    # load_pack 会加载 rules.json，_validate_assumption → _known_hypothesis_ids
+    # → 本函数 → load_pack 形成无限递归。_load_objects 仅解析 objects.json，
+    # 不触发规则/假设装载，安全。
+    try:
+        objs = {str(o.name) for o in _load_objects(root / "objects.json", {}, set())}
+    except Exception:
+        objs, src_names = set(), src_names
+
+    out: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"hypothesis_patterns.json patterns[{i}] 必须为对象")
+        kws = item.get("keywords") or []
+        if not isinstance(kws, list) or not all(isinstance(k, str) for k in kws):
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}].keywords 必须是字符串数组")
+        rids = item.get("rule_ids") or []
+        if not isinstance(rids, list) or not all(isinstance(k, str) for k in rids):
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}].rule_ids 必须是字符串数组")
+        tpl = item.get("hypothesis")
+        if not isinstance(tpl, dict):
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}].hypothesis 必须为对象")
+        hid = str(tpl.get("id") or "").strip()
+        if not hid:
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}].hypothesis.id 必填")
+        if not str(tpl.get("description") or "").strip():
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}].hypothesis.description 必填")
+        if not rids and not kws:
+            raise ValueError(
+                f"hypothesis_patterns.json patterns[{i}] 需至少声明 rule_ids 或 keywords"
+                f"（两者皆无则该模板永不命中）")
+
+        # 交叉校验：维度 / 间类 / 对象类型必须本体已声明
+        for d in tpl.get("dimension") or []:
+            # dims 现在是 **code** 集合（load_dimensions 语义已改）
+            if dims and str(d) not in dims:
+                raise ValueError(
+                    f"hypothesis_patterns.json patterns[{i}] 维度「{d}」未声明于 "
+                    f"dimensions.json（须用 code，已声明：{sorted(dims)}；"
+                    f"中文名仅作展示，不可用于引用）")
+        for j in tpl.get("jian_types") or []:
+            if jians and str(j) not in jians:
+                raise ValueError(
+                    f"hypothesis_patterns.json patterns[{i}] 间类「{j}」未声明于 "
+                    f"packs/wujian/jians.json（已声明：{sorted(jians)}）")
+        for o in tpl.get("object_types") or []:
+            if objs and str(o) not in objs:
+                raise ValueError(
+                    f"hypothesis_patterns.json patterns[{i}] 对象类型「{o}」未声明于 "
+                    f"objects.json")
+        # 所需证据同样走标识符：evidence_object_types 引用 objects.json，
+        # 无本体对象的证据（如「言词证据」）放 evidence_notes 自由文本补充。
+        for o in tpl.get("evidence_object_types") or []:
+            if objs and str(o) not in objs:
+                raise ValueError(
+                    f"hypothesis_patterns.json patterns[{i}] 证据对象类型「{o}」未声明于 "
+                    f"objects.json（无本体对象的证据请放 evidence_notes）")
+
+        # object_types → data_sources 中文显示名（jians.json source_names 解析，
+        # 不在此写死「银行流水」这类源表名——那是领域文本不是本体标识符）
+        obj_types = [str(o) for o in (tpl.get("object_types") or [])]
+        data_sources = [src_names[o] for o in obj_types if src_names.get(o)]
+        # evidence_object_types → evidence_needed 中文显示名（同口径解析）
+        ev_types = [str(o) for o in (tpl.get("evidence_object_types") or [])]
+        evidence = [src_names[o] for o in ev_types if src_names.get(o)]
+        evidence += [str(x) for x in (tpl.get("evidence_notes") or []) if str(x)]
+        tpl = dict(tpl)
+        tpl["_object_types"] = obj_types
+        tpl["data_sources"] = list(tpl.get("data_sources") or data_sources)
+        tpl["evidence_needed"] = list(tpl.get("evidence_needed") or evidence)
+
+        out.append({
+            "rule_ids": [str(r) for r in rids],
+            "keywords": [str(k) for k in kws],
+            "hypothesis": tpl,
+        })
+
+    # 悬空引用校验：rules.json / verify_playbooks.json 反向引用的假设 id
+    # 必须在本模式库已声明，否则该假设无处定义 → 线索挂不上假设链。
+    declared = {str(p["hypothesis"].get("id")) for p in out}
+    referenced = _referenced_assumption_ids(pack, base_dir)
+    dangling = sorted(referenced - declared)
+    if dangling:
+        raise ValueError(
+            f"假设 id {dangling} 被 rules.json / verify_playbooks.json 引用，"
+            f"但未声明于 hypothesis_patterns.json（已声明：{sorted(declared)}）")
+    return out or None
+
+
+def _referenced_assumption_ids(pack: str = "default",
+                               base_dir: Path | None = None) -> set[str]:
+    """收集 rules.json 的 assumption 与 verify_playbooks 的 match.assumption。"""
+    root = (base_dir or PACK_ROOT) / pack
+    out: set[str] = set()
+    try:
+        rj = json.loads((root / "rules.json").read_text(encoding="utf-8"))
+        for r in rj.get("rules") or []:
+            a = r.get("assumption")
+            if isinstance(a, str) and a.strip():
+                out.add(a.strip())
+    except Exception:
+        pass
+    try:
+        vj = json.loads((root / "verify_playbooks.json").read_text(encoding="utf-8"))
+        for p in vj.get("playbooks") or []:
+            a = (p.get("match") or {}).get("assumption")
+            if isinstance(a, str) and a.strip():
+                out.add(a.strip())
+            elif isinstance(a, list):
+                out.update(str(x).strip() for x in a if str(x).strip())
+    except Exception:
+        pass
     return out
 
 
@@ -693,6 +981,21 @@ def _validate_element_spec(eid: str, spec, ctx: str) -> None:
         raise ValueError(
             f"{ctx}['{eid}'] override 必须是 boolean"
             "（显式声明覆盖上层同名数据元，v1.2 §3.0.7/P2-7）")
+    # 语义角色（semantic）：让代码「读声明」而不是「猜中文列名」。
+    # event_time = 业务事件发生时间（区别于采集/入库时间）。
+    # 类型一致性硬失败——把字符串标成时间会让时间研判静默算错。
+    semantic = spec.get("semantic")
+    if semantic is not None:
+        if semantic not in ELEMENT_SEMANTICS:
+            raise ValueError(
+                f"{ctx}['{eid}'] semantic='{semantic}' 非法，"
+                f"允许 {sorted(ELEMENT_SEMANTICS)}")
+        required_types = ELEMENT_SEMANTICS[semantic]
+        if spec["type"] not in required_types:
+            raise ValueError(
+                f"{ctx}['{eid}'] semantic='{semantic}' 要求 type ∈ "
+                f"{sorted(required_types)}，实得 '{spec['type']}'"
+                f"（语义角色与数据类型必须一致，否则下游按时间解析会静默出错）")
     checksum = spec.get("checksum")
     if checksum is not None and checksum not in CHECKSUM_ALGOS:
         raise ValueError(
@@ -995,14 +1298,18 @@ def _load_objects(path: Path,
         prop_de_clean: dict[str, str] = {}
         norm_props: dict[str, str] = {}
         bad: dict = {}
+        # 属性 → 语义角色（load_semantic_roles 消费）
+        semantic_by_prop: dict[str, str] = {}
         for p, t in props.items():
             if isinstance(t, dict):
                 unknown = {k for k in t
-                           if k not in ("type", "composite", "data_element")}
+                           if k not in ("type", "composite", "data_element",
+                                        "semantic")}
                 if unknown:
                     raise ValueError(
                         f"{ctx}（{name}）属性 '{p}' 声明映射含未知键 {sorted(unknown)}"
-                        f"（fail-closed；允许键：type/composite/data_element，"
+                        f"（fail-closed；允许键："
+                        f"type/composite/data_element/semantic，"
                         f"REQ-D-013/REQ-D-016）")
                 base = t.get("type")
                 de = t.get("data_element")
@@ -1038,6 +1345,11 @@ def _load_objects(path: Path,
                                 f"fail-closed：敏感属性必须先声明 {name}.{p} 的遮蔽策略，"
                                 f"或在全域数据元声明 mask 兜底，v1.2 §3.0.5）")
                         # 数据元有 mask → 用默认遮蔽兜底（不报错；运行时仍由 PolicyEngine 把关）
+                    # 语义角色自动继承（与 type 继承同口径）：属性未显式声明
+                    # semantic 时，取数据元的 semantic。属性层可显式覆盖——
+                    # 例如同一对象既有业务时间又有采集时间，需要区分。
+                    if t.get("semantic") is None and spec.get("semantic"):
+                        semantic_by_prop[p] = spec["semantic"]
                     cr = spec.get("clean_rule")      # AC-3：清洗规则自动挂接
                     if cr:
                         # v1.3 §2-1：clean_rule 统一为 tuple（单 str → 单元素 tuple；
@@ -1054,6 +1366,18 @@ def _load_objects(path: Path,
                             f"{ctx}（{name}）属性 '{p}' composite 降级仅支持 string 类型"
                             f"（当前 {base}；复合列整列保留，不参与 CAST，REQ-D-013）")
                     composite.append(p)
+                # 属性层显式 semantic 覆盖（优先级高于数据元继承）
+                ps = t.get("semantic")
+                if ps is not None:
+                    if ps not in ELEMENT_SEMANTICS:
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' semantic='{ps}' 非法，"
+                            f"允许 {sorted(ELEMENT_SEMANTICS)}")
+                    if base not in ELEMENT_SEMANTICS[ps]:
+                        raise ValueError(
+                            f"{ctx}（{name}）属性 '{p}' semantic='{ps}' 要求 "
+                            f"type ∈ {sorted(ELEMENT_SEMANTICS[ps])}，实得 '{base}'")
+                    semantic_by_prop[p] = ps
                 norm_props[p] = base
             elif t in TYPE_NAMES:
                 norm_props[p] = t
@@ -2032,11 +2356,23 @@ def _validate_function_params(params: dict, sql: str | None, ctx: str, name: str
 # rules（自然语言规则手册，第六段）
 # ----------------------------------------------------------------------
 
-def _known_hypothesis_ids() -> set[str]:
-    """从 MiaoSuan.FINDING_PATTERNS 提取静态假设 ID（延迟导入避免循环依赖）。
+def _known_hypothesis_ids(pack: str = "default",
+                          base_dir: Path | None = None) -> set[str]:
+    """已知假设 ID 集合。**优先读本体声明**（ontology/<pack>/hypothesis_patterns.json）。
+
+    修复：此前只读 `MiaoSuan.FINDING_PATTERNS` 类属性（那是 default 包的内置
+    兜底），导致**换本体后规则引用的新假设 id 一律被判"未声明"**——本体
+    无关化在这一层是断的，装任何非 default 包都会硬失败。
 
     返回空集表示假设库不可导入（测试隔离场景），调用方应跳过校验。
     """
+    try:
+        declared = load_hypothesis_patterns(pack, base_dir)
+    except Exception:
+        declared = None
+    if declared:
+        return {str(p["hypothesis"].get("id")) for p in declared
+                if p.get("hypothesis")}
     try:
         from core.hypotheses import MiaoSuan
         return {p["hypothesis"].id for p in MiaoSuan.FINDING_PATTERNS
@@ -2045,22 +2381,29 @@ def _known_hypothesis_ids() -> set[str]:
         return set()
 
 
-def _validate_assumption(assumption: str, ctx: str, rid: str) -> str:
-    """校验 assumption 引用：空串合法（无假设驱动）；非空须在已知假设 ID 集合内。"""
+def _validate_assumption(assumption: str, ctx: str, rid: str,
+                         pack: str = "default",
+                         base_dir: Path | None = None) -> str:
+    """校验 assumption 引用：空串合法（无假设驱动）；非空须在已知假设 ID 集合内。
+
+    pack/base_dir 必须透传——否则换本体后校验集仍是 default 包的假设。
+    """
     if not assumption:
         return ""
-    known = _known_hypothesis_ids()
+    known = _known_hypothesis_ids(pack, base_dir)
     if known and assumption not in known:
         raise ValueError(
-            f"{ctx}（{rid}）assumption='{assumption}' 未在 core.hypotheses "
-            f"MiaoSuan.FINDING_PATTERNS 中声明，可用 {sorted(known)}；"
+            f"{ctx}（{rid}）assumption='{assumption}' 未声明于 "
+            f"hypothesis_patterns.json（pack={pack}），可用 {sorted(known)}；"
             f"空字符串表示无假设驱动")
     return assumption
 
 
 def _load_rules(path: Path, functions: dict[str, FunctionSpec],
                 required: bool,
-                allowed_dimensions: set | None = None) -> dict[str, RuleSpec]:
+                allowed_dimensions: set | None = None,
+                pack: str = "default",
+                base_dir: Path | None = None) -> dict[str, RuleSpec]:
     if not path.exists():
         if required:
             raise FileNotFoundError(f"ontology 声明文件缺失：{path}")
@@ -2113,7 +2456,8 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
             id=rid, stage=stage, title=r["title"], rule_text=rule_text,
             function=fname, params=params, hit_when=hit_when,
             dimension=dimension, jian_types=jian,
-            assumption=_validate_assumption(r.get("assumption", ""), ctx, rid),
+            assumption=_validate_assumption(
+                r.get("assumption", ""), ctx, rid, pack=pack, base_dir=base_dir),
             basis_text=r.get("basis_text", r["title"]),
             exclusive_group=r.get("exclusive_group") or None,
             primary_rule=bool(r.get("primary_rule", False)),

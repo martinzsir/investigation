@@ -32,6 +32,44 @@ export interface LensSpecItem {
   requires_params: boolean
   /** 参数声明（定向调度弹窗表单数据源） */
   params_schema: Record<string, LensParamSpec>
+  /** 用途说明（pack.json 声明；空则由 UI 按维度/依赖兜底描述） */
+  description?: string
+  /** 产出维度（维度 code，如 relation/time；停用即丢失这些维度的线索） */
+  produces_dims?: string[]
+  /**
+   * 产出维度的中文名。
+   * 来源是本体的 **dimensions.json 的 name**（不是 objects/links 的 title——
+   * 维度不在对象/链接层）。后端按 code→name 翻译，兼容存量包写中文 name。
+   */
+  produces_dims_labels?: string[]
+  /** 数据依赖（机器名） */
+  consumes_objects?: string[]
+  /** 数据依赖的中文名（本体 objects/links title，换本体自动跟随） */
+  consumes_labels?: string[]
+}
+
+/** 停用后果摘要（供二次确认弹窗使用） */
+export function lensDisableImpact(l: LensSpecItem): string {
+  const dims = (l.produces_dims_labels ?? l.produces_dims ?? []).filter(Boolean)
+  const dimPart = dims.length
+    ? `本案件将不再产出「${dims.join('、')}」维度线索`
+    : '本案件将不再产出该镜头的线索'
+  const rescan = '停用后自动入队重扫（RESCAN），已生效版本的检测结果会重算'
+  return `${dimPart}；${rescan}。`
+}
+
+/** 用途说明兜底：pack.json 未声明 description 时按本体维度/依赖自动生成 */
+export function lensFallbackDesc(l: LensSpecItem): string {
+  const dims = (l.produces_dims_labels ?? l.produces_dims ?? []).filter(Boolean)
+  const dep = (l.consumes_labels ?? []).filter(Boolean)
+  const dimPart = dims.length ? `产出「${dims.join('、')}」维度线索` : '产出线索'
+  const depPart = dep.length ? `，依赖 ${dep.length} 类数据（${dep.slice(0, 3).join('、')}${dep.length > 3 ? ' 等' : ''}）` : ''
+  return `按已接入数据${dimPart}${depPart}。`
+}
+
+/** 展示用用途说明：声明优先，缺失兜底（保证任何镜头都不会"无说明可看"） */
+export function lensDesc(l: LensSpecItem): string {
+  return (l.description ?? '').trim() || lensFallbackDesc(l)
 }
 
 export interface LensListResult {
@@ -55,6 +93,52 @@ export interface LensSwitchResult {
 export interface LensRunBody {
   params?: Record<string, unknown>
   reason?: string
+  /** 零填写提交：必填参数由后端按 auto_from 推导（画布上下文 / 案件登记） */
+  auto?: boolean
+}
+
+/** 单个候选主体（core.focus.FocusSubject） */
+export interface FocusCandidate {
+  name: string
+  type: string
+  score: number
+  source: string
+  evidence: number
+}
+
+/** 单个参数的候选集（后端按「画布选中 > 画布可见 > 案件登记 > 线索 > 语义层」排序） */
+export interface LensParamCandidates {
+  param: string
+  candidates: FocusCandidate[]
+  recommended: FocusCandidate | null
+  /** 推荐值来源（如 focus:case_aliases#1:张卫国），随线索落 detail 可审计 */
+  source: string
+  count: number
+  /** 候选唯一 → 静默带入，不展示 */
+  auto_only: boolean
+  /** 候选 ≤100 → 下拉直列（默认选推荐值） */
+  listable: boolean
+  /** 支持按需搜索（候选过多时） */
+  searchable: boolean
+}
+
+export interface LensParamsResult {
+  skill_id: string
+  params: Record<string, LensParamCandidates>
+}
+
+/** 候选来源徽标文案（让正兵一眼看出"系统替我选了谁"，且可覆盖） */
+export function candidateSourceLabel(src: string): string {
+  if (!src) return ''
+  if (src.includes('canvas_selected')) return '画布选中'
+  if (src.includes('canvas_visible')) return '画布节点'
+  if (src.includes('case_knowledge')) return '案件指定'
+  if (src.includes('case_aliases')) return '案件登记'
+  if (src.includes('clue_subjects')) return '线索推导'
+  if (src.includes('semantic_table')) return '数据枚举'
+  if (src.includes('semantic_search')) return '搜索命中'
+  if (src.includes('projects')) return '项目枚举'
+  return '自动推荐'
 }
 
 export interface LensRunResult {
@@ -111,6 +195,28 @@ export const lensesApi = {
       `/cases/${encodeURIComponent(caseId)}/lenses/${encodeURIComponent(skillId)}`,
       body,
       { idempotencyAction: `lens-switch:${skillId}` },
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /**
+   * POST /cases/{cid}/lenses/{skillId}/params —— 参数候选（自动推荐数据源）。
+   * 传画布上下文（selected_node / canvas_nodes）让候选聚焦当前研判范围，
+   * 语义层不做全量返回（真实案件可达数万主体，全量进下拉会 DOM 爆炸）。
+   */
+  async paramCandidates(
+    caseId: string,
+    skillId: string,
+    body: {
+      canvas_nodes?: string[]
+      selected_node?: string | null
+      keyword?: string | null
+    },
+  ): Promise<LensParamsResult> {
+    const res = await api.post<LensParamsResult>(
+      `/cases/${encodeURIComponent(caseId)}/lenses/${encodeURIComponent(skillId)}/params`,
+      body,
     )
     noteDataVersion(caseId, res.dataVersion)
     return res.data

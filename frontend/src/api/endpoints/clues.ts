@@ -55,6 +55,10 @@ export interface ClueListItem {
   operator?: string
   updated_at?: string
   status_source?: 'state' | 'artifact'
+  /** 定向镜头运行留痕（lens_runs 并线线索才有；列表「定向」徽标/筛选依据） */
+  lens_run_id?: string | null
+  lens_run_at?: string | null
+  lens_operator?: string | null
 }
 
 export interface ClueListPage {
@@ -94,6 +98,10 @@ export interface ClueListParams {
   dimension?: string
   jian?: string
   subject?: string
+  /** 按产出技能（镜头）过滤 */
+  skill?: string
+  /** true → 仅定向镜头运行线索（lens_runs 并线） */
+  lensRun?: boolean
   page?: number
   page_size?: number
 }
@@ -103,7 +111,9 @@ export const cluesApi = {
   async list(caseId: string, params: ClueListParams = {}): Promise<ClueListPage> {
     const q = new URLSearchParams()
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== '' && v !== null) q.set(k, String(v))
+      if (v === undefined || v === '' || v === null) continue
+      // 布尔（lensRun）转后端 bool 参数名与字面量
+      q.set(k === 'lensRun' ? 'lens_run' : k, String(v))
     }
     const qs = q.toString()
     const res = await api.get<ClueListPage>(

@@ -19,7 +19,13 @@ import {
   NSelect,
   NSwitch,
 } from 'naive-ui'
-import { validateLensParams, type LensSpecItem } from '../../api/endpoints/lenses'
+import {
+  candidateSourceLabel,
+  validateLensParams,
+  type LensParamCandidates,
+  type LensSpecItem,
+} from '../../api/endpoints/lenses'
+import { lensesApi } from '../../api/endpoints/lenses'
 import { LENS_PRESETS, presetOfSkill, type LensPreset } from '../../domain/lensPresets'
 
 const props = defineProps<{
@@ -30,6 +36,12 @@ const props = defineProps<{
   busy?: boolean
   /** 画布选中主体预填（按参数名命中才填：target_subject/subject_a/project…） */
   prefill?: Record<string, unknown>
+  /** 画布可见主体名（候选规模主力，典型 20-80；不传则只走案件登记/语义层） */
+  canvasNodes?: string[]
+  /** 画布选中主体（候选最高优先；唯一时静默带入） */
+  selectedNode?: string | null
+  /** 案件 id（拉取参数候选用） */
+  caseId?: string
 }>()
 
 const emit = defineEmits<{
@@ -59,6 +71,59 @@ const rawLensOptions = computed(() =>
 const selectedLens = computed<LensSpecItem | null>(
   () => props.lenses.find((l) => l.skill_id === selectedId.value) ?? null,
 )
+
+// ---------- 参数候选（自动推荐） ----------
+// 后端按「画布选中 > 画布可见 > 案件登记 > 线索 > 语义层」排序，语义层不做
+// 全量返回（真实案件数万主体，全量进下拉会 DOM 爆炸）。
+const paramCands = ref<Record<string, LensParamCandidates>>({})
+const candLoading = ref(false)
+
+/** 参数候选来源徽标（让正兵看出"系统替我选了谁"，且可随时覆盖） */
+function candLabel(param: string): string {
+  const c = paramCands.value[param]
+  if (!c?.recommended) return ''
+  return candidateSourceLabel(c.source)
+}
+
+/** 候选唯一 → 静默带入（不展示选择器，只显示已选值） */
+function isAutoOnly(param: string): boolean {
+  return paramCands.value[param]?.auto_only === true
+}
+
+/** 候选可直列（≤100）→ 下拉，默认选推荐值 */
+function candOptions(param: string): { label: string; value: string }[] {
+  const c = paramCands.value[param]
+  if (!c) return []
+  return c.candidates.map((x) => ({
+    label: x.name,
+    value: x.name,
+  }))
+}
+
+async function fetchCandidates(skillId: string): Promise<void> {
+  paramCands.value = {}
+  if (!props.caseId || !skillId) return
+  candLoading.value = true
+  try {
+    const r = await lensesApi.paramCandidates(props.caseId, skillId, {
+      canvas_nodes: props.canvasNodes ?? [],
+      selected_node: props.selectedNode ?? null,
+    })
+    paramCands.value = r.params ?? {}
+    // 推荐值落地：有推荐且当前为空（或预填为空）→ 带入推荐值
+    for (const [param, c] of Object.entries(paramCands.value)) {
+      const cur = values.value[param]
+      const empty = cur === null || cur === undefined || cur === ''
+      if (c.recommended && empty) {
+        values.value = { ...values.value, [param]: c.recommended.name }
+      }
+    }
+  } catch {
+    paramCands.value = {}
+  } finally {
+    candLoading.value = false
+  }
+}
 const activePreset = computed<LensPreset | null>(() =>
   selectedLens.value ? presetOfSkill(selectedLens.value.skill_id) : null,
 )
@@ -101,12 +166,14 @@ function selectPreset(p: LensPreset): void {
   selectedId.value = p.skill_id
   errors.value = {}
   initValues(props.lenses.find((l) => l.skill_id === p.skill_id) ?? null)
+  void fetchCandidates(p.skill_id)
 }
 
 function onSelect(id: string): void {
   selectedId.value = id
   errors.value = {}
   initValues(props.lenses.find((l) => l.skill_id === id) ?? null)
+  void fetchCandidates(id)
 }
 
 function setVal(key: string, v: unknown): void {
@@ -128,6 +195,7 @@ watch(
         onSelect(props.lenses[0].skill_id)
       } else {
         initValues(selectedLens.value)
+        if (selectedLens.value) void fetchCandidates(selectedLens.value.skill_id)
       }
     }
   },
@@ -214,8 +282,30 @@ function onSubmit(): void {
               {{ f.label }}
               <span v-if="selectedLens?.params_schema[f.param]?.required" class="req">*</span>
               <span v-if="isPrefilled(f.param)" class="prefill-tag">已按画布选中预填</span>
+              <span v-else-if="candLabel(f.param)" class="prefill-tag" :data-testid="`lens-cand-tag-${f.param}`">
+                {{ candLabel(f.param) }}
+              </span>
             </label>
+            <!-- 候选唯一：静默带入，不要求填写 -->
+            <div v-if="isAutoOnly(f.param)" class="auto-only" :data-testid="`lens-auto-only-${f.param}`">
+              {{ values[f.param] }}
+            </div>
+            <!-- 候选可直列（≤100）：下拉，默认选推荐值，可覆盖 -->
+            <NSelect
+              v-else-if="candOptions(f.param).length > 0"
+              :value="(values[f.param] as string | null | undefined) ?? null"
+              :options="candOptions(f.param)"
+              :loading="candLoading"
+              filterable
+              clearable
+              :disabled="busy"
+              :placeholder="f.placeholder ?? '选择或输入'"
+              :data-testid="`lens-param-select-${f.param}`"
+              @update:value="(v: string | null) => setVal(f.param, v ?? '')"
+            />
+            <!-- 无候选：才需要手填 -->
             <NInput
+              v-else
               :value="(values[f.param] as string | null | undefined) ?? null"
               :placeholder="f.placeholder ?? '输入名称'"
               :disabled="busy"
@@ -480,6 +570,14 @@ function onSubmit(): void {
   flex-direction: column;
   gap: 10px;
 }
+.auto-only {
+  padding: 6px 10px;
+  border: 1px dashed var(--border-color, #d9d9d9);
+  border-radius: 4px;
+  color: var(--text-color-2, #666);
+  background: var(--action-color, #fafafa);
+}
+
 .prefill-tag {
   margin-left: 6px;
   padding: 0 6px;

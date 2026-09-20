@@ -57,6 +57,77 @@ _HAS_CJK = re.compile(r"[\u4e00-\u9fff]")
 _MIN_CORE_LEN = 4
 
 
+# ----------------------------------------------------------------------
+# 1b. 实体类型形态判定（REQ: 实体对齐不得按"出现于哪张源表"定类型）
+# ----------------------------------------------------------------------
+# 背景（真实缺陷）：主体类型此前由采集来源决定——银行流水(主体/对方)采到的
+# 一律进人名对齐器、工商信息(主体)采到的一律进组织对齐器。结果「A建材」被
+# 判为 person、「张卫国配偶」被判为 org，类型全反。
+# 修法：按名称形态判类型（组织名带机构后缀/字号，人名短且无机构后缀），
+# 与采集来源解耦；判定不确定的标 unknown，两侧都不强制归入，留待人工确认。
+
+# 机构后缀/机构词（命中即判 org；长词优先）
+_ORG_TOKENS = tuple(sorted(
+    set(_ORG_SUFFIXES) | {
+        "公司", "集团", "建设", "建材", "工厂", "厂", "局", "中心", "研究院",
+        "事务所", "银行", "医院", "学校", "大学", "学院", "协会", "基金会",
+        "合作社", "商行", "商店", "超市", "酒店", "物业", "管理处", "办公室",
+        "项目部", "分公司", "子公司", "总队", "支队", "大队", "委员会",
+    },
+    key=len, reverse=True))
+
+# 交易摘要类伪主体（非实体，不进任何对齐器）
+_NON_ENTITY_TOKENS = ("现金存入", "现金", "转账", "取现", "现存", "结息",
+                      "手续费", "汇款", "代发", "工资")
+
+# 人名强特征：2-4 个汉字、无机构词、无数字字母
+_PURE_CJK_NAME_RE = re.compile(r"^[\u4e00-\u9fff]{2,4}$")
+
+
+def classify_entity_type(name) -> str:
+    """按名称形态判实体类型：person / org / non_entity / unknown。
+
+    - org        含机构后缀或机构词（宏业建设/A建材/财政局）
+    - person     纯 2-4 汉字且不含机构词（张卫国/李志强）
+    - non_entity 交易摘要类伪主体（现金存入）——不是实体，不参与对齐
+    - unknown    形态不足判定（过短/含数字字母/带关系后缀如"张卫国配偶"）
+
+    只做形态判定、不下定性结论；unknown 由调用方决定去向（默认不强制归类）。
+    """
+    if name is None:
+        return "unknown"
+    s = str(name).strip()
+    if not s:
+        return "unknown"
+    s = unicodedata.normalize("NFKC", s)
+    # 关系/身份后缀剥离后再判形态：张卫国配偶 → 张卫国
+    core = _PAREN_RE.sub("", s)
+    for suf in ("配偶", "妻弟", "妻妹", "之子", "之女", "父亲", "母亲",
+                "兄弟", "姐姐", "妹妹", "哥哥", "弟弟"):
+        if core.endswith(suf) and len(core) > len(suf):
+            core = core[: -len(suf)]
+            break
+
+    if any(tok in s for tok in _NON_ENTITY_TOKENS) and not any(
+            tok in s for tok in _ORG_TOKENS):
+        return "non_entity"
+    if any(tok in s for tok in _ORG_TOKENS):
+        return "org"
+    if _PURE_CJK_NAME_RE.match(core):
+        return "person"
+    return "unknown"
+
+
+def is_person_name(name) -> bool:
+    """是否应进入人名对齐器（形态判 person）。"""
+    return classify_entity_type(name) == "person"
+
+
+def is_org_name(name) -> bool:
+    """是否应进入组织对齐器（形态判 org）。"""
+    return classify_entity_type(name) == "org"
+
+
 def normalize_org_name(raw: str) -> str:
     """
     把组织各种写法归一为一个可比对的标准字符串。
@@ -436,10 +507,35 @@ def build_org_table_from_duckdb(
     rows = conn.execute(f'SELECT {", ".join(select)} FROM "{table}"').fetchall()
     col_names = [d[0] for d in conn.description]
     records = [dict(zip(col_names, r)) for r in rows]
+    # 实体类型按名称形态判，不按"出现于哪张源表"定：工商信息表里也混有自然人
+    # 行（如「张卫国配偶」是关系人登记，不是法人），此前一律进组织对齐器导致
+    # 类型判反。非 org 形态一律排除，unknown 交人审裁决不强制归类。
+    kept, dropped = [], []
+    for r in records:
+        if classify_entity_type(r.get("name")) == "org":
+            kept.append(r)
+        else:
+            dropped.append(str(r.get("name")))
+    if dropped:
+        _note_org_type_filter(dropped)
     org = OrganizationResolver()
-    org.ingest(records)
+    org.ingest(kept)
     org.resolve()
     return org
+
+
+def _note_org_type_filter(dropped: List[str]) -> None:
+    """被形态判定挡下的非组织行留痕（只诊断不阻断，便于回溯类型判定）。"""
+    try:
+        from .run_health import get_health
+        get_health(None).record(
+            "entity_type_filtered", "info", source="entity_resolution",
+            reason=f"组织采集按名称形态剔除 {len(dropped)} 条非组织行"
+                   f"（样例 {dropped[:3]}）；非组织名不再按来源表误判为法人",
+            dropped=len(dropped),
+        )
+    except Exception:
+        pass
 
 
 def apply_org_to_duckdb(store_or_conn, org: OrganizationResolver,

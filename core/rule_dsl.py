@@ -22,7 +22,31 @@ from typing import Any
 from core.ontology_loader import load_pack
 
 MAX_DEPTH = 5
-DATE_KEYS = ("日期", "中标公示日", "举报日期", "发布日期", "date", "DATE", "day")
+
+# 日期/时间列的**兜底**键（本体未声明 event_time 语义角色时才用）。
+# 主口径改读本体声明（load_semantic_roles），见 _date_keys()。
+# 保留少量通用英文名是必要的：py Function 输出的中间字段（如事件序列的
+# "date"）不在本体属性里，但确实是时间。中文名已全部移除——那是靠猜，
+# 换领域即失效（本体无关化病根之一）。
+_DATE_KEYS_FALLBACK = ("date", "DATE", "day", "event_date")
+
+
+def _date_keys(pack: str = "default") -> tuple[str, ...]:
+    """时间列名：优先读本体 event_time 语义角色声明，兜底少量通用英文名。
+
+    此前是硬编码中文词表（"日期"/"中标公示日"/"举报日期"/"发布日期"…），
+    换领域后全部失效且**不报错**，时间窗口判定静默算错。
+    """
+    try:
+        from core.ontology_loader import load_semantic_roles
+        declared = tuple(load_semantic_roles(pack).get("event_time") or ())
+    except Exception:
+        declared = ()
+    seen: list[str] = []
+    for k in declared + _DATE_KEYS_FALLBACK:
+        if k not in seen:
+            seen.append(k)
+    return tuple(seen)
 
 
 def _parse_date(v: Any) -> _date | None:
@@ -43,13 +67,16 @@ def _parse_date(v: Any) -> _date | None:
     return None
 
 
-def _finding_date_range(f: dict) -> tuple[_date | None, _date | None]:
+def _finding_date_range(f: dict, pack: str = "default",
+                        keys: tuple[str, ...] | None = None,
+                        ) -> tuple[_date | None, _date | None]:
     """从 finding.source_rows 扫描日期列；返回 (min_d, max_d)；缺则 (None,None)。"""
     rows = f.get("source_rows") or []
+    keys = keys if keys is not None else _date_keys(pack)
     dates = []
     for r in rows:
         if isinstance(r, dict):
-            for k in DATE_KEYS:
+            for k in keys:
                 if k in r:
                     d = _parse_date(r[k])
                     if d is not None:
@@ -207,12 +234,15 @@ def compile(node: DslNode) -> CallPlan:
     return CallPlan(node)
 
 
-def _cross_check_within_days(node: DslNode, finding_by_id: dict[str, list[dict]]) -> bool:
+def _cross_check_within_days(node: DslNode, finding_by_id: dict[str, list[dict]],
+                          pack: str = "default") -> bool:
     """AC4：within_days=N 的 RuleRef 必须与其"兄弟节点"（同 all 下其他 finding）的日期距离 ≤N。
 
     实现：对每个 All 节点，收集其中 RuleRef 且有 within_days=K 的 ruleA，以及其同层
     所有其他 RuleRef ruleB，找 A.dates 与 B.dates 间最小日差；任一分组不满足即 False。
     """
+    keys = _date_keys(pack)
+
     def walk(n: DslNode) -> bool:
         if isinstance(n, All):
             # 抽取本层 RuleRef + 其 finding date range
@@ -222,7 +252,7 @@ def _cross_check_within_days(node: DslNode, finding_by_id: dict[str, list[dict]]
                     flist = finding_by_id.get(c.rule_id) or []
                     rmin, rmax = None, None
                     for f in flist:
-                        mn, mx = _finding_date_range(f)
+                        mn, mx = _finding_date_range(f, pack, keys)
                         if mn and (rmin is None or mn < rmin): rmin = mn
                         if mx and (rmax is None or mx > rmax): rmax = mx
                     refs_with_range.append((c, rmin, rmax))
@@ -276,7 +306,7 @@ def evaluate(store, node: DslNode, pack: str = "default", health=None) -> dict:
         return {"hit": False, "findings": [], "plan": plan.explain(),
                 "degraded_note": None}
     # 再查 within_days 窗口（日期缺 => 视为"日期未知"，不通过 AC4 保守处理）
-    ok = _cross_check_within_days(node, by_id)
+    ok = _cross_check_within_days(node, by_id, pack)
     if not ok:
         return {"hit": False, "findings": [], "plan": plan.explain(),
                 "degraded_note": "within_days 不满足（或至少一条 finding 缺可用日期列，DSL 日期未知默认不通过 AC4）"}

@@ -37,6 +37,28 @@ class Hypothesis:
         return asdict(self)
 
 
+def _dim_names(codes, pack: str = "default", base_dir=None) -> list[str]:
+    """维度 code → 展示名（维度 code 化后，报警文案须给人看中文名）。
+
+    base_dir 须透传：案件包的本体可能不在默认路径（快照/测试场景），
+    不传会去默认路径找、找不到就回落 code，导致**换本体后报警文案露英文**。
+
+    翻译失败回落 code 本身——宁可显示机器标识符，也不能因翻译失败丢信息。
+    """
+    try:
+        from core.ontology_loader import load_dimension_labels
+        labels = load_dimension_labels(pack, base_dir)
+    except Exception:
+        labels = {}
+    return [labels.get(str(c)) or str(c) for c in (codes or [])]
+
+
+# 本体声明 → Hypothesis 的合法字段集（过滤未知键，避免声明笔误炸装载）
+_HYPOTHESIS_FIELDS = frozenset(
+    f for f in Hypothesis.__dataclass_fields__
+    if f != "source_rows")  # source_rows 由 findings 注入，不接受声明
+
+
 def _matches(a: str, b: str) -> bool:
     """授权/数据源匹配：精确相等或子串包含（'房产' ⊂ '房产车辆'）。
 
@@ -129,24 +151,45 @@ class MiaoSuan:
         "过桥": "财物通过第三方过桥",
     }
 
-    def __init__(self, pack: str = "default"):
+    def __init__(self, pack: str = "default", base_dir=None):
+        self.pack = pack               # 维度展示名翻译需回查本体声明
+        # base_dir：本体根（案件快照场景不在默认路径）。不传则走默认路径，
+        # 旧调用零行为变化；传了才能正确装载非默认位置的本体声明。
+        self.base_dir = base_dir
         self.hypotheses: list[Hypothesis] = []
         self.ji: dict[str, str] = {}  # 知己栏（证据缺口 / 授权边界）
         self.audit: list[dict] = []   # 人机协同全程审计
         self.backlog: list[dict] = [] # 枚举候补池（未转正候选）
         self._enum_total = 0          # 最近一次枚举的组合总数
         self._last_findings: list[dict] = []  # REQ-G-008：最近一次虚实扫描 findings（经验轨）
-        # REQ-G-011/012：维度与枚举空间改读 ontology/<pack> 声明；
-        # 声明文件缺失时回落类属性内置默认（旧案件包/精简测试包零行为变化）。
+        # REQ-G-011/012/025：维度、枚举空间、假设模式库一并改读
+        # ontology/<pack> 声明；声明文件缺失时回落类属性内置默认
+        #（旧案件包/精简测试包零行为变化）。
         try:
-            from core.ontology_loader import load_dimensions, load_enum_space
+            from core.ontology_loader import (load_dimensions, load_enum_space,
+                                              load_hypothesis_patterns)
             from core.wujian import load_wujian
-            dims = load_dimensions(pack)
+            dims = load_dimensions(pack, base_dir)
             if dims:
                 self.DIMENSIONS = dims
-            space = load_enum_space(pack)
+            space = load_enum_space(pack, base_dir)
             if space:
                 self.ENUM_SPACE = space
+            # REQ-G-025：反常→假设的映射知识属领域层（与维度/枚举空间同级），
+            # 不属 packs/ 手段层——镜头才是「怎么查」，这里是「什么算可疑」。
+            pats = load_hypothesis_patterns(pack, base_dir)
+            if pats:
+                # 模式库引用本体标识符：object_types 已由装载器解析成
+                # data_sources 中文显示名（jians.json source_names），
+                # 这里只取 Hypothesis 合法字段，_object_types 等内部键自动滤除。
+                self.FINDING_PATTERNS = [
+                    {"rule_ids": p.get("rule_ids") or [],
+                     "keywords": p.get("keywords") or [],
+                     "hypothesis": Hypothesis(**{
+                         k: v for k, v in p["hypothesis"].items()
+                         if k in _HYPOTHESIS_FIELDS})}
+                    for p in pats
+                ]
             # P6：五间从已挂载词汇（packs/wujian）读取；无包保留类属性默认
             wj = load_wujian(pack)
             if wj is not None and wj.jian_order:
@@ -206,8 +249,16 @@ class MiaoSuan:
         self._last_findings = list(findings or [])
         for f in findings:
             text = f"{f.get('候选虚处', '')}{f.get('依据', '')}"
+            # finding 携带的规则 id（R1/R2…）——主力关联，精确且可溯源
+            f_rule = str(f.get("rule_id") or f.get("id") or "")
             for p in (patterns or self.FINDING_PATTERNS):
-                if not any(k in text for k in p["keywords"]):
+                # ① rule_ids 精确命中（优先于文本匹配）
+                # ② rule_ids 未命中 → 回落 keywords 文本弱匹配
+                rids = p.get("rule_ids") or []
+                if f_rule and rids:
+                    if f_rule not in rids:
+                        continue
+                elif not any(k in text for k in (p.get("keywords") or [])):
                     continue
                 tpl = p["hypothesis"]
                 if any(h.description == tpl.description for h in self.hypotheses):
@@ -297,16 +348,21 @@ class MiaoSuan:
         alarm_text = ""
         if alarm:
             alarm_text = (f"假设维度覆盖不完整（{len(declared)}/{len(self.DIMENSIONS)}），"
-                          f"缺：{'、'.join(declared_missing)}；建议补充数据或人工注入")
+                          f"缺：{'、'.join(_dim_names(declared_missing, self.pack, self.base_dir))}；"
+                          f"建议补充数据或人工注入")
         # G-024：实证缺口独立报警，不与声明轨共用 alarm/alarm_text
         empirical_alarm = bool(empirical_missing)
         empirical_alarm_text = ""
         if empirical_alarm:
             empirical_alarm_text = (
                 f"实证维度覆盖不完整：扫描证据仅落 {len(empirical)}/{len(self.DIMENSIONS)} 维，"
-                f"缺：{'、'.join(empirical_missing)}；已声明假设但无证据产出的维度，"
+                f"缺：{'、'.join(_dim_names(empirical_missing, self.pack, self.base_dir))}；"
+                f"已声明假设但无证据产出的维度，"
                 f"建议核查数据源或检测器是否失效（零命中规则见 data_absent 诊断）")
         return {
+            # 展示名（维度 code 化后，报警文案/UI 需中文名，机器侧仍用 code）
+            "missing_labels": _dim_names(declared_missing, self.pack, self.base_dir),
+            "empirical_missing_labels": _dim_names(empirical_missing, self.pack, self.base_dir),
             # 兼容既有键（covered/missing/score/alarm/alarm_text 语义不变）
             "covered": sorted(declared), "missing": declared_missing,
             "score": round(score, 2), "alarm": alarm, "alarm_text": alarm_text,

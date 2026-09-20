@@ -63,6 +63,23 @@ TYPE_SQL = {
     "json": "VARCHAR",             # REQ-041: JSON 文本，DuckDB 有 JSON 函数
 }
 TYPE_NAMES = tuple(TYPE_SQL)
+
+# 数据元语义角色（semantic）：让代码「读声明」而不是「猜中文列名」。
+#
+# 背景：此前系统靠中文列名猜测语义（DATE_KEYS 猜哪个列是时间、
+# _SUBJECT_KEYS 猜哪个列是主体），换领域即失效——这是本体无关化的同一病根。
+#
+# 语义角色标在**数据元层**（一处声明、引用它的所有属性自动继承），
+# 粒度不够时可在属性层单独声明覆盖（如 osint_article 有 pub_date 业务时间
+# 与 crawled_at 采集时间，需要区分）。
+#
+# 值 = 该角色允许的数据类型（装载期硬校验，类型不符即失败）
+ELEMENT_SEMANTICS = {
+    # 业务事件发生时间（≠ 采集/入库时间）。时间研判、业务时间轴据此定位。
+    "event_time": ("date", "timestamp"),
+    # 主体名称（人/组织/账户的显示名）。靶心推导、主体提取据此定位。
+    "subject_name": ("string",),
+}
 OBJECT_KINDS = ("entity", "event")   # entity=实体型（按 name_property 发代理键）；event=事件型（按行）
 KEY_STRATEGIES = ("proxy", "natural", "composite")  # P1 主键策略枚举
 

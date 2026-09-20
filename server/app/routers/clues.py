@@ -198,11 +198,17 @@ def list_clues(case_id: str,
                jian: str | None = None,
                subject: str | None = None,
                status: str | None = None,
+               skill: str | None = None,
+               lens_run: bool = False,
                page: int = Query(1, ge=1),
                page_size: int = Query(50, ge=1, le=200),
                p: Principal = Depends(get_principal),
                ctx: WebContext = Depends(get_ctx)):
-    """线索列表：级别/维度/间类/主体/状态筛选 + 优先级排序 + 分页。"""
+    """线索列表：级别/维度/间类/主体/状态/镜头筛选 + 优先级排序 + 分页。
+
+    skill：按产出技能（镜头）过滤；lens_run=true 仅定向镜头运行线索
+    （lens_runs 补充产物并线，带 lens_run_id 留痕）。
+    """
     _get_owned_case(case_id, p, ctx.cases)
     case = ctx.repo.get_case(case_id)
     version = ctx.repo.current_version(case_id)
@@ -213,6 +219,7 @@ def list_clues(case_id: str,
             state_map=state_map, role=p.role,
             level=level, dimension=dimension, jian=jian,
             subject=subject, status=status,
+            skill=skill or None, lens_run=lens_run,
             page=page, page_size=page_size,
             pack_id=case.pack_id,
             ontology_base=ctx.cases.snapshot_ontology_root(case_id))

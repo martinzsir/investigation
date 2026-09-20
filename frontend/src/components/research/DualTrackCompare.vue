@@ -6,10 +6,15 @@ import { computed } from 'vue'
 import { NTag } from 'naive-ui'
 import type { CoverageCard, HypothesesDto } from '../../api/endpoints/research'
 import { gapCounts } from '../../domain/miaoSuan'
+import { useCaseOntologyConfig } from '../../composables/useCaseOntologyConfig'
 
 const props = defineProps<{
   coverage: HypothesesDto['coverage']
 }>()
+
+// 覆盖卡片的 dimension / missing 自 code 化后是机器标识符（fund…），
+// 直接显示正兵看到的是英文——统一翻译为维度展示名（资金/通讯…）。
+const { dimLabel } = useCaseOntologyConfig()
 
 const counts = computed(() => gapCounts(props.coverage))
 
@@ -64,7 +69,7 @@ function sevType(sev: string | null): 'default' | 'warning' | 'error' | 'success
         <ul v-else class="dtc-cards">
           <li v-for="(c, i) in t.cards" :key="`${t.key}-${i}`" class="dtc-card">
             <div class="dtc-card-row">
-              <span class="dtc-dim">{{ c.dimension ?? '五间全覆盖' }}</span>
+              <span class="dtc-dim">{{ c.dimension ? dimLabel(c.dimension) : '五间全覆盖' }}</span>
               <span class="dtc-count mono">{{ c.covered }}/{{ c.total }}</span>
               <NTag v-if="c.severity" size="tiny" :bordered="false" :type="sevType(c.severity)">
                 {{ c.severity }}
@@ -72,7 +77,7 @@ function sevType(sev: string | null): 'default' | 'warning' | 'error' | 'success
             </div>
             <div v-if="c.missing?.length" class="dtc-missing">
               <span class="dim">缺口：</span>
-              <span v-for="m in c.missing" :key="m" class="dtc-chip">{{ m }}</span>
+              <span v-for="m in c.missing" :key="m" class="dtc-chip">{{ dimLabel(m) }}</span>
             </div>
             <p v-if="c.reason" class="dtc-reason dim">{{ c.reason }}</p>
           </li>

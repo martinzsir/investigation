@@ -3,9 +3,15 @@
 // FE-T-014 红线二：candidates 是派生只读建议——独立虚线候补区展示，
 // 不携带/不回写任何交叉等级升格字段；restricted 内间线索只露 id + 原因。
 import { computed, ref, watch } from 'vue'
-import { NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NInput, NSelect, NSpin, NTag, useMessage } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
-import { researchApi, type HypothesesDto } from '../api/endpoints/research'
+import {
+  researchApi,
+  verdictTone,
+  type HypothesesDto,
+  type ManualHypothesesDto,
+  type SamplingDto,
+} from '../api/endpoints/research'
 import { useCaseStore } from '../stores/case'
 import { presentError, isApiError } from '../api/errors'
 import { CANDIDATE_ZONE_CLASS, restrictedList } from '../domain/miaoSuan'
@@ -48,6 +54,127 @@ function openClue(clueId: string): void {
     query: { from: route.path },
   })
 }
+
+// ---------- P1/P2：人工假设 ----------
+// 只持久化人工部分：自动假设从 findings 派生（每次 BUILD 重算），落盘会
+// 造成产物与数据漂移；人工假设是正兵判断，不该被重扫冲掉。
+const manual = ref<ManualHypothesesDto | null>(null)
+const mBusy = ref(false)
+const showAdd = ref(false)
+const form = ref({
+  description: '',
+  falsification: '',
+  procedure: '',
+  evidence_needed: '',
+  data_sources: '',
+})
+
+function splitList(s: string): string[] {
+  return s.split(/[,，、;；\n]/).map((x) => x.trim()).filter(Boolean)
+}
+
+async function loadManual(): Promise<void> {
+  if (!cs.currentCaseId) return
+  try {
+    manual.value = await researchApi.manualList(cs.currentCaseId)
+  } catch {
+    manual.value = null
+  }
+}
+
+async function submitAdd(): Promise<void> {
+  if (!cs.currentCaseId || !form.value.description.trim()) return
+  if (!form.value.falsification.trim()) {
+    message.error('请填写证伪条件（庙算要求每条假设可自动证伪）')
+    return
+  }
+  mBusy.value = true
+  try {
+    manual.value = await researchApi.manualAdd(cs.currentCaseId, {
+      description: form.value.description.trim(),
+      falsification: form.value.falsification.trim(),
+      procedure: form.value.procedure.trim(),
+      evidence_needed: splitList(form.value.evidence_needed),
+      data_sources: splitList(form.value.data_sources),
+    })
+    form.value = {
+      description: '', falsification: '', procedure: '',
+      evidence_needed: '', data_sources: '',
+    }
+    showAdd.value = false
+    message.success('人工假设已添加')
+  } catch (e) {
+    message.error(isApiError(e) ? e.message : presentError(e).title)
+  } finally {
+    mBusy.value = false
+  }
+}
+
+async function removeManual(id: string): Promise<void> {
+  if (!cs.currentCaseId) return
+  mBusy.value = true
+  try {
+    manual.value = await researchApi.manualRemove(cs.currentCaseId, id)
+  } catch (e) {
+    message.error(isApiError(e) ? e.message : presentError(e).title)
+  } finally {
+    mBusy.value = false
+  }
+}
+
+/** 上移（人工假设排序；正兵判断优先的排前面） */
+async function moveUp(idx: number): Promise<void> {
+  const items = manual.value?.items ?? []
+  if (idx <= 0 || idx >= items.length || !cs.currentCaseId) return
+  const order = items.map((x) => x.id)
+  ;[order[idx - 1], order[idx]] = [order[idx], order[idx - 1]]
+  mBusy.value = true
+  try {
+    manual.value = await researchApi.manualReorder(cs.currentCaseId, order)
+  } catch (e) {
+    message.error(isApiError(e) ? e.message : presentError(e).title)
+  } finally {
+    mBusy.value = false
+  }
+}
+
+// ---------- P3：采样预演 ----------
+// core/sampling.py 1% 采样验证假设方向，避免盲投全量算力。
+// 红线：只给方向建议，是否投全量由正兵拍板（不自动触发全量扫描）。
+const sampling = ref<SamplingDto | null>(null)
+const sBusy = ref(false)
+const selIds = ref<string[]>([])
+const ratio = ref(0.01)
+
+/** 可选假设：人工假设 + 自动假设（H1..H5，来自模式库/规则声明） */
+const sampleOptions = computed(() => {
+  const out: { label: string; value: string }[] = []
+  for (const m of manual.value?.items ?? []) {
+    out.push({ label: `${m.id} ${m.description}（人工）`, value: m.id })
+  }
+  for (const id of ['H1', 'H2', 'H3', 'H4', 'H5']) {
+    out.push({ label: `${id}（自动生成）`, value: id })
+  }
+  return out
+})
+
+async function runSampling(): Promise<void> {
+  if (!cs.currentCaseId || !selIds.value.length) {
+    message.warning('请先选择要预演的假设')
+    return
+  }
+  sBusy.value = true
+  try {
+    sampling.value = await researchApi.samplingPreflight(
+      cs.currentCaseId, selIds.value, ratio.value)
+  } catch (e) {
+    message.error(isApiError(e) ? e.message : presentError(e).title)
+  } finally {
+    sBusy.value = false
+  }
+}
+
+watch(() => cs.currentCaseId, () => void loadManual(), { immediate: true })
 </script>
 
 <template>
@@ -110,6 +237,140 @@ function openClue(clueId: string): void {
               <p class="dim cand-reason">{{ c.reason }}</p>
             </li>
           </ul>
+        </div>
+
+        <!-- P1/P2 人工假设：只持久化人工部分，自动假设保持派生（随数据重算） -->
+        <div class="card">
+          <div class="card-title">
+            人工假设（{{ manual?.items.length ?? 0 }}）
+            <NTag size="tiny" :bordered="false" type="info">不随重扫丢失</NTag>
+            <NButton size="tiny" @click="showAdd = !showAdd">
+              {{ showAdd ? '收起' : '+ 新增' }}
+            </NButton>
+          </div>
+          <p class="dim zone-note">
+            自动生成的假设由数据派生、每次 BUILD 重算，不落盘；此处保存的是正兵
+            手工添加的判断，重扫不会被冲掉。证伪条件必填——庙算要求每条假设可自动证伪。
+          </p>
+
+          <div v-if="showAdd" class="add-form">
+            <NInput
+              v-model:value="form.description"
+              placeholder="假设描述（必填）"
+              :disabled="mBusy"
+              data-testid="hyp-desc-input"
+            />
+            <NInput
+              v-model:value="form.falsification"
+              placeholder="证伪条件（必填，如：流水无对价时间耦合则证伪）"
+              :disabled="mBusy"
+              data-testid="hyp-falsify-input"
+            />
+            <NInput
+              v-model:value="form.evidence_needed"
+              placeholder="所需证据（逗号分隔，选填）"
+              :disabled="mBusy"
+            />
+            <NInput
+              v-model:value="form.data_sources"
+              placeholder="可调用数据源（逗号分隔，选填）"
+              :disabled="mBusy"
+            />
+            <NInput
+              v-model:value="form.procedure"
+              placeholder="对应程序（选填）"
+              :disabled="mBusy"
+            />
+            <div class="form-actions">
+              <NButton size="small" type="primary" :loading="mBusy"
+                data-testid="hyp-submit" @click="submitAdd">保存</NButton>
+              <NButton size="small" @click="showAdd = false">取消</NButton>
+            </div>
+          </div>
+
+          <EmptyState
+            v-if="!(manual?.items.length)"
+            type="empty"
+            title="暂无人工假设"
+            desc="点击「+ 新增」补充正兵判断（系统自动生成的假设由数据派生，不在此列）"
+          />
+          <ul v-else class="hyp-list">
+            <li v-for="(m, i) in manual.items" :key="m.id" class="hyp-item"
+              :data-testid="`hyp-item-${m.id}`">
+              <div class="hyp-head">
+                <span class="mono hyp-id">{{ m.id }}</span>
+                <strong>{{ m.description }}</strong>
+                <NTag size="tiny" :bordered="false">人工</NTag>
+                <span class="hyp-actions">
+                  <NButton size="tiny" :disabled="i === 0 || mBusy"
+                    @click="moveUp(i)">↑</NButton>
+                  <NButton size="tiny" :disabled="mBusy"
+                    @click="removeManual(m.id)">删除</NButton>
+                </span>
+              </div>
+              <p class="dim hyp-falsify">证伪：{{ m.falsification }}</p>
+              <p v-if="m.evidence_needed.length" class="dim hyp-meta">
+                所需证据：{{ m.evidence_needed.join('、') }}
+              </p>
+            </li>
+          </ul>
+        </div>
+
+        <!-- P3 采样预演：1% 采样验证方向，避免盲投全量算力 -->
+        <div class="card">
+          <div class="card-title">
+            采样预演
+            <NTag size="tiny" :bordered="false" type="warning">仅方向建议</NTag>
+          </div>
+          <p class="dim zone-note">
+            对小样本试跑已选假设，判断方向是否值得投入全量算力。命中率 ≥5% 方向明确、
+            1%~5% 存疑（建议扩大到 5% 再验）、&lt;1% 方向否定。
+            <strong>只给建议，是否投全量由正兵拍板。</strong>
+          </p>
+          <div class="sample-run">
+            <NSelect
+              v-model:value="selIds"
+              multiple
+              :options="sampleOptions"
+              placeholder="选择要预演的假设"
+              :disabled="sBusy"
+              class="sample-select"
+              data-testid="sample-select"
+            />
+            <NSelect
+              v-model:value="ratio"
+              :options="[
+                { label: '1%', value: 0.01 },
+                { label: '5%', value: 0.05 },
+                { label: '10%', value: 0.1 },
+              ]"
+              :disabled="sBusy"
+              class="sample-ratio"
+            />
+            <NButton size="small" type="primary" :loading="sBusy"
+              data-testid="sample-run" @click="runSampling">跑预演</NButton>
+          </div>
+
+          <div v-if="sampling" class="sample-result" data-testid="sample-result">
+            <div class="sample-overall">
+              整体判定：
+              <NTag size="small" :bordered="false" :type="verdictTone(sampling.overall_verdict)">
+                {{ sampling.overall_verdict }}
+              </NTag>
+              <span class="dim">{{ sampling.suggest }}</span>
+            </div>
+            <ul class="sample-list">
+              <li v-for="r in sampling.results" :key="r.hypothesis_id" class="sample-item">
+                <span class="mono">{{ r.hypothesis_id }}</span>
+                <span class="dim">
+                  采样 {{ r.sampled_rows }} 行，命中 {{ r.hit_rows }} 行（{{ (r.hit_rate * 100).toFixed(2) }}%）
+                </span>
+                <NTag size="tiny" :bordered="false" :type="verdictTone(r.verdict)">
+                  {{ r.verdict }}
+                </NTag>
+              </li>
+            </ul>
+          </div>
         </div>
 
         <!-- 无权内间线索：灰显，只露 id + 原因（不泄露内容） -->
@@ -209,6 +470,101 @@ function openClue(clueId: string): void {
   font-size: 13px;
   font-weight: 600;
 }
+/* ---- P1/P2 人工假设 ---- */
+.add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--sun-border);
+  border-radius: 6px;
+}
+.form-actions {
+  display: flex;
+  gap: 8px;
+}
+.hyp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hyp-item {
+  border: 1px solid var(--sun-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hyp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.hyp-id {
+  font-size: 11px;
+  color: var(--sun-warn-text);
+}
+.hyp-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+.hyp-falsify,
+.hyp-meta {
+  margin: 0;
+  font-size: 12px;
+}
+
+/* ---- P3 采样预演 ---- */
+.sample-run {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.sample-select {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.sample-ratio {
+  width: 90px;
+}
+.sample-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px dashed var(--sun-border);
+  border-radius: 6px;
+}
+.sample-overall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sample-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sample-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
 .restricted {
   opacity: 0.85;
 }

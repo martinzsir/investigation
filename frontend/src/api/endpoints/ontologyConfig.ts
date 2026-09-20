@@ -21,9 +21,23 @@ export interface CrossLevelDecl {
 
 /** 侦查五维/数据通道声明（线索 detail.dimension / 雷达 / 房间色板口径） */
 export interface OntologyDimension {
+  /** 机器标识符（rules.json / hypothesis_patterns.json 引用它；如 fund/comm） */
+  code?: string
+  /** 展示名（中文，UI/报告显示；如 资金/通讯） */
   name: string
   note?: string
   source_object_types?: string[]
+}
+
+/** 维度 code → 展示名（线索详情/热力图把机器标识符翻译给人看） */
+export function dimensionLabelMap(dims: OntologyDimension[]): Record<string, string> {
+  const m: Record<string, string> = {}
+  for (const d of dims ?? []) {
+    const code = d.code || d.name
+    m[code] = d.name
+    m[d.name] = d.name // 兼容旧产物里的中文维度值
+  }
+  return m
 }
 
 export type StateTone = 'warning' | 'info' | 'muted' | 'success' | 'danger'
@@ -71,6 +85,14 @@ export interface ScoringDimensionDecl {
   cap?: number
 }
 
+/** 业务事件时间字段（本体 semantic:event_time 声明；空=本体未声明） */
+export interface OntologyTimeFields {
+  /** 对象名 → 该对象的业务时间属性列表 */
+  objects: Record<string, string[]>
+  /** 全量去重（跨对象） */
+  event_time: string[]
+}
+
 export interface OntologyConfig {
   pack: string
   jians: OntologyJian[]
@@ -83,6 +105,8 @@ export interface OntologyConfig {
     dimensions: ScoringDimensionDecl[]
     assumption_confidence: Record<string, number>
   }
+  /** 业务事件时间字段（画布业务时间轴依据；空结构=本体未声明→回落过程时间） */
+  time_fields?: OntologyTimeFields
 }
 
 export const ontologyConfigApi = {

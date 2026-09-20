@@ -21,6 +21,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import duckdb
+
 
 # ----------------------------------------------------------------------
 # 数据结构
@@ -111,13 +113,13 @@ class GraphBackend:
             return {"nodes": 0, "edges": 0, "skipped": True}
 
         c = getattr(conn, "conn", conn)
-        table, (c_from, c_to, c_amt, c_date) = _flow_source(c, flow_table)
-        rows = c.execute(
-            f'SELECT "{c_from}", "{c_to}", "{c_amt}", "{c_date}" FROM "{table}"'
-        ).fetchall()
+        table, (c_from, c_to, c_amt, c_date), _ = _flow_source(c, flow_table)
+        rows = _query_rows(
+            c, f'SELECT "{c_from}", "{c_to}", "{c_amt}", "{c_date}" FROM "{table}"'
+        )
 
         # 节点 = 主体 ∪ 对方（去重，保证边表引用的节点全部存在）
-        names = sorted({r[0] for r in rows} | {r[1] for r in rows})
+        names = sorted({r[c_from] for r in rows} | {r[c_to] for r in rows})
         tmp = Path(tempfile.mkdtemp(prefix="lbug_import_"))
         node_csv = tmp / "nodes.csv"
         edge_csv = tmp / "edges.csv"
@@ -130,8 +132,8 @@ class GraphBackend:
         with open(edge_csv, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["frm", "to", "amount", "tdate"])
-            for a, b, amt, d in rows:
-                w.writerow([a, b, float(amt), str(d)])
+            for r in rows:
+                w.writerow([r[c_from], r[c_to], float(r[c_amt]), str(r[c_date])])
 
         if rebuild:
             # 重建表（DDL 不支持 IF NOT EXISTS 语义下的幂等清理，先 DROP）
@@ -200,30 +202,78 @@ class GraphBackend:
 
 
 # ----------------------------------------------------------------------
+# 只读查询通道（兼容 Store / ReadOnlyStore / 裸 duckdb 连接）
+# ----------------------------------------------------------------------
+def _query_rows(c, sql: str, **kw) -> List[Dict[str, Any]]:
+    """统一只读查询，返回 dict 列表。
+
+    py Function 经 ReadOnlyStore 代理调用时禁止访问 execute/conn（只读护栏），
+    故 Store / ReadOnlyStore 一律走 query()：与 SQL 轨共用 _assert_readonly
+    白名单，不绕过 REQ-003。
+
+    注意顺序：裸 duckdb 连接**也有** query()，但返回 DuckDBPyRelation 而非
+    list[dict]，故必须先按连接类型分流——否则 relation 当 list 下标访问会抛
+    TypeError（建图/测试直传裸连接的路径会崩）。
+    """
+    if isinstance(c, duckdb.DuckDBPyConnection):
+        cur = c.execute(sql)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    q = getattr(c, "query", None)
+    if callable(q):
+        return q(sql, **kw)
+    cur = c.execute(sql)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+# ----------------------------------------------------------------------
 # 数据入口：语义层优先（lnk_transfers），未构建语义层时回落 L2 银行流水
 # ----------------------------------------------------------------------
-def _flow_source(c, flow_table: str = "银行流水") -> tuple[str, tuple[str, str, str, str]]:
-    """返回 (表名, (from列, to列, 金额列, 日期列))。"""
-    has_sem = c.execute(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'lnk_transfers'"
-    ).fetchone()[0] > 0
+def _flow_source(c, flow_table: str = "银行流水") -> tuple[str, tuple[str, str, str, str], bool]:
+    """返回 (表名, (from列, to列, 金额列, 日期列), 是否语义层)。"""
+    rows = _query_rows(
+        c,
+        "SELECT COUNT(*) AS c FROM information_schema.tables "
+        "WHERE table_name = 'lnk_transfers'",
+    )
+    has_sem = bool(rows) and int(rows[0].get("c") or 0) > 0
     if has_sem:
-        return "lnk_transfers", ("from_account", "to_account", "amount", "date")
-    return flow_table, ("主体", "对方", "金额", "日期")
+        return "lnk_transfers", ("from_account", "to_account", "amount", "date"), True
+    return flow_table, ("主体", "对方", "金额", "日期"), False
+
+
+def has_semantic_flow(c) -> bool:
+    """语义层 lnk_transfers 是否可用。
+
+    供调用方在「语义层缺失」时决定降级还是回落直查源表——py Function 只读
+    通道不得直查 L2 业务源表（REQ-003），须据此先判定再降级。
+    """
+    return _flow_source(c)[2]
 
 
 # ----------------------------------------------------------------------
 # SQL 对照（同一问题的关系型解法，用于双轨一致性比对）
 # ----------------------------------------------------------------------
-def overpass_two_hop_sql(conn, flow_table: str = "银行流水") -> List[OverpassPath]:
+def overpass_two_hop_sql(conn, flow_table: str = "银行流水", *,
+                         allow_unsafe_fallback: bool = True) -> List[OverpassPath]:
     """
     Q2 过桥的 SQL 解法：流表自连接。
     与 Cypher 版互为校验 —— 两者结果必须一致，否则说明某一侧口径有误。
     数据入口与建图同源（_flow_source），保证双轨口径一致。
+
+    只读护栏（修复 overpass_two_hop 经 py Function 调用必崩）：
+      原先 c = getattr(conn, "conn", conn) + c.execute(...) 两步都会撞
+      ReadOnlyStore 黑名单（conn / execute）——py Function 拿到的 store 是只读代理。
+      现统一走 _query_rows()，与 SQL 轨共用只读白名单。
+
+    allow_unsafe_fallback（默认 True，Store 调用方保持旧行为）：
+      语义层 lnk_transfers 缺失时是否回落直查 L2 业务源表。直查违反 REQ-003，
+      故走 query(unsafe=True) 调试通道——具名 operator + 理由 + 行数上限 + 审计落盘。
+      py Function 传 False：只读通道不直查源表，由调用方降级留痕。
     """
-    c = getattr(conn, "conn", conn)
-    table, (c_from, c_to, c_amt, c_date) = _flow_source(c, flow_table)
-    rows = c.execute(f"""
+    table, (c_from, c_to, c_amt, c_date), is_semantic = _flow_source(conn, flow_table)
+    sql = f"""
         SELECT a."{c_from}" AS src, a."{c_to}" AS mid, b."{c_to}" AS dst,
                a."{c_amt}" AS amt1, b."{c_amt}" AS amt2,
                a."{c_date}" AS d1, b."{c_date}" AS d2
@@ -232,13 +282,24 @@ def overpass_two_hop_sql(conn, flow_table: str = "银行流水") -> List[Overpas
         WHERE a."{c_from}" <> b."{c_to}"
           AND a."{c_from}" <> a."{c_to}"
           AND b."{c_from}" <> b."{c_to}"
-    """).fetchall()
+    """
+    if is_semantic:
+        rows = _query_rows(conn, sql)
+    elif allow_unsafe_fallback:
+        rows = conn.query(
+            sql, unsafe=True, operator="graph.overpass",
+            reason="语义层 lnk_transfers 缺失，Q2 过桥双轨校验回落直查 L2 流表",
+        )
+    else:
+        # 只读通道不直查源表：降级为空，由调用方标 degraded 落健康度
+        return []
     return [
         OverpassPath(
-            source=r[0], bridge=r[1], dest=r[2],
-            amount_in=float(r[3]), amount_out=float(r[4]),
+            source=r["src"], bridge=r["mid"], dest=r["dst"],
+            amount_in=float(r["amt1"]), amount_out=float(r["amt2"]),
             engine="sql",
-            source_rows=[f"{table}({r[0]}→{r[1]}@{r[5]})", f"{table}({r[1]}→{r[2]}@{r[6]})"],
+            source_rows=[f"{table}({r['src']}→{r['mid']}@{r['d1']})",
+                         f"{table}({r['mid']}→{r['dst']}@{r['d2']})"],
         )
         for r in rows
     ]

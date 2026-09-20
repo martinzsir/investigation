@@ -135,7 +135,7 @@ class LensRunTest(unittest.TestCase):
                       skill_id="relation_neighborhood",
                       params={"target_subject": "张三"},
                       operator="张偏将", clues=[clue])
-        # 列表并线
+        # 列表并线 + 定向打标（lens_run_id/at/operator 随列表可见，徽标/审计面）
         r = self.client.get("/api/v1/cases/c1/clues", headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)
         items = r.json()["data"]["items"]
@@ -143,11 +143,44 @@ class LensRunTest(unittest.TestCase):
         self.assertEqual(len(hit), 1)
         self.assertEqual(hit[0]["skill_id"], "relation_neighborhood")
         self.assertEqual(hit[0]["status"], "待查")
+        self.assertEqual(hit[0]["lens_run_id"], "lensrun_t1")
+        self.assertEqual(hit[0]["lens_operator"], "张偏将")
+        self.assertTrue(hit[0]["lens_run_at"])
         # 详情可见
         r = self.client.get(
             f"/api/v1/cases/c1/clues/{clue.clue_id}", headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["data"]["title"], "定向：张三 关系圈层")
+
+    # ---- ②b 镜头筛选（skill / lens_run） ---------------------------------
+    def test_list_filter_by_skill_and_lens_run(self):
+        self._make_version1(with_clues_artifact=True)
+        lens_clue = LineageClue(skill_id="relation_neighborhood",
+                                title="定向：张三 关系圈层",
+                                detail={"依据": "邻域"})
+        save_lens_run(self.case_dir, 1, run_id="lensrun_t2",
+                      skill_id="relation_neighborhood",
+                      params={"target_subject": "张三"},
+                      operator="张偏将", clues=[lens_clue])
+        batch_clue = LineageClue(skill_id="relation_neighborhood",
+                                 title="批量：关系汇聚", detail={"依据": "批量"})
+        save_case_clues(self.case_dir, 1, [batch_clue])
+        base = "/api/v1/cases/c1/clues"
+        # lens_run=true：仅定向并线线索（批量同 skill 线索不混入）
+        r = self.client.get(f"{base}?lens_run=true", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        items = r.json()["data"]["items"]
+        self.assertEqual([x["clue_id"] for x in items],
+                         [lens_clue.clue_id])
+        # skill 过滤：主产物 + 定向并线同技能都在（定向镜头批量阶段跳过，
+        # 但过滤语义按产出技能统一口径，不隐含 lens_run）
+        r = self.client.get(f"{base}?skill=relation_neighborhood",
+                            headers=self.auth_h)
+        ids = {x["clue_id"] for x in r.json()["data"]["items"]}
+        self.assertEqual(ids, {lens_clue.clue_id, batch_clue.clue_id})
+        # 未知技能 → 空集（不是 404：筛选语义对任意值返回子集）
+        r = self.client.get(f"{base}?skill=ghost", headers=self.auth_h)
+        self.assertEqual(r.json()["data"]["items"], [])
 
     # ---- ③ 权限与边界 ---------------------------------------------------
     def test_run_requires_analyst(self):

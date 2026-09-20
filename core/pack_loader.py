@@ -170,6 +170,7 @@ def _build_specs(decl: dict[str, Any], pack_dir: Path,
             consumes_jian=list(s.get("consumes_jian") or []),
             data_deps=list(s.get("data_deps") or []),
             consumes_objects=consumes,
+            description=str(s.get("description") or ""),
             produces_dims=list(s.get("produces_dims") or []),
             mode=str(s.get("mode") or "deterministic"),
             enabled=bool(s.get("enabled", True)),
@@ -215,6 +216,51 @@ def batch_lens_ids(registry: SkillRegistry) -> tuple[list[str], list[str]]:
         else:
             runnable.append(spec.skill_id)
     return sorted(runnable), sorted(requires_params)
+
+
+def batch_lens_tasks(
+    registry: SkillRegistry,
+    store=None,
+    ctx: dict | None = None,
+    pack: str = "default",
+) -> tuple[list[tuple[str, dict]], list[str], list[str]]:
+    """批量调度任务清单（自动填参版，自动研判主入口）。
+
+    与 batch_lens_ids 的区别：后者把「有必填参数」的定向镜头整体跳过，
+    导致 relation_*/timeline_* 六个镜头在自动研判里永远不跑。本函数按
+    pack.json 的 auto_from 声明推导靶心，把定向镜头展开成可调度任务。
+
+    返回 (tasks, unresolved, skipped_by_mode)：
+      - tasks             [(skill_id, params)]，可直接喂 skill_invoke；
+                          单主体镜头 1 组/靶心，双主体走「靶心×关联」O(N)；
+      - unresolved        推导不出参数、无法自动调度的镜头（已落诊断）；
+      - skipped_by_mode   mode!=deterministic（如 draft 的 vlm，永不批量）。
+    """
+    from core.focus import auto_fill_params
+
+    ctx = dict(ctx or {})
+    tasks: list[tuple[str, dict]] = []
+    unresolved: list[str] = []
+    skipped_mode: list[str] = []
+
+    for spec in registry.all_specs():
+        if spec.pack_id == BUILTIN_PACK_ID or not spec.enabled:
+            continue
+        if spec.mode != "deterministic":
+            skipped_mode.append(spec.skill_id)
+            continue
+        has_required = any(
+            p.get("required") for p in spec.params_schema.values())
+        if not has_required:
+            tasks.append((spec.skill_id, {}))
+            continue
+        combos, _sources = auto_fill_params(spec, store, ctx, pack)
+        if not combos:
+            unresolved.append(spec.skill_id)
+            continue
+        for c in combos:
+            tasks.append((spec.skill_id, c))
+    return tasks, sorted(unresolved), sorted(skipped_mode)
 
 
 def case_batch_lens_ids(

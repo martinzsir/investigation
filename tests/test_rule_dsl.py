@@ -168,14 +168,14 @@ class RuleDslTests(unittest.TestCase):
             r7 = [f for f in out["findings"] if f["rule_id"] == "R7"]
             self.assertEqual(len(r7), 1)
             rows = r7[0]["source_rows"]
-            subjects = {r["主体"] for r in rows}
+            subjects = {r["subject_raw"] for r in rows}
             self.assertIn("张卫国", subjects)
             self.assertIn("李志强", subjects)
             # 单类型主体不碰撞
             self.assertNotIn("宏业建设", subjects)
             # 每行锚点回标到项目公示日（统一时间轴）
             self.assertTrue(all(r["anchor_date"] == "2021-10-01" for r in rows))
-            self.assertTrue(all(r["类型数"] >= 2 for r in rows))
+            self.assertTrue(all(r["type_count"] >= 2 for r in rows))
             # R7 可与既有规则做 DSL 组合
             combo = evaluate(store, parse({"all": [{"rule": "R6"},
                                                    {"rule": "R7"}]}))

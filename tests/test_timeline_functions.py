@@ -105,7 +105,7 @@ class TimelineFunctionTests(unittest.TestCase):
         self.assertEqual(r["event_count"], 5)
         self.assertEqual(r["span_days"], 44)
         self.assertEqual(r["type_counts"],
-                         {"资金": 2, "通话": 2, "轨迹": 1})
+                         {"transaction": 2, "call": 2, "trackpoint": 1})
         dates = [e["date"] for e in r["timeline"]]
         self.assertEqual(dates, sorted(dates))
         # 首事件无 gap；9-01 → 10-12 间隔 41 天
@@ -136,7 +136,8 @@ class TimelineFunctionTests(unittest.TestCase):
         self.assertEqual(burst["start"], "2021-10-12")
         self.assertEqual(burst["end"], "2021-10-15")
         self.assertEqual(burst["event_count"], 4)
-        self.assertEqual(set(burst["types"]), {"资金", "通话", "轨迹"})
+        self.assertEqual(set(burst["types"]),
+                         {"transaction", "call", "trackpoint"})
         self.assertEqual(r["median_gap_days"], 1.5)
 
     def test_rhythm_no_burst_when_spread_out(self):
@@ -165,10 +166,11 @@ class TimelineFunctionTests(unittest.TestCase):
                          {"project": "市政道路工程", "window_days": 7})
         self.assertTrue(r["hit"])
         self.assertEqual(r["count"], 3)
-        subjects = {row["主体"]: row for row in r["rows"]}
+        subjects = {row["subject_raw"]: row for row in r["rows"]}
         self.assertEqual(set(subjects), {"张三", "李四", "王五"})
-        self.assertEqual(subjects["张三"]["类型数"], 3)
-        self.assertEqual(subjects["王五"]["事件类型"], "资金、轨迹")
+        self.assertEqual(subjects["张三"]["type_count"], 3)
+        self.assertEqual(set(subjects["王五"]["event_types"]),
+                         {"transaction", "trackpoint"})
         # 单类型主体不进碰撞
         all_names = subjects
         self.assertNotIn("赵六", all_names)
@@ -178,7 +180,7 @@ class TimelineFunctionTests(unittest.TestCase):
         r = self._invoke("timeline_cross_collision",
                          {"project": "市政道路工程", "min_event_types": 3})
         self.assertEqual(r["count"], 2)
-        self.assertEqual({row["主体"] for row in r["rows"]},
+        self.assertEqual({row["subject_raw"] for row in r["rows"]},
                          {"张三", "李四"})
 
     def test_cross_collision_narrow_window(self):
@@ -186,13 +188,13 @@ class TimelineFunctionTests(unittest.TestCase):
                          {"project": "市政道路工程", "window_days": 1})
         # 10-14..10-16：王五（资金 10-14 + 轨迹 10-14）
         self.assertEqual(r["count"], 1)
-        self.assertEqual(r["rows"][0]["主体"], "王五")
+        self.assertEqual(r["rows"][0]["subject_raw"], "王五")
 
     def test_cross_collision_window_excludes_far_events(self):
         r = self._invoke("timeline_cross_collision",
                          {"project": "市政道路工程", "window_days": 3})
         # call_002 在 10-15（窗内），赵六仅通话单一类型仍不碰撞
-        subjects = {row["主体"] for row in r["rows"]}
+        subjects = {row["subject_raw"] for row in r["rows"]}
         self.assertNotIn("赵六", subjects)
 
     # ---- ④ 不存在 ----
@@ -236,7 +238,8 @@ class TimelineFunctionTests(unittest.TestCase):
         r = self._invoke("timeline_cross_collision", {})
         by_proj = {}
         for row in r["rows"]:
-            by_proj.setdefault(row["project"]["pk"], []).append(row["主体"])
+            by_proj.setdefault(row["project"]["pk"], []).append(
+                row["subject_raw"])
         self.assertIn("project_p2", by_proj)
         self.assertIn("钱七", by_proj["project_p2"])
 

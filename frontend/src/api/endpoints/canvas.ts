@@ -70,6 +70,25 @@ export const canvasApi = {
   },
 
   /**
+   * POST .../canvas/expand-rows —— 按需展开溯源行（规模保护）。
+   * 首屏只画前 N 条溯源行，用户点「展开更多」时补齐；后端幂等，
+   * 重复调用不重复加。row_limit 是**补到**的目标总数，不是再加多少条。
+   */
+  async expandRows(
+    caseId: string,
+    clueId: string,
+    rowLimit: number,
+    baseVersion: number,
+  ): Promise<CanvasEnvelope> {
+    const res = await api.post<CanvasEnvelope>(
+      `${base(caseId, clueId)}/expand-rows`,
+      { row_limit: rowLimit, version: baseVersion },
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /**
    * PATCH .../canvas —— 防抖自动保存。
    * baseVersion 为本地文档基准版本；409 时若 overwrite=true 以服务端
    * 当前版本重试一次（RC-205：后写覆盖并提示，冲突计入审计）。

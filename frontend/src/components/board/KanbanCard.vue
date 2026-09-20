@@ -34,6 +34,7 @@ const { config: cfg } = useCaseOntologyConfig()
 const meta = computed(() => statusMetaOf(props.card.status, cfg.value))
 const barColor = computed(() => meta.value?.border ?? 'var(--sun-border)')
 const isFiled = computed(() => isControlledTerminal(props.card.status, cfg.value))
+// 维度 code → 中文的翻译统一在 StatusBadge（room variant）内完成，此处不重复
 const rooms = computed(() => (props.card.dimension ?? props.card.jian_types ?? []).slice(0, 4))
 const operatorName = computed(() => props.card.operator || '未分派')
 const initial = computed(() => operatorName.value.slice(0, 1))

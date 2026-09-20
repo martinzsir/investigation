@@ -120,6 +120,32 @@ export function overviewLinkWidth(weight: number): number {
   return Math.round(raw * 10) / 10
 }
 
+/** 证据边线宽区间（画布像素）：比普通系统边(1.4)粗，但不超过概览主干边 */
+export const EVIDENCE_LINK_MIN_WIDTH = 1.6
+export const EVIDENCE_LINK_MAX_WIDTH = 3.2
+
+/**
+ * 命中边线宽 ∝ 溯源行数（对数缩放）。
+ *
+ * 为什么是对数：证据行数从 1 到几千都有可能，线性映射会让 10 行的边细到
+ * 看不见、而 1000 行的边粗到糊成一团。对数后每差一个数量级才明显变粗一档，
+ * 既区分得出"证据扎实"与"孤证"，又不会视觉失控。
+ *
+ * 1 行 → 1.6（略粗于普通边，表示"有证据"）
+ * 10 行 → 2.4
+ * 100 行 → 3.2（封顶）
+ */
+export function evidenceLinkWidth(rows: number): number {
+  const n = Number.isFinite(rows) ? Math.max(0, rows) : 0
+  if (n <= 0) return EVIDENCE_LINK_MIN_WIDTH
+  // log10(1)=0 → min；log10(100)=2 → max；中间线性插值
+  const t = Math.min(1, Math.log10(n + 1) / 2)
+  const raw =
+    EVIDENCE_LINK_MIN_WIDTH +
+    (EVIDENCE_LINK_MAX_WIDTH - EVIDENCE_LINK_MIN_WIDTH) * t
+  return Math.round(raw * 10) / 10
+}
+
 /** 胶囊 chip 上的计数文本（圆底宽 26，超两位退化成 99+） */
 export function overviewCountText(count: number): string {
   if (!Number.isFinite(count) || count <= 0) return '0'

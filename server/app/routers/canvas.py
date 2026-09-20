@@ -112,10 +112,14 @@ def _sha1(s: str) -> str:
 
 
 def _payload(row: dict, *, seeded: bool, semantic_ready: bool) -> dict:
+    doc = row["doc"] or {}
+    # meta：成图规模截断声明（种子期生成，随 doc 持久化）。
+    # 单独下发到顶层，前端不必去 doc 里翻；缺失即视为未截断。
+    meta = doc.get("meta") if isinstance(doc, dict) else None
     return {
         "canvas_id": row["canvas_id"],
         "clue_id": row["clue_id"],
-        "doc": row["doc"],
+        "doc": doc,
         "version": int(row["version"]),
         "created_by": row.get("created_by", ""),
         "created_at": row.get("created_at", ""),
@@ -123,6 +127,7 @@ def _payload(row: dict, *, seeded: bool, semantic_ready: bool) -> dict:
         "updated_at": row.get("updated_at", ""),
         "seeded": seeded,
         "semantic_ready": semantic_ready,
+        "meta": meta if isinstance(meta, dict) else {},
     }
 
 
@@ -270,9 +275,16 @@ def patch_canvas(case_id: str, clue_id: str, body: CanvasPatchIn,
             raise APIError(
                 ERR_VALIDATION,
                 "画布保存被拒：" + "；".join(errs[:5]), 400)
+        # 保存时保留 meta（成图截断声明）：前端回传的 doc 若未带 meta，
+        # 以服务端现存为准补齐——否则一次自动保存就把"还有多少没画"丢失了。
+        incoming = dict(body.doc)
+        if isinstance(current["doc"], dict) and "meta" not in incoming:
+            old_meta = current["doc"].get("meta")
+            if isinstance(old_meta, dict):
+                incoming["meta"] = old_meta
         try:
             row = state.update_canvas_doc(
-                clue_id, body.doc, operator=p.operator, updated_at=_now(),
+                clue_id, incoming, operator=p.operator, updated_at=_now(),
                 expected_version=body.version)
         except CanvasVersionConflict as exc:
             raise APIError(
@@ -287,6 +299,84 @@ def patch_canvas(case_id: str, clue_id: str, body: CanvasPatchIn,
                       "version": row["version"],
                       "nodes": len(row["doc"]["nodes"]),
                       "edges": len(row["doc"]["edges"])})
+        return ok(_payload(row, seeded=False,
+                           semantic_ready=_semantic_ready(ctx, case_id,
+                                                          version)),
+                  data_version=version)
+    finally:
+        state.close()
+
+
+# ======================================================================
+# 画布规模保护：溯源行按需展开
+# ======================================================================
+# 首屏只画前 _MAX_ROW_NODES 条溯源行（真实案件可达数千，全量成图会拖垮前端）。
+# 用户点「展开更多」时调本接口补齐——只增不改删，与 reconcile 同源口径。
+# meta.truncated 如实声明 shown/total，不静默少画。
+class CanvasExpandRowsIn(BaseModel):
+    row_limit: int = 180
+    version: int | None = None
+
+
+@router.post("/cases/{case_id}/clues/{clue_id}/canvas/expand-rows")
+def expand_canvas_rows(case_id: str, clue_id: str, body: CanvasExpandRowsIn,
+                       p: Principal = Depends(get_principal),
+                       ctx: WebContext = Depends(get_ctx)):
+    """按需展开溯源行：把未成图的 row 补进画布（幂等，重复调用不重复加）。"""
+    case = _get_owned_case(case_id, p, ctx.cases)
+    version = ctx.repo.current_version(case_id)
+    base_dir = ctx.factory.ontology_dir(case_id)
+    state = StateStore(case_id, ctx.factory.case_dir(case_id) / "state.sqlite")
+    try:
+        current = state.get_canvas(clue_id)
+        if current is None:
+            raise APIError(
+                ERR_NOT_FOUND,
+                f"画布尚未初始化：{clue_id}（请先 GET 触发惰性创建）", 404)
+        # 全量行清单须与 seed 同口径重算，否则展开的与首屏不是同一批行
+        cross_rows = _aggregate_cross_rows(
+            ctx, case_id, case.pack_id, version, base_dir)
+        access = access_for(p, case_id=case_id, purpose="线索研判画布")
+        detail = clues_view.assemble_detail(
+            case_dir=ctx.factory.case_dir(case_id), version=version,
+            clue_id=clue_id, state_map=state.status_map(), decisions=[],
+            access=access, pack_id=case.pack_id, base_dir=base_dir,
+            state_store=state, cross_rows=cross_rows,
+            provision_suggested=False)
+        if detail is None:
+            raise APIError(ERR_NOT_FOUND, f"线索不存在：{clue_id}", 404)
+        row_specs = canvas_seed._row_specs(
+            clue_id, detail, detail.get("evidence") or [],
+            pack_id=case.pack_id, base_dir=base_dir)
+
+        old_doc = current["doc"]
+        new_doc, n_nodes, n_edges = canvas_seed.expand_canvas_rows(
+            old_doc, row_specs=row_specs, row_limit=body.row_limit)
+        if n_nodes == 0:
+            return ok(_payload(current, seeded=False,
+                               semantic_ready=_semantic_ready(ctx, case_id,
+                                                              version)),
+                      data_version=version)
+        errs = canvas_seed.validate_doc_shape(new_doc)
+        if errs:
+            raise APIError(ERR_VALIDATION,
+                           "展开结果结构非法：" + "；".join(errs[:3]), 400)
+        try:
+            row = state.update_canvas_doc(
+                clue_id, new_doc, operator=p.operator, updated_at=_now(),
+                expected_version=body.version)
+        except CanvasVersionConflict as exc:
+            raise APIError(
+                ERR_CONFLICT,
+                f"画布已被他人更新（你的基准 v{exc.expected}，"
+                f"服务端 v{exc.current}），请刷新后重试", 409)
+        _audit(state, case_id=case_id, version=version,
+               operator=p.operator, action="canvas.expand_rows",
+               before={"version": current["version"]},
+               after={"action": "canvas.expand_rows", "clue_id": clue_id,
+                      "added_nodes": n_nodes, "added_edges": n_edges,
+                      "row_limit": body.row_limit,
+                      "version": row["version"]})
         return ok(_payload(row, seeded=False,
                            semantic_ready=_semantic_ready(ctx, case_id,
                                                           version)),

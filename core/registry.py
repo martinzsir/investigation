@@ -161,6 +161,10 @@ class SkillSpec:
     handler: Optional[Callable] = None                        # 实际执行函数
     # ---- P3 镜头契约 ----
     consumes_objects: list[str] = field(default_factory=list)
+    # 镜头用途说明（业务话术，声明在 pack.json；启停面板/运行弹窗据此向用户
+    # 解释"这个镜头干什么"——此前只有中文名，用户只能盲开关）。
+    # 缺失时由 UI 层按 produces_dims/consumes_objects 自动兜底描述，不硬编码。
+    description: str = ""
     produces_dims: list[str] = field(default_factory=list)
     mode: str = "deterministic"
     enabled: bool = True
@@ -421,12 +425,30 @@ def skill_invoke(
     """
     if ctx is None:
         ctx = {}
-    params = params or {}
+    params = dict(params or {})
     h = get_health(health)
 
     # 1. 解析 id
     sid = skill_id.split(".")[-1]
     spec = registry.skill(sid)
+
+    # 1.5 参数自动填充：必填缺失时按 pack.json 的 auto_from 声明推导靶心。
+    # 定向镜头（relation_*/timeline_*）此前因必填缺失在批量阶段被整体跳过，
+    # 与"自动研判"目标相悖；显式传入的参数优先，不做覆盖。
+    _param_source = params.pop("_param_source", "")
+    if any(p.get("required") and p_name not in params
+           for p_name, p in (spec.params_schema or {}).items()):
+        try:
+            from core.focus import auto_fill_params
+            combos, sources = auto_fill_params(spec, store, ctx, health=health)
+            if combos:
+                filled = dict(combos[0])
+                src = filled.pop("_param_source", "")
+                for k, v in filled.items():
+                    params.setdefault(k, v)
+                _param_source = _param_source or src
+        except Exception:
+            pass  # 推导失败不隔离：继续走 _validate_params 的既有硬失败口径
 
     # 2. 单镜头开关：调度短路（灰度/停用/吊销）
     if not spec.enabled:
@@ -454,6 +476,11 @@ def skill_invoke(
 
     # 归一化：允许 handler 返回 (clues, meta) 或纯 list
     clues = _normalize(raw)
+
+    # 自动填参溯源：每条线索记 param_source（靶心从哪来），可审计、可复算
+    if _param_source:
+        for c in clues:
+            c.detail.setdefault("param_source", _param_source)
 
     # 5. 后处理：补齐血缘 + evidence_refs 契约校验 + 写 L1
     for c in clues:
@@ -737,7 +764,7 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     """
     # 延迟导入：entity_resolution 与 core.registry 互相解耦
     # 复用 core.entity 的路径安全加载器（按绝对路径加载，避免同名包遮蔽 sys.path）
-    from .entity import _load_person_resolver
+    from .entity import _load_person_resolver, classify_entity_type
     EntityResolver = _load_person_resolver(health=health)
     resolver = EntityResolver()
     conn = getattr(store, "conn", None)
@@ -778,6 +805,12 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
         for row in rows:
             name = str(row[0]).strip()
             if not name:
+                continue
+            # 实体类型按名称形态判，不按"出现于哪张源表"定：
+            # 银行流水(主体/对方)混有机构名与交易摘要，此前一律进人名对齐器，
+            # 导致「A建材」被判 person、「现金存入」被当实体。org/non_entity
+            # 一律排除；unknown 交由人审队列裁决，不强制归入。
+            if classify_entity_type(name) != "person":
                 continue
             phone = str(row[1]).strip() if phone_col and row[1] is not None else ""
             id_card = (str(row[2]).strip()

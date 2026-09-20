@@ -3,7 +3,14 @@
 // 兼作视图开关（简洁/完整 + 实体/数据行/数据源三层强制显示）。
 // 纯展示+事件上抛，状态与持久化在 ResearchCanvas。
 import { computed } from 'vue'
-import { KIND_LABELS, KIND_ORDER, type NodeKind } from '../../domain/canvas'
+import {
+  KIND_LABELS,
+  KIND_ORDER,
+  PROVENANCE_HINTS,
+  PROVENANCE_LABELS,
+  type NodeKind,
+  type Provenance,
+} from '../../domain/canvas'
 import type { DetailLayerKind, ViewMode } from '../../domain/canvas-view'
 import { canvasTokens, colors } from '../../design/tokens'
 
@@ -49,6 +56,22 @@ const jianItems = [
   { label: '行为', color: colors.jian.behavior },
   { label: '关系', color: colors.jian.relation },
   { label: '时间', color: colors.jian.time },
+]
+
+/**
+ * 人机来源图例项（P1-②）。
+ * 画布上做可信度判断，先要分清「机器说的」和「人确认过的」——
+ * 描边颜色即来源：褐橙=人工新增、金=人工已采纳、虚线=AI 建议、默认=机器派生。
+ */
+const provenanceItems: Array<{
+  key: Provenance
+  color: string
+  dashed: boolean
+}> = [
+  { key: 'system', color: canvasTokens.stroke, dashed: false },
+  { key: 'suggestion', color: canvasTokens.stroke, dashed: true },
+  { key: 'adopted', color: canvasTokens.strokeAdopted, dashed: false },
+  { key: 'manual', color: canvasTokens.strokeManual, dashed: false },
 ]
 
 const layerItems: Array<{ layer: DetailLayerKind; label: string }> = [
@@ -140,11 +163,64 @@ function toggleView(mode: ViewMode): void {
         </div>
       </div>
 
+      <!-- P1-② 人机来源：颜色/虚线即「这条内容是谁给的」 -->
+      <div class="section-title">人机来源</div>
+      <div class="prov-list">
+        <div
+          v-for="p in provenanceItems"
+          :key="p.key"
+          class="prov-row"
+          :title="PROVENANCE_HINTS[p.key]"
+          :data-testid="`legend-prov-${p.key}`"
+        >
+          <span
+            class="prov-box"
+            :style="{
+              borderColor: p.color,
+              borderStyle: p.dashed ? 'dashed' : 'solid',
+            }"
+          />
+          <span class="prov-label">{{ PROVENANCE_LABELS[p.key] }}</span>
+        </div>
+      </div>
+
       <div class="section-title">研判五维</div>
       <div class="jians">
         <span v-for="j in jianItems" :key="j.label" class="jian-item">
           <span class="dot" :style="{ background: j.color }" />
           {{ j.label }}
+        </span>
+      </div>
+
+      <!-- P2-① 证据强度：命中边粗细 ∝ 溯源行数 -->
+      <div class="section-title">证据强度</div>
+      <div class="evid-list">
+        <div class="evid-row">
+          <svg width="34" height="10" aria-hidden="true">
+            <line x1="2" y1="5" x2="32" y2="5"
+                  :stroke="canvasTokens.edgeSystem" stroke-width="1.6" />
+          </svg>
+          <span>孤证 / 少量行</span>
+        </div>
+        <div class="evid-row">
+          <svg width="34" height="10" aria-hidden="true">
+            <line x1="2" y1="5" x2="32" y2="5"
+                  :stroke="canvasTokens.edgeSystem" stroke-width="3.2" />
+          </svg>
+          <span>证据扎实（≥100 行）</span>
+        </div>
+        <div class="evid-hint dim">
+          仅「命中」边按溯源行数加粗（对数缩放）
+        </div>
+      </div>
+
+      <!-- P2-③ 时间轴视角说明：讲清排的是「研判过程时间」不是「业务发生时间」 -->
+      <div class="section-title">时间轴视角</div>
+      <div class="time-note">
+        按研判过程时间排列（节点产生时刻）；无时间信息的节点归置在最右「无时间」档。
+        <br />
+        <span class="dim">
+          注：业务事件发生时间需本体声明时间字段，当前未支持。
         </span>
       </div>
 
@@ -320,5 +396,58 @@ function toggleView(mode: ViewMode): void {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* P2-① 证据强度：两条粗细对比的连线样例 */
+.evid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.evid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--sun-text-secondary, #84a2b5);
+}
+.evid-hint {
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* P2-③ 时间轴视角说明（小字，避免占太多图例空间） */
+.time-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--sun-text-secondary, #84a2b5);
+}
+.time-note .dim {
+  color: var(--sun-text-tertiary, #6b8399);
+}
+
+/* P1-② 人机来源：小方框描边复刻节点描边（实线/虚线 + 颜色） */
+.prov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.prov-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+}
+.prov-box {
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+  border-width: 1.5px;
+  background: #0a2233; /* canvasTokens.surface（SFC 样式内不可直接取 JS 常量） */
+  flex: none;
+}
+.prov-label {
+  font-size: 11px;
+  color: var(--sun-text-secondary, #84a2b5);
 }
 </style>

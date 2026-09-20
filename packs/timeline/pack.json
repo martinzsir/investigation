@@ -7,48 +7,151 @@
       "skill_id": "timeline_sequence",
       "name": "事件序列邻接镜头",
       "stage": "用间",
-      "consumes_objects": ["transaction", "call", "trackpoint", "bid_project", "time_window"],
-      "produces_dims": ["时间"],
+      "consumes_objects": [
+        "transaction",
+        "call",
+        "trackpoint",
+        "bid_project",
+        "time_window"
+      ],
+      "produces_dims": [
+        "time"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "target_subject": {"type": "string", "required": true, "description": "目标主体（raw_name 或代理键）"},
-        "target_type": {"type": "string", "description": "auto/person/account/org，同名歧义时显式消歧"}
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person/account/org，同名歧义时显式消歧"
+        }
       },
-      "scope": {"reads": ["transaction", "call", "trackpoint", "bid_project", "time_window"]},
-      "handler": "impl:sequence_lens"
+      "scope": {
+        "reads": [
+          "transaction",
+          "call",
+          "trackpoint",
+          "bid_project",
+          "time_window"
+        ]
+      },
+      "handler": "impl:sequence_lens",
+      "description": "把某个人的转账、通话、出行按时间排成一条线"
     },
     {
       "skill_id": "timeline_rhythm",
       "name": "周期节奏镜头",
       "stage": "用间",
-      "consumes_objects": ["transaction", "call", "trackpoint", "bid_project", "time_window"],
-      "produces_dims": ["时间"],
+      "consumes_objects": [
+        "transaction",
+        "call",
+        "trackpoint",
+        "bid_project",
+        "time_window"
+      ],
+      "produces_dims": [
+        "time"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "target_subject": {"type": "string", "required": true},
-        "target_type": {"type": "string", "description": "auto/person/account/org"},
-        "burst_days": {"type": "integer", "description": "相邻事件日差 ≤ 该值成聚集簇，1-14，缺省 3"}
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person",
+              "org",
+              "account"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person/account/org"
+        },
+        "burst_days": {
+          "type": "integer",
+          "description": "相邻事件日差 ≤ 该值成聚集簇，1-14，缺省 3"
+        }
       },
-      "scope": {"reads": ["transaction", "call", "trackpoint", "bid_project", "time_window"]},
-      "handler": "impl:rhythm_lens"
+      "scope": {
+        "reads": [
+          "transaction",
+          "call",
+          "trackpoint",
+          "bid_project",
+          "time_window"
+        ]
+      },
+      "handler": "impl:rhythm_lens",
+      "description": "看某个人在哪些天突然密集转账、通话或出行"
     },
     {
       "skill_id": "timeline_cross_collision",
       "name": "跨类型时间碰撞镜头",
       "stage": "用间",
-      "consumes_objects": ["transaction", "call", "trackpoint", "bid_project", "time_window"],
-      "produces_dims": ["时间"],
+      "consumes_objects": [
+        "transaction",
+        "call",
+        "trackpoint",
+        "bid_project",
+        "time_window"
+      ],
+      "produces_dims": [
+        "time"
+      ],
       "mode": "deterministic",
       "enabled": true,
       "params_schema": {
-        "project": {"type": "string", "required": true, "description": "锚点项目（title 或 project_id）"},
-        "window_days": {"type": "integer", "description": "公示日前后窗口 1-60，缺省 7"},
-        "min_event_types": {"type": "integer", "description": "同主体碰撞所需最少事件类型数 2-3，缺省 2"}
+        "project": {
+          "type": "string",
+          "required": true,
+          "description": "锚点项目（title 或 project_id）",
+          "auto_from": {
+            "source": "projects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "project_object_type": "bid_project"
+          }
+        },
+        "window_days": {
+          "type": "integer",
+          "description": "公示日前后窗口 1-60，缺省 7"
+        },
+        "min_event_types": {
+          "type": "integer",
+          "description": "同主体碰撞所需最少事件类型数 2-3，缺省 2"
+        }
       },
-      "scope": {"reads": ["transaction", "call", "trackpoint", "bid_project", "time_window"]},
-      "handler": "impl:cross_collision_lens"
+      "scope": {
+        "reads": [
+          "transaction",
+          "call",
+          "trackpoint",
+          "bid_project",
+          "time_window"
+        ]
+      },
+      "handler": "impl:cross_collision_lens",
+      "description": "看项目公示日前后，哪些人集中出现多类异常活动"
     }
   ]
 }

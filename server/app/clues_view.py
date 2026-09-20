@@ -44,7 +44,13 @@ def _with_lens_runs(case_dir: Path, version: int,
     for run in load_lens_runs(case_dir, version):
         for c in run.get("clues") or []:
             if isinstance(c, dict):
-                extra.append(c)
+                # 打标副本（不改产物）：定向线索来源留痕——列表徽标/筛选
+                # （lens_run_id）与运行元信息（时间/触发人）随线索可见
+                marked = dict(c)
+                marked["lens_run_id"] = run.get("run_id", "")
+                marked["lens_run_at"] = run.get("created_at", "")
+                marked["lens_operator"] = run.get("operator", "")
+                extra.append(marked)
     return [*raws, *extra] if extra else raws
 
 
@@ -96,13 +102,18 @@ def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
         "score_source": det.get("score_source"),
         "source_row_count": len(raw.get("source_rows") or []),
         "merged_from": det.get("merged_from") or [],
+        # 定向镜头运行留痕（非定向线索为 None/空，前端按 lens_run_id 出徽标）
+        "lens_run_id": raw.get("lens_run_id") or None,
+        "lens_run_at": raw.get("lens_run_at") or None,
+        "lens_operator": raw.get("lens_operator") or None,
         **_status_of(raw, state_map),
     }
 
 
 def _matches(item: dict, raw: dict, *, level: str | None,
              dimension: str | None, jian: str | None,
-             subject: str | None, status: str | None) -> bool:
+             subject: str | None, status: str | None,
+             skill: str | None = None, lens_run: bool = False) -> bool:
     if level is not None and str(item.get("level") or "") != level:
         return False
     if dimension is not None and str(item.get("dimension") or "") != dimension:
@@ -110,6 +121,10 @@ def _matches(item: dict, raw: dict, *, level: str | None,
     if jian is not None and jian not in (item.get("jian_types") or []):
         return False
     if status is not None and item.get("status") != status:
+        return False
+    if skill is not None and str(item.get("skill_id") or "") != skill:
+        return False
+    if lens_run and not item.get("lens_run_id"):
         return False
     if subject is not None:
         hay = f"{item.get('title', '')} {json.dumps(raw.get('detail') or {}, ensure_ascii=False)}"
@@ -123,6 +138,7 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
                   level: str | None = None, dimension: str | None = None,
                   jian: str | None = None, subject: str | None = None,
                   status: str | None = None,
+                  skill: str | None = None, lens_run: bool = False,
                   page: int = 1, page_size: int = 50,
                   pack_id: str = "default",
                   ontology_base: str | Path | None = None) -> dict:
@@ -141,7 +157,8 @@ def assemble_list(*, case_dir: str | Path, version: int | None,
             continue
         item = _base_item(raw, state_map)
         if not _matches(item, raw, level=level, dimension=dimension,
-                        jian=jian, subject=subject, status=status):
+                        jian=jian, subject=subject, status=status,
+                        skill=skill, lens_run=lens_run):
             continue
         items.append(item)
     # 排序（P0-1）：等级主序（声明推导，候选级恒在前；未知/待核实垫底），

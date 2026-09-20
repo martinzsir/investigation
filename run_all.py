@@ -62,6 +62,7 @@ def main():
     # （间类/cross_levels/同源对）在此注册；拔出目录即对账注销。
     from core.pack_loader import (
         batch_lens_ids,
+        batch_lens_tasks,
         discover as discover_packs,
     )
     discover_packs()
@@ -127,8 +128,13 @@ def main():
         queue.run_cli(auto_operator=args.operator)
 
     # 把正兵确认结果写回：只有 ACCEPTED 才进正式 mapping
+    # 按实体类型分组——此前 person/org 混在一个扁平 dict 里被整体标为 "org"，
+    # 导致 entity_mapping.json 里「张卫国」写成 org、「宏业建设」写成 person。
+    accepted_by_type = queue.accepted_mapping_by_type()
     accepted = queue.accepted_mapping()
-    print(f"  正式合并映射（仅 accepted）：{len(accepted)} 条")
+    print(f"  正式合并映射（仅 accepted）：{len(accepted)} 条"
+          f"（person {len(accepted_by_type.get('person', {}))} / "
+          f"org {len(accepted_by_type.get('org', {}))}）")
     # 拒绝的变体：从 person mapping 中移除，确保不误合并
     final_person_mapping = dict(person.mapping())
     for d in queue.decided():
@@ -270,19 +276,27 @@ def main():
         print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
         all_clues.extend(clues)
 
-    # P4/P5 镜头包批量接线：无必填参数的确定性镜头直接调度；定向镜头
-    # （target_subject/project 必填）跳过留痕——skill_invoke 对必填缺失
-    # 硬失败，无参调用会中断管线；案件级启停见 server 侧 lenses.json +
-    # case_batch_lens_ids（CLI 无案件上下文，按全局口径）；定向调度
-    # 入口属画布定向后续批次
-    runnable, requires_params = batch_lens_ids(registry)
-    for sid in runnable:
+    # P4/P5 镜头包批量接线（自动研判）：定向镜头的必填参数不再靠人填——
+    # 按 pack.json 的 auto_from 声明，由 core/focus.py 推导靶心自动填充。
+    # 靶心三级源：案件知识包显式声明 > 前序线索反推（故此处先填 ctx["clues"]）
+    # > 语义表枚举兜底。双主体镜头走「靶心×关联」O(N)，不做全组合 O(N²)。
+    ctx["clues"] = list(all_clues)
+    lens_tasks, unresolved, skipped_mode = batch_lens_tasks(
+        registry, store=store, ctx=ctx)
+    for sid, prm in lens_tasks:
+        _src = prm.pop("_param_source", "")
         clues = skill_invoke(registry, sid, miao=miao, store=store, ctx=ctx,
-                             health=health)
-        print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
+                             params=prm, health=health)
+        for c in clues:
+            c.detail.setdefault("param_source", _src)
+        if clues:
+            print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue"
+                  f"（靶心 {_src or '—'}）")
         all_clues.extend(clues)
-    for sid in requires_params:
-        print(f"  [{sid}] 定向镜头缺必填参数，批量阶段跳过")
+    for sid in unresolved:
+        print(f"  [{sid}] 靶心推导失败，无法自动调度（已落健康度诊断）")
+    for sid in skipped_mode:
+        print(f"  [{sid}] 非确定性镜头（draft），不进批量")
 
     merged = lineage.dedupe_and_merge(all_clues, threshold=0.5)
     print(f"  血缘去重：{len(all_clues)} → {len(merged)} 条")
@@ -383,12 +397,16 @@ def main():
     report["ontology"] = ontology_stats
     (out_dir / "lineage_clues.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    # 合并 person/org 映射供操作台展示
+    # 合并 person/org 映射供操作台展示（按类型分组，accepted 不再被整体标为 org）
+    merged_person = dict(final_person_mapping)
+    merged_person.update(accepted_by_type.get("person", {}))
+    merged_org = dict(org.mapping())
+    merged_org.update(accepted_by_type.get("org", {}))
     (out_dir / "entity_mapping.json").write_text(json.dumps(
-        {"person": final_person_mapping, "org": accepted, "review": queue.summary()},
+        {"person": merged_person, "org": merged_org, "review": queue.summary()},
         ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     print(f"  ✅ {out_dir / 'lineage_clues.json'}")
-    print(f"  ✅ {out_dir / 'entity_mapping.json'}（person={len(final_person_mapping)} org={len(accepted)}）")
+    print(f"  ✅ {out_dir / 'entity_mapping.json'}（person={len(merged_person)} org={len(merged_org)}）")
     print(f"  ✅ {out_dir / 'review_queue.json'}（{queue.summary()}）")
 
     store.close()

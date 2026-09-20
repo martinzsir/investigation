@@ -115,6 +115,8 @@ export const canvasTokens = {
   surfaceHover: '#0E2A40',
   stroke: '#1C3D55',
   strokeManual: '#B06A2E',
+  /** 人工已采纳（系统建议经正兵确认）——金色，区别于人工新增的褐橙 */
+  strokeAdopted: '#F2B54D',
   strokeSelected: '#6EDEE9',
   title: '#E9F7FA',
   subtitle: '#84A2B5',

@@ -97,7 +97,7 @@ def common_neighbors_lens(miao=None, store=None, ctx=None, params=None,
                           health=None) -> list:
     """两主体共同关系邻居 → 1 条聚合线索。"""
     params = params or {}
-    fn_params = _clean(params, ["edge_kinds"])
+    fn_params = _clean(params, ["edge_kinds", "target_type_a", "target_type_b"])
     fn_params["subject_a"] = params.get("subject_a", "")
     fn_params["subject_b"] = params.get("subject_b", "")
     out = _invoke(store, "relation_common_neighbors", fn_params, health)
@@ -151,7 +151,8 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
                health=None) -> list:
     """两主体间关系路径 → 每条简单路径 1 条线索。"""
     params = params or {}
-    fn_params = _clean(params, ["depth", "max_paths", "edge_kinds"])
+    fn_params = _clean(params, ["depth", "max_paths", "edge_kinds",
+                                "target_type_a", "target_type_b"])
     fn_params["subject_a"] = params.get("subject_a", "")
     fn_params["subject_b"] = params.get("subject_b", "")
     out = _invoke(store, "relation_paths", fn_params, health)
@@ -160,20 +161,39 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
         return []
 
     sa, sb = r["subject_a"], r["subject_b"]
+    # 并行边聚合：两主体间的同一条节点链可能有大量平行边（如 114 条通话记录
+    # 会展开成 20 条"张卫国→李志强"的 1 跳路径）。逐条出线索会刷屏、且血缘
+    # 不同（各指向不同边）无法被 dedupe_and_merge 合并——正兵看到 20 条同名
+    # 线索，信息过载且掩盖真信号。故按节点链聚合：一条链一条线索，平行边
+    # 计为 parallel_edges，代表边按需截断（_EDGE_REF_LIMIT）。
+    groups: dict[tuple, dict] = {}
+    for path in r["paths"]:
+        key = tuple(n["name"] for n in path["nodes"])
+        g = groups.setdefault(key, {"chain": [], "paths": []})
+        if not g["chain"]:
+            g["chain"] = path["nodes"]
+        g["paths"].append(path)
+
     clues = []
-    for i, path in enumerate(r["paths"], start=1):
-        chain = " → ".join(n["name"] for n in path["nodes"])
+    for i, (key, g) in enumerate(groups.items(), start=1):
+        chain = " → ".join(key)
+        parallel = len(g["paths"])
+        # 代表边：取每组首条路径的边（同链内边集合不同，逐条列会重回刷屏）
+        rep_edges = g["paths"][0]["edges"]
         edge_names = "、".join(
             f"{e['edge']}({'反向' if e.get('reversed_traversal') else '正向'})"
-            for e in path["edges"])
-        refs = [_node_ref(n) for n in path["nodes"]]
-        refs += [_edge_ref(e) for e in path["edges"]]
+            for e in rep_edges[:_EDGE_REF_LIMIT])
+        refs = [_node_ref(n) for n in g["chain"]]
+        refs += [_edge_ref(e) for e in rep_edges[:_EDGE_REF_LIMIT]]
         refs.append({"kind": "aggregate", "metric": "path_length",
-                     "value": path["length"]})
+                     "value": g["paths"][0]["length"]})
+        refs.append({"kind": "aggregate", "metric": "parallel_edges",
+                     "value": parallel})
+        suffix = f"（{parallel} 条平行边）" if parallel > 1 else ""
         clues.append(LineageClue(
             skill_id="relation_paths",
             title=f"{sa['name']} 与 {sb['name']} 的关系链 {i}"
-                  f"（{path['length']} 跳）：{chain}",
+                  f"（{g['paths'][0]['length']} 跳）：{chain}{suffix}",
             evidence_refs=refs,
             detail={
                 "function": "relation_paths",
@@ -182,11 +202,12 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
                               f"关系路径待正兵逐跳核查（只出关系，不作定性）",
                 "evidence_level": "观察",
                 "path_index": i,
+                "parallel_edges": parallel,
                 "subject_a": sa,
                 "subject_b": sb,
-                "nodes": path["nodes"],
-                "edges": path["edges"],
-                "length": path["length"],
+                "nodes": g["chain"],
+                "edges": rep_edges[:_EDGE_REF_LIMIT],
+                "length": g["paths"][0]["length"],
                 "diagnostics": r.get("diagnostics", {}),
                 "degraded": bool(r.get("degraded")),
                 "degraded_reason": r.get("degraded_reason"),
