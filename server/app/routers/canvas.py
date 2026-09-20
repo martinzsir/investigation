@@ -182,13 +182,33 @@ def get_canvas(case_id: str, clue_id: str,
     try:
         existing = state.get_canvas(clue_id)
         if existing is not None:
+            # ---- 定向镜头层懒补种（老画布升级，只增不改删）----
+            # meta.lens_seeded 已落（含"非镜头线索"空扫标记）→ 跳过，
+            # 避免每次 GET 重解析产物；未标记才轻量装配线索（access=None
+            # 不建三栏证据、不供给核查项，纯读 artifact/lens_run JSON）。
+            lens_layer = None
+            old_doc = existing.get("doc") if isinstance(
+                existing.get("doc"), dict) else {}
+            if not (old_doc.get("meta") or {}).get("lens_seeded"):
+                lite = clues_view.assemble_detail(
+                    case_dir=ctx.factory.case_dir(case_id), version=version,
+                    clue_id=clue_id, state_map=state.status_map(),
+                    decisions=[], access=None, pack_id=case.pack_id,
+                    base_dir=base_dir, state_store=None, cross_rows=None,
+                    provision_suggested=False)
+                if lite is not None:
+                    lens_layer = canvas_seed.build_lens_layer(clue_id, lite)
+
             # ---- 增量补种（只增不改删）：seed 后新上传的书证/新核查项
             # 与挂接边补进文档；无缺失零副作用（不写库/不 bump/不审计）。
             merged, n_nodes, n_edges = canvas_seed.reconcile_canvas(
                 existing["doc"],
                 verify_items=state.list_verify_items(clue_id),
-                materials=state.list_evidence(clue_id))
-            if n_nodes or n_edges:
+                materials=state.list_evidence(clue_id),
+                lens_layer=lens_layer)
+            meta_changed = (merged.get("meta") if isinstance(merged, dict)
+                            else None) != (old_doc.get("meta") or None)
+            if n_nodes or n_edges or meta_changed:
                 try:
                     existing = state.update_canvas_doc(
                         clue_id, merged, operator=p.operator,

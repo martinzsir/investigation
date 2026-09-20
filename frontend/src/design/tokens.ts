@@ -133,6 +133,16 @@ export const canvasTokens = {
   countBg: 'rgba(233,247,250,0.08)',
   countText: '#9FB8C6',
   dimOpacity: 0.18,
+  /**
+   * 时间轴 event 视角的区间轨道带：聚集簇=时间维度暖橙
+   * （colors.jian.time），碰撞窗=查询结果蓝紫（同 function_result chip）。
+   * 填色低透明，让带下事件点与连线仍可见。
+   */
+  band: {
+    burst: { fill: 'rgba(255,112,67,0.16)', stroke: '#FF7043' },
+    collision_window: { fill: 'rgba(110,135,181,0.18)', stroke: '#6E87B5' },
+  } as const,
+  bandLabel: '#C5DCE8',
   kind: {
     rule: { chip: '#55B9DC', ink: '#062436' },
     fact: { chip: '#4FC592', ink: '#063023' },

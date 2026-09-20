@@ -243,6 +243,10 @@ def assemble_detail(*, case_dir: str | Path, version: int | None,
     item["audit_log"] = raw.get("audit_log") or []
     det = raw.get("detail") or {}
     item["detail"] = det
+    # 定向镜头线索的主体/项目/事件对象引用走 evidence_refs（与 detail 的
+    # 时间研判结构配套）；画布 lens 成图层依赖它挂主体/项目节点，不透传
+    # 会只剩事件与区间、规则没有「涉及」主体的边。
+    item["evidence_refs"] = raw.get("evidence_refs") or []
     item["suppressed_log"] = det.get("suppressed_log") or []
     item["artifact_version"] = art_ver
     if decisions is not None:

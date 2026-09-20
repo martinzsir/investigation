@@ -64,6 +64,15 @@ _MAX_ROW_NODES = 60      # source_row 首屏上限
 _MAX_FACT_NODES = 40     # fact 首屏上限
 _ROW_EXPAND_STEP = 120   # 每次"展开更多"追加到的上限
 
+# ----------------------------------------------------------------------
+# 定向镜头（Lens）线索成图上限
+# ----------------------------------------------------------------------
+# timeline_sequence 的 detail.timeline 可达上百事件；全量灌入会拖垮前端。
+# 事件按 date 排序截断（时间轴上"最早的 N 起"语义成立），meta 如实声明
+# shown/total；区间节点（聚集簇/碰撞窗）数量天然较小，单独设限。
+_MAX_LENS_EVENT_NODES = 150
+_MAX_LENS_INTERVAL_NODES = 60
+
 
 def sys_node_id(kind: str, ref: str) -> str:
     """系统节点画布内稳定 id。"""
@@ -119,6 +128,14 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
 
     det = detail.get("detail") or {}
     rules = _extract_rules(det, detail)
+
+    # ---- 定向镜头线索层：skill_id 合成规则 + 事件/主体对象 + 聚集簇/碰撞窗 ----
+    # 主产物规则回填优先；镜头线索 detail 无 rule_id/rules，规则身份取顶层
+    # skill_id（与线索详情「规则 timeline_*」同源），避免误落历史占位节点。
+    lens_layer = build_lens_layer(clue_id, detail)
+    if (not rules and lens_layer is not None
+            and lens_layer.get("recognized") and lens_layer.get("rule")):
+        rules = [lens_layer["rule"]]
 
     # ---- 规则层 ----
     rule_ids: list[str] = []
@@ -264,6 +281,34 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
         if owner and owner in item_nodes:
             add_edge(item_nodes[owner], node_id, "挂接")
 
+    # ---- 定向镜头层：对象/区间节点 + 规则挂边 ----
+    lens_meta = None
+    if lens_layer is not None and lens_layer.get("recognized"):
+        lens_node_ids = {n["id"] for n in nodes}
+        for n in lens_layer.get("nodes") or []:
+            if n["id"] in lens_node_ids:
+                continue
+            lens_node_ids.add(n["id"])
+            nodes.append(n)
+        # 规则 ──查询自──▶ 区间；规则 ──涉及──▶ 主体/项目（事件经区间挂接，
+        # 避免规则直连一百多个事件节点）
+        interval_ids = {
+            n["id"] for n in lens_layer.get("nodes") or []
+            if n.get("kind") == "function_result"}
+        plain_object_ids = {
+            n["id"] for n in lens_layer.get("nodes") or []
+            if n.get("kind") == "object"
+            and (n.get("props") or {}).get("lens_layer") != "event"}
+        for rid in rule_ids:
+            for iid in sorted(interval_ids):
+                add_edge(rid, iid, "查询自")
+            for oid in sorted(plain_object_ids):
+                add_edge(rid, oid, "涉及")
+        # 区间 ──涉及──▶ 事件
+        for src, tgt, rel in lens_layer.get("edges") or []:
+            add_edge(src, tgt, rel)
+        lens_meta = lens_layer.get("meta")
+
     _apply_positions(nodes)
     # meta：截断声明（路由层取出单独下发，doc 存储时可一并保留以便 GET 回读
     # 仍知情；validate_doc_shape 只校验 nodes/edges，不受影响）
@@ -276,6 +321,11 @@ def seed_canvas(*, clue_id: str, detail: dict[str, Any],
         # 完整明细的去处——画布只做关系概览，全量溯源行在详情抽屉
         "hint": "画布仅渲染关系概览；完整溯源行请见线索详情的溯源抽屉",
     }
+    # 定向镜头层幂等标记 + 事件/区间规模声明（非镜头线索也落标记，
+    # 表示"已按 lens 口径 seed 过"，reconcile 路径据此跳过重复扫描）
+    meta["lens_seeded"] = lens_layer is not None
+    if lens_meta is not None:
+        meta["lens"] = lens_meta
     return {"nodes": nodes, "edges": edges, "meta": meta}
 
 
@@ -389,13 +439,18 @@ def expand_canvas_rows(doc: dict[str, Any], *,
 def reconcile_canvas(doc: dict[str, Any], *,
                      verify_items: list[dict[str, Any]] | None = None,
                      materials: list[dict[str, Any]] | None = None,
+                     lens_layer: dict[str, Any] | None = None,
                      ) -> tuple[dict[str, Any], int, int]:
     """GET 幂等增量补种：补齐 seed 后新出现的 verify_item/evidence 节点
-    与 verify_item-[挂接]→evidence 边。
+    与 verify_item-[挂接]→evidence 边；lens_layer 非空时补入定向镜头
+    规则/对象/区间节点与挂边（老画布升级，只增不改删）。
 
     只增不改删：节点/边形状与过滤口径（status=建议 不成节点，AC-105-2）
     与 seed_canvas 同源；不动既有节点/边/坐标，不重排。新节点 y 按 doc
-    内同列已有节点计数排布（fact/verify_item 共享 _fact_col 口径）。
+    内同列已有节点计数排布（fact/verify_item/function_result 共享列）。
+    唯一例外：lens 合成规则落位时撤下「未关联规则（历史产物）」占位节点
+    及其关联边——它是规则提取缺口的产物，不是用户内容，留着会与真规则
+    节点并存造成误导。
     返回 (doc, 新增节点数, 新增边数)；无缺失时原 doc 原样返回。
     """
     nodes = list(doc.get("nodes") or [])
@@ -472,9 +527,415 @@ def reconcile_canvas(doc: dict[str, Any], *,
         edge_ids.add(eid)
         added_edges += 1
 
-    if not added_nodes and not added_edges:
+    # ---- 定向镜头层补种（老画布升级；空层也只落 lens_seeded 幂等标记）----
+    removed_placeholder = False
+    new_meta: dict[str, Any] | None = None
+    if lens_layer is not None:
+        recognized = bool(lens_layer.get("recognized"))
+        rule_src: str | None = None
+        new_nodes_pending: list[dict[str, Any]] = []
+
+        rule_desc = lens_layer.get("rule") if recognized else None
+        if isinstance(rule_desc, dict) and rule_desc.get("rule_id"):
+            rid = str(rule_desc["rule_id"])
+            rule_src = sys_node_id("rule", rid)
+            if rule_src not in node_ids:
+                new_nodes_pending.append({
+                    "id": rule_src, "kind": "rule", "ref": rid,
+                    "label": f"规则 {rid}", "system": True, "pinned": False,
+                    "props": {
+                        "rule_id": rid,
+                        "rule_text": str(rule_desc.get("rule_text") or ""),
+                        "basis": str(rule_desc.get("basis") or ""),
+                    },
+                })
+
+        if recognized:
+            for n in lens_layer.get("nodes") or []:
+                if n["id"] not in node_ids \
+                        and not any(x["id"] == n["id"]
+                                    for x in new_nodes_pending):
+                    new_nodes_pending.append(dict(n))
+
+        # 真规则落位 → 撤下历史占位节点及其关联边（系统占位，非用户内容）。
+        # 注意必须改 nodes 本身（out["nodes"] 取的是它），只过滤一个局部
+        # 副本会让占位节点在最终 doc 里原样保留。
+        if rule_src is not None:
+            ph = sys_node_id("rule", _HISTORICAL_RULE_ID)
+            if ph in node_ids:
+                nodes = [n for n in nodes if n.get("id") != ph]
+                node_ids.discard(ph)
+                removed = [e for e in edges
+                           if e.get("source") == ph or e.get("target") == ph]
+                if removed:
+                    edges = [e for e in edges
+                             if e.get("source") != ph and e.get("target") != ph]
+                    edge_ids = {e["id"] for e in edges}
+                removed_placeholder = True
+
+        # 新节点按 doc 现状增量定位（不动任何既有坐标）
+        _position_incremental(nodes, new_nodes_pending)
+        for n in new_nodes_pending:
+            nodes.append(n)
+            node_ids.add(n["id"])
+            added_nodes += 1
+
+        def _add_e(src: str, tgt: str, rel: str) -> None:
+            nonlocal added_edges
+            eid = f"e:{src}--{rel}--{tgt}"
+            if eid in edge_ids:
+                return
+            edge_ids.add(eid)
+            edges.append({"id": eid, "source": src, "target": tgt,
+                          "rel": rel, "system": True})
+            added_edges += 1
+
+        if recognized and rule_src is not None:
+            interval_ids = sorted(
+                n["id"] for n in (lens_layer.get("nodes") or [])
+                if n.get("kind") == "function_result")
+            plain_object_ids = sorted(
+                n["id"] for n in (lens_layer.get("nodes") or [])
+                if n.get("kind") == "object"
+                and (n.get("props") or {}).get("lens_layer") != "event")
+            for iid in interval_ids:
+                _add_e(rule_src, iid, "查询自")
+            for oid in plain_object_ids:
+                _add_e(rule_src, oid, "涉及")
+            for src, tgt, rel in lens_layer.get("edges") or []:
+                _add_e(src, tgt, rel)
+
+        # meta：保留既有键，落 lens_seeded + lens 规模声明
+        new_meta = dict(doc.get("meta") or {})
+        new_meta["lens_seeded"] = True
+        if recognized:
+            new_meta["lens"] = lens_layer.get("meta")
+
+    if (not added_nodes and not added_edges and not removed_placeholder
+            and new_meta is None):
         return doc, 0, 0
-    return {"nodes": nodes, "edges": edges}, added_nodes, added_edges
+    out = dict(doc)
+    out["nodes"] = nodes
+    out["edges"] = edges
+    if new_meta is not None:
+        out["meta"] = new_meta
+    elif "meta" in doc:
+        # verify/material 补种路径也保留原 meta（旧实现会丢）
+        out["meta"] = doc["meta"]
+    return out, added_nodes, added_edges
+
+
+# ----------------------------------------------------------------------
+# 定向镜头（Lens）线索成图层
+# ----------------------------------------------------------------------
+# 主产物线索形状是「规则 → fact → source_row」；定向镜头线索（lens_runs 并线
+# 产物）是另一种形状：规则身份在顶层 skill_id，证据在 evidence_refs（指向
+# obj_* 语义对象），时间研判的事件/聚集簇在 detail.timeline/bursts/events。
+# 本层把后者映射为同一套画布语义：
+#
+#   rule(skill_id) ──查询自──▶ function_result(聚集簇/碰撞窗) ──涉及──▶ object(事件)
+#                  └──涉及──▶ object(主体/项目等非事件对象)
+#
+# 纪律：
+#   - 纯函数、不开库；只消费线索产物已有字段（事件对象在语义层真实存在，
+#     引用悬空由生产端 skill_invoke 校验硬失败兜底）；
+#   - 事件 object 节点 ref 与 canvas_expand._object_node 严格同口径
+#     "call:<pk>"（evidence_refs 的 "obj_call#<pk>" 仅作映射输入），
+#     M2 展开时同一 id 幂等合流，绝不产生重复节点；
+#   - 事件节点带 props.event_time=事件 date，时间轴视角无需特判即可分档；
+#   - 区间节点 props 带 start/end/event_time=start（第二批前端渲染轨道带）。
+def _obj_ref_to_node_ref(ref: Any) -> tuple[str, str] | None:
+    """evidence_refs 的 obj_* 引用 → M2 object 节点 (type, pk)。
+
+    "obj_call#call_834" → ("call", "call_834")，与
+    canvas_expand._object_node 的 f"{ot.name}:{pk}" 同口径；
+    非 obj_# 引用（aggregate/time_window 等）返回 None。
+    """
+    if not isinstance(ref, str) or not ref.startswith("obj_") or "#" not in ref:
+        return None
+    name, pk = ref[4:].split("#", 1)
+    name, pk = name.strip(), pk.strip()
+    if not name or not pk:
+        return None
+    return name, pk
+
+
+def _lens_events(det: dict[str, Any]) -> list[dict[str, Any]]:
+    """汇集时间研判事件（timeline / bursts[].events / events），按 (date,pk) 去重排序。"""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(e: Any) -> None:
+        if not isinstance(e, dict):
+            return
+        src = str(e.get("src_object") or "")
+        pk = str(e.get("event_pk") or "")
+        if not src or not pk or (src, pk) in seen:
+            return
+        seen.add((src, pk))
+        out.append(e)
+
+    for e in det.get("timeline") or []:
+        add(e)
+    for b in det.get("bursts") or []:
+        if isinstance(b, dict):
+            for e in b.get("events") or []:
+                add(e)
+    for e in det.get("events") or []:
+        add(e)
+    out.sort(key=lambda e: (
+        str(e.get("date") or ""), str(e.get("src_object") or ""),
+        str(e.get("event_pk") or "")))
+    return out
+
+
+def _event_object_node(event: dict[str, Any]) -> dict[str, Any]:
+    """时间研判事件 → object 节点（ref 对齐 M2 代理键，带 event_time）。"""
+    src = str(event.get("src_object") or "")
+    pk = str(event.get("event_pk") or "")
+    ref = f"{src}:{pk}"
+    etype = str(event.get("type") or src)
+    brief = str(event.get("brief") or "")
+    label = _truncate(f"{etype} {brief}".strip()) or pk
+    return {
+        "id": sys_node_id("object", ref), "kind": "object", "ref": ref,
+        "label": label, "system": True, "pinned": False,
+        "props": {
+            "type": src, "pk": pk,
+            "event_time": str(event.get("date") or ""),
+            "event_type": etype,
+            "role": str(event.get("role") or ""),
+            "brief": brief,
+            "lens_layer": "event",
+        },
+    }
+
+
+def _plain_object_node(obj_type: str, pk: str, label: str,
+                       lens_role: str) -> dict[str, Any]:
+    """主体/项目等非事件语义对象 → object 节点（无业务时间）。"""
+    ref = f"{obj_type}:{pk}"
+    return {
+        "id": sys_node_id("object", ref), "kind": "object", "ref": ref,
+        "label": _truncate(label) or pk, "system": True, "pinned": False,
+        "props": {"type": obj_type, "pk": pk, "lens_role": lens_role},
+    }
+
+
+def _shift_date(iso: str, days: int) -> str:
+    """ISO 日期 ±N 天；解析失败返回空串（纯 stdlib，不引第三方）。"""
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        return (_dt.fromisoformat(str(iso)[:10]).date()
+                + _td(days=int(days))).isoformat()
+    except (ValueError, TypeError):
+        return ""
+
+
+def _lens_intervals(clue_id: str, det: dict[str, Any]
+                    ) -> tuple[list[dict[str, Any]], int]:
+    """聚集簇/碰撞窗 → function_result 区间节点（带 start/end）。
+
+    返回 (节点列表（已截断）, 区间总数)。每个节点 props.event_time=start，
+    时间轴视角天然落到窗口起点。
+    """
+    fn_name = str(det.get("function") or "")
+    out: list[dict[str, Any]] = []
+
+    for i, b in enumerate(det.get("bursts") or [], start=1):
+        if not isinstance(b, dict):
+            continue
+        start, end = str(b.get("start") or ""), str(b.get("end") or "")
+        ref = f"burst:{clue_id}:{i}"
+        out.append({
+            "id": sys_node_id("function_result", ref),
+            "kind": "function_result", "ref": ref,
+            "label": _truncate(
+                f"聚集簇 {i}｜{start}~{end}"
+                f"（{b.get('event_count', len(b.get('events') or []))} 起）"),
+            "system": True, "pinned": False,
+            "props": {
+                "function": fn_name,
+                "interval_kind": "burst",
+                "start": start, "end": end,
+                "event_time": start,
+                "event_count": b.get("event_count"),
+                "types": list(b.get("types") or []),
+            },
+        })
+
+    if det.get("anchor_date") and det.get("window_days") is not None:
+        anchor = str(det.get("anchor_date") or "")
+        win = det.get("window_days")
+        idx = det.get("collision_index") or 1
+        start = _shift_date(anchor, -int(win))
+        end = _shift_date(anchor, int(win))
+        n_events = len(det.get("events") or [])
+        ref = f"collision:{clue_id}:{idx}"
+        out.append({
+            "id": sys_node_id("function_result", ref),
+            "kind": "function_result", "ref": ref,
+            "label": _truncate(
+                f"碰撞窗｜{anchor} ±{win} 天（{n_events} 起）"),
+            "system": True, "pinned": False,
+            "props": {
+                "function": fn_name,
+                "interval_kind": "collision_window",
+                "anchor_date": anchor, "window_days": win,
+                "start": start, "end": end,
+                "event_time": start,
+                "event_count": n_events,
+            },
+        })
+
+    total = len(out)
+    return out[:_MAX_LENS_INTERVAL_NODES], total
+
+
+def build_lens_layer(clue_id: str, item: dict[str, Any] | None
+                     ) -> dict[str, Any] | None:
+    """定向镜头线索 → 画布 lens 层（seed/reconcile 同源纯函数）。
+
+    识别口径：并线标记 lens_run_id，或 detail.function 为 timeline_*
+    （防御：标记缺失但产物形状是时间研判）。非镜头线索返回 recognized=False
+    的空层（调用方据此落 lens_seeded 幂等标记，避免每次 GET 重扫）。
+
+    返回：{recognized, rule, nodes, edges[[src,tgt,rel]], meta}
+    """
+    empty = {"recognized": False, "rule": None, "nodes": [],
+             "edges": [], "meta": {"events": {"shown": 0, "total": 0},
+                                   "intervals": {"shown": 0, "total": 0}}}
+    if not isinstance(item, dict):
+        return empty
+    det = item.get("detail") or {}
+    if not isinstance(det, dict):
+        det = {}
+    skill_id = str(item.get("skill_id") or "")
+    fn_name = str(det.get("function") or "")
+    is_lens = bool(item.get("lens_run_id")) or fn_name.startswith("timeline_")
+    if not is_lens:
+        return empty
+
+    # ---- 合成规则描述（seed 仅在 _extract_rules 落空时采用）----
+    rule = None
+    if skill_id:
+        rule = {
+            "rule_id": skill_id,
+            "rule_text": str(det.get("hypothesis") or item.get("title") or ""),
+            "basis": str(item.get("title") or det.get("hypothesis") or ""),
+        }
+
+    # ---- 事件 object 节点（按 date 排序截断）----
+    events = _lens_events(det)
+    event_nodes: list[dict[str, Any]] = []
+    event_ids: set[str] = set()
+    for e in events[:_MAX_LENS_EVENT_NODES]:
+        n = _event_object_node(e)
+        event_nodes.append(n)
+        event_ids.add(n["id"])
+
+    # ---- 主体/项目等非事件对象（evidence_refs 的 obj_* 引用，事件引用除外）----
+    label_map: dict[str, str] = {}
+    subj = det.get("subject")
+    if isinstance(subj, dict) and subj.get("type") and subj.get("pk"):
+        label_map[f"{subj['type']}:{subj['pk']}"] = str(
+            subj.get("name") or subj["pk"])
+    proj = det.get("project")
+    if isinstance(proj, dict) and proj.get("pk"):
+        label_map[f"bid_project:{proj['pk']}"] = str(
+            proj.get("name") or proj["pk"])
+
+    plain_nodes: list[dict[str, Any]] = []
+    plain_refs_seen: set[str] = set()
+    for r in item.get("evidence_refs") or []:
+        if not isinstance(r, dict) or r.get("kind") != "node":
+            continue
+        parsed = _obj_ref_to_node_ref(r.get("ref"))
+        if parsed is None:
+            continue
+        obj_type, pk = parsed
+        node_ref = f"{obj_type}:{pk}"
+        nid = sys_node_id("object", node_ref)
+        if nid in event_ids or node_ref in plain_refs_seen:
+            continue
+        plain_refs_seen.add(node_ref)
+        role = "project" if obj_type == "bid_project" else "subject"
+        plain_nodes.append(_plain_object_node(
+            obj_type, pk, label_map.get(node_ref, pk), role))
+
+    # ---- 区间节点 ----
+    interval_nodes, interval_total = _lens_intervals(clue_id, det)
+
+    # ---- 边：区间 ──涉及──▶ 事件（仅成图事件）----
+    edges: list[list[str]] = []
+    shown_event_refs = {n["ref"] for n in event_nodes}
+
+    def interval_event_edges(iv_id: str, raw_events: Any) -> None:
+        for e in raw_events or []:
+            if not isinstance(e, dict):
+                continue
+            ref = f"{e.get('src_object') or ''}:{e.get('event_pk') or ''}"
+            if ref in shown_event_refs:
+                edges.append([iv_id, sys_node_id("object", ref), "涉及"])
+
+    bursts = det.get("bursts") or []
+    for node, b in zip(interval_nodes, bursts):
+        if isinstance(b, dict) and (node.get("props") or {}).get(
+                "interval_kind") == "burst":
+            interval_event_edges(node["id"], b.get("events"))
+    if det.get("events") is not None:
+        win_node = next(
+            (n for n in interval_nodes
+             if (n.get("props") or {}).get("interval_kind")
+             == "collision_window"), None)
+        if win_node is not None:
+            interval_event_edges(win_node["id"], det.get("events"))
+
+    meta = {
+        "skill_id": skill_id,
+        "events": {"shown": len(event_nodes), "total": len(events)},
+        "intervals": {"shown": len(interval_nodes), "total": interval_total},
+    }
+    return {
+        "recognized": True, "rule": rule,
+        "nodes": plain_nodes + event_nodes + interval_nodes,
+        "edges": edges, "meta": meta,
+    }
+
+
+def _position_incremental(existing_nodes: list[dict[str, Any]],
+                          new_nodes: list[dict[str, Any]]) -> None:
+    """为只增补种的新节点分配列坐标（与 _apply_positions 同列同口径）。"""
+    col_x = {
+        "rule": _X_RULE,
+        "fact": _X_FACT,
+        "verify_item": _X_FACT,
+        "function_result": _X_FACT,
+        "evidence": _X_EVIDENCE,
+        "source_row": _X_ROW,
+        "object": _X_FACT + 220,
+        "source_file": 960,
+        "hypothesis": _X_EVIDENCE,
+        "note": _X_EVIDENCE,
+    }
+    counters: dict[str, int] = {}
+    shared = 0
+    for n in existing_nodes:
+        col = n.get("kind")
+        counters[col] = counters.get(col, 0) + 1
+        if col in ("fact", "verify_item", "function_result"):
+            shared += 1
+    for n in new_nodes:
+        col = n["kind"]
+        if col in ("fact", "verify_item", "function_result"):
+            n["x"] = col_x.get(col, 0)
+            n["y"] = shared * _Y_GAP
+            shared += 1
+        else:
+            idx = counters.get(col, 0)
+            n["x"] = col_x.get(col, 0)
+            n["y"] = idx * _Y_GAP
+        counters[col] = counters.get(col, 0) + 1
 
 
 # ----------------------------------------------------------------------
@@ -656,14 +1117,16 @@ def _apply_positions(nodes: list[dict[str, Any]]) -> None:
         "rule": _X_RULE,
         "fact": _X_FACT,
         "verify_item": _X_FACT,
+        # 镜头聚集簇/碰撞窗（function_result）排在事实列：流程读法为
+        # 规则(0) → 查询结果(260) → 事件对象(480)；与 fact/verify 共享纵轴
+        "function_result": _X_FACT,
         "evidence": _X_EVIDENCE,
         "source_row": _X_ROW,
         "object": _X_FACT + 220,
         "source_file": 960,
-        # 补齐与前端 RANK_X 同口径（hypothesis/note/function_result 均在 480 列）
+        # 补齐与前端 RANK_X 同口径（hypothesis/note 均在 480 列）
         "hypothesis": _X_EVIDENCE,
         "note": _X_EVIDENCE,
-        "function_result": _X_EVIDENCE,
     }
     counters: dict[str, int] = {}
     for n in nodes:
@@ -671,8 +1134,8 @@ def _apply_positions(nodes: list[dict[str, Any]]) -> None:
         idx = counters.get(col, 0)
         counters[col] = idx + 1
         n["x"] = col_x.get(col, 0)
-        # 同列 fact/verify_item 共享纵轴：合并计数，避免重叠
-        if col in ("fact", "verify_item"):
+        # 同列 fact/verify_item/function_result 共享纵轴：合并计数，避免重叠
+        if col in ("fact", "verify_item", "function_result"):
             shared = counters.get("_fact_col", 0)
             counters["_fact_col"] = shared + 1
             n["y"] = shared * _Y_GAP

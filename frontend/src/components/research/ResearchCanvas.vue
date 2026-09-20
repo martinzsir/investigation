@@ -83,6 +83,7 @@ import { createAutosaver } from '../../domain/canvas-autosave'
 import {
   buildTimeAxis,
   layoutByTime,
+  layoutTimeBands,
   timeAxisSummary,
   type TimeMode,
 } from '../../domain/canvas-layout-time'
@@ -346,6 +347,7 @@ function toG6Data(d: CanvasDoc): unknown {
   return {
     nodes: d.nodes.map((n) => {
       const group = model.groupByFact.get(n.id)
+      const band = eventBands.value.get(n.id) ?? null
       const dimension =
         n.kind === 'rule'
           ? dimensionMap[n.ref || n.id]
@@ -366,13 +368,17 @@ function toG6Data(d: CanvasDoc): unknown {
           stale: n.stale === true,
           pinned: n.pinned === true,
           manual: n.system !== true,
+          // 时间轴 event 视角：区间节点切成轨道带（'burst'/'collision_window'）
+          band: band?.kind ?? false,
+          bandWidth: band?.width,
+          bandHeight: band?.height,
           // P1-② 人机来源（四态）：机器派生 / AI 建议 / 人工已采纳 / 人工新增
           provenance: provenanceOf(n),
           provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
           // M4 RC-105：未采纳手册建议（虚线态）
           suggestion: isSuggestionNode(n),
-          // 简洁视图才给 +/−（完整视图所有节点恒显）
-          toggleable: viewMode.value === 'compact' && isToggleable(n),
+          // 简洁视图才给 +/−（完整视图所有节点恒显；轨道带不挂折叠开关）
+          toggleable: !band && viewMode.value === 'compact' && isToggleable(n),
           expanded: expandedRoots.value.has(n.id),
           rowCount: group?.rows.length ?? 0,
           objectCount: group?.objects.length ?? 0,
@@ -676,6 +682,31 @@ const canUseEventTime = computed(() => hasEventTime.value)
 const timeAxis = computed(() =>
   doc.value ? buildTimeAxis(doc.value, timeMode.value) : null,
 )
+
+/**
+ * 时间轴·业务时间口径下的区间轨道带（节点 id → 带种类/宽高）。
+ * 仅在「时间轴视角 + event 口径」生效；process 口径与其他视角恒为空，
+ * 区间节点保持普通 research-card 形态。几何与 layoutByTime 同函数同源。
+ */
+const eventBands = computed(() => {
+  const out = new Map<string, { kind: string; width: number; height: number }>()
+  if (
+    perspective.value !== 'time' ||
+    !canUseEventTime.value ||
+    timeMode.value !== 'event'
+  ) {
+    return out
+  }
+  // 必须与 layoutByTime 同一份投影文档（renderDoc）：轴范围/分档/泳道
+  // 都由可见节点集决定，吃 doc 全量会让简洁视图下宽度与 x 坐标错档
+  const base = renderDoc.value
+  if (!base) return out
+  const bands = layoutTimeBands(base, buildTimeAxis(base, 'event'))
+  for (const [id, g] of bands) {
+    out.set(id, { kind: g.kind, width: g.width, height: g.height })
+  }
+  return out
+})
 const timeSummary = computed(() =>
   timeAxis.value ? timeAxisSummary(timeAxis.value) : null,
 )
@@ -2512,17 +2543,28 @@ async function mountGraph(): Promise<void> {
       // RC-201：按数据 x/y preset 渲染（分列口径与种子/后端一致），不挂 dagre
       data: currentG6Data(),
       node: {
-        type: RESEARCH_CARD_NODE,
+        // 时间轴 event 视角的区间节点用内置 rect 画轨道带，其余走自定义卡片
+        type: (d: G6Datum) => (d.data?.band ? 'rect' : RESEARCH_CARD_NODE),
         style: {
-          size: [186, 50],
-          radius: 8,
+          size: (d: G6Datum) =>
+            d.data?.band
+              ? [Number(d.data.bandWidth ?? 96), Number(d.data.bandHeight ?? 28)]
+              : [186, 50],
+          radius: (d: G6Datum) => (d.data?.band ? 6 : 8),
           lineWidth: (d: G6Datum) => (d.data?.pinned ? 2.5 : 1.25),
-          // M4 RC-105：未采纳手册建议节点虚线描边
+          // M4 RC-105：未采纳手册建议节点虚线描边（轨道带不出现建议态）
           lineDash: (d: G6Datum) => (d.data?.suggestion ? [4, 3] : []),
           // P1-② 描边按人机来源区分：
           //   人工新增=褐橙 / 人工已采纳=金（已确认，权威度更高）/
-          //   其余=默认（AI 建议靠 lineDash 虚线区分，不另配色）
+          //   其余=默认（AI 建议靠 lineDash 虚线区分，不另配色）；
+          //   轨道带按区间种类取时间橙/查询蓝。
           stroke: (d: G6Datum) => {
+            if (d.data?.band === 'burst') {
+              return canvasTokens.band.burst.stroke
+            }
+            if (d.data?.band === 'collision_window') {
+              return canvasTokens.band.collision_window.stroke
+            }
             const pv = d.data?.provenance as string | undefined
             if (pv === 'manual') return canvasTokens.strokeManual
             if (pv === 'adopted') return canvasTokens.strokeAdopted
@@ -2530,7 +2572,13 @@ async function mountGraph(): Promise<void> {
           },
           cursor: 'pointer',
           pointerEvents: 'auto',
-          fill: canvasTokens.surface,
+          fill: (d: G6Datum) => {
+            if (d.data?.band === 'burst') return canvasTokens.band.burst.fill
+            if (d.data?.band === 'collision_window') {
+              return canvasTokens.band.collision_window.fill
+            }
+            return canvasTokens.surface
+          },
           // 卡片自定义属性（research-card 消费）
           chipText: (d: G6Datum) => d.data?.glyph ?? '',
           chipFill: (d: G6Datum) => d.data?.chip ?? 'transparent',
@@ -2538,15 +2586,22 @@ async function mountGraph(): Promise<void> {
           dimDotColor: (d: G6Datum) =>
             (d.data?.dimColor as string | undefined) ?? '',
           titleFill: canvasTokens.title,
-          subtitleText: (d: G6Datum) => d.data?.subtitle ?? '',
+          subtitleText: (d: G6Datum) =>
+            d.data?.band ? '' : (d.data?.subtitle ?? ''),
           subtitleFill: canvasTokens.subtitle,
+          // 轨道带：标签居中、10px、带内省略；卡片：左对齐 12px 粗体
           labelText: (d: G6Datum) => d.data?.label ?? '',
-          labelPlacement: 'left',
-          labelFill: canvasTokens.title,
-          labelFontSize: 12,
-          labelFontWeight: 600,
-          labelMaxWidth: 148,
+          labelPlacement: (d: G6Datum) =>
+            d.data?.band ? 'center' : 'left',
+          labelFill: (d: G6Datum) =>
+            d.data?.band ? canvasTokens.bandLabel : canvasTokens.title,
+          labelFontSize: (d: G6Datum) => (d.data?.band ? 10 : 12),
+          labelFontWeight: (d: G6Datum) => (d.data?.band ? 500 : 600),
+          labelMaxWidth: (d: G6Datum) =>
+            d.data?.band ? Number(d.data.bandWidth ?? 96) - 12 : 148,
           labelWordWrap: true,
+          labelMaxLines: 1,
+          labelTextOverflow: 'ellipsis',
           // 证据强度视角下 Tier 3 节点（推测 / 失效）半透明后退；
           // 流程视角下仅 stale 节点半透；两套规则都靠 perspective + tier 派生
           opacity: (d: G6Datum) => {
@@ -2556,7 +2611,9 @@ async function mountGraph(): Promise<void> {
             }
             return 1
           },
-          badges: (d: G6Datum) => cardBadges(d.data ?? {}),
+          // 轨道带不挂任何卡片徽标（+/−、行/实体计数）
+          badges: (d: G6Datum) =>
+            d.data?.band ? [] : cardBadges(d.data ?? {}),
         },
         state: {
           // 焦点链成员：细描边（低缩放下也要能看出链路）
@@ -2768,6 +2825,10 @@ watch(overviewMode, () => pushGraphData({ refit: true }))
 // P3：研判视角（process/tier）切换 — 节点坐标重排且 Tier 3 半透规则激活；
 // 流程视角之间不会真的改变坐标，但要确保 setData 把新的 opacity 规则带入 G6
 watch(perspective, () => pushGraphData({ refit: true }))
+
+// 时间轴口径（过程/业务时间）切换：laidOutDoc 的分档坐标与区间轨道带形态
+// （仅 event 口径成带）都依赖 timeMode，必须显式重推
+watch(timeMode, () => pushGraphData({ refit: true }))
 
 // 投影变化（展开集/层开关/模式）或维度懒取完成后重推
 watch(

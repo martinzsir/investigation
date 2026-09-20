@@ -16,17 +16,22 @@ from __future__ import annotations
 import copy
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from server.app.canvas_seed import (
+    build_lens_layer,
     fact_ref,
+    reconcile_canvas,
     seed_canvas,
     sys_node_id,
+    validate_doc_shape,
     validate_patch,
 )
+from server.app import canvas_seed as canvas_seed_mod
 from server.app.evidence_builder import _make_source_ref
 
 
@@ -261,6 +266,267 @@ class CanvasSeedTest(unittest.TestCase):
         bad_edge = copy.deepcopy(doc)
         bad_edge["edges"][0]["rel"] = "推断为"
         self.assertTrue(validate_patch(doc, bad_edge))
+
+
+# ----------------------------------------------------------------------
+# 定向镜头（timeline_*）线索成图
+# ----------------------------------------------------------------------
+def _lens_rhythm_item() -> dict:
+    """timeline_rhythm 镜头线索（assemble_detail item 形状）。
+
+    call_a 在两个簇中重复出现（验去重）；共 3 个唯一事件、2 个聚集簇、
+    1 个主体；另带 aggregate 引用（必须被忽略）。
+    """
+    call_a = {"type": "通话", "src_object": "call", "event_pk": "call_a",
+              "date": "2020-01-01", "role": "主叫", "brief": "主叫→李四"}
+    return {
+        "clue_id": "clue_lens1",
+        "title": "张卫国 的事件节奏：2 个聚集簇、常态间隔中位数 4 天",
+        "skill_id": "timeline_rhythm",
+        "lens_run_id": "lensrun_test",
+        "basis": "",
+        "source_rows": [],
+        "detail": {
+            "function": "timeline_rhythm",
+            "hypothesis": "事件成簇，待正兵核查",
+            "subject": {"type": "person", "pk": "person_1",
+                        "name": "张卫国"},
+            "bursts": [
+                {"start": "2020-01-01", "end": "2020-01-03",
+                 "event_count": 2, "types": ["call", "transaction"],
+                 "events": [
+                     call_a,
+                     {"type": "资金", "src_object": "transaction",
+                      "event_pk": "txn_a", "date": "2020-01-03",
+                      "role": "", "brief": "转出 5 万元"},
+                 ]},
+                {"start": "2020-02-01", "end": "2020-02-01",
+                 "event_count": 2, "types": ["call"],
+                 "events": [
+                     dict(call_a),
+                     {"type": "通话", "src_object": "call",
+                      "event_pk": "call_b", "date": "2020-02-01",
+                      "role": "被叫", "brief": "王五→本人"},
+                 ]},
+            ],
+        },
+        "evidence_refs": [
+            {"kind": "node", "ref": "obj_person#person_1",
+             "key_column": "person_id"},
+            {"kind": "node", "ref": "obj_call#call_a",
+             "key_column": "call_id"},
+            {"kind": "node", "ref": "obj_transaction#txn_a",
+             "key_column": "txn_id"},
+            {"kind": "node", "ref": "obj_call#call_b",
+             "key_column": "call_id"},
+            {"kind": "aggregate", "metric": "burst_count", "value": 2},
+            {"kind": "time_window", "ref": "lnk_time_window#p1",
+             "key_column": "project_id"},
+        ],
+    }
+
+
+def _lens_collision_item() -> dict:
+    return {
+        "clue_id": "clue_lens2",
+        "title": "张卫国 在城东管网公示日前后 7 天跨类型碰撞",
+        "skill_id": "timeline_cross_collision",
+        "lens_run_id": "lensrun_test2",
+        "basis": "",
+        "source_rows": [],
+        "detail": {
+            "function": "timeline_cross_collision",
+            "hypothesis": "公示窗口跨类型集中出现",
+            "collision_index": 1,
+            "anchor_date": "2020-03-25",
+            "window_days": 7,
+            "project": {"pk": "proj_1", "name": "城东管网改造"},
+            "events": [
+                {"type": "资金", "src_object": "transaction",
+                 "event_pk": "txn_b", "date": "2020-03-20",
+                 "role": "", "brief": "现金存入 10 万"},
+                {"type": "通话", "src_object": "call",
+                 "event_pk": "call_c", "date": "2020-03-26",
+                 "role": "主叫", "brief": "主叫→赵六"},
+            ],
+        },
+        "evidence_refs": [
+            {"kind": "node", "ref": "obj_bid_project#proj_1",
+             "key_column": "project_id"},
+            {"kind": "node", "ref": "obj_transaction#txn_b",
+             "key_column": "txn_id"},
+            {"kind": "node", "ref": "obj_call#call_c",
+             "key_column": "call_id"},
+        ],
+    }
+
+
+def _kind_index(doc: dict) -> dict[str, list[dict]]:
+    return {k: [n for n in doc["nodes"] if n["kind"] == k]
+            for k in ("rule", "object", "function_result")}
+
+
+def _edge_set(doc: dict) -> set[tuple[str, str, str]]:
+    return {(e["source"], e["rel"], e["target"]) for e in doc["edges"]}
+
+
+class LensSeedTest(unittest.TestCase):
+    def test_rhythm_seed_mapping(self):
+        """节奏线索：skill_id 规则 + 主体对象 + 去重事件 + 聚集簇区间。"""
+        doc = seed_canvas(
+            clue_id="clue_lens1", detail=_lens_rhythm_item(),
+            evidence=[], verify_items=[], materials=[])
+        self.assertEqual([], validate_doc_shape(doc))
+        idx = _kind_index(doc)
+        # 规则来自顶层 skill_id，不再落「未关联规则」占位
+        self.assertEqual(1, len(idx["rule"]))
+        rule = idx["rule"][0]
+        self.assertEqual("timeline_rhythm", rule["ref"])
+        self.assertEqual("规则 timeline_rhythm", rule["label"])
+        self.assertNotIn("历史产物", rule["label"])
+        # 主体 1 + 唯一事件 3（call_a 跨簇去重）
+        persons = [n for n in idx["object"]
+                   if (n["props"] or {}).get("lens_role") == "subject"]
+        events = [n for n in idx["object"]
+                  if (n["props"] or {}).get("lens_layer") == "event"]
+        self.assertEqual(1, len(persons))
+        self.assertEqual("张卫国", persons[0]["label"])
+        self.assertEqual(3, len(events))
+        # ref 与 M2 expand 同口径（type:pk，不是 evidence_refs 的 obj_#）
+        self.assertEqual(
+            sys_node_id("object", "call:call_a"),
+            next(n["id"] for n in events if n["ref"] == "call:call_a"))
+        # 事件节点带业务时间 → 时间轴视角可直接分档
+        call_a = next(n for n in events if n["ref"] == "call:call_a")
+        self.assertEqual("2020-01-01", call_a["props"]["event_time"])
+        # 2 个聚集簇区间（event_time=start）
+        self.assertEqual(2, len(idx["function_result"]))
+        b1 = next(n for n in idx["function_result"]
+                  if n["ref"] == "burst:clue_lens1:1")
+        self.assertEqual("2020-01-01", b1["props"]["start"])
+        self.assertEqual("2020-01-01", b1["props"]["event_time"])
+        self.assertEqual("burst", b1["props"]["interval_kind"])
+        self.assertEqual("timeline_rhythm", b1["props"]["function"])
+
+        edges = _edge_set(doc)
+        rid = rule["id"]
+        # 规则 ──查询自──▶ 两簇；规则 ──涉及──▶ 主体（不直连事件）
+        self.assertIn((rid, "查询自", b1["id"]), edges)
+        self.assertIn((rid, "涉及", persons[0]["id"]), edges)
+        self.assertNotIn((rid, "涉及", call_a["id"]), edges)
+        # 簇 ──涉及──▶ 事件（call_a 被两个簇各连一次）
+        b2 = next(n for n in idx["function_result"]
+                  if n["ref"] == "burst:clue_lens1:2")
+        self.assertIn((b1["id"], "涉及", call_a["id"]), edges)
+        self.assertIn((b2["id"], "涉及", call_a["id"]), edges)
+        txn = next(n["id"] for n in events if n["ref"] == "transaction:txn_a")
+        call_b = next(n["id"] for n in events if n["ref"] == "call:call_b")
+        self.assertIn((b1["id"], "涉及", txn), edges)
+        self.assertIn((b2["id"], "涉及", call_b), edges)
+        # aggregate/time_window 引用不成节点
+        self.assertFalse(any("aggregate" in n["id"] for n in doc["nodes"]))
+        # meta 规模声明
+        self.assertTrue(doc["meta"]["lens_seeded"])
+        self.assertEqual({"shown": 3, "total": 3},
+                         doc["meta"]["lens"]["events"])
+        self.assertEqual({"shown": 2, "total": 2},
+                         doc["meta"]["lens"]["intervals"])
+
+    def test_collision_window_dates_and_edges(self):
+        """碰撞线索：碰撞窗区间 start/end=anchor±window，挂项目与事件。"""
+        doc = seed_canvas(
+            clue_id="clue_lens2", detail=_lens_collision_item(),
+            evidence=[], verify_items=[], materials=[])
+        self.assertEqual([], validate_doc_shape(doc))
+        idx = _kind_index(doc)
+        win = next(n for n in idx["function_result"]
+                   if n["ref"] == "collision:clue_lens2:1")
+        self.assertEqual("2020-03-18", win["props"]["start"])
+        self.assertEqual("2020-04-01", win["props"]["end"])
+        self.assertEqual("collision_window", win["props"]["interval_kind"])
+        self.assertEqual(7, win["props"]["window_days"])
+        project = next(n for n in idx["object"]
+                       if n["ref"] == "bid_project:proj_1")
+        self.assertEqual("城东管网改造", project["label"])
+        edges = _edge_set(doc)
+        rid = idx["rule"][0]["id"]
+        self.assertIn((rid, "查询自", win["id"]), edges)
+        self.assertIn((rid, "涉及", project["id"]), edges)
+        self.assertIn((win["id"], "涉及",
+                       sys_node_id("object", "transaction:txn_b")), edges)
+        self.assertIn((win["id"], "涉及",
+                       sys_node_id("object", "call:call_c")), edges)
+
+    def test_event_truncation_declared(self):
+        """事件超 cap：按日期截断，只连已成图事件，meta 如实声明。"""
+        with unittest.mock.patch.object(
+                canvas_seed_mod, "_MAX_LENS_EVENT_NODES", 2):
+            doc = seed_canvas(
+                clue_id="clue_lens1", detail=_lens_rhythm_item(),
+                evidence=[], verify_items=[], materials=[])
+        events = [n for n in doc["nodes"]
+                  if (n.get("props") or {}).get("lens_layer") == "event"]
+        # date 升序前二：call_a(01-01)、txn_a(01-03)；call_b(02-01) 截断
+        self.assertEqual(2, len(events))
+        refs = {n["ref"] for n in events}
+        self.assertEqual({"call:call_a", "transaction:txn_a"}, refs)
+        self.assertEqual({"shown": 2, "total": 3},
+                         doc["meta"]["lens"]["events"])
+        targets = {e["target"] for e in doc["edges"]
+                   if e["rel"] == "涉及" and e["source"].startswith(
+                       "function_result:")}
+        self.assertNotIn(sys_node_id("object", "call:call_b"), targets)
+
+    def test_reconcile_backfills_placeholder_canvas(self):
+        """老画布（仅 unlinked 占位）reconcile：撤占位、补镜头节点与边，幂等。"""
+        placeholder = {
+            "id": sys_node_id("rule", "unlinked"), "kind": "rule",
+            "ref": "unlinked", "label": "未关联规则（历史产物）",
+            "system": True, "pinned": False, "x": 0, "y": 0,
+            "props": {"historical": True},
+        }
+        old = {"nodes": [placeholder], "edges": [],
+               "meta": {"truncated": {"source_row": {"shown": 0, "total": 0}}}}
+        layer = build_lens_layer("clue_lens1", _lens_rhythm_item())
+        merged, n_nodes, n_edges = reconcile_canvas(
+            old, lens_layer=layer)
+        self.assertGreater(n_nodes, 0)
+        self.assertGreater(n_edges, 0)
+        ids = {n["id"] for n in merged["nodes"]}
+        self.assertNotIn(placeholder["id"], ids)
+        self.assertIn(sys_node_id("rule", "timeline_rhythm"), ids)
+        self.assertIn(sys_node_id("object", "call:call_a"), ids)
+        self.assertIn(
+            sys_node_id("function_result", "burst:clue_lens1:1"), ids)
+        self.assertTrue(merged["meta"]["lens_seeded"])
+        # 既有 meta 键保留
+        self.assertIn("truncated", merged["meta"])
+        # 新节点均有坐标（形状合法）
+        self.assertEqual([], validate_doc_shape(merged))
+
+        # 第二次：零新增、零边、meta 不变
+        again, n2, e2 = reconcile_canvas(merged, lens_layer=layer)
+        self.assertEqual(0, n2)
+        self.assertEqual(0, e2)
+        self.assertEqual(merged["nodes"], again["nodes"])
+        self.assertEqual(merged["edges"], again["edges"])
+        self.assertEqual(merged["meta"], again["meta"])
+
+    def test_non_lens_clue_marker_only(self):
+        """非镜头线索：seed/reconcile 不造镜头节点，仅落幂等标记。"""
+        doc = seed_canvas(
+            clue_id="clue_1", detail=_detail(), evidence=_evidence(1),
+            verify_items=[], materials=[])
+        self.assertTrue(doc["meta"]["lens_seeded"])
+        self.assertNotIn("lens", doc["meta"])
+        # 老画布 reconcile 空层：0 节点 0 边，仅 meta 打标
+        old = {"nodes": [dict(n) for n in doc["nodes"]],
+               "edges": [dict(e) for e in doc["edges"]], "meta": {}}
+        merged, n_nodes, n_edges = reconcile_canvas(
+            old, lens_layer=build_lens_layer("clue_1", _detail()))
+        self.assertEqual(0, n_nodes)
+        self.assertEqual(0, n_edges)
+        self.assertTrue(merged["meta"]["lens_seeded"])
 
 
 if __name__ == "__main__":
