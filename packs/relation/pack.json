@@ -66,7 +66,10 @@
         ]
       },
       "handler": "impl:neighborhood_lens",
-      "description": "看一个人的资金、通讯、轨迹上有哪些关联人和账户"
+      "description": "看一个人的资金、通讯、轨迹上有哪些关联人和账户",
+      "uses_functions": [
+        "relation_neighborhood"
+      ]
     },
     {
       "skill_id": "relation_common_neighbors",
@@ -144,7 +147,10 @@
         ]
       },
       "handler": "impl:common_neighbors_lens",
-      "description": "看两个人之间有没有共同的账户、单位或联系人"
+      "description": "看两个人之间有没有共同的账户、单位或联系人",
+      "uses_functions": [
+        "relation_common_neighbors"
+      ]
     },
     {
       "skill_id": "relation_paths",
@@ -230,7 +236,10 @@
         ]
       },
       "handler": "impl:paths_lens",
-      "description": "看两个人之间经过几步、通过谁连起来"
+      "description": "看两个人之间经过几步、通过谁连起来",
+      "uses_functions": [
+        "relation_paths"
+      ]
     }
   ]
 }

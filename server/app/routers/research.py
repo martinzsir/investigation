@@ -150,6 +150,47 @@ def list_manual_hypotheses(case_id: str,
               data_version=ctx.repo.current_version(case_id))
 
 
+@router.get("/cases/{case_id}/hypotheses/ji")
+def get_miao_ji(case_id: str,
+                p: Principal = Depends(get_principal),
+                ctx: WebContext = Depends(get_ctx)):
+    """知己栏（证据缺口 / 授权边界）——庙算的强制输入。
+
+    configured=false 表示正兵未填写，当前用**派生值**在建（不阻塞 BUILD）。
+    UI 须明示"授权边界未声明"，否则正兵会以为已声明、假设的受限标记可信。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    from server.app import miao_ji
+    data = miao_ji.load_ji(ctx.factory.case_dir(case_id))
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
+class MiaoJiIn(BaseModel):
+    """知己入参：证据缺口 + 授权边界（庙算 set_ji 强制非空）。"""
+    gaps: list[str] = []
+    auth_boundary: list[str] = []
+
+
+@router.put("/cases/{case_id}/hypotheses/ji")
+def save_miao_ji(case_id: str, body: MiaoJiIn,
+                 p: Principal = Depends(get_principal),
+                 ctx: WebContext = Depends(get_ctx)):
+    """写知己栏（全量覆盖）。两者均非空才算 configured=true。
+
+    写入后不自动重扫：知己影响的是假设的受限/降级标记，下一次
+    BUILD/RESCAN 生效；立时重扫会把正兵正在研判的版本冲掉。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    from server.app import miao_ji
+    if not body.gaps or not body.auth_boundary:
+        raise APIError(ERR_VALIDATION,
+                       "知己栏强制非空：证据缺口与授权边界均须填写", 400)
+    data = miao_ji.save_ji(ctx.factory.case_dir(case_id),
+                           gaps=body.gaps, auth_boundary=body.auth_boundary,
+                           operator=p.username)
+    return ok(data, data_version=ctx.repo.current_version(case_id))
+
+
 @router.post("/cases/{case_id}/hypotheses/manual",
              status_code=201)
 def add_manual_hypothesis(case_id: str, body: HypothesisIn,

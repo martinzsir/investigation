@@ -67,6 +67,24 @@ def build_evidence(
                                              base_dir=base_dir)],
         })
 
+    # ---- 镜头线索的事实栏 ----
+    # 镜头线索 source_rows=0、证据走 evidence_refs/事件明细。原实现只认
+    # source_rows，导致详情页三栏全空。这里补上：有事件明细优先（人能读的
+    # brief），否则退回证据引用（至少可定位）。同时产出可挂的 source_rows，
+    # 使下面的推断卡不被前端按 FE-T-004 丢弃。
+    _skill = str(raw_clue.get("skill_id") or "")
+    if not source_rows:
+        ev_items, ev_rows = _lens_event_items(detail, clue_id)
+        if ev_items:
+            items.extend(ev_items)
+            refs = refs + ev_rows
+        else:
+            rf_items, rf_rows = _ref_items(
+                raw_clue.get("evidence_refs") or [], clue_id)
+            if rf_items:
+                items.extend(rf_items)
+                refs = refs + rf_rows
+
     # ---- 规则解析：多规则合并线索 detail.rules（回填）优先；否则回落单规则 ----
     rules = _extract_rules(detail, raw_clue)
 
@@ -121,6 +139,43 @@ def build_evidence(
             "text": f"判据已降级：{degrade_reason}",
             "source_rows": [],
         })
+
+    # ---- 镜头线索的推断栏（判据）----
+    # 镜头此前只出标题（如"张卫国 在…公示日前后 7 天跨类型碰撞"），
+    # 详情页**没有一句"这说明什么"**——正兵要么去画布数节点，要么放弃。
+    # 判据由 core.lens_basis 生成：陈述观测 + 与常态比，**不作定性**。
+    # 优先用生产时写入的 detail.basis；存量产物从 detail 重建兜底。
+    if not rules and not legacy_basis:
+        try:
+            from core.lens_basis import basis_from_detail
+            lb = basis_from_detail(_skill, detail)
+        except Exception:
+            lb = {"basis": "", "falsification": "", "claims": []}
+        if lb.get("basis"):
+            if refs:
+                items.append({
+                    "id": f"i{clue_id}",
+                    "kind": "inference",
+                    "text": lb["basis"],
+                    "source_rows": refs,
+                })
+            else:
+                # 无溯源支撑的判据不许进推断栏（FE-T-004）：降级为待核实，
+                # 不静默丢弃也不冒充推断。
+                items.append({
+                    "id": f"a{clue_id}",
+                    "kind": "pending",
+                    "text": f"镜头判据（无行级溯源）：{lb['basis']}",
+                    "source_rows": [],
+                })
+            # 证伪条件：回答"什么情况下这不成立"，帮助正兵反驳而非只接受
+            if lb.get("falsification"):
+                items.append({
+                    "id": f"z{clue_id}",
+                    "kind": "pending",
+                    "text": f"证伪条件：{lb['falsification']}",
+                    "source_rows": [],
+                })
 
     # 2. 假设匹配：多规则逐条按 rule_id 直映 + 关键词兜底（同假设去重）
     seen_h: set[str] = set()
@@ -219,6 +274,116 @@ def _extract_rules(detail: dict[str, Any],
     return []
 
 
+def _lens_event_items(detail: dict[str, Any], clue_id: str,
+                      limit: int = 30) -> tuple[list[dict], list[dict]]:
+    """镜头线索的**事件明细** → 事实卡 + 可挂溯源行。
+
+    为什么需要
+    ----------
+    镜头线索 `source_rows` 恒为 0（证据走 evidence_refs 语义层引用），
+    而原事实栏只认 source_rows —— 结果**详情页三栏全空**：正兵点开一条
+    "跨类型时间碰撞"线索，看不到任何一行支撑，只能去画布数节点。
+
+    但镜头的 detail 里其实带着完整事件明细（timeline / events / bursts
+    内嵌 events），每条带 date、role、brief（如"转出→财政局 18533 元"）。
+    这才是人能读的事实，比干巴巴的 `obj_call#call_xxx` 引用有用得多。
+
+    返回 (items, rows)：items 为 fact 卡，rows 为对应 SourceRef
+    （推断栏需要挂 source_rows，否则前端按 FE-T-004 丢弃 + 计数）。
+    """
+    events: list[dict] = []
+    for e in detail.get("timeline") or []:
+        if isinstance(e, dict):
+            events.append(e)
+    for e in detail.get("events") or []:
+        if isinstance(e, dict):
+            events.append(e)
+    for b in detail.get("bursts") or []:
+        if isinstance(b, dict):
+            for e in b.get("events") or []:
+                if isinstance(e, dict):
+                    events.append(e)
+
+    # 同一事件可能在 timeline 与 bursts 中重复出现（节奏镜头），按 event_pk 去重
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for e in events:
+        key = str(e.get("event_pk") or "") or json.dumps(
+            e, sort_keys=True, ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+
+    total = len(uniq)
+    items: list[dict] = []
+    rows: list[dict] = []
+    for idx, e in enumerate(uniq[:limit]):
+        parts = []
+        d = e.get("date")
+        if d:
+            parts.append(str(d))
+        if e.get("offset_days") is not None:
+            parts.append(f"偏移 {e['offset_days']:+d} 天")
+        if e.get("type"):
+            parts.append(str(e["type"]))
+        if e.get("role"):
+            parts.append(str(e["role"]))
+        brief = e.get("brief")
+        text = " · ".join(parts)
+        if brief:
+            text = f"{text}｜{brief}" if text else str(brief)
+        dataset = f"obj_{e['src_object']}" if e.get("src_object") else "语义层"
+        pk = str(e.get("event_pk") or f"e{idx}")
+        rows.append({"row_uri": f"{dataset}@local#row/{pk}",
+                     "source": dataset})
+        items.append({"id": f"f{clue_id}-ev{idx}", "kind": "fact",
+                      "text": text or "（事件无摘要）",
+                      "source_rows": [rows[-1]]})
+    # 超出上限：如实声明，不静默截断（与画布规模保护同口径）
+    if total > limit:
+        items.append({"id": f"f{clue_id}-ev-more", "kind": "fact",
+                      "text": f"…另有 {total - limit} 起事件未逐条展开"
+                              f"（共 {total} 起，完整明细见画布）",
+                      "source_rows": []})
+    return items, rows
+
+
+def _ref_items(refs_raw: list[dict], clue_id: str,
+               limit: int = 30) -> tuple[list[dict], list[dict]]:
+    """语义层证据引用（evidence_refs）→ 事实卡 + 可挂溯源行。
+
+    事件明细缺失时的兜底：至少把「引用了哪些语义对象/聚合量」摆出来，
+    而不是三栏全空。文本是引用本身（可定位），不编造行内容。
+    """
+    items: list[dict] = []
+    rows: list[dict] = []
+    total = len(refs_raw or [])
+    for idx, r in enumerate((refs_raw or [])[:limit]):
+        if not isinstance(r, dict):
+            continue
+        kind = str(r.get("kind") or "")
+        if kind == "aggregate":
+            text = f"聚合量 {r.get('metric')}：{r.get('value')}"
+            dataset = "聚合"
+            uri = f"aggregate@local#row/{r.get('metric')}-{r.get('value')}"
+        else:
+            ref = str(r.get("ref") or "")
+            table, _, key = ref.partition("#")
+            text = f"{kind}：{ref}"
+            dataset = table or "语义层"
+            uri = f"{dataset}@local#row/{key or idx}"
+        rows.append({"row_uri": uri, "source": dataset})
+        items.append({"id": f"f{clue_id}-ref{idx}", "kind": "fact",
+                      "text": text, "source_rows": [rows[-1]]})
+    if total > limit:
+        items.append({"id": f"f{clue_id}-ref-more", "kind": "fact",
+                      "text": f"…另有 {total - limit} 条证据引用未展开"
+                              f"（共 {total} 条）",
+                      "source_rows": []})
+    return items, rows
+
+
 def _fact_text(sr: dict[str, Any]) -> str:
     """把数据行转人类可读的事实文本。
 
@@ -288,7 +453,7 @@ def _match_hypothesis(rule_id: str, basis: str,
     hypotheses.py 的 MiaoSuan.FINDING_PATTERNS 是类属性，
     按关键词命中 findings 的「候选虚处+依据」文本即映射：
       - R1（整数现金存入）→ H1 收受财物
-      - R3（通话频次突增）→ H3 密切关系
+      - R3（单一对端通话高频）→ H3 密切关系
       - R5（利益关联）→ H2 行贿获中标
     """
     text = f"{rule_id} {basis} {rule_text}"

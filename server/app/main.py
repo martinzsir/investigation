@@ -31,6 +31,7 @@ from server.app.routers import dashboard as dashboard_router
 from server.app.routers import ingest as ingest_router
 from server.app.routers import rule_workshop as rule_workshop_router
 from server.app.routers import lenses as lenses_router
+from server.app.routers import observations as observations_router
 from server.app.routers import model_designer as model_designer_router
 from server.app.routers import access_config as access_config_router
 from server.app.routers import knowledge as knowledge_router
@@ -118,6 +119,7 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(clues_router.router, prefix=API_PREFIX)
     app.include_router(rule_workshop_router.router, prefix=API_PREFIX)
     app.include_router(lenses_router.router, prefix=API_PREFIX)
+    app.include_router(observations_router.router, prefix=API_PREFIX)
     app.include_router(ingest_router.router, prefix=API_PREFIX)
     app.include_router(model_designer_router.router, prefix=API_PREFIX)
     app.include_router(access_config_router.router, prefix=API_PREFIX)

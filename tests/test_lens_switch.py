@@ -196,8 +196,38 @@ class LensSwitchTest(unittest.TestCase):
             case_dir=self.factory.case_dir("c1"), version=1,
             pack="default", snapshot_base=self.tmp / "no_ontology")
         self.assertEqual(det["lens_case_disabled"], [])
-        # 真实 packs 当前 6 镜头全为定向 → 全部进 skipped 留痕
-        self.assertEqual(len(det["lens_batch_skipped"]), 6)
+        # 判据已由「有没有必填参数」改为「能不能自动确定靶心」：
+        # 6 个 relation_*/timeline_* 都声明了 auto_from，靶心可推导时
+        # **应被调度**，不再因「有必填参数」整体跳过（此前该断言写死 6）。
+        # 故此处只断言：跳过留痕是「推导不出靶心」的集合，且数量 < 镜头总数。
+        skipped = det["lens_batch_skipped"]
+        self.assertIsInstance(skipped, list)
+        self.assertLess(len(skipped), 6,
+                        f"靶心可推导的镜头不应进跳过留痕，实际 {skipped}")
+
+    def test_lens_batch_skipped_means_unresolvable_not_directional(self):
+        """「跳过」语义变更：= 推导不出靶心，而非「有必填参数」。
+
+        此前 Web 端 detect 按「有必填参数 = 定向」整体跳过六个镜头，
+        导致 Web 建案与 CLI（run_all）线索集不一致。本用例守住新语义。
+        """
+        from core.pack_loader import case_batch_lens_tasks
+        from core.registry import get_registry
+
+        reg = get_registry()
+        tasks, unresolved, _disabled = case_batch_lens_tasks(
+            reg, None, store=None, ctx={"clues": []}, pack="default")
+        directional = {"relation_neighborhood", "relation_common_neighbors",
+                       "relation_paths", "timeline_sequence",
+                       "timeline_rhythm", "timeline_cross_collision"}
+        scheduled = {sid for sid, _ in tasks}
+        # 已调度的镜头不该同时出现在跳过留痕里
+        self.assertFalse(scheduled & set(unresolved),
+                         f"同一镜头不可既调度又跳过：{scheduled & set(unresolved)}")
+        # 定向不再是跳过理由：能推导靶心的定向镜头应出现在调度中
+        self.assertTrue(
+            scheduled & directional or not (unresolved or scheduled),
+            "靶心可推导时，定向镜头应被批量调度")
 
 
 if __name__ == "__main__":

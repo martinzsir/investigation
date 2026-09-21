@@ -50,7 +50,10 @@
         ]
       },
       "handler": "impl:sequence_lens",
-      "description": "把某个人的转账、通话、出行按时间排成一条线"
+      "description": "把某个人的转账、通话、出行按时间排成一条线",
+      "uses_functions": [
+        "timeline_event_sequence"
+      ]
     },
     {
       "skill_id": "timeline_rhythm",
@@ -102,7 +105,10 @@
         ]
       },
       "handler": "impl:rhythm_lens",
-      "description": "看某个人在哪些天突然密集转账、通话或出行"
+      "description": "看某个人在哪些天突然密集转账、通话或出行",
+      "uses_functions": [
+        "timeline_rhythm"
+      ]
     },
     {
       "skill_id": "timeline_cross_collision",
@@ -151,7 +157,10 @@
         ]
       },
       "handler": "impl:cross_collision_lens",
-      "description": "看项目公示日前后，哪些人集中出现多类异常活动"
+      "description": "看项目公示日前后，哪些人集中出现多类异常活动",
+      "uses_functions": [
+        "timeline_cross_collision"
+      ]
     }
   ]
 }

@@ -717,20 +717,102 @@ def _normalize(raw: Any) -> list[LineageClue]:
     raise TypeError(f"handler 返回类型不合法：{type(raw)}，应为 [LineageClue]")
 
 
-def _infer_assumptions(clue: LineageClue, spec: SkillSpec, miao: Any) -> list[str]:
+def _clue_data_sources(clue: LineageClue) -> set[str]:
+    """从线索**实际证据**反推数据源名（技能没声明 data_deps 时用）。
+
+    奇正/用间的 data_deps 为空（它们走 Function 编排，不声明静态依赖），
+    旧逻辑直接返回 []，兜底对这两个技能永久失效。改为从证据反推：
+      - source_rows 的「语义表」字段（obj_call → call）
+      - evidence_refs 的 ref（obj_call#xxx → call）
+    再经五间包 source_names 译成展示名，与假设 data_sources 同口径。
+    译不到就回落类型名——宁可匹配不上，也不硬编码中文。
     """
-    若技能未显式填 assumption_chain，按数据依赖反推：
-    取 miao.hypotheses 中 data_sources 与本技能 data_deps 交集非空者。
-    这是「假设覆盖完整性」的兜底 —— 确保每条线索都能挂回某条假设。
+    types: set[str] = set()
+    for r in (getattr(clue, "source_rows", None) or []):
+        if not isinstance(r, dict):
+            continue
+        t = str(r.get("语义表") or r.get("对象类型") or "").strip()
+        if t:
+            types.add(t[4:] if t.startswith("obj_") else t)
+    for e in (getattr(clue, "evidence_refs", None) or []):
+        if not isinstance(e, dict):
+            continue
+        ref = str(e.get("ref") or "")
+        if "#" in ref:
+            head = ref.split("#", 1)[0]
+            types.add(head[4:] if head.startswith("obj_") else head)
+    if not types:
+        return set()
+    try:
+        from core.wujian import load_wujian
+        wj = load_wujian(getattr(spec_pack_of(clue), "pack", "default"))
+    except Exception:
+        wj = None
+    names = (wj.source_names if wj is not None else {}) or {}
+    return {names.get(t, t) for t in types}
+
+
+def spec_pack_of(clue: LineageClue):
+    """占位：包标识当前未随线索携带，返回 None 由调用方回落 default。"""
+    return None
+
+
+def _infer_assumptions(clue: LineageClue, spec: SkillSpec, miao: Any) -> list[str]:
+    """若技能未显式填 assumption_chain，按数据依赖反推挂回**一条**假设。
+
+    为什么必须收敛到一条
+    --------------------
+    旧实现把所有"数据源有交集"的假设全塞进 chain，实测 xu_shi 的
+    data_deps=银行流水 会同时命中 H1(银行流水/招投标档案) 与 H4(银行流水/
+    工商信息) → 返回 ['H1','H4']。一条线索挂两条假设等于有两个证伪
+    目标，处置时无从下手——"挂回某条假设"这个兜底目标反而被破坏了。
+
+    消歧：先按数据源交集数，再按**间类交集数**（线索自身的 jian_types
+    是本条证据的真实归属，比静态 data_deps 更贴切）。两者都并列 →
+    返回空，不猜（AI 不给定性，猜错的假设比没有假设更危险）。
+
+    这是「假设覆盖完整性」的兜底 —— 确保每条线索都能挂回某条假设；
+    挂不回去时留空，由读面标 needs_hypothesis 让正兵手动指定。
     """
     if miao is None or not hasattr(miao, "hypotheses"):
         return []
-    chain: list[str] = []
     deps = set(spec.data_deps)
+    if not deps:
+        deps = _clue_data_sources(clue)  # 技能没声明 → 从证据反推
+    if not deps:
+        return []
+
+    cj = set(getattr(clue, "jian_types", None) or [])
+    scored: list[tuple[int, int, str]] = []
     for h in miao.hypotheses:
-        if deps & set(getattr(h, "data_sources", [])):
-            chain.append(h.id)
-    return chain
+        overlap = deps & set(getattr(h, "data_sources", None) or [])
+        hj = set(getattr(h, "jian_types", None) or [])
+        jov = len(hj & cj)
+        # 间类不符即排除：假设**声明了**间类却与线索间类无交集 → 不挂。
+        # 反例：死间线索（OSINT+工商内档）凭"工商信息"数据源交集挂上了
+        # H2（因间），间类明显不符——等于凭一个共有数据源硬认亲，
+        # 比留空更危险（留空至少会标 needs_hypothesis 让正兵手动指定）。
+        # 假设未声明间类（hj 为空）时不歧视，仍按数据源匹配。
+        if hj and not jov:
+            continue
+        # 须至少一维命中：数据源交集 OR 间类交集（旧实现只认前者，
+        # 间类对得上但数据源口径不一致的假设会被整个漏掉）
+        if not overlap and not jov:
+            continue
+        scored.append((jov, len(overlap), str(h.id)))
+    if not scored:
+        return []
+    # 排序键：**间类交集优先于数据源交集**。
+    # 反例：按数据源数排，H1 声明了 2 个源恒得 2 分，生/反/因间线索
+    # 一律挂 H1（实测三种间类全返回 ['H1']）。间类是侦查学归属，比
+    # "谁声明的源多"更能区分假设——先按间类，同间类再比数据源。
+    scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+    top = scored[0]
+    if len(scored) > 1:
+        second = scored[1]
+        if (second[0], second[1]) == (top[0], top[1]):
+            return []  # 并列且间类也分不出 → 不猜
+    return [top[2]]
 
 
 # ----------------------------------------------------------------------

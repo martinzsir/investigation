@@ -54,6 +54,81 @@ def _dims_for_jian(jian_types: list[str]) -> list[str]:
     return seen
 
 
+def _hypothesis_for_jian(jian_name: str, hit_object_types: list[str],
+                         pack: str = "default",
+                         base_dir=None) -> tuple[str, str]:
+    """间类 → 假设：本体声明反查 + 命中对象类型消歧。
+
+    为什么必须反查本体
+    ------------------
+    用间线索此前假设链全空 → 进处置清单却无命题可证伪，只能空转。
+    补假设的**唯一可靠来源**是本体假设模式库的 jian_types 声明——
+    假设回答"什么算可疑"，属领域知识，换本体自动跟随，不硬编码 H1..Hn。
+
+    为什么还要消歧
+    --------------
+    间类到假设不是一对一的。实测本本体：
+        生间 → H1（收受财物）**和** H3（密切私下关系）
+    只按间类反查，生间命中该挂哪个？两者说的是完全不同的事——
+    一个是钱，一个是关系。硬选一个等于替正兵定性。
+
+    消歧用**命中的对象类型**与假设 evidence_object_types 的交集：
+        生间命中 call/trackpoint/transaction
+        H1 evidence=[transaction]          交集 1
+        H3 evidence=[call, trackpoint]     交集 2  → H3 胜
+    语义上也对：生间主力是通话 114 条 + 轨迹，正是"密切关系"的证据。
+
+    返回 (hypothesis_id, 依据)。推不出返回 ("", 原因)——
+    **不猜、不硬凑**：宁可留空让正兵指定，也不给一个来路不明的假设。
+    """
+    try:
+        from core.ontology_loader import load_hypothesis_patterns
+        raw = load_hypothesis_patterns(pack, base_dir=base_dir)
+    except Exception:
+        return "", "假设模式库装载失败"
+    patterns = raw if isinstance(raw, list) else []
+    if not patterns:
+        return "", "本体未声明假设模式库"
+
+    cands: dict[str, dict] = {}
+    for it in patterns:
+        h = it.get("hypothesis") if isinstance(it, dict) else None
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("id") or "").strip()
+        if not hid:
+            continue
+        if jian_name in (h.get("jian_types") or []):
+            cands.setdefault(hid, h)
+
+    if not cands:
+        return "", f"本体未为间类「{jian_name}」声明假设"
+    if len(cands) == 1:
+        hid = next(iter(cands))
+        return hid, f"间类「{jian_name}」唯一映射到 {hid}"
+
+    # 多候选：用命中对象类型与 evidence_object_types 的交集消歧
+    hits = {str(t) for t in hit_object_types if t}
+    scored: list[tuple[int, str]] = []
+    for hid, h in cands.items():
+        ev = {str(x) for x in (h.get("evidence_object_types") or [])}
+        if not ev:  # 证据对象类型未声明 → 回落 object_types
+            ev = {str(x) for x in (h.get("object_types") or [])}
+        scored.append((len(hits & ev), hid))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    if scored[0][0] == 0:
+        return "", (f"间类「{jian_name}」有 {len(cands)} 个候选假设，"
+                    f"但均不覆盖命中的对象类型（{'、'.join(sorted(hits))}）")
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return "", (f"间类「{jian_name}」候选假设覆盖度相同"
+                    f"（{scored[0][1]} 与 {scored[1][1]} 均 {scored[0][0]} 项），"
+                    f"无法消歧")
+    return scored[0][1], (
+        f"间类「{jian_name}」多候选，按命中对象类型消歧 → {scored[0][1]}"
+        f"（交集 {scored[0][0]} 项）")
+
+
 def _chain_jian_dim_for(text: str) -> tuple[list[str], list[str], list[str]]:
     """按庙算模式库把 finding 文本映射为 (假设链, 间类, 维度)。"""
     from core.hypotheses import MiaoSuan  # 延迟导入：core 不依赖 skills，无循环
@@ -213,19 +288,91 @@ def _clue_from_yong_jian(spec: SkillSpec, result: dict) -> list[LineageClue]:
         basis = "；".join(str(s) for s in sources[:3]) if sources else ""
         # B：表级汇总行集（旧版 Function 输出回落字符串解析）
         agg_rows = _aggregate_rows_from_cross_row(row)
+        # 本间判定优先（全局等级对单间无区分力：数据接全了恒为最高级）；
+        # 缺本间字段（旧 Function 输出）时回落全局等级，再不行按命中算。
+        n_src = row.get("本间独立源数")
+        if not isinstance(n_src, int):
+            n_src = len(row.get("命中明细") or [])
+        j_level = row.get("本间交叉等级") or result["用间交叉"].get("交叉等级")
         detail: dict[str, Any] = {
-            "数据源": sources, "等级": result["用间交叉"].get("交叉等级"),
+            "数据源": sources, "等级": j_level,
+            "本间独立源数": n_src,
+            "本间独立数据源": list(row.get("本间独立数据源") or []),
+            "够格为线索": bool(n_src >= 2),
             "依据": basis, "维度": _dims_for_jian([jian_name])}
         if agg_rows:
             detail["行集口径"] = AGGREGATE_GRANULARITY
+        # 表级 COUNT 转 aggregate 证据引用：五间交叉是覆盖度判定，没行级
+        # 定位，故只挂 metric（不带 ref——_validate_evidence_refs 第 664-670
+        # 行 aggregate 无 ref 时只要求 metric 字段，通过校验）。前端 refText
+        # 扩展读 source/table 让显示从"聚合量 count：5"变成可读的
+        # "举报材料（obj_tipoff）行数=5"。
+        ev_refs: list[dict[str, Any]] = []
+        for r in agg_rows:
+            tbl = str(r.get("语义表") or "")
+            ev_refs.append({
+                "kind": "aggregate",
+                "metric": "row_count",
+                "value": int(r.get("行数") or 0),
+                "source": str(r.get("数据源") or ""),
+                "table": tbl,
+                "obj_type": str(r.get("对象类型") or ""),
+                "granularity": str(r.get("粒度") or ""),
+            })
+        # 假设链：本体间类声明反查（多候选时按命中对象类型消歧）。
+        # 推不出就留空并记原因——不猜、不硬凑，读面可据此提示正兵指定。
+        hit_types = [str(d.get("obj_name") or "")
+                     for d in (row.get("命中明细") or [])
+                     if isinstance(d, dict)]
+        hid, why = _hypothesis_for_jian(jian_name, hit_types)
+        detail["假设依据"] = why
+        if not hid:
+            detail["假设缺失原因"] = why
         clues.append(LineageClue(
             skill_id=spec.skill_id,
             title=title,
             detail=detail,
             source_rows=agg_rows,
+            evidence_refs=ev_refs,
             jian_types=[jian_name],
+            assumption_chain=[hid] if hid else [],
         ))
     return clues
+
+
+def split_yong_jian(clues: list) -> tuple[list, list]:
+    """用间产出分流：够格为线索的留线索，单源（观察）转观察档案。
+
+    兑现五间方法论自己声明的规则
+    ----------------------------
+        "单源=观察 → 双源=线索 → 三源=可立案依据候选"
+
+    此前 adapter 只要"命中"就产线索，**完全不看交叉等级**，于是单源的
+    内间也变成"查证中"的线索——规则承诺从未兑现。
+
+    判据用**本间独立源数**（不是全局）：全局是全案汇总，数据接全了恒为
+    3 级，对单间没有区分力。
+
+    返回 (clues, observations)：observations 为 Observation 列表。
+    """
+    from core.observation import observation_from_clue
+
+    keep: list = []
+    observations: list = []
+    for c in clues:
+        det = c.detail if hasattr(c, "detail") else (c.get("detail") or {})
+        if det.get("够格为线索", True):
+            keep.append(c)
+            continue
+        # 观察没有主体靶心（五间是数据源盘点，不是针对某个人的发现）→
+        # 转换前先把间类写进 detail.主体：observation id 由「技能+靶心」
+        # 派生，靶心为空会让多条单源观察挤成同一个 id。
+        jn = (c.jian_types if hasattr(c, "jian_types") else
+              c.get("jian_types")) or []
+        if jn and not det.get("主体"):
+            det["主体"] = jn[0]
+        observations.append(observation_from_clue(c))
+    return keep, observations
 
 
 def _clue_default(spec: SkillSpec, result: dict) -> list[LineageClue]:
@@ -324,8 +471,10 @@ def register_all(registry: SkillRegistry | None = None) -> SkillRegistry:
         SkillSpec(skill_id="zhi_ji_zhi_bi", name="双向画像机", stage="知己",
                    consumes_jian=[], data_deps=[],
                    handler=make_handler("zhi_ji_zhi_bi", run_zj)),
+        # data_deps 须与假设的 data_sources 同口径（五间 source_names 展示名）：
+        # 旧值"中标档案"与假设的"招投标档案"对不上，因间线索兜底恒落空。
         SkillSpec(skill_id="xu_shi", name="虚实扫描", stage="虚实",
-                   consumes_jian=["生间", "反间"], data_deps=["银行流水", "中标档案"],
+                   consumes_jian=["生间", "反间"], data_deps=["银行流水", "招投标档案"],
                    handler=make_handler("xu_shi", run_xs)),
         SkillSpec(skill_id="qi_zheng", name="奇正分工器", stage="奇正",
                    consumes_jian=["生间", "反间", "因间"], data_deps=[],

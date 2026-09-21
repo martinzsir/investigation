@@ -49,6 +49,8 @@ TASK_DE_DECIDE = "DE_RECO_DECIDE"     # W-P-007：推荐采纳/驳回裁决（�
 TASK_VERIFY = "VERIFY"                # REQ-V-004：核查项写通道（裁决/采纳/忽略/人工添加，写 state 不产版本）
 TASK_REPORT = "REPORT"              # RC-304：研判报告生成（读快照→LLM→写回 report 行，写 state 不产版本）
 TASK_LENS_RUN = "LENS_RUN"  # 画布定向镜头带参调度（只读当前版本跑单镜头，线索落 lens_runs 补充产物，不产版本）
+TASK_OBS_PROMOTE = "OBS_PROMOTE"  # 观察提升为线索（人工认领，强制指定假设；落案件级产物跨版本持久）
+TASK_OBS_DISPOSITION = "OBS_DISPOSITION"  # 观察认领/归档（只写 state，跨版本持久，不产线索）
 
 
 class TaskExecError(RuntimeError):
@@ -366,6 +368,17 @@ def _lens_run_handler(task, **kw):
     return handle_lens_run(task, **kw)
 
 
+def _obs_promote_handler(task, **kw):
+    # 惰性导入：observation_promote.py 引用本模块 TaskExecError，避免循环
+    from server.app.worker.observation_promote import handle_obs_promote
+    return handle_obs_promote(task, **kw)
+
+
+def _obs_disposition_handler(task, **kw):
+    from server.app.worker.observation_promote import handle_obs_disposition
+    return handle_obs_disposition(task, **kw)
+
+
 HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_BUILD: handle_build,
     TASK_PING: handle_ping,
@@ -383,4 +396,6 @@ HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     TASK_VERIFY: _verify_handler,           # REQ-V-004 核查项写通道
     TASK_REPORT: _report_handler,           # RC-304 研判报告生成
     TASK_LENS_RUN: _lens_run_handler,       # 画布定向镜头带参调度
+    TASK_OBS_PROMOTE: _obs_promote_handler,  # 观察提升为线索（强制假设）
+    TASK_OBS_DISPOSITION: _obs_disposition_handler,  # 观察认领/归档
 }

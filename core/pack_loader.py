@@ -135,6 +135,19 @@ def _build_vocabulary(decl: dict[str, Any],
         f"包 {decl.get('pack_id')} 提供了未知 vocabulary.type={vtype!r}")
 
 
+def _declared_function_names() -> set[str]:
+    """本体已声明的 Function 名集合（校验 uses_functions 引用用）。
+
+    装载早期/本体不可用时返回空集——调用方据此跳过校验，不硬失败。
+    """
+    try:
+        from core.ontology_loader import load_pack
+        spec = load_pack("default")
+        return set(spec.functions or {})
+    except Exception:
+        return set()
+
+
 def _build_specs(decl: dict[str, Any], pack_dir: Path,
                  ontology_names: set[str]) -> list[SkillSpec]:
     pack_id = decl.get("pack_id")
@@ -159,6 +172,22 @@ def _build_specs(decl: dict[str, Any], pack_dir: Path,
                 raise ValueError(
                     f"包 {pack_id} 镜头 {sid} 引用了不存在的底座类型 {t!r}"
                     f"（对象/链接均无此声明）")
+        # 注册期引用存在性（Function）：声明用了不存在的 Function → 拒绝挂载。
+        # 与 consumes_objects 同口径：引用不存在即硬失败，不静默漏跑。
+        # 拿不到本体函数表（装载早期）时跳过，不因此拖垮挂载。
+        declared_fns = s.get("uses_functions")
+        if declared_fns is not None:
+            if not isinstance(declared_fns, list) or not all(
+                    isinstance(x, str) and x for x in declared_fns):
+                raise ValueError(
+                    f"包 {pack_id} 镜头 {sid} 的 uses_functions 必须为非空字符串数组")
+            known_fn = _declared_function_names()
+            if known_fn:
+                bad = [x for x in declared_fns if x not in known_fn]
+                if bad:
+                    raise ValueError(
+                        f"包 {pack_id} 镜头 {sid} 引用了未声明的 Function "
+                        f"{bad}（本体无此声明）")
         handler = None
         href = s.get("handler")
         if href:
@@ -223,6 +252,8 @@ def batch_lens_tasks(
     store=None,
     ctx: dict | None = None,
     pack: str = "default",
+    base_dir=None,
+    health=None,
 ) -> tuple[list[tuple[str, dict]], list[str], list[str]]:
     """批量调度任务清单（自动填参版，自动研判主入口）。
 
@@ -254,13 +285,54 @@ def batch_lens_tasks(
         if not has_required:
             tasks.append((spec.skill_id, {}))
             continue
-        combos, _sources = auto_fill_params(spec, store, ctx, pack)
+        combos, _sources = auto_fill_params(spec, store, ctx, pack,
+                                            base_dir=base_dir, health=health)
         if not combos:
             unresolved.append(spec.skill_id)
             continue
         for c in combos:
             tasks.append((spec.skill_id, c))
     return tasks, sorted(unresolved), sorted(skipped_mode)
+
+
+def case_batch_lens_tasks(
+        registry: SkillRegistry,
+        overrides: dict[str, bool] | None = None,
+        store=None,
+        ctx: dict | None = None,
+        pack: str = "default",
+        base_dir=None,
+        health=None,
+) -> tuple[list[tuple[str, dict]], list[str], list[str]]:
+    """批量调度（自动填参版）+ 案件级启停过滤 —— detect 应走这个入口。
+
+    为什么必须替换 case_batch_lens_ids
+    ----------------------------------
+    `case_batch_lens_ids` 的判据是「有没有必填参数」：有 → 划入定向、**跳过不跑**。
+    这在自动填参能力出现之前成立（有必填参数 = 必须人工指定）。但现在
+    pack.json 的 `auto_from` 声明让系统能自己推导靶心（focus_subjects /
+    projects），六个 relation_*/timeline_* 全都声明了。
+
+    于是判据失效，后果是：**Web 端建案时这六个镜头全部不跑**，而 CLI
+    （run_all → batch_lens_tasks）会跑 —— 同一案件两条路径线索集不一致。
+
+    正解：判据从「有没有必填参数」改为「**能不能自动确定靶心**」——
+    能推导就批量跑，推导不出才跳过留痕。本函数即该口径 + 案件启停。
+
+    返回 (tasks, unresolved, case_disabled)：
+      - tasks           [(skill_id, params)]，已排除案件停用镜头；
+      - unresolved      推导不出靶心、无法调度的（留痕，不静默丢）；
+      - case_disabled   被案件启停挡下的（包级 enabled=false 仍优先）。
+    """
+    tasks, unresolved, _skipped_mode = batch_lens_tasks(
+        registry, store=store, ctx=ctx, pack=pack)
+    if not overrides:
+        return tasks, unresolved, []
+    disabled = {sid for sid, _ in tasks if overrides.get(sid) is False}
+    kept = [(sid, prm) for sid, prm in tasks if sid not in disabled]
+    # 被停用的镜头不再报 unresolved —— 停用是显式决策，不是推导失败
+    unresolved = [s for s in unresolved if s not in disabled]
+    return kept, unresolved, sorted(disabled)
 
 
 def case_batch_lens_ids(

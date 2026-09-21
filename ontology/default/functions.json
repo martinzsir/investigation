@@ -4,11 +4,28 @@
     {
       "name": "quarter_end_integer_deposits",
       "title": "季度末整数存入聚合",
-      "inputs": ["obj_transaction"],
+      "inputs": [
+        "obj_transaction"
+      ],
       "parameters": {
-        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"},
-        "quarter_end_window_days": {"type": "integer", "default": 15, "description": "距最近季末边界天数阈值；0=不按日期过滤（复现旧口径）"},
-        "cash_summary_tokens": {"type": "string", "enum": ["现金存入"], "default": "现金存入", "description": "现金类交易对方摘要标记；对公转账归 integer_transfer_aggregates"}
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（1 万元整数倍）"
+        },
+        "quarter_end_window_days": {
+          "type": "integer",
+          "default": 15,
+          "description": "距最近季末边界天数阈值；0=不按日期过滤（复现旧口径）"
+        },
+        "cash_summary_tokens": {
+          "type": "string",
+          "enum": [
+            "现金存入"
+          ],
+          "default": "现金存入",
+          "description": "现金类交易对方摘要标记；对公转账归 integer_transfer_aggregates"
+        }
       },
       "output_type": "rows",
       "impl": "sql",
@@ -19,9 +36,15 @@
     {
       "name": "integer_transfer_aggregates",
       "title": "整数转账聚合（过桥结构）",
-      "inputs": ["obj_transaction"],
+      "inputs": [
+        "obj_transaction"
+      ],
       "parameters": {
-        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"}
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（1 万元整数倍）"
+        }
       },
       "output_type": "rows",
       "impl": "sql",
@@ -30,19 +53,40 @@
     },
     {
       "name": "call_frequency_spike",
-      "title": "通话频次突增检测",
-      "inputs": ["obj_call"],
-      "requires": {"objects": ["call"], "props": {"call": ["caller_raw", "callee_raw"]}},
-      "parameters": {"absolute_threshold": {"type": "integer", "required": false, "default": 30, "description": "无对照对端时退化使用的绝对频次阈值（次）"}},
+      "title": "单一对端通话高频检测",
+      "inputs": [
+        "obj_call"
+      ],
+      "requires": {
+        "objects": [
+          "call"
+        ],
+        "props": {
+          "call": [
+            "caller_raw",
+            "callee_raw"
+          ]
+        }
+      },
+      "parameters": {
+        "absolute_threshold": {
+          "type": "integer",
+          "required": false,
+          "default": 30,
+          "description": "无对照对端时退化使用的绝对频次阈值（次）"
+        }
+      },
       "output_type": "report",
       "impl": "py",
       "impl_ref": "call_frequency_spike",
-      "description": "通讯维度：头部对端频次 ≥2 倍常态中位数（无对照对端时退化为绝对频次判据）"
+      "description": "通讯维度：头部对端频次 ≥2 倍常态中位数（无对照对端时退化为绝对频次判据，仅示高频不构成突增）"
     },
     {
       "name": "co_located_pairs",
       "title": "轨迹同框对",
-      "inputs": ["lnk_co_located"],
+      "inputs": [
+        "lnk_co_located"
+      ],
       "parameters": {},
       "output_type": "rows",
       "impl": "sql",
@@ -52,8 +96,21 @@
     {
       "name": "org_interest_links",
       "title": "工商登记利益关联",
-      "inputs": ["obj_org"],
-      "requires": {"objects": ["org"], "props": {"org": ["raw_name", "legal_rep", "relation"]}},
+      "inputs": [
+        "obj_org"
+      ],
+      "requires": {
+        "objects": [
+          "org"
+        ],
+        "props": {
+          "org": [
+            "raw_name",
+            "legal_rep",
+            "relation"
+          ]
+        }
+      },
       "parameters": {},
       "output_type": "rows",
       "impl": "py",
@@ -63,10 +120,24 @@
     {
       "name": "time_window_collision",
       "title": "中标-资金时间窗碰撞",
-      "inputs": ["lnk_time_window", "obj_bid_project"],
+      "inputs": [
+        "lnk_time_window",
+        "obj_bid_project"
+      ],
       "parameters": {
-        "round_unit": {"type": "integer", "default": 10000, "description": "整数金额单位（1 万元整数倍）"},
-        "exclude_org_suffix": {"type": "string", "enum": ["公司"], "default": "公司", "description": "资金主体名含该后缀视为对公单位，从个人时间窗碰撞排除"}
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（1 万元整数倍）"
+        },
+        "exclude_org_suffix": {
+          "type": "string",
+          "enum": [
+            "公司"
+          ],
+          "default": "公司",
+          "description": "资金主体名含该后缀视为对公单位，从个人时间窗碰撞排除"
+        }
       },
       "output_type": "rows",
       "impl": "sql",
@@ -76,8 +147,14 @@
     {
       "name": "overpass_two_hop",
       "title": "两跳过桥路径（SQL 轨）",
-      "inputs": ["lnk_transfers"],
-      "requires": {"links": ["transfers"]},
+      "inputs": [
+        "lnk_transfers"
+      ],
+      "requires": {
+        "links": [
+          "transfers"
+        ]
+      },
       "parameters": {},
       "output_type": "rows",
       "impl": "py",
@@ -87,8 +164,30 @@
     {
       "name": "jian_cross_level",
       "title": "五间交叉等级",
-      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint", "obj_org", "obj_bid_project", "lnk_time_window", "obj_tipoff", "obj_osint_article"],
-      "requires": {"objects": ["transaction", "call", "trackpoint", "org", "bid_project", "tipoff", "osint_article"], "links": ["time_window"]},
+      "inputs": [
+        "obj_transaction",
+        "obj_call",
+        "obj_trackpoint",
+        "obj_org",
+        "obj_bid_project",
+        "lnk_time_window",
+        "obj_tipoff",
+        "obj_osint_article"
+      ],
+      "requires": {
+        "objects": [
+          "transaction",
+          "call",
+          "trackpoint",
+          "org",
+          "bid_project",
+          "tipoff",
+          "osint_article"
+        ],
+        "links": [
+          "time_window"
+        ]
+      },
       "parameters": {},
       "output_type": "report",
       "impl": "py",
@@ -101,7 +200,11 @@
       "inputs": [],
       "requires": {},
       "parameters": {
-        "radius_m": {"type": "integer", "default": 200, "description": "坐标可用时的同框距离阈值（米）；无坐标时按路名主干判同"}
+        "radius_m": {
+          "type": "integer",
+          "default": 200,
+          "description": "坐标可用时的同框距离阈值（米）；无坐标时按路名主干判同"
+        }
       },
       "output_type": "report",
       "impl": "py",
@@ -111,8 +214,29 @@
     {
       "name": "tipoff_cross_reference",
       "title": "举报线索与已知证据交叉",
-      "inputs": ["obj_tipoff", "lnk_tipoff_targets_person", "lnk_owns", "lnk_involved_in", "obj_org", "obj_person"],
-      "requires": {"objects": ["tipoff", "org"], "links": ["owns", "involved_in"], "props": {"org": ["raw_name"]}},
+      "inputs": [
+        "obj_tipoff",
+        "lnk_tipoff_targets_person",
+        "lnk_owns",
+        "lnk_involved_in",
+        "obj_org",
+        "obj_person"
+      ],
+      "requires": {
+        "objects": [
+          "tipoff",
+          "org"
+        ],
+        "links": [
+          "owns",
+          "involved_in"
+        ],
+        "props": {
+          "org": [
+            "raw_name"
+          ]
+        }
+      },
       "parameters": {},
       "output_type": "report",
       "impl": "py",
@@ -122,9 +246,27 @@
     {
       "name": "call_pair_coverage",
       "title": "通话对端覆盖诊断",
-      "inputs": ["obj_call"],
-      "requires": {"objects": ["call"], "props": {"call": ["caller_raw", "callee_raw"]}},
-      "parameters": {"min_peer_count": {"type": "integer", "required": false, "default": 3}},
+      "inputs": [
+        "obj_call"
+      ],
+      "requires": {
+        "objects": [
+          "call"
+        ],
+        "props": {
+          "call": [
+            "caller_raw",
+            "callee_raw"
+          ]
+        }
+      },
+      "parameters": {
+        "min_peer_count": {
+          "type": "integer",
+          "required": false,
+          "default": 3
+        }
+      },
       "output_type": "report",
       "impl": "py",
       "impl_ref": "call_pair_coverage",
@@ -133,11 +275,50 @@
     {
       "name": "relation_neighborhood",
       "title": "关系圈层（N跳邻域）",
-      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
-      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "inputs": [
+        "obj_person",
+        "obj_account",
+        "obj_org",
+        "obj_bid_project",
+        "lnk_transfers",
+        "lnk_calls_to",
+        "lnk_owns",
+        "lnk_involved_in",
+        "lnk_co_located"
+      ],
+      "requires": {
+        "objects": [
+          "person",
+          "account",
+          "org",
+          "bid_project"
+        ],
+        "links": [
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
       "parameters": {
-        "depth": {"type": "integer", "required": false, "default": 2, "description": "邻域跳数，1-3"},
-        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄：all 跨类型混合图/fund 资金/contact 通话同框/org 持有中标"}
+        "depth": {
+          "type": "integer",
+          "required": false,
+          "default": 2,
+          "description": "邻域跳数，1-3"
+        },
+        "edge_kinds": {
+          "type": "string",
+          "enum": [
+            "all",
+            "fund",
+            "contact",
+            "org"
+          ],
+          "default": "all",
+          "description": "边类别收窄：all 跨类型混合图/fund 资金/contact 通话同框/org 持有中标"
+        }
       },
       "output_type": "report",
       "impl": "py",
@@ -147,10 +328,44 @@
     {
       "name": "relation_common_neighbors",
       "title": "共同关系邻居",
-      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
-      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "inputs": [
+        "obj_person",
+        "obj_account",
+        "obj_org",
+        "obj_bid_project",
+        "lnk_transfers",
+        "lnk_calls_to",
+        "lnk_owns",
+        "lnk_involved_in",
+        "lnk_co_located"
+      ],
+      "requires": {
+        "objects": [
+          "person",
+          "account",
+          "org",
+          "bid_project"
+        ],
+        "links": [
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
       "parameters": {
-        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄"}
+        "edge_kinds": {
+          "type": "string",
+          "enum": [
+            "all",
+            "fund",
+            "contact",
+            "org"
+          ],
+          "default": "all",
+          "description": "边类别收窄"
+        }
       },
       "output_type": "report",
       "impl": "py",
@@ -160,12 +375,56 @@
     {
       "name": "relation_paths",
       "title": "关系路径枚举",
-      "inputs": ["obj_person", "obj_account", "obj_org", "obj_bid_project", "lnk_transfers", "lnk_calls_to", "lnk_owns", "lnk_involved_in", "lnk_co_located"],
-      "requires": {"objects": ["person", "account", "org", "bid_project"], "links": ["transfers", "calls_to", "owns", "involved_in", "co_located"]},
+      "inputs": [
+        "obj_person",
+        "obj_account",
+        "obj_org",
+        "obj_bid_project",
+        "lnk_transfers",
+        "lnk_calls_to",
+        "lnk_owns",
+        "lnk_involved_in",
+        "lnk_co_located"
+      ],
+      "requires": {
+        "objects": [
+          "person",
+          "account",
+          "org",
+          "bid_project"
+        ],
+        "links": [
+          "transfers",
+          "calls_to",
+          "owns",
+          "involved_in",
+          "co_located"
+        ]
+      },
       "parameters": {
-        "depth": {"type": "integer", "required": false, "default": 2, "description": "路径最大跳数，1-3"},
-        "max_paths": {"type": "integer", "required": false, "default": 20, "description": "枚举条数上限（防爆），1-100"},
-        "edge_kinds": {"type": "string", "enum": ["all", "fund", "contact", "org"], "default": "all", "description": "边类别收窄"}
+        "depth": {
+          "type": "integer",
+          "required": false,
+          "default": 2,
+          "description": "路径最大跳数，1-3"
+        },
+        "max_paths": {
+          "type": "integer",
+          "required": false,
+          "default": 20,
+          "description": "枚举条数上限（防爆），1-100"
+        },
+        "edge_kinds": {
+          "type": "string",
+          "enum": [
+            "all",
+            "fund",
+            "contact",
+            "org"
+          ],
+          "default": "all",
+          "description": "边类别收窄"
+        }
       },
       "output_type": "report",
       "impl": "py",
@@ -175,8 +434,36 @@
     {
       "name": "timeline_event_sequence",
       "title": "跨类型事件序列邻接",
-      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint"],
-      "requires": {"objects": ["transaction", "call", "trackpoint"], "props": {"transaction": ["from_raw", "to_raw", "amount", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "location", "date"]}},
+      "inputs": [
+        "obj_transaction",
+        "obj_call",
+        "obj_trackpoint"
+      ],
+      "requires": {
+        "objects": [
+          "transaction",
+          "call",
+          "trackpoint"
+        ],
+        "props": {
+          "transaction": [
+            "from_raw",
+            "to_raw",
+            "amount",
+            "date"
+          ],
+          "call": [
+            "caller_raw",
+            "callee_raw",
+            "date"
+          ],
+          "trackpoint": [
+            "person_raw",
+            "location",
+            "date"
+          ]
+        }
+      },
       "parameters": {},
       "output_type": "report",
       "impl": "py",
@@ -186,10 +473,43 @@
     {
       "name": "timeline_rhythm",
       "title": "事件周期节奏与聚集",
-      "inputs": ["obj_transaction", "obj_call", "obj_trackpoint"],
-      "requires": {"objects": ["transaction", "call", "trackpoint"], "props": {"transaction": ["from_raw", "to_raw", "amount", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "location", "date"]}},
+      "inputs": [
+        "obj_transaction",
+        "obj_call",
+        "obj_trackpoint"
+      ],
+      "requires": {
+        "objects": [
+          "transaction",
+          "call",
+          "trackpoint"
+        ],
+        "props": {
+          "transaction": [
+            "from_raw",
+            "to_raw",
+            "amount",
+            "date"
+          ],
+          "call": [
+            "caller_raw",
+            "callee_raw",
+            "date"
+          ],
+          "trackpoint": [
+            "person_raw",
+            "location",
+            "date"
+          ]
+        }
+      },
       "parameters": {
-        "burst_days": {"type": "integer", "required": false, "default": 3, "description": "相邻事件日差 ≤ 该值视为同一聚集簇，1-14"}
+        "burst_days": {
+          "type": "integer",
+          "required": false,
+          "default": 3,
+          "description": "相邻事件日差 ≤ 该值视为同一聚集簇，1-14"
+        }
       },
       "output_type": "report",
       "impl": "py",
@@ -199,11 +519,53 @@
     {
       "name": "timeline_cross_collision",
       "title": "开标前后跨类型时间窗碰撞",
-      "inputs": ["obj_bid_project", "obj_transaction", "obj_call", "obj_trackpoint"],
-      "requires": {"objects": ["bid_project", "transaction", "call", "trackpoint"], "props": {"bid_project": ["title", "pub_date"], "transaction": ["from_raw", "to_raw", "date"], "call": ["caller_raw", "callee_raw", "date"], "trackpoint": ["person_raw", "date"]}},
+      "inputs": [
+        "obj_bid_project",
+        "obj_transaction",
+        "obj_call",
+        "obj_trackpoint"
+      ],
+      "requires": {
+        "objects": [
+          "bid_project",
+          "transaction",
+          "call",
+          "trackpoint"
+        ],
+        "props": {
+          "bid_project": [
+            "title",
+            "pub_date"
+          ],
+          "transaction": [
+            "from_raw",
+            "to_raw",
+            "date"
+          ],
+          "call": [
+            "caller_raw",
+            "callee_raw",
+            "date"
+          ],
+          "trackpoint": [
+            "person_raw",
+            "date"
+          ]
+        }
+      },
       "parameters": {
-        "window_days": {"type": "integer", "required": false, "default": 7, "description": "锚点公示日前后窗口天数，1-60"},
-        "min_event_types": {"type": "integer", "required": false, "default": 2, "description": "同主体命中碰撞所需的最少事件类型数，2-3"}
+        "window_days": {
+          "type": "integer",
+          "required": false,
+          "default": 7,
+          "description": "锚点公示日前后窗口天数，1-60"
+        },
+        "min_event_types": {
+          "type": "integer",
+          "required": false,
+          "default": 2,
+          "description": "同主体命中碰撞所需的最少事件类型数，2-3"
+        }
       },
       "output_type": "report",
       "impl": "py",

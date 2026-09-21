@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from core.pack_loader import BUILTIN_PACK_ID
 
+from server.app import clues_view
 from server.app.deps import WebContext, get_ctx, get_principal, task_dto
 from server.app.envelope import (
     ERR_NOT_FOUND,
@@ -38,6 +39,7 @@ from server.app.security import Principal
 from server.app.snapshot_config import (
     atomic_write_json,
     lens_overrides_path,
+    load_lens_canvas_overrides,
     load_lens_overrides,
     record_config_audit,
     require_analyst,
@@ -54,12 +56,19 @@ router = APIRouter(tags=["lenses"])
 class LensSwitchIn(BaseModel):
     enabled: bool
     reason: str | None = None  # 变更理由（FE-T-012：落审计链 note）
+    # 画布可用开关（可选）：None=未指定，按 enabled 推导（见路由内注释）。
+    # 与 enabled 分离：自动批量跑 ≠ 正兵在画布上手动能用。
+    canvas_enabled: bool | None = None
 
 
 class LensRunIn(BaseModel):
     params: dict[str, Any] = {}  # 与 params_schema 双向核对（路由预检 + Worker 纵深）
     reason: str | None = None
     auto: bool = False  # 零填写提交：必填参数由 skill_invoke 按 auto_from 推导
+    # 发起来源（画布深挖）：{clue_id, node_id?, subject?, surface?}
+    # 画布发起时带上，产物据此回到发起线索的画布（原地并入），
+    # 避免"深挖后跳去列表找结果"的研判中断。缺失=无发起画布，行为不变。
+    origin: dict[str, Any] | None = None
 
 
 def _registry_specs() -> list[Any]:
@@ -122,6 +131,33 @@ def _dimension_labels(pack: str = "default") -> dict[str, str]:
     return out
 
 
+def _lens_readiness(case_id: str, ctx) -> dict[str, dict]:
+    """各镜头的数据就绪度（已物化对象/链接 vs 镜头声明依赖）。
+
+    纯 schema 内省，不读业务数据；失败返回空（UI 回落"未知"，不谎报就绪）。
+    """
+    try:
+        from core.lens_advisory import advisories
+        from core.store import Store
+        vf = ctx.factory.version_file(case_id, ctx.repo.current_version(case_id))
+        st = Store(db_path=str(vf))
+        try:
+            obj = {r["table_name"][4:] for r in st.query(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name LIKE 'obj_%'")}
+            lnk = {r["table_name"][4:] for r in st.query(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name LIKE 'lnk_%'")}
+        finally:
+            st.close()
+        out = {}
+        for a in advisories(_registry_specs(), sorted(obj), sorted(lnk)):
+            out[a["skill_id"]] = a
+        return out
+    except Exception:
+        return {}
+
+
 def _labels_for(names, labels: dict[str, str]) -> list[str]:
     """机器名 → 中文标题（缺失回落原名，不丢信息）。"""
     return [labels.get(str(n)) or str(n) for n in (names or [])]
@@ -134,9 +170,13 @@ def list_lenses(case_id: str,
     """镜头清单 + 案件生效状态（启停面板数据源）。"""
     _get_owned_case(case_id, p, ctx.cases)
     overrides = load_lens_overrides(ctx.factory.case_dir(case_id))
+    canvas_overrides = load_lens_canvas_overrides(
+        ctx.factory.case_dir(case_id))
     labels = _ontology_labels(getattr(ctx, "pack", "default"))
     # 维度翻译须查 dimensions.json，不能复用 objects/links 的 title 映射
     dim_labels = _dimension_labels(getattr(ctx, "pack", "default"))
+    # 数据就绪度（跑之前就知道会不会降级，不用跑完才看到 degraded_reason）
+    ready_map = _lens_readiness(case_id, ctx)
     items = []
     for spec in sorted(_registry_specs(), key=lambda s: s.skill_id):
         if spec.pack_id == BUILTIN_PACK_ID:
@@ -157,6 +197,12 @@ def list_lenses(case_id: str,
             "case_override": case_enabled,
             # 生效值：案件覆盖优先；未覆盖回落包声明
             "enabled": spec.enabled if case_enabled is None else case_enabled,
+            # 画布可用（与批量启停分离）：只影响正兵能否在画布手动带参跑。
+            # 案件未覆盖 → 回落包级 enabled（包被吊销则画布也不可用）。
+            "canvas_enabled": (
+                canvas_overrides[spec.skill_id]
+                if spec.skill_id in canvas_overrides
+                else spec.enabled),
             "requires_params": has_required,
             # ---- 启停决策所需说明（此前缺失，用户只能凭中文名盲开关）----
             # 用途说明（pack.json 声明；缺失由 UI 按维度/依赖兜底描述）
@@ -169,6 +215,9 @@ def list_lenses(case_id: str,
             "consumes_labels": _labels_for(consumes, labels),
             # 参数声明（定向调度弹窗表单数据源；与 Function 目录同级的公开元数据）
             "params_schema": spec.params_schema,
+            # ---- 数据就绪度（前置提示：缺哪些数据 → 跑了也会降级）----
+            # ready=False 不禁止运行，只提前告知——正兵有权在缺数据时试跑。
+            "readiness": ready_map.get(spec.skill_id) or None,
         })
     return ok({
         "lenses": items,
@@ -205,7 +254,15 @@ def switch_lens(case_id: str, skill_id: str, body: LensSwitchIn,
     entry = lenses.get(skill_id)
     already = isinstance(entry, dict) and entry.get("enabled") == bool(
         body.enabled)
-    lenses[skill_id] = {"enabled": bool(body.enabled)}
+    # 画布可用开关（可选）：不传则继承 enabled（老语义：停用 = 两处都不用）
+    prev_canvas = entry.get("canvas_enabled") if isinstance(entry, dict) else None
+    canvas_val = body.canvas_enabled
+    if canvas_val is None:
+        # 未显式指定：新停用时同步停用画布（保持"停用即全面停用"的直觉）；
+        # 已启用时若此前有显式值则保留，否则跟随 enabled。
+        canvas_val = bool(body.enabled) if prev_canvas is None else prev_canvas
+    lenses[skill_id] = {"enabled": bool(body.enabled),
+                        "canvas_enabled": bool(canvas_val)}
     data["schema_version"] = 1
     data["lenses"] = lenses
     if not already:
@@ -219,14 +276,23 @@ def switch_lens(case_id: str, skill_id: str, body: LensSwitchIn,
                         summary={"skill_id": skill_id,
                                  "enabled": bool(body.enabled)})
 
-    # 启停影响批量检测结果 → 入队 RESCAN（幂等键随版本）
-    task = enqueue_task(
-        ctx.repo, case_id=case_id, task_type=TASK_RESCAN,
-        params={"skill_id": skill_id, "changed": ["lens_switch"]},
-        idem_key=f"rescan:lens:{skill_id}:{ctx.repo.current_version(case_id)}",
-        created_by=p.operator)
+    # 只有**批量开关**（enabled）变化才影响自动产出 → 需重扫。
+    # 只改画布可用（canvas_enabled）不影响已产出结果，改了立即生效——
+    # 不必让正兵白等一次 RESCAN。
+    prev_enabled = entry.get("enabled") if isinstance(entry, dict) else None
+    batch_changed = prev_enabled != bool(body.enabled)
+    task = None
+    if batch_changed:
+        task = enqueue_task(
+            ctx.repo, case_id=case_id, task_type=TASK_RESCAN,
+            params={"skill_id": skill_id, "changed": ["lens_switch"]},
+            idem_key=f"rescan:lens:{skill_id}:"
+                     f"{ctx.repo.current_version(case_id)}",
+            created_by=p.operator)
     return ok({"skill_id": skill_id, "enabled": bool(body.enabled),
-               "rescan_task": task_dto(task)},
+               "canvas_enabled": bool(canvas_val),
+               "batch_changed": batch_changed,
+               "rescan_task": task_dto(task) if task is not None else None},
               data_version=ctx.repo.current_version(case_id))
 
 
@@ -264,6 +330,67 @@ def _precheck_run_params(spec: Any, params: dict) -> None:
         raise APIError(ERR_VALIDATION,
                        f"镜头 {spec.skill_id} 缺少必填参数："
                        f"{', '.join(missing)}", 400)
+
+
+@router.get("/cases/{case_id}/lenses/recommendations")
+def lens_recommendations(case_id: str, clue_id: str = "",
+                         p: Principal = Depends(get_principal),
+                         ctx: WebContext = Depends(get_ctx)):
+    """针对某条线索的**假设**，给出镜头贴合度排序。
+
+    依据全部是本体现有声明，不新增配置字段：
+      镜头 produces_dims    ←→ 假设 dimension
+      镜头 consumes_objects ←→ 假设 object_types
+
+    clue_id 为空、或线索无假设链（自动发现）→ 返回空推荐：
+    **不硬凑**一个"看起来合理"的排序，那是误导。
+
+    只建议不拦截：正兵完全可以用任意镜头验证任意假设，
+    排序只影响默认展示顺序。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    if not clue_id:
+        return ok({"clue_id": "", "hypotheses": [], "recommendations": []},
+                  data_version=ctx.repo.current_version(case_id))
+    pack = getattr(ctx, "pack", "default")
+    try:
+        from core.lens_advisory import rank_for_hypothesis
+        from core.ontology_loader import load_hypothesis_patterns
+        base_dir = ctx.cases.snapshot_ontology_root(case_id)
+        # ① 线索的假设链
+        raws, _v = clues_view._load_raw(
+            ctx.factory.case_dir(case_id), ctx.repo.current_version(case_id))
+        target = next((r for r in raws if str(r.get("clue_id")) == clue_id),
+                      None)
+        chain = list((target or {}).get("assumption_chain") or [])
+        # ② 本体假设定义
+        decls = {str((p.get("hypothesis") or {}).get("id")):
+                 (p.get("hypothesis") or {})
+                 for p in load_hypothesis_patterns(pack, base_dir)
+                 if isinstance(p.get("hypothesis"), dict)}
+        hyps = [decls[h] for h in chain if h in decls]
+        # ③ 贴合度排序
+        specs = [s for s in _registry_specs()
+                 if s.pack_id != BUILTIN_PACK_ID]
+        recs = []
+        for h in hyps:
+            ranked = rank_for_hypothesis(specs, h)
+            if ranked:
+                recs.append({
+                    "hypothesis_id": h.get("id"),
+                    "hypothesis_desc": h.get("description", ""),
+                    "dimension": h.get("dimension") or [],
+                    "lenses": ranked,
+                })
+        return ok({"clue_id": clue_id,
+                   "hypothesis_ids": [h.get("id") for h in hyps],
+                   "recommendations": recs},
+                  data_version=ctx.repo.current_version(case_id))
+    except Exception:
+        # 推荐失败不影响主流程：回空，UI 显示默认顺序
+        return ok({"clue_id": clue_id, "hypotheses": [],
+                   "recommendations": []},
+                  data_version=ctx.repo.current_version(case_id))
 
 
 class LensParamsIn(BaseModel):
@@ -346,7 +473,10 @@ def run_lens(case_id: str, skill_id: str, body: LensRunIn,
         raise APIError(ERR_VALIDATION,
                        f"镜头 {skill_id} 为草案镜头（mode={spec.mode}），"
                        "产出须经人验，不支持直接调度", 400)
-    if load_lens_overrides(ctx.factory.case_dir(case_id)).get(skill_id) is False:
+    # 画布定向运行看的是 **canvas_enabled**，不是批量 enabled：
+    # 正兵手动带参跑，与"是否自动批量跑"是两个开关。自动跑关了仍可手动跑。
+    if load_lens_canvas_overrides(ctx.factory.case_dir(case_id)).get(
+            skill_id) is False:
         raise APIError(ERR_VALIDATION,
                        f"镜头 {skill_id} 已在本案件停用（启停面板）", 400)
     # 零填写（auto）：跳过必填预检，由 skill_invoke 按 auto_from 推导补齐
@@ -356,10 +486,20 @@ def run_lens(case_id: str, skill_id: str, body: LensRunIn,
         _precheck_unknown_only(spec, body.params)
 
     version = ctx.repo.current_version(case_id)
+    # origin 只保留已知键（不落任意结构），并强制 clue_id 为字符串
+    origin: dict[str, Any] | None = None
+    if isinstance(body.origin, dict):
+        cid = str(body.origin.get("clue_id") or "").strip()
+        if cid:
+            origin = {"clue_id": cid}
+            for k in ("node_id", "subject", "surface"):
+                v = body.origin.get(k)
+                if v not in (None, ""):
+                    origin[k] = str(v)
     task = enqueue_task(
         ctx.repo, case_id=case_id, task_type=TASK_LENS_RUN,
         params={"skill_id": skill_id, "params": body.params, "auto": body.auto,
-                "reason": body.reason},
+                "reason": body.reason, "origin": origin},
         idem_key=(f"lensrun:{skill_id}:{version}:"
                   f"{json.dumps(body.params, ensure_ascii=False, sort_keys=True, default=str)}"),
         created_by=p.operator)

@@ -54,20 +54,40 @@ def _with_lens_runs(case_dir: Path, version: int,
     return [*raws, *extra] if extra else raws
 
 
+def _with_promoted(case_dir: Path, raws: list[dict]) -> list[dict]:
+    """并入**由观察提升**的线索（artifacts/promoted_clues/，案件级）。
+
+    与 lens_runs 的关键差异：提升线索**不挂版本、跨版本持久**。
+    提升是正兵的人工认领——他断言"这批观察构成疑点"，这是证据链的一环，
+    不能因为重扫（RESCAN）就凭空消失，否则处置记录会变孤儿。
+
+    观察本体仍随版本（可复现），线索只持有引用与摘要，两处不冲突。
+    """
+    try:
+        from server.app.observation_promote import load_promoted_clues
+        extra = load_promoted_clues(case_dir)
+    except Exception:
+        return raws
+    return [*raws, *extra] if extra else raws
+
+
 def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | None]:
     """返回 (线索 dict 列表, 产物版本号)；无产物 → ([], None)。"""
     if version is not None:
         p = artifact_path(case_dir, version)
         if p.exists():
             data = json.loads(p.read_text(encoding="utf-8"))
-            return (_with_lens_runs(case_dir, version,
-                                    data.get("clues", [])), version)
+            return (_with_promoted(case_dir,
+                                   _with_lens_runs(case_dir, version,
+                                                   data.get("clues", []))),
+                    version)
     latest = latest_artifact_version(case_dir)
     if latest is None:
         return [], None
     data = json.loads(artifact_path(case_dir, latest).read_text(encoding="utf-8"))
-    return (_with_lens_runs(case_dir, latest,
-                            data.get("clues", [])), latest)
+    return (_with_promoted(case_dir,
+                           _with_lens_runs(case_dir, latest,
+                                           data.get("clues", []))), latest)
 
 
 def _status_of(raw: dict, state_map: dict[str, dict]) -> dict:
@@ -102,6 +122,13 @@ def _base_item(raw: dict, state_map: dict[str, dict]) -> dict[str, Any]:
         "score_source": det.get("score_source"),
         "source_row_count": len(raw.get("source_rows") or []),
         "merged_from": det.get("merged_from") or [],
+        # 无命题可证伪 = 进处置流程只能空转。本体未为该间类声明假设时
+        # （如实測死间）假设链为空，此处显式标出，让正兵知道要先指定
+        # 验证目标，而不是看到一个"查证中"却不知查证什么。
+        "needs_hypothesis": not (raw.get("assumption_chain") or []),
+        "hypothesis_gap_reason": det.get("假设缺失原因") or "",
+        # 五间本间独立源数（交叉等级判定的真正粒度；非用间线索为 None）
+        "jian_sources": det.get("本间独立源数"),
         # 定向镜头运行留痕（非定向线索为 None/空，前端按 lens_run_id 出徽标）
         "lens_run_id": raw.get("lens_run_id") or None,
         "lens_run_at": raw.get("lens_run_at") or None,

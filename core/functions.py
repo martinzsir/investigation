@@ -143,7 +143,7 @@ def register_function(name: str):
     return deco
 
 
-# ---- 通讯维度：通话频次突增 ----
+# ---- 通讯维度：单一对端通话高频 ----
 @register_function("call_frequency_spike")
 def _call_frequency_spike(store, params: dict, ctx=None) -> dict:
     import statistics
@@ -177,7 +177,8 @@ def _call_frequency_spike(store, params: dict, ctx=None) -> dict:
         median = 0
         hit = top["c"] >= threshold
         basis = (f"{top['caller_raw']}→{top['callee_raw']} 单一对端通话 "
-                 f"{top['c']} 次（无其他对端可比，按绝对频次判据 ≥{threshold} 次）")
+                 f"{top['c']} 次（无其他对端可比，按绝对频次判据 ≥{threshold} 次；"
+                 f"无可比对端，不构成突增判定）")
         diag = {"is_degraded": True,
                 "degrade_reason": "只有一个通话对端（其他对端未入库），中位数判据不可用 → 降级到绝对频次阈值；建议补全量通话对端清单后重跑",
                 "total_pairs": total_pairs, "unique_parties": len(all_parties),
@@ -378,14 +379,37 @@ def _jian_cross_level(store, params: dict) -> dict:
     level_n = 3 if n >= 3 else (2 if n == 2 else 1)
     level = _cross_level_name(level_n, pack)
     jian_order = _jian_order(pack)
-    rows = [
-        {"间": j, "数据源": src_by_jian.get(j, []),
-         "依据": hits.get(j, []),
-         "命中明细": hits_detail.get(j, []),
-         "命中": j in hits,
-         "缺口": _UNMODELED.get(j, [])}
-        for j in jian_order
-    ]
+    rows = []
+    for j in jian_order:
+        # 每间独立源数：等级判定的真正粒度。
+        #
+        # 全局独立源数（n）是**全案汇总**，只要数据接得全就恒为 3 级
+        # （实测 9 个源 → 可立案依据候选），对单间毫无区分力——用它给
+        # 每间贴等级，等于所有间都是最高级，规则"单源=观察"永不生效。
+        #
+        # 五间方法论的粒度是**每一间**：该间有几个独立数据源在支撑。
+        # 内间只有举报材料 → 单源 → 观察（不是命题）；
+        # 生间有通话+轨迹+流水 → 三源 → 可立案依据候选。
+        j_srcs: list[str] = []
+        for d in hits_detail.get(j, []):
+            if isinstance(d, dict) and d.get("obj_name"):
+                j_srcs.append(str(d["obj_name"]))
+        j_n = count_independent(sorted(set(j_srcs)), related_pairs)
+        j_level = _cross_level_name(3 if j_n >= 3 else (2 if j_n == 2 else 1),
+                                    pack)
+        rows.append({
+            "间": j, "数据源": src_by_jian.get(j, []),
+            "依据": hits.get(j, []),
+            "命中明细": hits_detail.get(j, []),
+            "命中": j in hits,
+            "缺口": _UNMODELED.get(j, []),
+            # 本间判定（产出分流的依据：观察 vs 线索）
+            "本间独立源数": j_n,
+            "本间独立数据源": sorted(set(j_srcs)),
+            "本间交叉等级": j_level,
+            # 是否够格成为命题：单源=观察，双源及以上=线索
+            "够格为线索": j_n >= 2,
+        })
     return {"rows": rows, "命中间类": sorted(hits),
             "独立源数": n, "独立数据源": sorted(set(hit_sources)),
             "交叉等级": level,
@@ -1188,14 +1212,33 @@ class FunctionExecutor:
         return load_pack(self.pack, base_dir=self.base_dir).functions
 
     def catalog(self) -> list[dict]:
-        """可发现的函数目录（MCP function_list 消费）。"""
-        return [
-            {"name": f.name, "title": f.title, "inputs": list(f.inputs),
-             "output_type": f.output_type, "impl": f.impl,
-             "parameters": f.parameters, "description": f.description,
-             "readonly": True}
-            for f in self._specs().values()
-        ]
+        """可发现的函数目录（MCP function_list 消费）+ 归属状态。
+
+        归属回答"这个 Function 被谁用了"：经规则（有判定层、能产命题）/
+        经镜头（研判手段、产观察）/ 被内置技能直调（有业务目标无判定层）/
+        未接线。未接线的不会因此禁用——直接调用技术上没问题，只是没有
+        判定语义，让人知道即可。
+        """
+        try:
+            from core.function_bindings import scan_function_bindings
+            binds = scan_function_bindings(self.pack, base_dir=self.base_dir)
+        except Exception:
+            binds = {}
+        out = []
+        for f in self._specs().values():
+            b = binds.get(f.name) or {}
+            out.append({
+                "name": f.name, "title": f.title, "inputs": list(f.inputs),
+                "output_type": f.output_type, "impl": f.impl,
+                "parameters": f.parameters, "description": f.description,
+                "readonly": True,
+                # 归属（注册期可见，不用事后排查）
+                "status": b.get("status", ""),
+                "status_label": b.get("status_label", ""),
+                "bound_by": b.get("bound_by", []),
+                "note": b.get("note", ""),
+            })
+        return out
 
     def _make_ctx(self):
         """构造 RuntimeContext（py 函数运行时上下文 + 只读护栏）。"""

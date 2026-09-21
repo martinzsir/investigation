@@ -19,16 +19,33 @@ from pathlib import Path
 from typing import Any
 
 from core import lineage
-from core.pack_loader import case_batch_lens_ids
+from core.observation import observation_from_clue
+from core.pack_loader import case_batch_lens_tasks
 from core.registry import get_registry, skill_invoke
 from core.rules import run_rules
 from core.store import Store as CoreStore
 
-from server.app.clues_artifact import save_case_clues
+from server.app.clues_artifact import save_case_clues, save_case_observations
 from server.app.snapshot_config import load_lens_overrides
 
 # 导入即注册五技能到 DEFAULT_REGISTRY（register_all 幂等）
 from skills import registry_bootstrap  # noqa: F401
+
+
+def _lens_name_labels(pack: str, base_dir) -> dict[str, str]:
+    """镜头 skill_id → 中文名（pack.json 声明，换包自动跟随）。
+
+    取不到就回落 skill_id：宁可显示英文标识，也不硬编码中文（换本体即失效）。
+    """
+    try:
+        from core.pack_loader import discover
+        from core.registry import get_registry
+        discover()
+        return {s.skill_id: s.name
+                for s in get_registry().all_specs()
+                if getattr(s, "name", "")}
+    except Exception:
+        return {}
 
 
 def run_detection(*, version_file: Path, case_dir: Path, version: int,
@@ -56,27 +73,108 @@ def run_detection(*, version_file: Path, case_dir: Path, version: int,
             registry_bootstrap._clue_from_xu_shi(
                 xs_spec, {"虚实扫描": {"findings": findings}}))
 
-        # 2) 奇正/用间：Function 编排（functions 声明随包快照一致；
-        #    miao=None：前置校验对非庙算/知己阶段跳过，Web 无庙算沙盘输入）
-        for sid in ("qi_zheng", "yong_jian"):
-            all_clues.extend(skill_invoke(reg, sid, store=det, ctx={}))
+        # 观察档案收集器（镜头 + 用间单源行共用；线索与观察分开落盘）
+        observations: list = []
 
-        # 2b) P4/P5 镜头包批量接线 + 案件级启停：无必填参数的确定性镜头
-        #     直接调度；定向镜头（target_subject/project 必填）跳过留痕——
-        #     skill_invoke 对必填缺失硬失败，无参调用会拖垮 BUILD；
-        #     案件启停（lenses.json，启停面板写）再过滤一轮，被停镜头
-        #     落 case_disabled 留痕；定向调度入口属画布定向后续批次
-        runnable, requires_params, case_disabled = case_batch_lens_ids(
-            reg, load_lens_overrides(case_dir))
-        for sid in runnable:
-            all_clues.extend(skill_invoke(reg, sid, store=det, ctx={}))
+        # 1b) 庙算沙盘实例化（此前 Web 侧 miao=None，庙算形同不存在：
+        #     假设页只能从线索产物反推，_infer_assumptions 兜底恒返回空）。
+        #     知己从案件数据派生（零行语义表=证据缺口；授权边界不编造），
+        #     人工假设从 cases/<cid>/hypotheses.json 合并（跨版本持久）。
+        try:
+            from server.app import miao_ji, hypotheses_store
+            from server.app.clues_artifact import save_case_hypotheses
+            manual = hypotheses_store.load_manual(case_dir)
+            miao, _miao_meta = miao_ji.build_miaosuan(
+                case_dir=case_dir, conn=det.conn, pack=pack,
+                base_dir=snapshot_base, findings=findings, manual=manual)
+        except Exception:
+            miao, _miao_meta = None, {}
+
+        # 2) 奇正/用间：Function 编排（functions 声明随包快照一致）
+        #
+        #    用间产出按**交叉等级**分流：五间方法论自己声明了
+        #    「单源=观察 → 双源=线索 → 三源=可立案依据候选」，但此前
+        #    adapter 只看"命中"，单源也产线索，规则从未兑现。
+        #    判据用**本间独立源数**：全局独立源数是全案汇总，数据接全了
+        #    恒为 3 级，对单间没有区分力。
+        for sid in ("qi_zheng", "yong_jian"):
+            produced = skill_invoke(reg, sid, store=det, ctx={}, miao=miao)
+            if sid == "yong_jian":
+                kept, obs = registry_bootstrap.split_yong_jian(produced)
+                all_clues.extend(kept)
+                observations.extend(obs)
+            else:
+                all_clues.extend(produced)
+
+        # 2b) P4/P5 镜头包批量接线 + 案件级启停 → **观察档案**，不是线索。
+        #
+        #     关键转向：镜头产出**不进线索清单**。理由不是"不确定"（规则
+        #     同样 deterministic、同样可复现），而是**没有常态基线**——
+        #     规则回答"跟常态比算不算异常"（判定），镜头只回答"这个结构
+        #     存不存在"（观测）。观测不是命题，无假设可证伪，进处置清单
+        #     只能空转（实测此前 10 条镜头线索全"查证中"而假设链全空）。
+        #
+        #     调度判据仍是「能不能自动确定靶心」（auto_from 推导），
+        #     推得出就跑、推不出才跳过留痕 —— 与 CLI 同口径，避免 Web 建案
+        #     与命令行两套线索集。ctx["clues"] 前置入：靶心三级源含
+        #     「前序线索反推」，与 run_all 同路径。
+        ctx_lens: dict[str, Any] = {"clues": list(all_clues)}
+        lens_tasks, lens_unresolved, case_disabled = case_batch_lens_tasks(
+            reg, load_lens_overrides(case_dir),
+            store=det, ctx=ctx_lens, pack=pack, base_dir=snapshot_base)
+        for sid, prm in lens_tasks:
+            _src = prm.pop("_param_source", "")
+            clues = skill_invoke(reg, sid, store=det, ctx=ctx_lens,
+                                 params=prm)
+            for c in clues:
+                c.detail.setdefault("param_source", _src)
+                observations.append(observation_from_clue(c))
+        requires_params = lens_unresolved
+
+        # 观察档案独立落盘（不混进 clues 产物 → 不进处置清单/看板计数）。
+        # 本体随版本可复现；正兵的认领/提升落 state.sqlite 跨版本持久。
+        # 镜头中文名在此翻译（本体声明，换本体自动跟随）。
+        obs_labels = _lens_name_labels(pack, snapshot_base)
+        for o in observations:
+            o.lens_name = obs_labels.get(o.skill_id, o.skill_id)
+        obs_artifact = save_case_observations(case_dir, version, observations)
 
         # 3) 血缘去重 + 优先级排序（与 run_all 第 7-8 步同路径）
         merged = lineage.dedupe_and_merge(all_clues, threshold=0.5)
+        # 实证轨全量 findings：虚实 + 本轮全部产线已落 dimension 的 finding。
+        # 建沙盘时只有虚实阶段，不补全会把奇正（R6/R7 时间维度）已命中的
+        # 证据误算成"实证缺口"。
+        _all_det_findings: list = list(findings)
+        try:
+            for c in all_clues:
+                _d = (c.detail or {}).get("dimension")
+                if _d:
+                    _all_det_findings.append({"dimension": _d})
+        except Exception:
+            pass
         merged = lineage.prioritize_clues(merged)
         artifact = save_case_clues(case_dir, version, merged)
+
+        # 4) 假设产物（随版本可复现）：供假设页读真实假设清单，
+        #    不再只从线索反推。知己派生标记一并落盘，UI 需明示。
+        hyp_payload: dict[str, Any] = {"source": "derived+manual",
+                                       "miao_meta": _miao_meta}
+        if miao is not None:
+            try:
+                hyp_payload["hypotheses"] = [h.to_dict()
+                                             for h in miao.hypotheses]
+                hyp_payload["coverage"] = miao.report(
+                    None, findings=_all_det_findings).get("dimension_coverage")
+            except Exception:
+                pass
+        hyp_artifact = save_case_hypotheses(case_dir, version, hyp_payload)
     finally:
         det.close()
     return {"clues": len(merged), "raw_findings": len(findings),
             "artifact": str(artifact), "lens_batch_skipped": requires_params,
-            "lens_case_disabled": case_disabled}
+            "lens_case_disabled": case_disabled,
+            "observations": len(observations),
+            "observation_artifact": str(obs_artifact),
+            "hypotheses": len(hyp_payload.get("hypotheses") or []),
+            "hypotheses_artifact": str(hyp_artifact),
+            "ji_configured": bool(_miao_meta.get("ji_configured"))}

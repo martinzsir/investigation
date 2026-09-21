@@ -95,6 +95,24 @@ CREATE TABLE IF NOT EXISTS clue_disposal_status (
     operator   TEXT DEFAULT '',
     updated_at TEXT DEFAULT ''
 );
+-- ---- 观察档案的正兵操作（跨版本持久；档案本体随版本，操作不随）----
+-- 观察 ≠ 线索：镜头产出摆出结构、不下"异常"判断。正兵对观察的操作
+-- （认领/归档/提升为线索）必须跨版本保留——RESCAN 后档案重算，但
+-- "这条我看过了 / 这条我提为线索了"不能丢。
+-- observation_id 由「镜头+靶心+参数」派生、不含版本号，故跨版本稳定。
+CREATE TABLE IF NOT EXISTS observation_disposition (
+    observation_id TEXT PRIMARY KEY,
+    case_id        TEXT NOT NULL,
+    -- 处置态：未认领(默认) / 已认领 / 已归档 / 已提升
+    disposition    TEXT NOT NULL DEFAULT '未认领',
+    note           TEXT NOT NULL DEFAULT '',
+    operator       TEXT NOT NULL DEFAULT '',
+    updated_at     TEXT NOT NULL DEFAULT '',
+    -- 提升为线索后回写（disposition='已提升' 时有值），可跳回线索
+    promoted_clue_id TEXT NOT NULL DEFAULT '',
+    promoted_hypothesis TEXT NOT NULL DEFAULT ''   -- 提升时指定的假设（必有）
+);
+CREATE INDEX IF NOT EXISTS idx_od_case ON observation_disposition(case_id);
 CREATE TABLE IF NOT EXISTS review_decision (
     decision_id TEXT PRIMARY KEY,
     kind        TEXT NOT NULL DEFAULT '',
@@ -1333,3 +1351,63 @@ class StateStore:
             "counts_match": len(rows) == self.event_count(),
             "root_match": duckdb_root == self.root_hash(),
         }
+
+
+# ----------------------------------------------------------------------
+# 观察档案的正兵操作（跨版本持久）
+# ----------------------------------------------------------------------
+# 档案本体随版本（RESCAN 重算、可复现），但正兵的处置动作**不能随版本
+# 蒸发**——否则"这条我看过了/提为线索了"每次重扫都要重来一遍。
+# observation_id 不含版本号 → 跨版本稳定（core/observation._stable_id）。
+
+def _extend_state_store_observation():
+    from server.app.store.state_store import StateStore
+    if hasattr(StateStore, "get_observation_disposition"):
+        return
+
+    def _get_observation_disposition(self, observation_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM observation_disposition WHERE observation_id=?",
+            [observation_id]).fetchone()
+        return dict(row) if row else None
+
+    def _list_observation_dispositions(self, case_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM observation_disposition WHERE case_id=? "
+            "ORDER BY updated_at DESC, observation_id", [case_id]).fetchall()
+        return [dict(r) for r in rows]
+
+    def _set_observation_disposition(
+            self, observation_id: str, case_id: str, disposition: str,
+            note: str = "", operator: str = "",
+            promoted_clue_id: str = "",
+            promoted_hypothesis: str = "") -> dict:
+        """写入/更新观察处置态（UPSERT）。
+
+        提升为线索（disposition='已提升'）必须带 promoted_hypothesis——
+        没有假设的线索无法处置，等于没解决问题。校验在 Worker 层，
+        此处只做落库。
+        """
+        from datetime import datetime
+        now = datetime.now().isoformat(timespec="seconds")
+        self._conn.execute(
+            "INSERT INTO observation_disposition "
+            "(observation_id, case_id, disposition, note, operator, "
+            " updated_at, promoted_clue_id, promoted_hypothesis) "
+            "VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(observation_id) DO UPDATE SET "
+            " disposition=excluded.disposition, note=excluded.note, "
+            " operator=excluded.operator, updated_at=excluded.updated_at, "
+            " promoted_clue_id=excluded.promoted_clue_id, "
+            " promoted_hypothesis=excluded.promoted_hypothesis",
+            [observation_id, case_id, disposition, note, operator, now,
+             promoted_clue_id, promoted_hypothesis])
+        self._conn.commit()
+        return self.get_observation_disposition(observation_id) or {}
+
+    StateStore.get_observation_disposition = _get_observation_disposition
+    StateStore.list_observation_dispositions = _list_observation_dispositions
+    StateStore.set_observation_disposition = _set_observation_disposition
+
+
+_extend_state_store_observation()

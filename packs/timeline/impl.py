@@ -16,6 +16,7 @@ from datetime import date as _date, timedelta as _td
 
 from core.functions import FunctionExecutor
 from core.graph import NODE_PK_COLUMN
+from core.lens_basis import basis_for
 from core.registry import LineageClue
 
 _EVENT_REF_LIMIT = 15
@@ -102,6 +103,9 @@ def sequence_lens(miao=None, store=None, ctx=None, params=None,
     refs.append({"kind": "aggregate", "metric": "span_days",
                  "value": r["span_days"]})
 
+    # 判据：把 148 起事件压成一句「说明什么」，避免用户陷在庞杂数据里。
+    # 只陈述观测 + 与常态比，不作定性（定性权属正兵）。
+    _b = basis_for("timeline_sequence", r)
     clue = LineageClue(
         skill_id="timeline_sequence",
         title=f"{subject['name']} 的跨类型事件序列：{r['event_count']} 起事件、"
@@ -109,6 +113,9 @@ def sequence_lens(miao=None, store=None, ctx=None, params=None,
         evidence_refs=refs,
         detail={
             "function": "timeline_event_sequence",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
             "source_type": _SOURCE_TYPE,
             "hypothesis": f"{subject['name']} 在统一时间轴上留下资金/通话/轨迹事件，"
                           f"相邻节奏待正兵核查（只出序列，不作定性）",
@@ -155,6 +162,7 @@ def rhythm_lens(miao=None, store=None, ctx=None, params=None,
     refs.append({"kind": "aggregate", "metric": "median_gap_days",
                  "value": r["median_gap_days"]})
 
+    _b = basis_for("timeline_rhythm", r)
     clue = LineageClue(
         skill_id="timeline_rhythm",
         title=f"{subject['name']} 的事件节奏：{r['burst_count']} 个聚集簇、"
@@ -162,6 +170,9 @@ def rhythm_lens(miao=None, store=None, ctx=None, params=None,
         evidence_refs=refs,
         detail={
             "function": "timeline_rhythm",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
             "source_type": _SOURCE_TYPE,
             "hypothesis": f"{subject['name']} 的事件在 {r.get('burst_days', 3)} 天窗内"
                           f"成簇出现，节奏聚集待正兵核查（只出节奏，不作定性）",
@@ -215,6 +226,13 @@ def cross_collision_lens(miao=None, store=None, ctx=None, params=None,
         _TYPE_LABEL = {"transaction": "资金", "call": "通话",
                        "trackpoint": "轨迹"}
         type_labels = [_TYPE_LABEL.get(t, t) for t in event_types]
+        # 判据只描述**本条线索这一个主体**的窗口汇聚（一条线索=一个主体），
+        # 不是函数返回的整个 rows 列表——否则会把别人的发现算到他头上。
+        _b = basis_for("timeline_cross_collision",
+                       {"project": project, "anchor_date": anchor_iso,
+                        "window_days": window_days, "rows": [row],
+                        "degraded": bool(r.get("degraded")),
+                        "degraded_reason": r.get("degraded_reason")})
         clues.append(LineageClue(
             skill_id="timeline_cross_collision",
             title=f"{row['subject_raw']} 在{project['name']}公示日前后 "
@@ -222,6 +240,9 @@ def cross_collision_lens(miao=None, store=None, ctx=None, params=None,
             evidence_refs=refs,
             detail={
                 "function": "timeline_cross_collision",
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
                 "source_type": _SOURCE_TYPE,
                 "hypothesis": f"{row['subject_raw']} 在项目公示日前后 "
                               f"{window_days} 天内出现 "

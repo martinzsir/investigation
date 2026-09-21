@@ -81,14 +81,45 @@ async function applySwitch(l: LensSpecItem, enabled: boolean): Promise<void> {
   lensBusyId.value = l.skill_id
   try {
     const r = await lensesApi.switch(props.caseId, l.skill_id, { enabled })
+    // 只改画布可用不重扫（立即生效）——提示语不得承诺"已入队重扫"
     message.success(
-      `${l.name} 已${enabled ? '启用' : '停用'}，已入队重扫（任务 ${r.rescan_task?.id}）`,
+      r.rescan_task
+        ? `${l.name} 已${enabled ? '启用' : '停用'}，已入队重扫（任务 ${r.rescan_task.id}）`
+        : `${l.name} 已${enabled ? '启用' : '停用'}（仅画布开关变化，无需重扫）`,
     )
   } catch (e) {
     message.error(presentError(e).title, { duration: 5000 })
   } finally {
     lensBusyId.value = ''
     await refreshLenses() // 回读生效真值（覆盖失败/幂等分支）
+  }
+}
+
+/**
+ * 画布可用开关（独立于批量启停）。
+ *
+ * 两个开关是不同决策：
+ *   enabled        —— 建案/重扫时**自动跑**，产出观察档案
+ *   canvas_enabled —— 正兵在研判画布上**能否手动带参跑**
+ * 有的镜头值得自动过一遍全案，但具体研判时用不上；也有的正兵想随时
+ * 手动试，但不必每次重扫都跑。合成一个开关就无法分别表达。
+ */
+async function toggleCanvas(l: LensSpecItem, next: boolean): Promise<void> {
+  if (lensBusyId.value || !l.pack_enabled) return
+  lensBusyId.value = l.skill_id
+  try {
+    await lensesApi.switch(props.caseId, l.skill_id, {
+      enabled: l.enabled,
+      canvas_enabled: next,
+    })
+    message.success(
+      `${l.name} 画布${next ? '可用' : '不可用'}（自动批量${l.enabled ? '仍在跑' : '仍不跑'}）`,
+    )
+  } catch (e) {
+    message.error(presentError(e).title, { duration: 5000 })
+  } finally {
+    lensBusyId.value = ''
+    await refreshLenses()
   }
 }
 
@@ -166,14 +197,28 @@ const enabledCount = computed(
               已由管理员全局停用，本案件无法开启
             </NTooltip>
             <code class="mono dim lsp-id">{{ l.skill_id }}</code>
-            <NSwitch
-              size="small"
-              :value="l.enabled"
-              :loading="lensBusyId === l.skill_id"
-              :disabled="!l.pack_enabled || lensBusyId === l.skill_id"
-              :data-testid="`lens-switch-${l.skill_id}`"
-              @update:value="(v: boolean) => onToggle(l, v)"
-            />
+            <span class="lsp-sw">
+              <span class="lsp-sw-label">自动批量</span>
+              <NSwitch
+                size="small"
+                :value="l.enabled"
+                :loading="lensBusyId === l.skill_id"
+                :disabled="!l.pack_enabled || lensBusyId === l.skill_id"
+                :data-testid="`lens-switch-${l.skill_id}`"
+                @update:value="(v: boolean) => onToggle(l, v)"
+              />
+            </span>
+            <span class="lsp-sw">
+              <span class="lsp-sw-label">画布可用</span>
+              <NSwitch
+                size="small"
+                :value="l.canvas_enabled"
+                :loading="lensBusyId === l.skill_id"
+                :disabled="!l.pack_enabled || lensBusyId === l.skill_id"
+                :data-testid="`lens-canvas-${l.skill_id}`"
+                @update:value="(v: boolean) => toggleCanvas(l, v)"
+              />
+            </span>
           </div>
 
           <!-- ① 用途说明 -->
@@ -193,6 +238,11 @@ const enabledCount = computed(
           <p v-if="disabledReason(l)" class="lsp-why">
             {{ disabledReason(l) }}
           </p>
+
+          <!-- ⑥ 数据就绪度：开了也会降级的原因（前置告知，不拦着不让开） -->
+          <p v-if="l.readiness && !l.readiness.ready" class="lsp-why lsp-why--warn">
+            数据未齐：{{ l.readiness.note }}
+          </p>
         </li>
       </ul>
     </template>
@@ -200,10 +250,12 @@ const enabledCount = computed(
     <!-- ⑥ 按上下文给不同说明 -->
     <p class="dim lsp-hint">
       <template v-if="context === 'canvas'">
-        启停影响本案件整体研判：停用后该镜头的线索不再生成，新线索需重扫后才会出现在画布上。
+        镜头产出的是<strong>观察</strong>（摆出数据结构，不下"异常"判断），不是线索。
+        「自动批量」控制建案/重扫时是否自动跑一遍；「画布可用」控制能否在此处手动带参跑。
+        只改画布可用无需重扫，立即生效。
       </template>
       <template v-else>
-        启停为本案件级配置，不影响其他案件：停用后该镜头不再进入本案件批量检测，保存即入队重扫（RESCAN）后生效；定向镜头可从画布工具栏带参运行。
+        启停为本案件级配置，不影响其他案件：<strong>自动批量</strong>停用后该镜头不再进入本案件批量检测（不再自动产出观察），保存即入队重扫（RESCAN）后生效；<strong>画布可用</strong>停用后正兵无法在研判画布手动带参运行，改了立即生效、不需重扫。
       </template>
     </p>
 
@@ -280,6 +332,18 @@ const enabledCount = computed(
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 双开关：自动批量 / 画布可用 —— 两个不同决策，不合成一个 */
+.lsp-sw {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+.lsp-sw-label {
+  font-size: 11px;
+  color: var(--sun-text-tertiary);
+  white-space: nowrap;
+}
 .lsp-tag {
   font-size: 10px;
 }
@@ -298,6 +362,10 @@ const enabledCount = computed(
   margin: 0;
   font-size: 11px;
   color: var(--sun-warn-text, inherit);
+}
+/* 数据未齐：与「禁用原因」区分——这是可开但会降级，不是不能开 */
+.lsp-why--warn {
+  color: var(--sun-text-tertiary);
 }
 .lsp-impact {
   margin: 6px 0 0;

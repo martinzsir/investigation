@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from core.functions import FunctionExecutor
 from core.graph import NODE_PK_COLUMN
+from core.lens_basis import basis_for
 from core.registry import LineageClue
 
 _NODE_REF_LIMIT = 15
@@ -69,6 +70,8 @@ def neighborhood_lens(miao=None, store=None, ctx=None, params=None,
                  "value": len(edges)})
 
     depth = fn_params.get("depth", 2)
+    # 判据：邻域规模与跳数分布（不推断结构性质，那是定性）
+    _b = basis_for("relation_neighborhood", r)
     clue = LineageClue(
         skill_id="relation_neighborhood",
         title=f"{subject['name']} 的 {depth} 跳关系圈层："
@@ -76,6 +79,9 @@ def neighborhood_lens(miao=None, store=None, ctx=None, params=None,
         evidence_refs=refs,
         detail={
             "function": "relation_neighborhood",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
             "source_type": _SOURCE_TYPE,
             "hypothesis": f"{subject['name']} 在 {depth} 跳内与上述主体存在"
                           f"资金/通讯/持有/中标/同框关联，圈层关系待正兵核查",
@@ -124,6 +130,7 @@ def common_neighbors_lens(miao=None, store=None, ctx=None, params=None,
     names = "、".join(c["name"] for c in common[:5])
     if r["count"] > 5:
         names += f" 等 {r['count']} 个"
+    _b = basis_for("relation_common_neighbors", r)
     clue = LineageClue(
         skill_id="relation_common_neighbors",
         title=f"{sa['name']} 与 {sb['name']} 存在 {r['count']} 个"
@@ -131,6 +138,9 @@ def common_neighbors_lens(miao=None, store=None, ctx=None, params=None,
         evidence_refs=refs,
         detail={
             "function": "relation_common_neighbors",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
             "source_type": _SOURCE_TYPE,
             "hypothesis": f"{sa['name']} 与 {sb['name']} 共享关系圈层，"
                           f"可能存在共同关联方/过桥节点，待正兵核查",
@@ -190,6 +200,13 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
         refs.append({"kind": "aggregate", "metric": "parallel_edges",
                      "value": parallel})
         suffix = f"（{parallel} 条平行边）" if parallel > 1 else ""
+        # 判据描述**这一组**路径（同一条链 + 平行边），不是函数的全量 paths：
+        # 一条线索 = 一条链，把别人的路径算进来会串线。
+        _b = basis_for("relation_paths",
+                       {"subject_a": sa, "subject_b": sb,
+                        "paths": g["paths"],
+                        "degraded": bool(r.get("degraded")),
+                        "degraded_reason": r.get("degraded_reason")})
         clues.append(LineageClue(
             skill_id="relation_paths",
             title=f"{sa['name']} 与 {sb['name']} 的关系链 {i}"
@@ -197,6 +214,9 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
             evidence_refs=refs,
             detail={
                 "function": "relation_paths",
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
                 "source_type": _SOURCE_TYPE,
                 "hypothesis": f"{sa['name']} 经 {edge_names} 与 {sb['name']} 连通，"
                               f"关系路径待正兵逐跳核查（只出关系，不作定性）",

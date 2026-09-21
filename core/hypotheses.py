@@ -475,9 +475,16 @@ class MiaoSuan:
         raise KeyError(f"候补不存在：{candidate_id}")
 
     # ---------- 覆盖完整性报告（E） ----------
-    def report(self, data_files: list[str] | None = None) -> dict:
-        """覆盖完整性量化指标：维度覆盖 + 数据源覆盖 + 间类缺口 + 证据冲突。"""
-        r: dict = {"dimension_coverage": self.dimension_coverage()}
+    def report(self, data_files: list[str] | None = None,
+               findings: list[dict] | None = None) -> dict:
+        """覆盖完整性量化指标：维度覆盖 + 数据源覆盖 + 间类缺口 + 证据冲突。
+
+        findings：实证轨的**全量** findings。不传则用 _last_findings（建
+        沙盘时那批）。两者可能不同——沙盘建立时往往只跑了虚实阶段，而
+        奇正（R6/R7 时间维度）在后面才跑；不传全量会把已产出的证据漏算成
+        "实证缺口"，误导补救动作（本例：time 报缺，实则已有 2 条命中）。
+        """
+        r: dict = {"dimension_coverage": self.dimension_coverage(findings)}
         if data_files:
             r["data_source_coverage"] = self.coverage(data_files)
         r["jian_coverage"] = self.jian_coverage()
@@ -492,6 +499,174 @@ class MiaoSuan:
             "audit": self.audit,
             "backlog": self.backlog,
         }
+
+
+def locate_empirical_gaps(dc: dict, conn=None, pack: str = "default",
+                          base_dir=None) -> dict:
+    """实证缺口自动定位：把"缺哪一维"翻译成"该干什么"。
+
+    为什么需要
+    ----------
+    dimension_coverage() 会报实证缺口，但只给一句文案建议：
+    "建议核查数据源或检测器是否失效"。正兵看到"实证缺五维"仍不知下一步。
+
+    实证缺口的成因在数据上是可分的，判据全部现成，无需新造：
+      ① 数据未接入 —— 该维度对应的语义表零行（含表不存在）
+      ② 检测器失效 —— 表有数据，但规则零命中且 zero_type 为
+         empty_result_suspect / config_missing
+      ③ 无规则覆盖 —— 表有数据、规则也跑了，但本维度没有规则声明
+      该假设（属声明缺口，不是实证问题）
+
+    三者补救动作完全不同：补数据 / 查检测器 / 补假设。混在一起报
+    等于没报——这正是此前"报了但没人管"的原因。
+
+    返回 {dimension_code: {"cause": ..., "action": ..., "detail": ...}}。
+    conn=None（无库/未 BUILD）→ 只给 unknown，不猜。
+    """
+    from core.ontology_loader import load_dimensions
+
+    missing = list(dc.get("empirical_missing") or [])
+    if not missing:
+        return {}
+
+    # 维度 → 对象类型（dimensions.json 声明；换本体自动跟随）
+    try:
+        dims = load_dimensions(pack, base_dir)
+    except Exception:
+        dims = []
+    obj_by_dim: dict[str, list[str]] = {}
+    for d in dims:
+        code = d.get("code") if isinstance(d, dict) else str(d)
+        if isinstance(d, dict):
+            obj_by_dim[code] = list(d.get("source_object_types") or [])
+
+    # 维度 → 声明了该维度的规则 id
+    rules_by_dim: dict[str, list[str]] = {}
+    try:
+        from core.ontology_loader import load_pack
+        spec = load_pack(pack, base_dir=base_dir)
+        for r in (spec.rules or {}).values():
+            rd = getattr(r, "dimension", "") or ""
+            if rd in missing:
+                rules_by_dim.setdefault(rd, []).append(str(getattr(r, "id", "")))
+    except Exception:
+        pass
+
+    # 规则零命中诊断（zero_type 由 rules._classify_zero 分类，落 detail JSON）
+    zero_by_rule: dict[str, str] = {}
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "SELECT source, detail FROM run_diagnostic "
+                "WHERE kind='rule_zero_hit'").fetchall()
+            for src, det in rows:
+                sid = str(src or "")
+                if not sid.startswith("rule:"):
+                    continue
+                zt = ""
+                try:
+                    zt = str((json.loads(det) or {}).get("zero_type") or "")
+                except Exception:
+                    zt = ""
+                if zt:
+                    zero_by_rule[sid[len("rule:"):]] = zt
+        except Exception:
+            pass
+
+    out: dict[str, dict] = {}
+    if conn is None:
+        # 无库连接（未 BUILD/只读降级）：既不查表也不查诊断 → 一律 unknown。
+        # 不猜：凭声明就断言"数据缺失"或"检测器失效"会误导补救动作。
+        return {dim: {"cause": "unknown",
+                      "action": "需连接数据库后判定",
+                      "detail": "无库连接，无法区分数据缺口与检测器失效"}
+                for dim in missing}
+
+    for dim in missing:
+        objs = obj_by_dim.get(dim) or []
+        tables = [f"obj_{o}" for o in objs]
+        rows_by_tbl: dict[str, int] = {}
+        if conn is not None:
+            for t in tables:
+                try:
+                    n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    rows_by_tbl[t] = int(n or 0)
+                except Exception:
+                    rows_by_tbl[t] = -1  # 表不存在
+
+        # ① 数据未接入：全部相关表零行或不存在
+        if rows_by_tbl and all(v <= 0 for v in rows_by_tbl.values()):
+            out[dim] = {
+                "cause": "data_absent",
+                "action": "补数据接入",
+                "detail": (f"维度「{dim}」相关语义表 "
+                           f"{'、'.join(tables)} 均无数据行"),
+                "tables": tables,
+            }
+            continue
+
+        # ② 按规则零命中原因（zero_type）定位——比"表有没有数据"更准：
+        #    对象表有数据不代表链路完整，R4 依赖 lnk_co_located（0 行）而
+        #    obj_trackpoint 有 7 行，只看对象表会误判为"有数据但没命中"。
+        dim_rules = rules_by_dim.get(dim, [])
+        zt_by_rule = {r: zero_by_rule.get(r) or "" for r in dim_rules}
+        failed = [r for r, z in zt_by_rule.items()
+                  if z in ("empty_result_suspect", "config_missing")]
+        absent = [r for r, z in zt_by_rule.items() if z == "data_absent"]
+        if failed:
+            out[dim] = {
+                "cause": "detector_failed",
+                "action": "查检测器",
+                "detail": (f"维度「{dim}」有数据，但规则 "
+                           f"{'、'.join(failed)} 零命中疑似匹配失效"
+                           f"（zero_type={zt_by_rule[failed[0]]}）"),
+                "rules": failed,
+            }
+            continue
+        if absent:
+            # 走到这里 failed 必为空；该维度有规则卡在数据缺失 →
+            # 数据链路断了（对象表可能有数据，多为链接表未构建）
+            out[dim] = {
+                "cause": "data_absent",
+                "action": "补数据接入",
+                "detail": (f"维度「{dim}」对象表有数据，但规则 "
+                           f"{'、'.join(absent)} 依赖的数据缺失"
+                           f"（zero_type=data_absent，多为链接表未构建）"),
+                "rules": absent,
+            }
+            continue
+
+        # ③ 兜底：有数据、有规则声明，但既无命中也无失效诊断
+        if not dim_rules:
+            out[dim] = {
+                "cause": "no_rule_for_dimension",
+                "action": "补规则",
+                "detail": f"维度「{dim}」无规则声明，无法产生该维度证据",
+            }
+        elif any(zt_by_rule.values()):
+            # 规则跑了且落了诊断，但不是失效类（如 clean_scan=正常空）
+            out[dim] = {
+                "cause": "no_evidence_for_hypothesis",
+                "action": "补假设或核对判据",
+                "detail": (f"维度「{dim}」规则 "
+                           f"{'、'.join(dim_rules)} 已执行但无证据产出"
+                           f"（zero_type={','.join(sorted(set(filter(None, zt_by_rule.values())))) or '—'}），"
+                           f"多为假设与判据口径不匹配"),
+                "rules": dim_rules,
+            }
+        else:
+            # 无零命中诊断记录 → 规则本轮未执行（不在扫描阶段/未启用）
+            out[dim] = {
+                "cause": "rule_not_run",
+                "action": "确认规则是否纳入扫描",
+                "detail": (f"维度「{dim}」规则 "
+                           f"{'、'.join(dim_rules)} 本轮无执行记录"
+                           f"（无 rule_zero_hit 诊断），"
+                           f"可能未纳入当前扫描阶段或未启用"),
+                "rules": dim_rules,
+            }
+
+    return out
 
 
 def record_dimension_gaps(dc: dict, health) -> None:
@@ -517,3 +692,29 @@ def record_dimension_gaps(dc: dict, health) -> None:
                  source="miaosuan:dimension:empirical",
                  reason=dc.get("empirical_alarm_text") or "庙算实证维度覆盖缺口",
                  missing=dc.get("empirical_missing"))
+
+
+def record_empirical_gap_causes(dc: dict, conn=None, pack: str = "default",
+                                base_dir=None, health=None) -> dict:
+    """实证缺口 → 逐维定位 → 落诊断（可行动版）。
+
+    与 record_dimension_gaps 的区别：那条只报"缺哪几维"，本条回答
+    "每一维该干什么"——补数据 / 查检测器 / 补规则 / 补假设，并逐维
+    落一条 miaosuan:gap:empirical:<dim> 诊断，正兵可按维处置。
+    """
+    from core.run_health import get_health
+
+    located = locate_empirical_gaps(dc, conn=conn, pack=pack,
+                                    base_dir=base_dir)
+    if not located:
+        return {}
+    h = get_health(health)
+    for dim, info in located.items():
+        # kind 复用 coverage_gap（已在 run_health.KINDS 内）；按维度拆 source，
+        # 与 record_dimension_gaps 的双轨 source 同族，正兵可按维处置。
+        h.record("coverage_gap",
+                 "warning" if info["cause"] != "unknown" else "info",
+                 source=f"miaosuan:gap:empirical:{dim}",
+                 reason=f"{info['detail']} → 建议：{info['action']}",
+                 dimension=dim, cause=info["cause"], action=info["action"])
+    return located

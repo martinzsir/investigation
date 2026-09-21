@@ -123,6 +123,43 @@ def load_lens_overrides(case_dir: str | Path) -> dict[str, bool]:
     return out
 
 
+def load_lens_canvas_overrides(case_dir: str | Path) -> dict[str, bool]:
+    """画布可用开关 → {skill_id: bool}。
+
+    为什么与批量启停拆成两个开关
+    ----------------------------
+    一个开关管两件事是后续一系列问题的根源：
+      - `enabled`        —— 是否在建案/重扫时**自动跑**（产出观察档案）
+      - `canvas_enabled` —— 是否在研判画布上**可用**（正兵手动带参跑）
+
+    这是两个不同决策。有的镜头值得自动跑一遍全案，但在具体研判时
+    正兵用不上；也有的镜头正兵想随时手动试，但不必每次重扫都跑。
+
+    向后兼容：`canvas_enabled` 缺省时**继承 enabled**（老文件语义不变——
+    停用 = 两处都不用）。显式声明后以显式值为准。
+    """
+    path = lens_overrides_path(case_dir)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("lenses")
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, bool] = {}
+    for sid, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        enabled = entry.get("enabled")
+        if not isinstance(enabled, bool):
+            continue
+        canvas = entry.get("canvas_enabled")
+        out[str(sid)] = canvas if isinstance(canvas, bool) else enabled
+    return out
+
+
 def copy_layer_dirs(snap_dir: Path, base_dir: Path, tmp_root: Path) -> None:
     """复制数据元上游层到临时校验副本（S0-1 三层合并）：
     _shared 全域层 + _industry/<行业> 行业叠加层。

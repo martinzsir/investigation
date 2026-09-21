@@ -18,11 +18,13 @@ import {
   NModal,
   NSelect,
   NSwitch,
+  NTag,
 } from 'naive-ui'
 import {
   candidateSourceLabel,
   validateLensParams,
   type LensParamCandidates,
+  type LensRecommendation,
   type LensSpecItem,
 } from '../../api/endpoints/lenses'
 import { lensesApi } from '../../api/endpoints/lenses'
@@ -42,6 +44,12 @@ const props = defineProps<{
   selectedNode?: string | null
   /** 案件 id（拉取参数候选用） */
   caseId?: string
+  /**
+   * 针对当前线索假设的镜头贴合度推荐（父组件从
+   * /lenses/recommendations 取）。为空表示无假设链（自动发现线索）
+   * 或取不到——此时按默认顺序展示，**不硬凑排序**。
+   */
+  recommendations?: LensRecommendation[]
 }>()
 
 const emit = defineEmits<{
@@ -55,10 +63,21 @@ const selectedId = ref<string | null>(null)
 const values = ref<Record<string, unknown>>({})
 const errors = ref<Record<string, string>>({})
 
-/** 当前镜头清单里有预设覆盖的卡片 */
-const presetCards = computed<LensPreset[]>(() =>
-  LENS_PRESETS.filter((p) => props.lenses.some((l) => l.skill_id === p.skill_id)),
-)
+/**
+ * 当前镜头清单里有预设覆盖的卡片。
+ * 有假设推荐时按贴合度排序（默认落在更贴切的镜头上）——只影响顺序，
+ * 不隐藏任何镜头：正兵有权用任何手段验证任何假设。
+ */
+const presetCards = computed<LensPreset[]>(() => {
+  const cards = LENS_PRESETS.filter(
+    (p) => props.lenses.some((l) => l.skill_id === p.skill_id))
+  const rec = recBySkill.value
+  if (!Object.keys(rec).length) return cards
+  return [...cards].sort(
+    (a, b) => (_rank(rec[b.skill_id]?.level ?? '') -
+               _rank(rec[a.skill_id]?.level ?? '')),
+  )
+})
 /** 有预设镜头存在 → 默认业务模式可用 */
 const hasPresets = computed(() => presetCards.value.length > 0)
 /** 无预设覆盖的镜头（只在完整参数模式的下拉里出现） */
@@ -71,6 +90,58 @@ const rawLensOptions = computed(() =>
 const selectedLens = computed<LensSpecItem | null>(
   () => props.lenses.find((l) => l.skill_id === selectedId.value) ?? null,
 )
+
+// ---------- 假设贴合度推荐（只影响默认顺序，不排除任何镜头） ----------
+/**
+ * 把后端推荐拍平成 skill_id → {等级, 理由}。
+ * 推荐为空（线索无假设链）→ 全部镜头无标记，按默认顺序展示。
+ */
+const recBySkill = computed<Record<string, {
+  level: 'recommended' | 'possible' | 'unrelated'
+  reasons: string[]
+  hypId: string
+}>>(() => {
+  const out: Record<string, {
+    level: 'recommended' | 'possible' | 'unrelated'
+    reasons: string[]
+    hypId: string
+  }> = {}
+  for (const r of props.recommendations ?? []) {
+    for (const l of r.lenses ?? []) {
+      const prev = out[l.skill_id]
+      // 多假设时取更贴切的那条；同级保留先出现的（后端已按 score 降序）
+      if (!prev || _rank(l.recommendation) > _rank(prev.level)) {
+        out[l.skill_id] = {
+          level: l.recommendation, reasons: l.reasons, hypId: r.hypothesis_id,
+        }
+      }
+    }
+  }
+  return out
+})
+
+function _rank(level: string): number {
+  return level === 'recommended' ? 3 : level === 'possible' ? 2 : 1
+}
+
+/** 推荐徽标文案；无推荐返回空（不显示徽标） */
+function recBadge(skillId: string): string {
+  const r = recBySkill.value[skillId]
+  if (!r || r.level === 'unrelated') return ''
+  return r.level === 'recommended' ? '贴合本假设' : '可能相关'
+}
+
+/** 推荐理由（悬浮说明） */
+function recTitle(skillId: string): string {
+  const r = recBySkill.value[skillId]
+  if (!r) return ''
+  return `针对假设 ${r.hypId}：${r.reasons.join('；')}`
+}
+
+/** 该镜头的数据就绪度（来自镜头清单的 readiness 字段） */
+function lensReadiness(skillId: string) {
+  return props.lenses.find((l) => l.skill_id === skillId)?.readiness ?? null
+}
 
 // ---------- 参数候选（自动推荐） ----------
 // 后端按「画布选中 > 画布可见 > 案件登记 > 线索 > 语义层」排序，语义层不做
@@ -255,8 +326,35 @@ function onSubmit(): void {
             :disabled="busy"
             @click="selectPreset(p)"
           >
-            <span class="pc-title">{{ p.title }}</span>
+            <span class="pc-title">
+              {{ p.title }}
+              <!-- 假设贴合度徽标：有推荐才显示，不排除任何镜头 -->
+              <NTag
+                v-if="recBadge(p.skill_id)"
+                size="tiny"
+                round
+                :type="recBySkill[p.skill_id]?.level === 'recommended' ? 'success' : 'warning'"
+                class="pc-rec"
+                :title="recTitle(p.skill_id)"
+                data-testid="lens-rec-badge"
+              >{{ recBadge(p.skill_id) }}</NTag>
+              <!-- 数据就绪度：缺数据 → 跑了也会降级（提前告知，不禁止） -->
+              <NTag
+                v-if="lensReadiness(p.skill_id)?.ready === false"
+                size="tiny"
+                round
+                type="error"
+                class="pc-rec"
+                :title="lensReadiness(p.skill_id)?.note || ''"
+                data-testid="lens-ready-badge"
+              >数据未齐</NTag>
+            </span>
             <span class="pc-desc">{{ p.desc }}</span>
+            <!-- 降级预告：说清缺什么、会怎样，而不是跑完才发现 -->
+            <span
+              v-if="lensReadiness(p.skill_id)?.ready === false"
+              class="pc-warn"
+            >{{ lensReadiness(p.skill_id)?.note }}</span>
           </button>
           <button
             v-if="rawLensOptions.length > 0"
@@ -564,6 +662,19 @@ function onSubmit(): void {
 .pc-desc {
   font-size: 11px;
   color: var(--sun-text-tertiary);
+}
+/* 贴合度 / 就绪度徽标：跟标题同行，不抢主视觉 */
+.pc-rec {
+  margin-left: 4px;
+  vertical-align: middle;
+}
+/* 数据未齐的降级预告：说清缺什么、会怎样 */
+.pc-warn {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--sun-warning, #d89614);
 }
 .preset-fields {
   display: flex;

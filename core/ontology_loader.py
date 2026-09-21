@@ -85,7 +85,11 @@ ALLOWED_OVERLAP_RESOLUTION = {None, "drop_if_primary_hit"}
 ALLOWED_PLAYBOOK_CHANNELS = {"function", "external"}
 ALLOWED_PLAYBOOK_SLOTS = {"subject", "project_count"}
 _PLAYBOOK_SLOT_RE = re.compile(r"\{(\w+)\}")
-_PLAYBOOK_ASSUMPTION_RE = re.compile(r"H\d+")
+# 假设 ID 格式：字母开头 + 字母/数字/下划线。
+# 此前写死 `H\d+`（侦查域 H1/H2 命名），换领域用 HF1/FUND_A 之类即被拒——
+# 这是借格式校验偷渡了领域约定。真正的合法性由「是否在 hypothesis_patterns.json
+# 声明」把关（_validate_assumption），此处只拦空值/空白/非法字符。
+_PLAYBOOK_ASSUMPTION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 _PLAYBOOK_CACHE: dict[tuple, list[dict]] = {}
 
 
@@ -136,9 +140,15 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
                                 required=False)
     # REQ-G-011：维度声明先于规则装载——规则的 dimension 必须是 dimensions.json
     # 已声明的 name（缺省回落内置 5 维）；新增维度在声明文件加一项即被规则引用。
+    # 维度合法集同时接受 **code 与 name**：官方声明写 code（稳定标识符），
+    # 存量包/夹具可能仍写中文 name。只认一边会让另一边在装载期硬失败——
+    # 与 produces_dims_labels 的双向建索引同理（维度翻译查错表的同类 bug）。
     dim_names = load_dimensions(pack, base_dir)
+    dim_decls = load_dimension_declarations(pack, base_dir)
+    allowed_dims = set(dim_names) | {
+        str(d.get("name") or "") for d in dim_decls if d.get("name")}
     rules = _load_rules(root / "rules.json", functions, required=False,
-                        allowed_dimensions=set(dim_names),
+                        allowed_dimensions=allowed_dims,
                         pack=pack, base_dir=base_dir)
     # REQ-G-012：枚举空间声明化——存在即校验版本与结构（缺失回落内置默认）。
     load_enum_space(pack, base_dir)
@@ -786,8 +796,10 @@ def load_verify_playbooks(pack: str = "default",
                                and _PLAYBOOK_ASSUMPTION_RE.fullmatch(v)
                                for v in assumptions)):
                 raise ValueError(
-                    f"{ctx}（{pb_id}）match.assumption 必须为 H\\d+ 字符串"
-                    "或非空字符串数组")
+                    f"{ctx}（{pb_id}）match.assumption 必须为非空标识符字符串"
+                    "或非空字符串数组"
+                    "（字母开头，可含数字/下划线；须在本体 "
+                    "hypothesis_patterns.json 已声明）")
 
         if channel == "function":
             fn = pb.get("function")
@@ -2356,6 +2368,49 @@ def _validate_function_params(params: dict, sql: str | None, ctx: str, name: str
 # rules（自然语言规则手册，第六段）
 # ----------------------------------------------------------------------
 
+def _raw_hypothesis_ids(pack: str = "default",
+                        base_dir: Path | None = None) -> set[str]:
+    """只读 hypothesis_patterns.json 拿假设 ID 集合——**不装载本体、不交叉校验**。
+
+    为什么必须绕开 load_hypothesis_patterns
+    --------------------------------------
+    ``load_hypothesis_patterns`` 为做交叉校验会 ``load_pack()`` 取对象名，
+    而 ``load_pack`` → ``_load_rules`` → ``_validate_assumption`` →
+    ``_known_hypothesis_ids`` → ``load_hypothesis_patterns`` —— **形成环**。
+
+    实测该环会一直递归到 RecursionError，而这里 ``except Exception`` 把
+    RecursionError 也吞掉了（RecursionError 是 Exception 子类），于是
+    **静默回落 default 包的假设集**：非 default 包的假设 id 被判"未声明"，
+    装载直接硬失败——正是此前想修却没修成的那个问题。
+
+    本函数只做「读文件取 ID」，不需要对象名/维度/间类的交叉校验，
+    因而天然无环。**结构校验仍由 load_hypothesis_patterns 在顶层调用时完成**，
+    不会漏检。
+    """
+    root = (base_dir or PACK_ROOT) / pack
+    p = root / "hypothesis_patterns.json"
+    if not p.exists():
+        return set()
+    try:
+        data = _read_json(p)
+    except Exception:
+        return set()
+    raw = data.get("patterns", [])
+    if not isinstance(raw, list):
+        return set()
+    out: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        tpl = item.get("hypothesis")
+        if isinstance(tpl, dict):
+            hid = str(tpl.get("id") or "").strip()
+            if hid:
+                out.add(hid)
+    return out
+
+
+
 def _known_hypothesis_ids(pack: str = "default",
                           base_dir: Path | None = None) -> set[str]:
     """已知假设 ID 集合。**优先读本体声明**（ontology/<pack>/hypothesis_patterns.json）。
@@ -2364,15 +2419,15 @@ def _known_hypothesis_ids(pack: str = "default",
     兜底），导致**换本体后规则引用的新假设 id 一律被判"未声明"**——本体
     无关化在这一层是断的，装任何非 default 包都会硬失败。
 
+    注意：这里必须走 `_raw_hypothesis_ids`（读原始文件），不能调
+    `load_hypothesis_patterns`——后者会 `load_pack`，形成装载环。
+    详见 `_raw_hypothesis_ids` 的说明。
+
     返回空集表示假设库不可导入（测试隔离场景），调用方应跳过校验。
     """
-    try:
-        declared = load_hypothesis_patterns(pack, base_dir)
-    except Exception:
-        declared = None
+    declared = _raw_hypothesis_ids(pack, base_dir)
     if declared:
-        return {str(p["hypothesis"].get("id")) for p in declared
-                if p.get("hypothesis")}
+        return declared
     try:
         from core.hypotheses import MiaoSuan
         return {p["hypothesis"].id for p in MiaoSuan.FINDING_PATTERNS
@@ -2411,7 +2466,18 @@ def _load_rules(path: Path, functions: dict[str, FunctionSpec],
     data = _read_json(path)
     from core import functions as fn_mod
     # REQ-G-011：合法维度集来自 dimensions.json 声明（缺省回落内置 5 维）
-    _dims = allowed_dimensions if allowed_dimensions is not None else set(DEFAULT_DIMENSIONS)
+    if allowed_dimensions is not None:
+        _dims = set(allowed_dimensions)
+    else:
+        # 未显式传入（如单测直调 _load_rules）→ 按 pack/base_dir 自行装载，
+        # 否则会回落内置**中文**维度，而官方声明写 code（'fund'）→ 误拒。
+        try:
+            _decls = load_dimension_declarations(pack, base_dir)
+            _dims = {str(d.get("code") or "") for d in _decls} | {
+                str(d.get("name") or "") for d in _decls}
+        except Exception:
+            _dims = set(DEFAULT_DIMENSIONS)
+        _dims.discard("")
     # P6：rules 的 jian_types 标签是不透明注解——底座不再做间类白名单校验
     # （无 wujian 包也须能装载）；标签合法性由 packs/wujian validator 负责。
 

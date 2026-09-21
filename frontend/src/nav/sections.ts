@@ -18,6 +18,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { key: 'overview', label: '治理仪表盘', mvp: 1 },
       { key: 'clues', label: '线索列表', mvp: 1 },
+      { key: 'observations', label: '观察档案', mvp: 2 },
       { key: 'board', label: '处置看板', mvp: 2 },
       { key: 'verdict', label: '实体裁决', mvp: 2 },
       { key: 'miaosuan', label: '庙算工作台', mvp: 5 },

@@ -117,9 +117,14 @@ import ReportPanel from './ReportPanel.vue'
 import SnapshotDrawer from './SnapshotDrawer.vue'
 import EdgeCreatePopover from './EdgeCreatePopover.vue'
 import FunctionQueryModal from './FunctionQueryModal.vue'
+import { useRouter } from 'vue-router'
 import LensRunModal from './LensRunModal.vue'
 import LensSwitchPanel from '../config/LensSwitchPanel.vue'
-import { lensesApi, type LensSpecItem } from '../../api/endpoints/lenses'
+import {
+  lensesApi,
+  type LensRecommendation,
+  type LensSpecItem,
+} from '../../api/endpoints/lenses'
 import {
   RESEARCH_CARD_NODE,
   ensureResearchCardNode,
@@ -139,6 +144,18 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'loaded', payload: { version: number; nodeCount: number; edgeCount: number }): void
 }>()
+
+const router = useRouter()
+
+/**
+ * 跳到深挖线索的独立画布。
+ * 深挖结果在发起画布上只落**代表节点**（完整内容会淹没本画布结构），
+ * 需要深挖下去时再跳到它自己的画布——这条路径保留了"可独立处置"的语义。
+ */
+function openOriginLensClue(subClueId: string): void {
+  if (!subClueId || !props.caseId) return
+  void router.push(`/c/clue/${encodeURIComponent(subClueId)}`)
+}
 
 type LoadState = 'loading' | 'ready' | 'error'
 const state = ref<LoadState>('loading')
@@ -375,6 +392,12 @@ function toG6Data(d: CanvasDoc): unknown {
           // P1-② 人机来源（四态）：机器派生 / AI 建议 / 人工已采纳 / 人工新增
           provenance: provenanceOf(n),
           provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
+          // C 方案：本线索发起的深挖结果（可跳转回其独立画布）
+          originLens: (n.props as Record<string, unknown> | undefined)
+            ?.origin_lens === true,
+          originLensClueId: String(
+            (n.props as Record<string, unknown> | undefined)
+              ?.sub_clue_id ?? ''),
           // M4 RC-105：未采纳手册建议（虚线态）
           suggestion: isSuggestionNode(n),
           // 简洁视图才给 +/−（完整视图所有节点恒显；轨道带不挂折叠开关）
@@ -2403,6 +2426,8 @@ async function submitFunctionQuery(payload: {
 const lrShow = ref(false)
 const lrLenses = ref<LensSpecItem[]>([])
 const lrBusy = ref(false)
+/** 针对当前线索假设的镜头贴合度推荐（空 = 无假设链，按默认顺序） */
+const lrRecommendations = ref<LensRecommendation[]>([])
 
 /** 选中主体标签——只预填**主体类**参数。
  *  旧实现把同一个 label 同时灌进 target_subject/subject_a/project，
@@ -2441,17 +2466,27 @@ async function openLensRun(): Promise<void> {
   lrBusy.value = false
   try {
     const r = await lensesApi.list(props.caseId)
-    // 仅确定性、包级与案件级均启用的定向镜头可带参调度
+    // 仅确定性、包级与案件级均启用的定向镜头可带参调度。
+    // 看的是 **canvas_enabled**（不是 enabled）：批量自动跑与正兵手动带参跑
+    // 是两个开关——自动跑关了仍可在画布手动跑。
     lrLenses.value = (r.lenses ?? []).filter(
       (l) =>
         l.requires_params &&
-        l.enabled &&
+        l.canvas_enabled &&
         l.pack_enabled &&
         l.mode === 'deterministic',
     )
   } catch (e) {
     message.error(presentError(e).title)
     lrLenses.value = []
+  }
+  // 按**本线索的假设**给镜头排贴合度。失败/无假设链 → 空数组，
+  // 弹窗回落默认顺序——不硬凑排序误导用户。
+  try {
+    const rec = await lensesApi.recommendations(props.caseId, props.clueId)
+    lrRecommendations.value = rec.recommendations ?? []
+  } catch {
+    lrRecommendations.value = []
   }
   lrShow.value = true
 }
@@ -2462,12 +2497,20 @@ async function submitLensRun(payload: {
 }): Promise<void> {
   lrBusy.value = true
   try {
+    // 带上发起来源：产物据此回到**本线索画布**（原地并入深挖结果），
+    // 避免"深挖后跳去列表找结果"打断研判。node_id 用于把结果挂在选中主体下。
     const r = await lensesApi.run(props.caseId, payload.skill_id, {
       params: payload.params,
+      origin: {
+        clue_id: props.clueId,
+        node_id: selectedNodeId.value || undefined,
+        subject: lrSelectedNode.value || undefined,
+        surface: 'canvas',
+      },
     })
     lrShow.value = false
     message.success(
-      `定向镜头已入队（任务 ${r.task.id}），运行完成后线索进线索列表`,
+      `定向镜头已入队（任务 ${r.task.id}），完成后结果回到本画布的「深挖结果」`,
       { duration: 5000 },
     )
   } catch (e) {
@@ -2564,6 +2607,11 @@ async function mountGraph(): Promise<void> {
             }
             if (d.data?.band === 'collision_window') {
               return canvasTokens.band.collision_window.stroke
+            }
+            // 深挖结果层优先：它是"本次研判发起的机器产出"，
+            // 视觉上要能一眼认出"这是我刚才跑出来的"。
+            if (d.data?.originLens === true) {
+              return canvasTokens.strokeOriginLens
             }
             const pv = d.data?.provenance as string | undefined
             if (pv === 'manual') return canvasTokens.strokeManual
@@ -3187,6 +3235,7 @@ function nodeLabel(id: string): string {
       :case-id="props.caseId"
       :canvas-nodes="lrCanvasNodes"
       :selected-node="lrSelectedNode"
+      :recommendations="lrRecommendations"
       @submit="submitLensRun"
     />
 

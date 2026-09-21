@@ -35,9 +35,12 @@ sys.path.insert(0, str(ROOT))
 # core.entity 已改为按绝对路径加载 entity_resolution，无需依赖 sys.path。
 
 from core import Store, skill_invoke, get_registry, lineage, review, record_dimension_gaps
+from core.hypotheses import record_empirical_gap_causes
 from core.entity import run_entity_resolution, apply_org_to_duckdb
+from core.observation import observation_from_clue
 from core.run_health import RunHealth
 from skills.registry_bootstrap import register_all
+from skills import registry_bootstrap
 
 
 def step(title: str):
@@ -270,17 +273,30 @@ def main():
     miao = _build_miaosuan(store, ctx, health=health)
 
     all_clues: list = []
+    observations: list = []
     for sid in ["xu_shi", "qi_zheng", "yong_jian"]:
         clues = skill_invoke(registry, sid, miao=miao, store=store, ctx=ctx,
                              health=health)
-        print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
-        all_clues.extend(clues)
+        # 用间按交叉等级分流：兑现五间自己声明的「单源=观察 → 双源=线索」。
+        # 判据是**本间独立源数**（全局是全案汇总，恒为最高级，无区分力）。
+        if sid == "yong_jian":
+            kept, obs = registry_bootstrap.split_yong_jian(clues)
+            print(f"  [{sid}] 产出 {len(clues)} 条 → 线索 {len(kept)}"
+                  f" / 观察 {len(obs)}（单源降为观察）")
+            all_clues.extend(kept)
+            observations.extend(obs)
+        else:
+            print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue")
+            all_clues.extend(clues)
 
     # P4/P5 镜头包批量接线（自动研判）：定向镜头的必填参数不再靠人填——
     # 按 pack.json 的 auto_from 声明，由 core/focus.py 推导靶心自动填充。
     # 靶心三级源：案件知识包显式声明 > 前序线索反推（故此处先填 ctx["clues"]）
     # > 语义表枚举兜底。双主体镜头走「靶心×关联」O(N)，不做全组合 O(N²)。
     ctx["clues"] = list(all_clues)
+    # 镜头产出落观察档案（与 detect 同口径）：不进线索清单
+    _lens_labels = {s.skill_id: s.name for s in registry.all_specs()
+                    if getattr(s, "name", "")}
     lens_tasks, unresolved, skipped_mode = batch_lens_tasks(
         registry, store=store, ctx=ctx)
     for sid, prm in lens_tasks:
@@ -289,10 +305,13 @@ def main():
                              params=prm, health=health)
         for c in clues:
             c.detail.setdefault("param_source", _src)
+            # 镜头产出 = **观察档案**，不是线索：无常态基线 → 只摆出结构，
+            # 不下"异常"判断。进 clues 会导致无假设可证伪的条目空转在
+            # 处置流程里（此前 10 条全"查证中"而假设链全空）。
+            observations.append(observation_from_clue(c))
         if clues:
-            print(f"  [{sid}] 产出 {len(clues)} 条 LineageClue"
+            print(f"  [{sid}] 产出 {len(clues)} 条观察档案"
                   f"（靶心 {_src or '—'}）")
-        all_clues.extend(clues)
     for sid in unresolved:
         print(f"  [{sid}] 靶心推导失败，无法自动调度（已落健康度诊断）")
     for sid in skipped_mode:
@@ -344,14 +363,36 @@ def main():
     # 必须在此重新生成 report：上面第 9 步改变了处置状态，
     # 若沿用第 7-8 步的旧 report，by_status 会停留在『全部待查』，与 DuckDB 真实状态矛盾。
     report = lineage.lineage_report(merged)
+    # 实证轨全量 findings：虚实之外，奇正阶段（R6/R7，时间维度）也会产
+    # finding，二者合并才是"本案实际查到了什么"的完整口径。
+    _all_findings = list(getattr(miao, "_last_findings", None) or [])
+    try:
+        from core.rules import run_rules as _run_rules
+        _seen = {str(f.get("rule_id") or "") for f in _all_findings}
+        for f in _run_rules(store, stage=None, health=health):
+            if str(f.get("rule_id") or "") not in _seen:
+                _all_findings.append(f)
+    except Exception:
+        pass
+
     # 庙算覆盖完整性报告（维度/数据源/间类/冲突/枚举候补）——先于健康度小节计算，
     # 维度覆盖缺口（G-008/009 双轨口径）落 coverage_gap 诊断，进入"健康度"。
-    miao_cov = miao.report(ctx["可用数据"])
+    # 实证轨须传**全量** findings（含奇正 R6/R7）：沙盘建立时只跑了虚实，
+    # 不传会把已命中的时间维度误报成"实证缺口"。
+    miao_cov = miao.report(ctx["可用数据"], findings=_all_findings)
     _dc = miao_cov.get("dimension_coverage", {})
     # REQ-G-024：声明缺口与实证缺口独立留痕——实证缺口不再被声明轨 alarm 门控，
     # 声明 100% 但实证缺维时健康度不得报 healthy；source 区分补救动作
     # （miaosuan:dimension=补假设；miaosuan:dimension:empirical=补数据/查检测器）。
     record_dimension_gaps(_dc, health)
+    # 实证缺口逐维定位：把"缺哪一维"翻译成"该干什么"
+    # （补数据 / 查检测器 / 补规则 / 确认规则是否纳入扫描）
+    _located = record_empirical_gap_causes(_dc, conn=store.conn,
+                                           pack=getattr(args, "pack", "default"), health=health)
+    if _located:
+        print('  实证缺口定位：')
+        for _d, _i in _located.items():
+            print(f"    · {_d}: {_i['action']}（{_i['cause']}）")
     # REQ-G-017：规则推翻率超阈告警；REQ-G-018：审计链完备性自检（断链/缺字段/缺号）。
     # 二者均在健康度小节生成前完成留痕。
     try:
@@ -397,6 +438,13 @@ def main():
     report["ontology"] = ontology_stats
     (out_dir / "lineage_clues.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    # 观察档案单独落盘：镜头产出不混进线索报告（同理不进处置清单）
+    for _o in observations:
+        _o.lens_name = _lens_labels.get(_o.skill_id, _o.skill_id)
+    (out_dir / "observations.json").write_text(
+        json.dumps({"observations": [o.to_dict() for o in observations]},
+                   ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8")
     # 合并 person/org 映射供操作台展示（按类型分组，accepted 不再被整体标为 org）
     merged_person = dict(final_person_mapping)
     merged_person.update(accepted_by_type.get("person", {}))
@@ -552,7 +600,9 @@ def _build_miaosuan(store, ctx, health=None):
     # REQ-G-024：实证缺口独立于声明报警，控制台同步可见（否则声明满覆盖时
     # 上面打印"无报警"，健康度却因实证缺口 degraded，自相矛盾）
     if dc.get("empirical_alarm"):
-        print(f"  实证覆盖：⚠ {dc['empirical_alarm_text']}")
+        # 此处为**建沙盘时**快照：实证轨只含虚实阶段 findings，奇正（R6/R7
+        # 时间维度）尚未跑。最终权威口径见导出段的"实证缺口定位"（全量）。
+        print(f"  实证覆盖（建沙盘时，仅含虚实）：⚠ {dc['empirical_alarm_text']}")
     print(f"  间类缺口：{cov['jian_coverage']['missing'] or '无'}；"
           f"证据冲突：{len(cov['conflicts'])} 处；"
           f"枚举候选池 {cov['enum']['total_combos']} 组合 → 候补 {cov['enum']['backlog_size']}")

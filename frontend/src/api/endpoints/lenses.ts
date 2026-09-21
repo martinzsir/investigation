@@ -28,8 +28,15 @@ export interface LensSpecItem {
   case_override: boolean | null
   /** 生效值：案件覆盖优先，未覆盖回落包声明 */
   enabled: boolean
+  /**
+   * 画布可用（与 enabled **分离**）：只影响正兵能否在画布手动带参跑。
+   * 案件未覆盖 → 回落包级 enabled（包被吊销则画布也不可用）。
+   */
+  canvas_enabled: boolean
   /** 有必填参数的定向镜头（批量检测跳过，画布/面板定向带参调度） */
   requires_params: boolean
+  /** 数据就绪度（前置提示：缺哪些数据 → 跑了也会降级；null=未能判定） */
+  readiness?: LensReadiness | null
   /** 参数声明（定向调度弹窗表单数据源） */
   params_schema: Record<string, LensParamSpec>
   /** 用途说明（pack.json 声明；空则由 UI 按维度/依赖兜底描述） */
@@ -81,13 +88,23 @@ export interface LensSwitchBody {
   enabled: boolean
   /** 变更理由（落审计链 note） */
   reason?: string
+  /**
+   * 画布可用开关（可选）。不传 → 按 enabled 推导（停用即两处都不用）。
+   * 传了则与批量开关独立：可不自动跑但仍能在画布手动跑。
+   */
+  canvas_enabled?: boolean | null
 }
 
 export interface LensSwitchResult {
   skill_id: string
   enabled: boolean
-  /** 启停影响批量检测结果，自动入队 RESCAN */
-  rescan_task: TaskRow
+  canvas_enabled: boolean
+  /** 批量开关是否变化：只有它变了才影响自动产出 → 才入队 RESCAN */
+  batch_changed: boolean
+  /**
+   * 仅批量开关变化时入队；只改画布可用不重扫（改了立即生效），故可为 null。
+   */
+  rescan_task: TaskRow | null
 }
 
 export interface LensRunBody {
@@ -95,6 +112,22 @@ export interface LensRunBody {
   reason?: string
   /** 零填写提交：必填参数由后端按 auto_from 推导（画布上下文 / 案件登记） */
   auto?: boolean
+  /**
+   * 发起来源（画布深挖）。
+   * 后端据此前把结果**回到发起线索的画布**（原地并入「深挖结果」层），
+   * 避免正兵跑完镜头后要跳去线索列表找结果、研判被打断。
+   * 缺失表示无发起画布（如从启停面板发起），行为同旧版。
+   */
+  origin?: {
+    /** 发起线索 ID（必填，后端据此回挂） */
+    clue_id: string
+    /** 画布选中节点 ID（把结果挂在选中主体下，建立视觉关联） */
+    node_id?: string
+    /** 发起主体名 */
+    subject?: string
+    /** 发起面标识 */
+    surface?: string
+  }
 }
 
 /** 单个候选主体（core.focus.FocusSubject） */
@@ -175,6 +208,34 @@ export function validateLensParams(
   return errs
 }
 
+/** 数据就绪度：跑之前就知道会不会因数据未接入而降级（不禁止运行） */
+export interface LensReadiness {
+  skill_id: string
+  name: string
+  ready: boolean
+  /** 未接入的依赖（对象或链接名） */
+  missing: string[]
+  /** 声明的全部依赖 */
+  deps: string[]
+  note: string
+}
+
+/** 单个镜头对某假设的贴合度 */
+export interface LensRecommendation {
+  hypothesis_id: string
+  hypothesis_desc: string
+  dimension: string[]
+  lenses: {
+    skill_id: string
+    name: string
+    description: string
+    score: number
+    reasons: string[]
+    /** recommended=贴切 / possible=沾边 / unrelated=无交集（不排除，仅排序） */
+    recommendation: 'recommended' | 'possible' | 'unrelated'
+  }[]
+}
+
 export const lensesApi = {
   /** GET /cases/{cid}/lenses —— 镜头清单 + 案件生效状态 */
   async list(caseId: string): Promise<LensListResult> {
@@ -205,6 +266,21 @@ export const lensesApi = {
    * 传画布上下文（selected_node / canvas_nodes）让候选聚焦当前研判范围，
    * 语义层不做全量返回（真实案件可达数万主体，全量进下拉会 DOM 爆炸）。
    */
+  /**
+   * GET /cases/{cid}/lenses/recommendations?clue_id=
+   * 按**当前线索的假设**给镜头排贴合度（维度交集 + 对象交集）。
+   * 线索无假设链 → 后端返回空，前端按默认顺序展示，不硬凑。
+   */
+  async recommendations(
+    caseId: string,
+    clueId: string,
+  ): Promise<{ recommendations: LensRecommendation[] }> {
+    const q = encodeURIComponent(clueId)
+    return api.get<{ recommendations: LensRecommendation[] }>(
+      `/cases/${encodeURIComponent(caseId)}/lenses/recommendations?clue_id=${q}`,
+    )
+  },
+
   async paramCandidates(
     caseId: string,
     skillId: string,

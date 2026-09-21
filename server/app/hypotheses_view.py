@@ -149,9 +149,28 @@ def assemble_hypotheses(*, case_dir: str | Path, state_map: dict[str, dict],
         else:
             visible.append(raw)
 
+    # 庙算假设清单（detect 落 hypotheses_v{N}.json）：此前假设页只有覆盖率/
+    # 热力/候补，**没有假设本体**——因为 Web 侧从未建过庙算实例，只能
+    # 从线索反推。现在读真实产物；无产物（旧版本/未 BUILD）降级为空列表。
+    hyp: dict[str, Any] = {}
+    if art_ver is not None:
+        try:
+            from server.app.clues_artifact import load_case_hypotheses
+            hyp = load_case_hypotheses(Path(case_dir), int(art_ver))
+        except Exception:
+            hyp = {}
+
     return {
         "available": art_ver is not None,
         "derived": True,
+        # 假设本体（自动在前、人工在后，与 store 同序）
+        "hypotheses": hyp.get("hypotheses") or [],
+        # 知己是否为正兵填写——False 时 UI 须明示"授权边界未声明"
+        "ji_configured": bool((hyp.get("miao_meta") or {}).get("ji_configured")),
+        "ji": {
+            "gaps": (hyp.get("miao_meta") or {}).get("ji_gaps") or [],
+            "auth_boundary": (hyp.get("miao_meta") or {}).get("ji_auth_boundary") or [],
+        },
         "coverage": _coverage(_diag_rows(conn), total_dims),
         "heatmap": _heatmap(visible, jian_names, level_names),
         "candidates": _candidates(
