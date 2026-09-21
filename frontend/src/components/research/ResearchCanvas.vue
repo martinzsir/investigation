@@ -2545,7 +2545,8 @@ async function load(): Promise<void> {
     semanticReady.value = env.semantic_ready !== false
     // 规则五维懒预取（卡片顶部色点/事实继承色；失败静默）
     for (const n of env.doc.nodes) {
-      if (n.kind === 'rule') void ensureRuleDimension(n.ref || n.id)
+      if (n.kind === 'rule' && (n.ref || n.id) !== 'unlinked')
+        void ensureRuleDimension(n.ref || n.id)
     }
     state.value = 'ready'
     emit('loaded', {
