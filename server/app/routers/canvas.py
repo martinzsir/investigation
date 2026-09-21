@@ -201,11 +201,17 @@ def get_canvas(case_id: str, clue_id: str,
 
             # ---- 增量补种（只增不改删）：seed 后新上传的书证/新核查项
             # 与挂接边补进文档；无缺失零副作用（不写库/不 bump/不审计）。
+            # origin_lens_layer：本线索发起的定向镜头深挖结果回画布代表节点
+            # （每次 GET 都查 lens_runs/v{N}/*.json——load 是文件读，开销小；
+            # 节点 id 含 run_id+sub_clue_id 幂等，重复 GET 不会产生重复节点）。
+            origin_lens_layer = canvas_seed.build_origin_lens_layer(
+                ctx.factory.case_dir(case_id), version, clue_id)
             merged, n_nodes, n_edges = canvas_seed.reconcile_canvas(
                 existing["doc"],
                 verify_items=state.list_verify_items(clue_id),
                 materials=state.list_evidence(clue_id),
-                lens_layer=lens_layer)
+                lens_layer=lens_layer,
+                origin_lens_layer=origin_lens_layer)
             meta_changed = (merged.get("meta") if isinstance(merged, dict)
                             else None) != (old_doc.get("meta") or None)
             if n_nodes or n_edges or meta_changed:
@@ -254,6 +260,14 @@ def get_canvas(case_id: str, clue_id: str,
             verify_items=state.list_verify_items(clue_id),
             materials=state.list_evidence(clue_id),
             pack_id=case.pack_id, base_dir=base_dir)
+        # 首次 seed 后立刻并入 origin_lens_layer：用户可能在线索列表/其他
+        # 画布跑过 lens_run（origin.clue_id=本线索），第一次打开本画布时
+        # 这些深挖结果应该立刻可见。
+        origin_lens_layer = canvas_seed.build_origin_lens_layer(
+            ctx.factory.case_dir(case_id), version, clue_id)
+        if origin_lens_layer and origin_lens_layer.get("nodes"):
+            doc, _ol_n, _ol_e = canvas_seed.reconcile_canvas(
+                doc, origin_lens_layer=origin_lens_layer)
         ts = _now()
         row = state.insert_canvas(
             clue_id=clue_id, doc=doc, created_by=p.operator, created_at=ts)

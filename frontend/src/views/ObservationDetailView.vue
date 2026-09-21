@@ -8,7 +8,7 @@
 // 缺任何一件，正兵要么陷在庞杂数据里，要么只拿到一个无从辩驳的结论。
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NSpin, NTag, NEmpty, NButton, useMessage } from 'naive-ui'
+import { NSpin, NTag, NEmpty, NButton, NSelect, NInput, useMessage } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import {
   observationsApi,

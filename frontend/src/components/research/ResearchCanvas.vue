@@ -1059,6 +1059,12 @@ function onNodeClick(ev: unknown, rawId: unknown): void {
     openFactPopover(node.id, oe?.clientX, oe?.clientY)
     return
   }
+  // 深挖结果代表节点：点击直接跳转到 sub_clue 独立画布（不延迟、不开抽屉）
+  if (g6Node.data?.originLens === true && g6Node.data?.originLensClueId) {
+    clearClickTimer()
+    openOriginLensClue(String(g6Node.data.originLensClueId))
+    return
+  }
   // 连线模式下节点点击归 create-edge behavior，不开抽屉
   if (connectMode.value) return
   clearClickTimer()

@@ -122,9 +122,15 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
         det.close()
 
     run_id = f"lensrun_{uuid.uuid4().hex[:12]}"
+    # task.params["origin"] 是路由侧预处理的发起来源（lenses.py 第 489-498 行
+    # 只保留已知键并强制 clue_id 为字符串）；透传给 save_lens_run 落盘。
+    # 之前漏传 → origin 永远 null → build_origin_lens_layer 找不到匹配项 →
+    # 画布上看不到代表节点。这是画布定向调度「原地并入深挖结果」断链的根因。
+    origin = p.get("origin") if isinstance(p.get("origin"), dict) else None
     path = save_lens_run(factory.case_dir(case.id), version,
                          run_id=run_id, skill_id=sid, params=lens_params,
-                         operator=task.created_by, clues=clues)
+                         operator=task.created_by, clues=clues,
+                         origin=origin)
     degraded = [str(d.get("skill_id")) for d in ctx.get("degraded", [])
                 if isinstance(d, dict)]
     repo.record_ops("lens_run", case.id,

@@ -440,10 +440,12 @@ def reconcile_canvas(doc: dict[str, Any], *,
                      verify_items: list[dict[str, Any]] | None = None,
                      materials: list[dict[str, Any]] | None = None,
                      lens_layer: dict[str, Any] | None = None,
+                     origin_lens_layer: dict[str, Any] | None = None,
                      ) -> tuple[dict[str, Any], int, int]:
     """GET 幂等增量补种：补齐 seed 后新出现的 verify_item/evidence 节点
     与 verify_item-[挂接]→evidence 边；lens_layer 非空时补入定向镜头
-    规则/对象/区间节点与挂边（老画布升级，只增不改删）。
+    规则/对象/区间节点与挂边（老画布升级，只增不改删）；origin_lens_layer
+    非空时补入「本线索发起的定向镜头」代表节点（点击跳转 sub_clue 画布）。
 
     只增不改删：节点/边形状与过滤口径（status=建议 不成节点，AC-105-2）
     与 seed_canvas 同源；不动既有节点/边/坐标，不重排。新节点 y 按 doc
@@ -610,6 +612,39 @@ def reconcile_canvas(doc: dict[str, Any], *,
         new_meta["lens_seeded"] = True
         if recognized:
             new_meta["lens"] = lens_layer.get("meta")
+
+    # ---- 由本线索发起的定向镜头代表节点（origin_lens_layer） ----
+    # 与 lens_layer 区别：lens_layer 处理「线索本身是 lens 线索」的成图
+    # （rule→fact→source_row 主形状之外的 lens 形状）；origin_lens_layer
+    # 处理「本线索发起了 lens_run，产出是新线索」的代表节点——B 线索的
+    # 完整结构在 B 自己的画布，A 画布只看到代表节点 + 跳转。
+    if origin_lens_layer:
+        ol_new: list[dict[str, Any]] = []
+        for n in origin_lens_layer.get("nodes") or []:
+            if (isinstance(n, dict) and n.get("id")
+                    and n["id"] not in node_ids):
+                ol_new.append(dict(n))
+        if ol_new:
+            _position_incremental(nodes, ol_new)
+            for n in ol_new:
+                nodes.append(n)
+                node_ids.add(n["id"])
+                added_nodes += 1
+        # edges：[src, tgt, rel] 三元组 → dict 边（与 lens_layer 同口径）
+        for edge in origin_lens_layer.get("edges") or []:
+            if not isinstance(edge, list) or len(edge) < 3:
+                continue
+            src, tgt, rel = str(edge[0]), str(edge[1]), str(edge[2])
+            # 源（origin.node_id）可能不在画布——跳过该边，节点仍独立可见
+            if src not in node_ids or tgt not in node_ids:
+                continue
+            eid = f"e:{src}--{rel}--{tgt}"
+            if eid in edge_ids:
+                continue
+            edge_ids.add(eid)
+            edges.append({"id": eid, "source": src, "target": tgt,
+                          "rel": rel, "system": True})
+            added_edges += 1
 
     if (not added_nodes and not added_edges and not removed_placeholder
             and new_meta is None):
@@ -936,6 +971,72 @@ def _position_incremental(existing_nodes: list[dict[str, Any]],
             n["x"] = col_x.get(col, 0)
             n["y"] = idx * _Y_GAP
         counters[col] = counters.get(col, 0) + 1
+
+
+# ----------------------------------------------------------------------
+# 定向镜头代表节点层（origin_lens）：本线索发起的深挖结果回画布
+# ----------------------------------------------------------------------
+# 正兵在 A 画布跑定向镜头 → 产出 B 线索落 lens_runs JSON（origin.clue_id=A）。
+# B 自身有独立画布（保留可独立处置语义），但 A 画布需要看到「我刚才跑出了
+# 什么」——每条 B 线索在 A 画布上落一个**代表节点**（不并入完整结构，否则
+# 会淹没 A 的研判上下文），点击跳转到 B 画布继续深挖。
+#
+# 识别口径：load_origin_lens_runs 按 origin.clue_id 过滤 lens_runs/v{N}/*.json
+# 幂等：节点 id 含 run_id+sub_clue_id，同 run 多次 GET 不重复；版本前进后
+# 旧版本 lens_run 失效（load_origin_lens_runs 按版本过滤）。
+def build_origin_lens_layer(case_dir, version: int,
+                             clue_id: str) -> dict[str, Any]:
+    """本线索发起的定向镜头运行 → 画布代表节点层。
+
+    返回 {nodes, edges}：每条产出的 sub_clue 一个代表节点；边连接发起主体
+    （origin.node_id）→ 代表节点（"深挖" 关系）。无 origin 或无产物返回空层。
+    """
+    empty: dict[str, Any] = {"nodes": [], "edges": []}
+    if not clue_id:
+        return empty
+    try:
+        from server.app.clues_artifact import load_origin_lens_runs
+        runs = load_origin_lens_runs(case_dir, version, clue_id)
+    except Exception:
+        return empty
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[list[str]] = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        run_id = str(run.get("run_id") or "")
+        skill_id = str(run.get("skill_id") or "")
+        origin = run.get("origin") or {}
+        if not isinstance(origin, dict):
+            origin = {}
+        origin_node_id = str(origin.get("node_id") or "")
+        for c in run.get("clues") or []:
+            if not isinstance(c, dict):
+                continue
+            sub_clue_id = str(c.get("clue_id") or "")
+            if not sub_clue_id:
+                continue
+            title = str(c.get("title") or "深挖线索")
+            nid = f"origin_lens:{run_id}:{sub_clue_id}"
+            nodes.append({
+                "id": nid, "kind": "function_result",
+                "ref": sub_clue_id,
+                "label": _truncate(title),
+                "system": True, "pinned": False,
+                "props": {
+                    "origin_lens": True,
+                    "sub_clue_id": sub_clue_id,
+                    "origin_lens_run_id": run_id,
+                    "origin_lens_skill_id": skill_id,
+                    "lens_layer": "origin",
+                },
+            })
+            # 边：发起主体 → 代表节点（"深挖" 关系）
+            # 没记录 origin.node_id 时不挂边（独立浮节点也比错连强）
+            if origin_node_id:
+                edges.append([origin_node_id, nid, "深挖"])
+    return {"nodes": nodes, "edges": edges}
 
 
 # ----------------------------------------------------------------------
