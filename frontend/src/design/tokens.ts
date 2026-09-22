@@ -118,6 +118,18 @@ export const canvasTokens = {
   /** 人工已采纳（系统建议经正兵确认）——金色，区别于人工新增的褐橙 */
   strokeAdopted: '#F2B54D',
   strokeSelected: '#6EDEE9',
+  /**
+   * 深挖结果层（origin_lens）描边——"本次研判发起的机器产出"。
+   * 此前 ResearchCanvas 引用了本 token 但此处从未定义（取值恒 undefined），
+   * 深挖代表节点实际落在默认描边上，与人工节点无法区分。补定义修复。
+   */
+  strokeOriginLens: '#7C6BF0',
+  /**
+   * 观察图层描边：独立于主画布的外挂时间轴。
+   * 取偏冷的青绿，与深挖代表节点的紫（主画布内）区分——
+   * 「主画布里的深挖痕迹」与「展开的独立观察层」是两件事。
+   */
+  strokeObservationLayer: '#3FBFA8',
   title: '#E9F7FA',
   subtitle: '#84A2B5',
   staleOpacity: 0.38,

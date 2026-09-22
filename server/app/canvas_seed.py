@@ -72,6 +72,10 @@ _ROW_EXPAND_STEP = 120   # 每次"展开更多"追加到的上限
 # shown/total；区间节点（聚集簇/碰撞窗）数量天然较小，单独设限。
 _MAX_LENS_EVENT_NODES = 150
 _MAX_LENS_INTERVAL_NODES = 60
+# 定向深挖层最多展开的观察条数（超出按倒序取最近若干条，记 meta）。
+# 每条观察自带 150 事件 / 60 区间上限，若不限条数，多次深挖叠加会把发起
+# 画布挤爆——与画布规模保护同口径：宁可显式截断并留痕，不静默丢弃也不无限堆叠。
+_MAX_ORIGIN_LAYER_OBS = 8
 
 
 def sys_node_id(kind: str, ref: str) -> str:
@@ -827,13 +831,54 @@ def _lens_intervals(clue_id: str, det: dict[str, Any]
     return out[:_MAX_LENS_INTERVAL_NODES], total
 
 
+# ----------------------------------------------------------------------
+# 镜头产出识别
+# ----------------------------------------------------------------------
+# 镜头 detail 的典型键：任一存在即说明这是镜头产出（形状判据）。
+# 覆盖 timeline（timeline/bursts/events）与 relation（nodes/edges），
+# 新增镜头包只要沿用这些键就自动识别，不必改识别代码。
+_LENS_DETAIL_KEYS = ("timeline", "bursts", "events", "nodes", "edges",
+                     "collision_window", "intervals", "paths", "neighbors")
+
+
+def _looks_like_lens(item: dict[str, Any], det: dict[str, Any],
+                     skill_id: str) -> bool:
+    """镜头产出识别：归属 → 形状 → 技能包，三选一命中即认。
+
+    为什么换口径
+    ------------
+    旧口径 `lens_run_id 标记 or detail.function 以 timeline_ 开头` 两处都脆：
+      ① 并线标记：定向产出已统一为观察、不再并线进线索，标记不复存在；
+      ② 函数名前缀：硬编码 timeline_，relation 包（关系邻域/共同邻居/
+         路径）永远认不出，每新增镜头包都要改一次这里。
+    """
+    # ① 显式归属：观察本体，或调用方已打镜头包标记
+    if item.get("observation_id") or item.get("lens_pack"):
+        return True
+    # ② 结构形状
+    if any(k in det for k in _LENS_DETAIL_KEYS):
+        return True
+    # ③ 技能归属：非内置包即为镜头（换包自动跟随）
+    if skill_id:
+        try:
+            from core.pack_loader import BUILTIN_PACK_ID
+            from core.registry import get_registry
+            reg = get_registry()
+            if skill_id in reg:
+                return reg.skill(skill_id).pack_id != BUILTIN_PACK_ID
+        except Exception:
+            pass
+    return False
+
+
 def build_lens_layer(clue_id: str, item: dict[str, Any] | None
                      ) -> dict[str, Any] | None:
     """定向镜头线索 → 画布 lens 层（seed/reconcile 同源纯函数）。
 
-    识别口径：并线标记 lens_run_id，或 detail.function 为 timeline_*
-    （防御：标记缺失但产物形状是时间研判）。非镜头线索返回 recognized=False
-    的空层（调用方据此落 lens_seeded 幂等标记，避免每次 GET 重扫）。
+    识别口径（见 _looks_like_lens）：按**归属 + 形状**判定，不再依赖
+    lens_run_id 并线标记或 timeline_ 函数名前缀（那个前缀认不出 relation
+    包，每加一个镜头包就要改代码）。非镜头线索返回 recognized=False 的
+    空层（调用方据此落 lens_seeded 幂等标记，避免每次 GET 重扫）。
 
     返回：{recognized, rule, nodes, edges[[src,tgt,rel]], meta}
     """
@@ -846,9 +891,7 @@ def build_lens_layer(clue_id: str, item: dict[str, Any] | None
     if not isinstance(det, dict):
         det = {}
     skill_id = str(item.get("skill_id") or "")
-    fn_name = str(det.get("function") or "")
-    is_lens = bool(item.get("lens_run_id")) or fn_name.startswith("timeline_")
-    if not is_lens:
+    if not _looks_like_lens(item, det, skill_id):
         return empty
 
     # ---- 合成规则描述（seed 仅在 _extract_rules 落空时采用）----
@@ -976,67 +1019,184 @@ def _position_incremental(existing_nodes: list[dict[str, Any]],
 # ----------------------------------------------------------------------
 # 定向镜头代表节点层（origin_lens）：本线索发起的深挖结果回画布
 # ----------------------------------------------------------------------
-# 正兵在 A 画布跑定向镜头 → 产出 B 线索落 lens_runs JSON（origin.clue_id=A）。
-# B 自身有独立画布（保留可独立处置语义），但 A 画布需要看到「我刚才跑出了
-# 什么」——每条 B 线索在 A 画布上落一个**代表节点**（不并入完整结构，否则
-# 会淹没 A 的研判上下文），点击跳转到 B 画布继续深挖。
+# 正兵在 A 画布跑定向镜头 → 产出**观察**落案件级定向档案
+# （origin.clue_id=A）。A 画布需要看到「我刚才跑出了什么」——每条定向观察
+# 在 A 画布上落一个**代表节点**（不并入完整结构，否则会淹没 A 的研判上下文），
+# 点击跳到观察详情；认为构成疑点时再提升为线索（强制指定假设）。
 #
-# 识别口径：load_origin_lens_runs 按 origin.clue_id 过滤 lens_runs/v{N}/*.json
-# 幂等：节点 id 含 run_id+sub_clue_id，同 run 多次 GET 不重复；版本前进后
-# 旧版本 lens_run 失效（load_origin_lens_runs 按版本过滤）。
+# 生灭：定向观察**不随版本失效**（案件级档案），版本前进后仍在发起画布可见。
+# 幂等：节点 id 含 run_id+observation_id，同 run 多次 GET 不重复。
 def build_origin_lens_layer(case_dir, version: int,
                              clue_id: str) -> dict[str, Any]:
-    """本线索发起的定向镜头运行 → 画布代表节点层。
+    """本线索发起的定向深挖 → 主画布代表节点层。
 
-    返回 {nodes, edges}：每条产出的 sub_clue 一个代表节点；边连接发起主体
-    （origin.node_id）→ 代表节点（"深挖" 关系）。无 origin 或无产物返回空层。
+    每条定向观察在发起画布落**一个代表节点**（不铺完整结构）。完整结构
+    由 build_observation_layer 供「观察图层」使用——图层是独立坐标系，
+    默认关闭，开启才渲染。两者职责分离：
+
+      代表节点（本函数）：常驻主画布，回答「我在这条线索上跑过什么」，
+                          点击跳观察详情 / 可提升为线索。
+      观察图层（另一函数）：外挂独立时间轴，回答「深挖出来的事发生在哪天」。
+
+    为什么不再把完整结构铺进主画布
+    ------------------------------
+    铺进主画布要与流程列共享坐标系（流程列 x=0/260/480/720 与时间轴
+    x=40/250…1510 大量重合），且深挖一次可带来上百节点，主画布的研判
+    上下文会被淹没。图层方案下主画布保持干净，观察结构按需唤出。
+
+    version 参数保留仅为兼容调用方，**不再用于过滤**：定向观察落案件级
+    档案（artifacts/directed_observations.json），RESCAN 版本前进后仍在
+    发起画布可见——正兵显式发起的深挖不该因重扫蒸发。
     """
     empty: dict[str, Any] = {"nodes": [], "edges": []}
     if not clue_id:
         return empty
     try:
-        from server.app.clues_artifact import load_origin_lens_runs
-        runs = load_origin_lens_runs(case_dir, version, clue_id)
+        from server.app.clues_artifact import load_directed_observations
+        obs = load_directed_observations(case_dir)
     except Exception:
         return empty
 
     nodes: list[dict[str, Any]] = []
     edges: list[list[str]] = []
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        run_id = str(run.get("run_id") or "")
-        skill_id = str(run.get("skill_id") or "")
-        origin = run.get("origin") or {}
+    for o in obs:
+        origin = getattr(o, "origin", None) or {}
         if not isinstance(origin, dict):
-            origin = {}
+            continue
+        if str(origin.get("clue_id") or "") != str(clue_id):
+            continue
+        oid = str(getattr(o, "observation_id", "") or "")
+        if not oid:
+            continue
+        run_id = str(getattr(o, "run_id", "") or "")
+        title = str(getattr(o, "title", "") or "深挖结果")
+        nid = f"origin_lens:{run_id}:{oid}"
+        nodes.append({
+            "id": nid, "kind": "function_result",
+            "ref": oid,
+            "label": _truncate(title),
+            "system": True, "pinned": False,
+            "props": {
+                "origin_lens": True,
+                "observation_id": oid,
+                "origin_lens_run_id": run_id,
+                "origin_lens_skill_id": str(getattr(o, "skill_id", "") or ""),
+                "lens_layer": "origin",
+                "directed": True,
+            },
+        })
+        # 边：发起主体 → 代表节点（"深挖" 关系）
+        # 没记录 origin.node_id 时不挂边（独立浮节点也比错连强）
         origin_node_id = str(origin.get("node_id") or "")
-        for c in run.get("clues") or []:
-            if not isinstance(c, dict):
-                continue
-            sub_clue_id = str(c.get("clue_id") or "")
-            if not sub_clue_id:
-                continue
-            title = str(c.get("title") or "深挖线索")
-            nid = f"origin_lens:{run_id}:{sub_clue_id}"
-            nodes.append({
-                "id": nid, "kind": "function_result",
-                "ref": sub_clue_id,
-                "label": _truncate(title),
-                "system": True, "pinned": False,
-                "props": {
-                    "origin_lens": True,
-                    "sub_clue_id": sub_clue_id,
-                    "origin_lens_run_id": run_id,
-                    "origin_lens_skill_id": skill_id,
-                    "lens_layer": "origin",
-                },
-            })
-            # 边：发起主体 → 代表节点（"深挖" 关系）
-            # 没记录 origin.node_id 时不挂边（独立浮节点也比错连强）
-            if origin_node_id:
-                edges.append([origin_node_id, nid, "深挖"])
+        if origin_node_id:
+            edges.append([origin_node_id, nid, "深挖"])
     return {"nodes": nodes, "edges": edges}
+
+
+# ----------------------------------------------------------------------
+# 观察图层（observation layer）：定向深挖结果的独立时间轴
+# ----------------------------------------------------------------------
+# 观察不在 canvas doc 里——它们存在案件级定向档案，每次 GET 动态派生。
+# 这使它们天然是「外挂层」：开关是纯视图状态，不影响任何持久化数据。
+#
+# 独立坐标系：观察层用自己的时间轴算 x（区间节点成带），整体 y 偏移到主
+# 内容下方。不与流程列共享坐标，因此不会出现坐标重合遮挡。
+#
+# 节点 id 加 OBS_ID_PREFIX：主画布可能已存在同名 object 节点（深挖引用
+# 的实体常常也是主画布上的实体），不加前缀合并时会 id 冲突。
+OBS_ID_PREFIX = "obs::"
+
+
+def build_observation_layer(case_dir, clue_id: str) -> dict[str, Any]:
+    """本线索发起的定向深挖 → 观察图层完整结构（不并入主 doc）。
+
+    返回 {nodes, edges, meta}。节点带 props.obs_layer=True 与
+    props.obs_of=<observation_id>，前端据此：
+      - 参与时间轴布局时用**本层自己的轴**（独立坐标系）；
+      - 渲染时给独立描边色，与主画布元素区分；
+      - 点击剥掉 OBS_ID_PREFIX 拿到真实 ref 跳转。
+
+    meta 供前端显示层规模与截断情况。
+    """
+    empty: dict[str, Any] = {"nodes": [], "edges": [], "meta": {}}
+    if not clue_id:
+        return empty
+    try:
+        from server.app.clues_artifact import load_directed_observations
+        obs = load_directed_observations(case_dir)
+    except Exception:
+        return empty
+
+    mine = []
+    for o in obs:
+        origin = getattr(o, "origin", None) or {}
+        if not isinstance(origin, dict):
+            continue
+        if str(origin.get("clue_id") or "") != str(clue_id):
+            continue
+        if not str(getattr(o, "observation_id", "") or ""):
+            continue
+        mine.append(o)
+    mine.reverse()  # 最近深挖优先（配合截断）
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[list[str]] = []
+    seen: set[str] = set()
+    expanded = 0
+    skipped = 0
+
+    def _pid(raw: str) -> str:
+        return OBS_ID_PREFIX + str(raw)
+
+    def _push(n: dict[str, Any]) -> None:
+        nid = str(n.get("id") or "")
+        if not nid or nid in seen:
+            return
+        seen.add(nid)
+        nodes.append(n)
+
+    for o in mine:
+        oid = str(getattr(o, "observation_id", "") or "")
+        if expanded >= _MAX_ORIGIN_LAYER_OBS:
+            skipped += 1
+            continue
+        det = getattr(o, "detail", None)
+        if not isinstance(det, dict) or not det:
+            continue
+        item = {
+            "skill_id": str(getattr(o, "skill_id", "") or ""),
+            "title": str(getattr(o, "title", "") or ""),
+            "detail": det,
+            "evidence_refs": list(getattr(o, "evidence_refs", None) or []),
+        }
+        layer = build_lens_layer(oid, item)
+        if not (layer or {}).get("recognized"):
+            continue
+        created = str(getattr(o, "created_at", "") or "")
+        for n in layer.get("nodes") or []:
+            raw_id = str(n.get("id") or "")
+            if not raw_id:
+                continue
+            props = dict(n.get("props") or {})
+            # 研判过程时间：观察的创建时刻（process 口径落档用）
+            if created and not props.get("created_at"):
+                props["created_at"] = created
+            props["obs_layer"] = True
+            props["obs_of"] = oid
+            props["obs_skill_id"] = str(getattr(o, "skill_id", "") or "")
+            _push({**n, "id": _pid(raw_id), "props": props})
+        for src, tgt, rel in layer.get("edges") or []:
+            edges.append([_pid(src), _pid(tgt), rel])
+        expanded += 1
+
+    meta = {
+        "observations": len(mine),
+        "expanded": expanded,
+        "skipped": skipped,
+        "nodes": len(nodes),
+        "edges": len(edges),
+    }
+    return {"nodes": nodes, "edges": edges, "meta": meta}
 
 
 # ----------------------------------------------------------------------

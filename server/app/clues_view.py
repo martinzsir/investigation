@@ -25,33 +25,9 @@ from server.app import ontology_meta
 from server.app.clues_artifact import (
     artifact_path,
     latest_artifact_version,
-    load_lens_runs,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _with_lens_runs(case_dir: Path, version: int,
-                    raws: list[dict]) -> list[dict]:
-    """并入定向镜头运行线索（lens_runs/v{N}/*.json 补充产物）。
-
-    主产物随版本不可变（D-M3-2），定向调度（TASK_LENS_RUN）线索落独立
-    补充产物、挂产生它的版本：列表/详情/抑制读面统一在此并线；版本前进
-    （RESCAN）后随旧版本自然失效，按需重跑。损坏运行文件在
-    load_lens_runs 内跳过，不拖垮读面。
-    """
-    extra: list[dict] = []
-    for run in load_lens_runs(case_dir, version):
-        for c in run.get("clues") or []:
-            if isinstance(c, dict):
-                # 打标副本（不改产物）：定向线索来源留痕——列表徽标/筛选
-                # （lens_run_id）与运行元信息（时间/触发人）随线索可见
-                marked = dict(c)
-                marked["lens_run_id"] = run.get("run_id", "")
-                marked["lens_run_at"] = run.get("created_at", "")
-                marked["lens_operator"] = run.get("operator", "")
-                extra.append(marked)
-    return [*raws, *extra] if extra else raws
 
 
 def _with_promoted(case_dir: Path, raws: list[dict]) -> list[dict]:
@@ -72,22 +48,22 @@ def _with_promoted(case_dir: Path, raws: list[dict]) -> list[dict]:
 
 
 def _load_raw(case_dir: Path, version: int | None) -> tuple[list[dict], int | None]:
-    """返回 (线索 dict 列表, 产物版本号)；无产物 → ([], None)。"""
+    """返回 (线索 dict 列表, 产物版本号)；无产物 → ([], None)。
+
+    不再并线定向镜头产出：定向与批量统一产**观察**，线索只能由人认领
+    （提升）产生。lens_runs/v{N}/*.json 退化为纯运行审计留痕。
+    """
     if version is not None:
         p = artifact_path(case_dir, version)
         if p.exists():
             data = json.loads(p.read_text(encoding="utf-8"))
-            return (_with_promoted(case_dir,
-                                   _with_lens_runs(case_dir, version,
-                                                   data.get("clues", []))),
+            return (_with_promoted(case_dir, data.get("clues", [])),
                     version)
     latest = latest_artifact_version(case_dir)
     if latest is None:
         return [], None
     data = json.loads(artifact_path(case_dir, latest).read_text(encoding="utf-8"))
-    return (_with_promoted(case_dir,
-                           _with_lens_runs(case_dir, latest,
-                                           data.get("clues", []))), latest)
+    return (_with_promoted(case_dir, data.get("clues", [])), latest)
 
 
 def _status_of(raw: dict, state_map: dict[str, dict]) -> dict:

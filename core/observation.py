@@ -89,6 +89,18 @@ class Observation:
     degraded_reason: str = ""
     created_at: str = field(default_factory=_now)
 
+    # ---- 定向深挖（画布发起）专属 ----
+    # source 区分自动批量与人工定向：两者产出性质相同（都是观察），
+    # 但**生灭口径不同**——批量随版本重算，定向是正兵显式发起的研判动作，
+    # 不随版本失效（见 DIRECTED 档案说明）。
+    source: str = "batch"        # batch=自动批量 / directed=画布定向
+    # 发起来源 {clue_id, node_id, subject, surface}：结果要能回到发起画布
+    origin: dict[str, Any] = field(default_factory=dict)
+    run_id: str = ""             # 定向运行批次（可回跳运行记录）
+    operator: str = ""           # 谁发起
+    version: int | None = None   # 产出时所处版本（仅审计，不决定生灭）
+    updated_at: str = ""
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -105,7 +117,10 @@ class Observation:
 # （引用必须指向真实存在的语义行）与 L1 特征层写入。转换发生在**编排层**，
 # 不动 handler 契约——改动面最小、且不丢失既有校验。
 
-def observation_from_clue(clue: Any) -> Observation:
+def observation_from_clue(clue: Any, *, source: str = "batch",
+                          origin: dict | None = None,
+                          run_id: str = "", operator: str = "",
+                          version: int | None = None) -> Observation:
     """镜头产出的 LineageClue → Observation。
 
     抽取「观察」该有的部分；**不继承** status / assumption_chain /
@@ -136,6 +151,14 @@ def observation_from_clue(clue: Any) -> Observation:
     # param_source 含靶心来源（如 focus:case_aliases#1:张卫国），
     # 用它做参数指纹能区分不同靶心；靶心变化 → 观察不同 → id 不同。
     params_key = str(detail.get("param_source") or "") or params_key
+    # 定向深挖可能与批量扫描「同镜头 + 同靶心」→ id 相撞。把发起线索并入
+    # 指纹：「在 A 线索下深挖张卫国」与「全案批量扫张卫国」是两条不同观察，
+    # 前者带研判上下文，后者是全案视角。
+    if source == "directed":
+        _ocid = str((origin or {}).get("clue_id") or "")
+        if _ocid:
+            params_key = (f"{params_key}|origin:{_ocid}" if params_key
+                          else f"origin:{_ocid}")
 
     return Observation(
         observation_id=_stable_id(skill_id, subject_key, params_key),
@@ -154,6 +177,11 @@ def observation_from_clue(clue: Any) -> Observation:
         param_source=str(detail.get("param_source") or ""),
         degraded=bool(detail.get("degraded")),
         degraded_reason=str(detail.get("degraded_reason") or ""),
+        source=source,
+        origin=dict(origin) if isinstance(origin, dict) else {},
+        run_id=str(run_id or ""),
+        operator=str(operator or ""),
+        version=version,
     )
 
 

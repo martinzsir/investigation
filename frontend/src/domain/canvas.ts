@@ -284,6 +284,27 @@ export interface CanvasEnvelope {
   semantic_ready?: boolean
   /** 成图规模声明（后端截断保护；缺失=未截断） */
   meta?: CanvasMeta
+  /**
+   * 观察图层：定向深挖结果的独立时间轴，**不并入 doc**。
+   * 独立下发使图层开关成为纯视图状态——关掉就是真的不在图里。
+   */
+  observation_layer?: ObservationLayerPayload
+}
+
+/**
+ * 观察图层载荷。边用三元组 [source, target, rel]（与后端镜头条目同形），
+ * 前端转 CanvasEdge 时补 id/system。
+ */
+export interface ObservationLayerPayload {
+  nodes: CanvasNode[]
+  edges: Array<[string, string, string]>
+  meta?: {
+    observations?: number
+    expanded?: number
+    skipped?: number
+    nodes?: number
+    edges?: number
+  }
 }
 
 /**

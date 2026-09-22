@@ -28,12 +28,27 @@ from core.pack_loader import BUILTIN_PACK_ID
 from core.registry import get_registry, skill_invoke
 from core.store import Store as CoreStore
 
-from server.app.clues_artifact import save_lens_run
+from core.observation import observation_from_clue
+from server.app.clues_artifact import (save_directed_observations,
+                                       save_lens_run)
 from server.app.snapshot_config import load_lens_overrides
 from server.app.worker.tasks import TaskExecError
 
 # 导入即注册五技能到 DEFAULT_REGISTRY（register_all 幂等）
 from skills import registry_bootstrap  # noqa: F401
+
+
+def _lens_label(skill_id: str, pack_id: str) -> str:
+    """镜头中文名（本体声明；取不到回落 skill_id，不硬编码中文）。"""
+    try:
+        m = __import__("server.app.worker.detect",
+                       fromlist=["_lens_name_labels"])
+        fn = getattr(m, "_lens_name_labels", None)
+        if fn:
+            return (fn(pack_id, None) or {}).get(skill_id, skill_id)
+    except Exception:
+        pass
+    return skill_id
 
 
 def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
@@ -68,6 +83,12 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
     if load_lens_overrides(factory.case_dir(case.id)).get(sid) is False:
         raise TaskExecError("LENS_CASE_DISABLED",
                             f"镜头 {sid} 已在本案件停用（启停面板）")
+
+    run_id = f"lensrun_{uuid.uuid4().hex[:12]}"
+    # origin 提前解析：观察要携带发起上下文，结果才能回到发起画布。
+    # 路由侧只保留已知键并强制 clue_id 为字符串（lenses.py run 端点）。
+    origin = p.get("origin") if isinstance(p.get("origin"), dict) else None
+    observations: list = []
 
     det = CoreStore(db_path=str(factory.version_path(case.id, version)))
     try:
@@ -115,28 +136,43 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
                             lens_params[type_key] = t
             clues = skill_invoke(reg, sid, store=det, ctx=ctx,
                                  params=lens_params)
+            # 定向产出统一为**观察**，与批量同口径：镜头无常态基线，只摆出
+            # 结构、不下异常判断。此前定向产 LineageClue 并线进线索清单，
+            # 等于按**触发方式**（而非产出性质）决定它是命题还是证据——
+            # 同一镜头批量时是观察、手跑时是线索，模型不自洽。
+            observations = [
+                observation_from_clue(c, source="directed", origin=origin,
+                                      run_id=run_id,
+                                      operator=task.created_by,
+                                      version=version)
+                for c in (clues or [])]
+            for o in observations:
+                o.lens_name = _lens_label(o.skill_id, spec.pack_id)
         except ValueError as e:
             # _validate_params 双向核对硬失败（未声明参数/必填缺失）
             raise TaskExecError("LENS_PARAM_INVALID", str(e))
     finally:
         det.close()
 
-    run_id = f"lensrun_{uuid.uuid4().hex[:12]}"
-    # task.params["origin"] 是路由侧预处理的发起来源（lenses.py 第 489-498 行
-    # 只保留已知键并强制 clue_id 为字符串）；透传给 save_lens_run 落盘。
-    # 之前漏传 → origin 永远 null → build_origin_lens_layer 找不到匹配项 →
-    # 画布上看不到代表节点。这是画布定向调度「原地并入深挖结果」断链的根因。
-    origin = p.get("origin") if isinstance(p.get("origin"), dict) else None
+    # 定向观察**案件级持久化**（artifacts/directed_observations.json，不挂
+    # 版本）：正兵显式发起的研判动作，RESCAN 版本前进不得删除——否则他刚
+    # 深挖完、一次重扫就没了。批量观察仍随版本重算（可复现、无需留手）。
+    if observations:
+        save_directed_observations(factory.case_dir(case.id), observations)
     path = save_lens_run(factory.case_dir(case.id), version,
                          run_id=run_id, skill_id=sid, params=lens_params,
-                         operator=task.created_by, clues=clues,
-                         origin=origin)
+                         operator=task.created_by, clues=[],
+                         observations=observations, origin=origin)
     degraded = [str(d.get("skill_id")) for d in ctx.get("degraded", [])
                 if isinstance(d, dict)]
     repo.record_ops("lens_run", case.id,
                     {"run_id": run_id, "skill_id": sid, "version": version,
-                     "params": lens_params, "clues": len(clues),
+                     "params": lens_params, "observations": len(observations),
+                     "observation_ids": [o.observation_id
+                                         for o in observations],
                      "degraded": degraded, "artifact": str(path),
                      "triggered_by": task.created_by})
-    return {"run_id": run_id, "version": version, "clues": len(clues),
+    return {"run_id": run_id, "version": version,
+            "observations": len(observations),
+            "observation_ids": [o.observation_id for o in observations],
             "artifact": str(path), "degraded": degraded}

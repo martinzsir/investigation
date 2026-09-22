@@ -20,7 +20,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from server.app.clues_artifact import load_case_observations
+from server.app.clues_artifact import (load_case_observations,
+                                       load_directed_observations)
 
 
 def assemble_observations(*, case_dir: str | Path, version: int,
@@ -43,7 +44,12 @@ def assemble_observations(*, case_dir: str | Path, version: int,
     ----------------------
       total / 未认领数 / 已提升数 / 按镜头分布
     """
-    obs = load_case_observations(case_dir, version)
+    # 两类观察合并展示：
+    #   批量（随版本重算，可复现） + 定向（画布深挖，案件级不随版本失效）
+    obs = list(load_case_observations(case_dir, version))
+    _seen = {x.observation_id for x in obs}
+    obs += [o for o in load_directed_observations(case_dir)
+            if o.observation_id not in _seen]
     disp = dispositions or {}
 
     rows: list[dict] = []
@@ -70,6 +76,11 @@ def assemble_observations(*, case_dir: str | Path, version: int,
             "operator": d.get("operator") or "",
             "promoted_clue_id": d.get("promoted_clue_id") or "",
             "promoted_hypothesis": d.get("promoted_hypothesis") or "",
+            # 定向深挖：案件级持久（不随版本失效），带发起上下文
+            "directed": o.source == "directed",
+            "origin": o.origin or {},
+            "run_id": o.run_id,
+            "operator": o.operator or d.get("operator") or "",
         })
 
     # ---- 跨版本遗留：认领过但不在当前版本档案里 ----
@@ -165,7 +176,10 @@ def assemble_observation_detail(*, case_dir: str | Path, version: int,
     事实明细默认只返回前 50 条（与档案内 facts 上限一致）；完整事件序列
     由画布下钻承载——详情页不铺开上百行。
     """
-    obs = load_case_observations(case_dir, version)
+    obs = list(load_case_observations(case_dir, version))
+    _seen = {x.observation_id for x in obs}
+    obs += [x for x in load_directed_observations(case_dir)
+            if x.observation_id not in _seen]
     o = next((x for x in obs if x.observation_id == observation_id), None)
     if o is None:
         return None
@@ -192,4 +206,8 @@ def assemble_observation_detail(*, case_dir: str | Path, version: int,
         "operator": d.get("operator") or "",
         "promoted_clue_id": d.get("promoted_clue_id") or "",
         "promoted_hypothesis": d.get("promoted_hypothesis") or "",
+        "directed": o.source == "directed",
+        "origin": o.origin or {},
+        "run_id": o.run_id,
+        "operator": o.operator or d.get("operator") or "",
     }

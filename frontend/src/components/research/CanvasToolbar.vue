@@ -34,6 +34,12 @@ defineProps<{
   /** G6 布局模式：preset（自定义 barycenter）或 G6 内置布局 */
   g6LayoutMode?: string
   busy?: boolean
+  /** 观察图层当前是否开启 */
+  observationLayerOn?: boolean
+  /** 是否存在可展开的观察（无观察时按钮禁用，避免点了没反应） */
+  hasObservationLayer?: boolean
+  /** 观察条数（tooltip 文案用） */
+  observationCount?: number
 }>()
 
 const emit = defineEmits<{
@@ -50,6 +56,8 @@ const emit = defineEmits<{
   (e: 'open-lens-run'): void
   /** 案件级镜头启停（lenses.json，RESCAN 后对批量检测生效） */
   (e: 'open-lens-switch'): void
+  /** 观察图层：定向深挖结果的独立时间轴开关（外挂层，不并入画布 doc） */
+  (e: 'toggle-observation-layer'): void
   /** M5 RC-301：打开画布问答侧栏 */
   (e: 'open-chat'): void
   /** M6 RC-304：打开研判报告面板 */
@@ -334,6 +342,29 @@ const LAYOUT_OPTIONS = [
           </NButton>
         </template>
         本案件镜头启停配置：保存即自动重建（RESCAN），停用镜头的线索随重建从线索列表移除，重新启用则恢复产出
+      </NTooltip>
+
+      <NTooltip trigger="hover">
+        <template #trigger>
+          <NButton
+            size="small"
+            class="tb-btn"
+            data-testid="tb-observation-layer"
+            :type="observationLayerOn ? 'primary' : 'default'"
+            :disabled="!hasObservationLayer"
+            @click="emit('toggle-observation-layer')"
+          >
+            <NIcon :component="LayersOutline" />
+            观察图层
+          </NButton>
+        </template>
+        {{
+          !hasObservationLayer
+            ? '本线索还没有定向深挖结果：先在画布选中主体运行「定向镜头」，结果会成为可展开的观察图层'
+            : observationLayerOn
+              ? `关闭观察图层（当前 ${observationCount ?? 0} 条深挖观察，独立时间轴）`
+              : `展开观察图层：${observationCount ?? 0} 条深挖观察按时间铺成独立时间轴，画在主画布下方`
+        }}
       </NTooltip>
 
       <NTooltip trigger="hover">

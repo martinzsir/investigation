@@ -15,7 +15,7 @@
  * （如 semantic: "event_time"），由装载器下发、画布读取——那是另一个改造。
  */
 import { RANK_Y_GAP } from './canvas-layout'
-import type { CanvasDoc, CanvasNode } from './canvas'
+import type { CanvasDoc, CanvasEdge, CanvasNode } from './canvas'
 
 /** 时间轴横向间距（像素/档；同档节点纵向堆叠） */
 export const TIME_X_GAP = 210
@@ -92,7 +92,7 @@ export function nodeTimestamp(
   const raw =
     mode === 'event'
       ? props.event_time
-      : (props.uploaded_at ?? props.uploadedAt ?? n.created_at ?? n.updated_at)
+      : (props.uploaded_at ?? props.uploadedAt ?? props.created_at ?? n.created_at ?? n.updated_at)
   if (typeof raw !== 'string' && typeof raw !== 'number') return null
   const t = typeof raw === 'number' ? raw : Date.parse(String(raw))
   return Number.isFinite(t) ? t : null
@@ -336,22 +336,54 @@ export function layoutByTime(
     target.y = topPad + y * RANK_Y_GAP
   }
 
-  // 无时间档放最右
+  // ---- 无时间节点归置：两种口径理由不同，处置也不同 ----
   const untimedIdx = axis.timed > 0 ? count : 0
-  let uy = 0
-  for (const n of untimed) {
-    const target = byId.get(n.id)
-    if (!target || target.pinned === true) continue
-    target.x = xByIndex(untimedIdx)
-    target.y = topPad + uy * RANK_Y_GAP
-    uy += 1
+  if (mode === 'event' && untimed.length > 0) {
+    // event 口径：无 event_time 是**本质如此**——rule/fact/hypothesis 这些
+    // 研判产物没有"发生在哪天"，不是数据缺失。全塞进一个「无时间」档会在
+    // 最右堆成一列长柱（实测可上百节点）。按 kind 分列摊到时间轴右侧：
+    // 同类一列、纵向堆叠，既摊薄高度，也保留了「这些不是业务事件」的语义。
+    //
+    // 为什么不让它们回流程坐标：流程列 x（0/260/480/720）与时间轴分档
+    // x（40/250/460…）大量重合，两坐标系会叠在一起互相遮挡。
+    const byKind = new Map<string, CanvasNode[]>()
+    for (const n of untimed) {
+      const k = String(n.kind || 'other')
+      const bucket = byKind.get(k)
+      if (bucket) bucket.push(n)
+      else byKind.set(k, [n])
+    }
+    let gi = 0
+    for (const k of [...byKind.keys()].sort()) {
+      const col = untimedIdx + gi
+      let uy = 0
+      for (const n of byKind.get(k) as CanvasNode[]) {
+        const target = byId.get(n.id)
+        if (!target || target.pinned === true) continue
+        target.x = xByIndex(col)
+        target.y = topPad + uy * RANK_Y_GAP
+        uy += 1
+      }
+      gi += 1
+    }
+  } else {
+    // process 口径：无过程时间戳才是真的缺失，保留单列「无时间」档显式归置
+    let uy = 0
+    for (const n of untimed) {
+      const target = byId.get(n.id)
+      if (!target || target.pinned === true) continue
+      target.x = xByIndex(untimedIdx)
+      target.y = topPad + uy * RANK_Y_GAP
+      uy += 1
+    }
   }
 
   return { ...doc, nodes: out }
 }
 
 /** 时间轴状态栏摘要文本（无有效时间轴时返回 null） */
-export function timeAxisSummary(axis: TimeAxisModel): string | null {
+export function timeAxisSummary(axis: TimeAxisModel,
+                                mode: TimeMode = 'process'): string | null {
   if (axis.timed === 0) return null
   const fmt = (t: number | null) =>
     t === null
@@ -362,5 +394,134 @@ export function timeAxisSummary(axis: TimeAxisModel): string | null {
           day: '2-digit',
         })
   const base = `${fmt(axis.from)} → ${fmt(axis.to)}`
-  return axis.untimed > 0 ? `${base}（${axis.untimed} 个节点无时间）` : base
+  if (axis.untimed === 0) return base
+  // 口径要说实话：event 口径下它们是"不该在业务时间轴上"，不是"缺时间"
+  return mode === 'event'
+    ? `${base}（${axis.untimed} 个节点非业务事件，按类型列于右侧）`
+    : `${base}（${axis.untimed} 个节点无时间）`
+}
+
+/**
+ * 观察图层与主画布之间的垂直留白（px）。
+ * 留白让「外挂层」在视觉上明确分离于主画布，而不是混在同一片节点里。
+ */
+export const OBS_LAYER_GAP = 160
+
+/**
+ * 观察图层独立布局：用自己的时间轴算 x，整体 y 偏移到主内容下方。
+ *
+ * 为什么独立坐标系
+ * ----------------
+ * 主画布流程列 x 为 0/260/480/720，时间轴分档 x 为 40/250…1510，两者大量
+ * 重合。若观察节点并入主画布同一套布局，会与流程节点叠在一起互相遮挡。
+ * 独立坐标系下观察层是一条**自己的时间轴**，画在主内容下方，互不干扰。
+ *
+ * 与 layoutByTime 的关系：复用同一批几何函数（buildTimeAxis /
+ * layoutTimeBands / bandLaneCount），因此「排的位置」与「画的宽度」同源，
+ * 不会出现带宽度与 x 坐标错档。
+ *
+ * @param nodes  观察层节点（后端已打 obs_layer 标记、id 带 obs:: 前缀）
+ * @param edges  观察层边（端点同为 obs:: 前缀）
+ * @param mode   时间口径（跟随主画布 effectiveTimeMode）
+ * @param yOffset 整体 y 偏移（= 主内容 bbox 底边 + OBS_LAYER_GAP）
+ * @param axisOverride 供渲染侧复用同一份轴（避免重复计算）
+ */
+export function layoutObservationLayer(
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+  mode: TimeMode,
+  yOffset: number,
+  axisOverride?: TimeAxisModel | null,
+): { doc: CanvasDoc; axis: TimeAxisModel; bands: Map<string, TimeBandGeometry> } {
+  const axis =
+    axisOverride !== undefined
+      ? (axisOverride as TimeAxisModel)
+      : buildTimeAxis({ nodes, edges }, mode)
+
+  if (axis.from === null || axis.to === null || axis.timed === 0) {
+    // 全无时间：不做无意义重排，但仍要下移到图层区域（否则叠在主画布上）。
+    // x 兜底：后端产物节点可能不带 x，undefined 会被 G6 渲到 x=0 视口外。
+    return {
+      doc: {
+        nodes: nodes.map((n, i) => ({
+          ...n,
+          x: typeof n.x === 'number' ? n.x : TIME_X_START,
+          y: yOffset + i * RANK_Y_GAP,
+        })),
+        edges,
+      },
+      axis,
+      bands: new Map<string, TimeBandGeometry>(),
+    }
+  }
+
+  const count = _bucketCount(axis.from, axis.to)
+  const bucketMs = axis.to > axis.from ? (axis.to - axis.from) / Math.max(1, count) : 0
+  const bands = mode === 'event'
+    ? layoutTimeBands({ nodes, edges }, axis)
+    : new Map<string, TimeBandGeometry>()
+  const bandIds = new Set(bands.keys())
+
+  const positioned = new Map<string, { x: number; y: number }>()
+  // 1) 区间带：轨道在图层区顶部（引擎原 y 是相对 0，这里整体加偏移）
+  for (const [id, g] of bands) {
+    positioned.set(id, { x: g.cx, y: yOffset + g.y })
+  }
+
+  // 2) 点节点：按时间分档落 x，档内纵向堆叠；整体避让轨道带高度
+  const trackH = bandLaneCount(bands) > 0
+    ? Math.max(...[...bands.values()].map((g) => g.y + g.height))
+    : 0
+  const perBucket = new Map<number, number>()
+  const timed: Array<{ n: CanvasNode; t: number }> = []
+  const untimed: CanvasNode[] = []
+  for (const n of nodes) {
+    if (bandIds.has(n.id)) continue
+    const t = nodeTimestamp(n, mode)
+    if (t === null) untimed.push(n)
+    else timed.push({ n, t })
+  }
+  timed.sort((a, b) => a.t - b.t || a.n.id.localeCompare(b.n.id))
+  for (const { n, t } of timed) {
+    const bi = _bucketIndex(t, axis.from as number, bucketMs, count)
+    const seq = perBucket.get(bi) ?? 0
+    perBucket.set(bi, seq + 1)
+    positioned.set(n.id, {
+      x: _bucketCenterX(bi),
+      y: yOffset + trackH + BAND_TRACK_PAD_TOP + seq * RANK_Y_GAP,
+    })
+  }
+  // 无时间节点：归到最右一档（与主画布同口径：显式归置，不隐藏）
+  const untimedBucket = count
+  untimed.forEach((n, i) => {
+    positioned.set(n.id, {
+      x: _bucketCenterX(untimedBucket),
+      y: yOffset + trackH + BAND_TRACK_PAD_TOP + i * RANK_Y_GAP,
+    })
+  })
+
+  return {
+    doc: {
+      nodes: nodes.map((n) => {
+        const p = positioned.get(n.id)
+        return p ? { ...n, x: p.x, y: p.y } : n
+      }),
+      edges,
+    },
+    axis,
+    bands,
+  }
+}
+
+/**
+ * 观察图层占用的高度（px）——供视口自适应与图层区背景框使用。
+ */
+export function observationLayerHeight(
+  bands: Map<string, TimeBandGeometry>,
+  pointRows: number,
+): number {
+  const trackH = bandLaneCount(bands) > 0
+    ? Math.max(...[...bands.values()].map((g) => g.y + g.height))
+    : 0
+  return trackH + BAND_TRACK_PAD_TOP + Math.max(1, pointRows) * RANK_Y_GAP
 }

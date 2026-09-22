@@ -23,6 +23,9 @@ ARTIFACT_PREFIX = "clues_v"
 # 观察档案（镜头产出）——与线索分离：不进处置清单，随版本可复现
 OBSERVATION_PREFIX = "observations_v"
 LENS_RUN_DIRNAME = "lens_runs"
+# 定向深挖观察档案：**案件级、不挂版本**（正兵显式发起的研判动作，
+# 不能因 RESCAN 版本前进而消失）。与批量观察（随版本重算）分开存放。
+DIRECTED_OBS_FILENAME = "directed_observations.json"
 # 庙算假设（自动派生 + 人工补充）——随版本可复现，与线索同目录不同前缀
 HYPOTHESES_PREFIX = "hypotheses_v"
 
@@ -57,6 +60,72 @@ def save_case_observations(case_dir: str | Path, version: int,
         json.dumps({"version": version, "observations": items},
                    ensure_ascii=False, indent=1, default=str),
         encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def directed_observations_path(case_dir: str | Path) -> Path:
+    """定向深挖观察档案路径（案件级，无版本号）。"""
+    return Path(case_dir) / ARTIFACT_DIR / DIRECTED_OBS_FILENAME
+
+
+def load_directed_observations(case_dir: str | Path) -> list:
+    """读定向深挖观察（案件级，跨版本持久）；无文件/损坏 → []。"""
+    path = directed_observations_path(case_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = data.get("observations") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        if isinstance(it, dict):
+            out.append(Observation.from_dict(it))
+    return out
+
+
+def save_directed_observations(case_dir: str | Path,
+                               observations: list) -> Path:
+    """合并写入定向观察（按 observation_id upsert，原子写）。
+
+    为什么 upsert 而不是追加
+    ------------------------
+    同一镜头 + 同一靶心 + 同一发起线索 → 稳定 id 相同。正兵重跑一次
+    （比如 RESCAN 后再看同一个人的时间线）应当**更新**那条观察，
+    而不是堆出第二条几乎一样的条目。运行历史仍由 lens_runs 逐次留痕。
+    """
+    path = directed_observations_path(case_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, dict] = {}
+    if path.exists():
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            for it in (old.get("observations") or []):
+                if isinstance(it, dict) and it.get("observation_id"):
+                    existing[str(it["observation_id"])] = it
+        except Exception:
+            existing = {}
+    for o in observations or []:
+        d = o.to_dict() if hasattr(o, "to_dict") else dict(o)
+        oid = str(d.get("observation_id") or "")
+        if not oid:
+            continue
+        prev = existing.get(oid)
+        if prev:
+            # 保留首次创建时间，其余按最新运行结果更新
+            d["created_at"] = prev.get("created_at") or d.get("created_at")
+        d["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        existing[oid] = d
+    items = [existing[k] for k in sorted(existing, key=lambda x: (
+        existing[x].get("created_at") or "", x))]
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"schema_version": 1, "observations": items},
+                              ensure_ascii=False, indent=1, default=str),
+                   encoding="utf-8")
     tmp.replace(path)
     return path
 
@@ -200,7 +269,8 @@ def load_origin_lens_runs(case_dir: str | Path, version: int,
 
 def save_lens_run(case_dir: str | Path, version: int, *, run_id: str,
                   skill_id: str, params: dict, operator: str,
-                  clues: list, origin: dict | None = None) -> Path:
+                  clues: list | None = None, origin: dict | None = None,
+                  observations: list | None = None) -> Path:
     """定向镜头运行线索落盘（原子写）。clues 为 LineageClue 或 dict 列表。
 
     origin（发起来源，可选）：{clue_id, node_id, subject, surface}。
@@ -218,8 +288,16 @@ def save_lens_run(case_dir: str | Path, version: int, *, run_id: str,
         "skill_id": skill_id, "params": params, "operator": operator,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "origin": dict(origin) if isinstance(origin, dict) else None,
+        # 定向产出已统一为**观察**而非线索：clues 仅作历史兼容保留空列表，
+        # 真正结果在 observations（观察档案，案件级不挂版本）。
         "clues": [c.to_dict() if hasattr(c, "to_dict") else dict(c)
-                  for c in clues],
+                  for c in (clues or [])],
+        "observations": [o.to_dict() if hasattr(o, "to_dict") else dict(o)
+                         for o in (observations or [])],
+        "observation_ids": [str(getattr(o, "observation_id", None)
+                                or (o.get("observation_id") if isinstance(o, dict)
+                                    else "") or "")
+                            for o in (observations or [])],
     }
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(

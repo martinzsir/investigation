@@ -42,6 +42,7 @@ import {
   type ManualRel,
   type NodeDetail,
   type NodeKind,
+  type ObservationLayerPayload,
   type RuleAudit,
 } from '../../domain/canvas'
 import { RANK_X, layoutNodes } from '../../domain/canvas-layout'
@@ -84,6 +85,8 @@ import {
   buildTimeAxis,
   layoutByTime,
   layoutTimeBands,
+  layoutObservationLayer,
+  OBS_LAYER_GAP,
   timeAxisSummary,
   type TimeMode,
 } from '../../domain/canvas-layout-time'
@@ -148,19 +151,46 @@ const emit = defineEmits<{
 const router = useRouter()
 
 /**
- * 跳到深挖线索的独立画布。
- * 深挖结果在发起画布上只落**代表节点**（完整内容会淹没本画布结构），
- * 需要深挖下去时再跳到它自己的画布——这条路径保留了"可独立处置"的语义。
+ * 跳到深挖结果的观察详情。
+ * 定向产出已统一为**观察**（不是线索）：在发起画布上只落代表节点
+ * （完整内容会淹没本画布结构），要看全貌就跳到观察详情；认为构成疑点时
+ * 在详情页提升为线索（强制指定假设），那一刻它才成为待证伪的命题。
  */
-function openOriginLensClue(subClueId: string): void {
-  if (!subClueId || !props.caseId) return
-  void router.push(`/c/clue/${encodeURIComponent(subClueId)}`)
+function openOriginLensObservation(observationId: string): void {
+  if (!observationId || !props.caseId) return
+  void router.push(`/c/observations/${encodeURIComponent(observationId)}`)
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
 const state = ref<LoadState>('loading')
 const errorMsg = ref('')
 const doc = ref<CanvasDoc | null>(null)
+
+/**
+ * 观察图层原始数据（定向深挖结果）。
+ *
+ * **不并入 doc**——它不在持久化的画布文档里，每次 GET 由后端从案件级
+ * 定向档案派生。这使图层开关成为纯视图状态：关掉就是真的不在图里，
+ * 不产生任何持久化副作用。
+ */
+const observationLayerRaw = ref<ObservationLayerPayload>({
+  nodes: [],
+  edges: [],
+})
+
+/**
+ * 观察图层开关，默认关闭。
+ *
+ * 默认关的理由：深挖结果应由正兵主动唤出，而不是每次打开画布都糊上来
+ * 淹没研判上下文。代表节点仍常驻主画布（回答「我跑过什么」），完整
+ * 时间轴按需展开（回答「挖出来的事发生在哪天」）。
+ */
+const observationLayerOn = ref(false)
+
+/** 无可用观察时开关不可点（有按钮但点了没反应更让人困惑） */
+const hasObservationLayer = computed(
+  () => (observationLayerRaw.value.nodes?.length ?? 0) > 0,
+)
 const version = ref(0)
 const semanticReady = ref(true)
 /** 成图规模声明（溯源行截断 shown/total） */
@@ -392,12 +422,15 @@ function toG6Data(d: CanvasDoc): unknown {
           // P1-② 人机来源（四态）：机器派生 / AI 建议 / 人工已采纳 / 人工新增
           provenance: provenanceOf(n),
           provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
-          // C 方案：本线索发起的深挖结果（可跳转回其独立画布）
+          // 观察图层：展开的独立时间轴节点（外挂层，不属主画布研判上下文）
+          observationLayer: (n.props as Record<string, unknown> | undefined)
+            ?.obs_layer === true,
+          // C 方案：本线索发起的深挖结果（跳观察详情，可再提升为线索）
           originLens: (n.props as Record<string, unknown> | undefined)
             ?.origin_lens === true,
-          originLensClueId: String(
+          originLensObsId: String(
             (n.props as Record<string, unknown> | undefined)
-              ?.sub_clue_id ?? ''),
+              ?.observation_id ?? ''),
           // M4 RC-105：未采纳手册建议（虚线态）
           suggestion: isSuggestionNode(n),
           // 简洁视图才给 +/−（完整视图所有节点恒显；轨道带不挂折叠开关）
@@ -683,12 +716,37 @@ const laidOutDoc = computed<CanvasDoc | null>(() => {
   if (!base) return null
   if (perspective.value === 'tier') return layoutByTier(base)
   if (perspective.value === 'time') {
-    // 业务时间口径需本体已声明；未声明时 layoutByTime 会因全无时间而原样返回，
-    // 这里显式回落 process，保证「没有业务时间就按过程时间排」，不空白。
-    const mode: TimeMode = canUseEventTime.value ? timeMode.value : 'process'
-    return layoutByTime(base, mode)
+    return layoutByTime(base, effectiveTimeMode.value)
   }
   return base
+})
+
+/**
+ * 观察图层已定位的文档（独立坐标系）。
+ *
+ * 观察层用**自己的时间轴**算 x，整体 y 偏移到主内容下方，因此不与主画布
+ * 的流程列坐标重合。轴与轨道带在此算出并向下传递，渲染侧复用同一份，
+ * 保证「排的位置」与「画的宽度」同源。
+ */
+const observationLayerDoc = computed(() => {
+  if (!observationLayerOn.value || !hasObservationLayer.value) return null
+  const raw = observationLayerRaw.value
+  const nodes = raw.nodes ?? []
+  const edges = (raw.edges ?? []).map(([source, target, rel], i) => ({
+    id: `obsedge:${i}`,
+    source,
+    target,
+    rel,
+    system: true,
+  }))
+  // y 偏移 = 主内容底边 + 留白。主层为空时从 0 起。
+  const baseNodes = laidOutDoc.value?.nodes ?? []
+  const mainBottom = baseNodes.length
+    ? Math.max(...baseNodes.map((n) => Number(n.y ?? 0)))
+    : 0
+  return layoutObservationLayer(
+    nodes, edges, effectiveTimeMode.value, mainBottom + OBS_LAYER_GAP,
+  )
 })
 
 /**
@@ -701,9 +759,17 @@ const { hasEventTime } = useCaseOntologyConfig()
 /** 允许使用业务时间口径（本体已声明） */
 const canUseEventTime = computed(() => hasEventTime.value)
 
-/** 时间轴视角摘要（状态栏：起止日期 + 无时间节点数） */
+/**
+ * 实际生效的口径。业务时间需本体已声明；未声明时强制回落 process，
+ * 保证「没有业务时间就按过程时间排」，不空白。布局、摘要、轨道带
+ * 三处必须同口径，否则会出现「按业务时间排、按过程时间报」的错档。
+ */
+const effectiveTimeMode = computed<TimeMode>(
+  () => (canUseEventTime.value ? timeMode.value : 'process'))
+
+/** 时间轴视角摘要（状态栏：起止日期 + 非业务事件节点数） */
 const timeAxis = computed(() =>
-  doc.value ? buildTimeAxis(doc.value, timeMode.value) : null,
+  doc.value ? buildTimeAxis(doc.value, effectiveTimeMode.value) : null,
 )
 
 /**
@@ -713,11 +779,8 @@ const timeAxis = computed(() =>
  */
 const eventBands = computed(() => {
   const out = new Map<string, { kind: string; width: number; height: number }>()
-  if (
-    perspective.value !== 'time' ||
-    !canUseEventTime.value ||
-    timeMode.value !== 'event'
-  ) {
+  // 与 laidOutDoc / timeAxis 同一份 effectiveTimeMode，避免三处口径打架
+  if (perspective.value !== 'time' || effectiveTimeMode.value !== 'event') {
     return out
   }
   // 必须与 layoutByTime 同一份投影文档（renderDoc）：轴范围/分档/泳道
@@ -731,8 +794,19 @@ const eventBands = computed(() => {
   return out
 })
 const timeSummary = computed(() =>
-  timeAxis.value ? timeAxisSummary(timeAxis.value) : null,
+  timeAxis.value ? timeAxisSummary(timeAxis.value, effectiveTimeMode.value) : null,
 )
+
+/** 当前布局模式名（提示文案用） */
+const g6LayoutModeLabel = computed(() => {
+  switch (g6LayoutMode.value) {
+    case 'dagre': return '层次'
+    case 'force': return '力导向'
+    case 'radial': return '辐射'
+    case 'concentric': return '同心圆'
+    default: return '分列'
+  }
+})
 
 /** 状态栏视角名（三态） */
 const perspectiveLabel = computed(() => {
@@ -854,11 +928,21 @@ const graphDoc = computed<CanvasDoc | null>(() => {
   const base = laidOutDoc.value ?? renderDoc.value ?? doc.value
   if (!base) return null
   const c = collapsedChain.value
-  if (!c || c.collapsedNodeIds.size === 0) return base
-  const nodes = base.nodes.filter((n) => !c.collapsedNodeIds.has(n.id))
-  const ids = new Set(nodes.map((n) => n.id))
-  const edges = base.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
-  return { ...base, nodes, edges }
+  let merged = base
+  if (c && c.collapsedNodeIds.size > 0) {
+    const nodes = base.nodes.filter((n) => !c.collapsedNodeIds.has(n.id))
+    const ids = new Set(nodes.map((n) => n.id))
+    const edges = base.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
+    merged = { ...base, nodes, edges }
+  }
+  // 观察图层在折叠**之后**并入：obs:: 前缀节点不参与主画布折叠链路，
+  // 若在折叠前并入，ids 过滤会把图层边误删（端点不在主画布节点集）。
+  const layer = observationLayerDoc.value
+  if (!layer) return merged
+  return {
+    nodes: [...merged.nodes, ...layer.doc.nodes],
+    edges: [...merged.edges, ...layer.doc.edges],
+  }
 })
 
 // ----------------------------------------------------------------------
@@ -912,6 +996,7 @@ function currentG6Data(): unknown {
   if (overviewMode.value && overviewModel.value) {
     return toG6OverviewData(overviewModel.value)
   }
+  // graphDoc 已含观察图层（折叠后并入）；全局概览外统一走这里
   const d = graphDoc.value ?? doc.value
   if (!d) return { nodes: [], edges: [] }
   return toG6Data(d)
@@ -1059,10 +1144,10 @@ function onNodeClick(ev: unknown, rawId: unknown): void {
     openFactPopover(node.id, oe?.clientX, oe?.clientY)
     return
   }
-  // 深挖结果代表节点：点击直接跳转到 sub_clue 独立画布（不延迟、不开抽屉）
-  if (g6Node.data?.originLens === true && g6Node.data?.originLensClueId) {
+  // 深挖结果代表节点：点击直接跳到观察详情（不延迟、不开抽屉）
+  if (g6Node.data?.originLens === true && g6Node.data?.originLensObsId) {
     clearClickTimer()
-    openOriginLensClue(String(g6Node.data.originLensClueId))
+    openOriginLensObservation(String(g6Node.data.originLensObsId))
     return
   }
   // 连线模式下节点点击归 create-edge behavior，不开抽屉
@@ -1390,6 +1475,7 @@ function absorbReload(env: { doc: CanvasDoc; version: number;
   doc.value = env.doc
   version.value = env.version
   semanticReady.value = env.semantic_ready !== false
+  observationLayerRaw.value = env.observation_layer ?? { nodes: [], edges: [] }
   // 成图规模声明（溯源行截断）；后端缺失即视为未截断
   if (env.meta) canvasMeta.value = env.meta
 }
@@ -1590,9 +1676,14 @@ function onTogglePerspective(): void {
   persistViewPref()
   // 视角切换 = 整体布局变化，重排视口；附带清焦点（节点跨带位移，路径条不再连贯）
   if (perspective.value !== 'process') clearFocus()
-  // 非 preset 布局不感知分带/时间档，退回流程视角
+  // 非 preset 布局不感知分带/时间档，退回流程视角。
+  // 静默退回会让用户"点了没反应"，必须给出原因：告知是哪种布局挡住了。
   if (g6LayoutMode.value !== 'preset' && perspective.value !== 'process') {
+    const blocked = perspectiveLabel.value
     perspective.value = 'process'
+    message.warning(
+      `当前为「${g6LayoutModeLabel.value}」布局，${blocked}视角不生效，已退回流程视角`,
+    )
   }
   pendingRefit = true
 }
@@ -2505,8 +2596,13 @@ async function submitLensRun(payload: {
   try {
     // 带上发起来源：产物据此回到**本线索画布**（原地并入深挖结果），
     // 避免"深挖后跳去列表找结果"打断研判。node_id 用于把结果挂在选中主体下。
+    // auto 显式 false：画布定向**不允许零填写**，靶心必须由正兵指定
+    // （选中主体预填 / 下拉选 / 手填，三选一）。后端 auto=true 会跳过
+    // 必填预检、交由 auto_from 推导——那是批量扫描的口径，不是研判口径：
+    // 深挖要看的是"我指定的这个对象"，不是"系统帮我挑一个"。
     const r = await lensesApi.run(props.caseId, payload.skill_id, {
       params: payload.params,
+      auto: false,
       origin: {
         clue_id: props.clueId,
         node_id: selectedNodeId.value || undefined,
@@ -2535,6 +2631,31 @@ function openLensSwitch(): void {
   lsShow.value = true
 }
 
+/** 定向深挖观察条数（工具栏文案与层规模提示用） */
+const observationCount = computed(
+  () => observationLayerRaw.value.meta?.observations
+    ?? new Set(
+      (observationLayerRaw.value.nodes ?? [])
+        .map((n) => String((n.props ?? {}).obs_of ?? ''))
+        .filter(Boolean),
+    ).size,
+)
+
+/**
+ * 切换观察图层。
+ *
+ * 图层不是画布文档的组成部分（每次 GET 由后端从案件级定向档案派生），
+ * 所以这里只是纯视图开关——不落库、不入队重扫、不影响任何持久化数据。
+ */
+function onToggleObservationLayer(): void {
+  observationLayerOn.value = !observationLayerOn.value
+  message.info(
+    observationLayerOn.value
+      ? `已展开观察图层：${observationCount.value} 条深挖观察（独立时间轴，画在主画布下方）`
+      : '已收起观察图层',
+  )
+}
+
 async function load(): Promise<void> {
   state.value = 'loading'
   errorMsg.value = ''
@@ -2543,6 +2664,7 @@ async function load(): Promise<void> {
     doc.value = env.doc
     version.value = env.version
     semanticReady.value = env.semantic_ready !== false
+    observationLayerRaw.value = env.observation_layer ?? { nodes: [], edges: [] }
     // 规则五维懒预取（卡片顶部色点/事实继承色；失败静默）
     for (const n of env.doc.nodes) {
       if (n.kind === 'rule' && (n.ref || n.id) !== 'unlinked')
@@ -2614,6 +2736,11 @@ async function mountGraph(): Promise<void> {
             }
             if (d.data?.band === 'collision_window') {
               return canvasTokens.band.collision_window.stroke
+            }
+            // 观察图层最优先：它是展开的外挂独立时间轴，整层都要能一眼
+            // 认出"这不属于主画布的研判上下文"。
+            if (d.data?.observationLayer === true) {
+              return canvasTokens.strokeObservationLayer
             }
             // 深挖结果层优先：它是"本次研判发起的机器产出"，
             // 视觉上要能一眼认出"这是我刚才跑出来的"。
@@ -2885,6 +3012,10 @@ watch(perspective, () => pushGraphData({ refit: true }))
 // （仅 event 口径成带）都依赖 timeMode，必须显式重推
 watch(timeMode, () => pushGraphData({ refit: true }))
 
+// 观察图层开合：图层节点在 graphDoc 末尾并入，开合改变 graphDoc 但不影响
+// renderDoc/collapsedChain——必须有专用 watcher 重推，否则点了开关图层不出现
+watch(observationLayerOn, () => pushGraphData({ refit: true }))
+
 // 投影变化（展开集/层开关/模式）或维度懒取完成后重推
 watch(
   [renderDoc, () => JSON.stringify(dimensionMap)],
@@ -2995,6 +3126,10 @@ function nodeLabel(id: string): string {
         @open-function-query="openFunctionQuery"
         @open-lens-run="openLensRun"
         @open-lens-switch="openLensSwitch"
+        :observation-layer-on="observationLayerOn"
+        :has-observation-layer="hasObservationLayer"
+        :observation-count="observationCount"
+        @toggle-observation-layer="onToggleObservationLayer"
         @open-chat="openChat"
         @open-report="openReport"
         @expand-all-details="onExpandAllDetails"

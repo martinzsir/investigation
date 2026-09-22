@@ -111,7 +111,8 @@ def _sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 
-def _payload(row: dict, *, seeded: bool, semantic_ready: bool) -> dict:
+def _payload(row: dict, *, seeded: bool, semantic_ready: bool,
+             observation_layer: dict | None = None) -> dict:
     doc = row["doc"] or {}
     # meta：成图规模截断声明（种子期生成，随 doc 持久化）。
     # 单独下发到顶层，前端不必去 doc 里翻；缺失即视为未截断。
@@ -128,6 +129,11 @@ def _payload(row: dict, *, seeded: bool, semantic_ready: bool) -> dict:
         "seeded": seeded,
         "semantic_ready": semantic_ready,
         "meta": meta if isinstance(meta, dict) else {},
+        # 观察图层：定向深挖结果的独立时间轴，**不并入 doc**。
+        # 独立下发 → 前端开关是纯视图状态，图层关掉就是真的不在图里，
+        # 不污染持久化的 canvas doc。
+        "observation_layer": observation_layer
+        if isinstance(observation_layer, dict) else {"nodes": [], "edges": []},
     }
 
 
@@ -231,7 +237,10 @@ def get_canvas(case_id: str, clue_id: str,
                                   "clue_id": clue_id,
                                   "added_nodes": n_nodes,
                                   "added_edges": n_edges})
-            return ok(_payload(existing, seeded=False, semantic_ready=ready),
+            obs_layer = canvas_seed.build_observation_layer(
+                ctx.factory.case_dir(case_id), clue_id)
+            return ok(_payload(existing, seeded=False, semantic_ready=ready,
+                               observation_layer=obs_layer),
                       data_version=version)
 
         # ---- 惰性 seed：复用 assemble_detail（三栏证据/遮蔽/核查项供给
@@ -279,7 +288,10 @@ def get_canvas(case_id: str, clue_id: str,
                before=None,
                after={"action": "canvas.create", "clue_id": clue_id,
                       "nodes": len(doc["nodes"]), "edges": len(doc["edges"])})
-        return ok(_payload(row, seeded=True, semantic_ready=ready),
+        obs_layer = canvas_seed.build_observation_layer(
+            ctx.factory.case_dir(case_id), clue_id)
+        return ok(_payload(row, seeded=True, semantic_ready=ready,
+                           observation_layer=obs_layer),
                   data_version=version)
     finally:
         state.close()
