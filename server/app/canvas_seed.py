@@ -779,30 +779,51 @@ def _lens_intervals(clue_id: str, det: dict[str, Any]
     时间轴视角天然落到窗口起点。
     """
     fn_name = str(det.get("function") or "")
-    out: list[dict[str, Any]] = []
+    raw_bursts = det.get("bursts") or []
+    # 镜头级节奏指标在 detail 顶层（timeline_rhythm 产物）；
+    # 旧产物缺 burst_count 时按实际簇数回退，缺 median_gap_days 则不透传
+    # （前端不显示，不编造）。
+    burst_count = det.get("burst_count")
+    if burst_count is None:
+        burst_count = len(raw_bursts) if isinstance(raw_bursts, list) else None
+    median_gap = det.get("median_gap_days")
 
-    for i, b in enumerate(det.get("bursts") or [], start=1):
+    burst_nodes: list[dict[str, Any]] = []
+    for i, b in enumerate(raw_bursts, start=1):
         if not isinstance(b, dict):
             continue
         start, end = str(b.get("start") or ""), str(b.get("end") or "")
         ref = f"burst:{clue_id}:{i}"
-        out.append({
+        props: dict[str, Any] = {
+            "function": fn_name,
+            "interval_kind": "burst",
+            "start": start, "end": end,
+            "event_time": start,
+            "event_count": b.get("event_count"),
+            "types": list(b.get("types") or []),
+            # 链式簇标记（相邻间隔均 ≤ burst_days 但首末跨度超天窗）；
+            # 旧产物无此字段，span_days 缺失时按 False 保守处理
+            "chain": bool(b.get("chain", False)),
+            "span_days": b.get("span_days"),
+            "max_gap_days": b.get("max_gap_days"),
+        }
+        # 节奏指标挂在每个簇节点上（同一次镜头产物内冗余但极小，
+        # 前端按 obs_of 组读取，用于「常态间隔 vs 成簇」对照判读）
+        if median_gap is not None:
+            props["median_gap_days"] = median_gap
+        if burst_count is not None:
+            props["burst_count"] = burst_count
+        burst_nodes.append({
             "id": sys_node_id("function_result", ref),
             "kind": "function_result", "ref": ref,
             "label": _truncate(
                 f"聚集簇 {i}｜{start}~{end}"
                 f"（{b.get('event_count', len(b.get('events') or []))} 起）"),
             "system": True, "pinned": False,
-            "props": {
-                "function": fn_name,
-                "interval_kind": "burst",
-                "start": start, "end": end,
-                "event_time": start,
-                "event_count": b.get("event_count"),
-                "types": list(b.get("types") or []),
-            },
+            "props": props,
         })
 
+    collision_node: dict[str, Any] | None = None
     if det.get("anchor_date") and det.get("window_days") is not None:
         anchor = str(det.get("anchor_date") or "")
         win = det.get("window_days")
@@ -811,7 +832,7 @@ def _lens_intervals(clue_id: str, det: dict[str, Any]
         end = _shift_date(anchor, int(win))
         n_events = len(det.get("events") or [])
         ref = f"collision:{clue_id}:{idx}"
-        out.append({
+        collision_node = {
             "id": sys_node_id("function_result", ref),
             "kind": "function_result", "ref": ref,
             "label": _truncate(
@@ -820,15 +841,24 @@ def _lens_intervals(clue_id: str, det: dict[str, Any]
             "props": {
                 "function": fn_name,
                 "interval_kind": "collision_window",
-                "anchor_date": anchor, "window_days": win,
+                "anchor_date": anchor,
+                "window_days": win,
                 "start": start, "end": end,
                 "event_time": start,
                 "event_count": n_events,
             },
-        })
+        }
 
-    total = len(out)
-    return out[:_MAX_LENS_INTERVAL_NODES], total
+    total = len(burst_nodes) + (1 if collision_node is not None else 0)
+    cap = _MAX_LENS_INTERVAL_NODES
+    if collision_node is not None:
+        # 碰撞窗是另一判据的产物，截断时至少保留 1 席，避免簇数 ≥ cap
+        # 时排在队尾的碰撞窗被静默挤掉（下游 zip 按 burst 在前配对，
+        # 碰撞窗垫尾不影响「簇 ──涉及──▶ 事件」边）。
+        out = burst_nodes[: cap - 1] + [collision_node]
+    else:
+        out = burst_nodes[:cap]
+    return out, total
 
 
 # ----------------------------------------------------------------------
@@ -1115,6 +1145,8 @@ def build_observation_layer(case_dir, clue_id: str) -> dict[str, Any]:
       - 参与时间轴布局时用**本层自己的轴**（独立坐标系）；
       - 渲染时给独立描边色，与主画布元素区分；
       - 点击剥掉 OBS_ID_PREFIX 拿到真实 ref 跳转。
+    另透传 obs_skill_id/obs_lens_name/obs_target/obs_title 供泳道头
+    与悬浮显示中文名（缺失字段由前端回退）。
 
     meta 供前端显示层规模与截断情况。
     """
@@ -1184,6 +1216,13 @@ def build_observation_layer(case_dir, clue_id: str) -> dict[str, Any]:
             props["obs_layer"] = True
             props["obs_of"] = oid
             props["obs_skill_id"] = str(getattr(o, "skill_id", "") or "")
+            # 中文显示名（泳道头/悬浮用）：lens_name 为本体声明的镜头中文名；
+            # target 取观察靶心（主体优先、项目次之），用于区分同镜头对不同人
+            # 的多条观察；title 是完整观察标题。旧档案缺字段 → 前端安全回退。
+            props["obs_lens_name"] = str(getattr(o, "lens_name", "") or "")
+            props["obs_target"] = str(
+                getattr(o, "subject", "") or getattr(o, "project", "") or "")
+            props["obs_title"] = str(getattr(o, "title", "") or "")
             _push({**n, "id": _pid(raw_id), "props": props})
         for src, tgt, rel in layer.get("edges") or []:
             edges.append([_pid(src), _pid(tgt), rel])

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -23,7 +24,9 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from server.app.canvas_seed import (
+    OBS_ID_PREFIX,
     build_lens_layer,
+    build_observation_layer,
     fact_ref,
     reconcile_canvas,
     seed_canvas,
@@ -32,7 +35,9 @@ from server.app.canvas_seed import (
     validate_patch,
 )
 from server.app import canvas_seed as canvas_seed_mod
+from server.app.clues_artifact import save_directed_observations
 from server.app.evidence_builder import _make_source_ref
+from core.observation import Observation
 
 
 def _detail(**over) -> dict:
@@ -289,11 +294,15 @@ def _lens_rhythm_item() -> dict:
         "detail": {
             "function": "timeline_rhythm",
             "hypothesis": "事件成簇，待正兵核查",
+            # 镜头级节奏指标（detail 顶层，需透传到簇节点供时间轴对照判读）
+            "median_gap_days": 4,
+            "burst_count": 2,
             "subject": {"type": "person", "pk": "person_1",
                         "name": "张卫国"},
             "bursts": [
                 {"start": "2020-01-01", "end": "2020-01-03",
                  "event_count": 2, "types": ["call", "transaction"],
+                 "chain": True, "span_days": 2, "max_gap_days": 2,
                  "events": [
                      call_a,
                      {"type": "资金", "src_object": "transaction",
@@ -407,6 +416,17 @@ class LensSeedTest(unittest.TestCase):
         self.assertEqual("2020-01-01", b1["props"]["event_time"])
         self.assertEqual("burst", b1["props"]["interval_kind"])
         self.assertEqual("timeline_rhythm", b1["props"]["function"])
+        # 链式簇标记透传到区间节点 props（供时间轴区分带宽语义）
+        self.assertTrue(b1["props"]["chain"])
+        self.assertEqual(2, b1["props"]["span_days"])
+        self.assertEqual(2, b1["props"]["max_gap_days"])
+        # 镜头级节奏指标透传（时间轴泳道组「中位间隔 vs 成簇」对照用）
+        self.assertEqual(4, b1["props"]["median_gap_days"])
+        self.assertEqual(2, b1["props"]["burst_count"])
+        # 第二簇无链式字段（模拟旧产物）→ 保守 False
+        b2_legacy = next(n for n in idx["function_result"]
+                         if n["ref"] == "burst:clue_lens1:2")
+        self.assertFalse(b2_legacy["props"]["chain"])
 
         edges = _edge_set(doc)
         rid = rule["id"]
@@ -445,6 +465,9 @@ class LensSeedTest(unittest.TestCase):
         self.assertEqual("2020-04-01", win["props"]["end"])
         self.assertEqual("collision_window", win["props"]["interval_kind"])
         self.assertEqual(7, win["props"]["window_days"])
+        # 碰撞镜头产物无节奏指标，不得透传簇字段（前端不显示该摘要）
+        self.assertNotIn("median_gap_days", win["props"])
+        self.assertNotIn("burst_count", win["props"])
         project = next(n for n in idx["object"]
                        if n["ref"] == "bid_project:proj_1")
         self.assertEqual("城东管网改造", project["label"])
@@ -476,6 +499,65 @@ class LensSeedTest(unittest.TestCase):
                    if e["rel"] == "涉及" and e["source"].startswith(
                        "function_result:")}
         self.assertNotIn(sys_node_id("object", "call:call_b"), targets)
+
+    def test_interval_truncation_reserves_collision_seat(self):
+        """簇数超 cap：碰撞窗保留 1 席，簇只取前 cap-1；meta 如实声明。"""
+        import copy
+        item = copy.deepcopy(_lens_rhythm_item())
+        # 构造 5 个簇 + 碰撞窗（同 detail 形状：anchor/window/events）
+        item["detail"]["bursts"] = [
+            {"start": f"2020-01-{i:02d}", "end": f"2020-01-{i:02d}",
+             "event_count": 1, "types": ["call"],
+             "events": [{"type": "通话", "src_object": "call",
+                         "event_pk": f"call_{i}", "date": f"2020-01-{i:02d}",
+                         "role": "主叫", "brief": "测试"}]}
+            for i in range(1, 6)
+        ]
+        item["detail"]["anchor_date"] = "2020-03-25"
+        item["detail"]["window_days"] = 7
+        item["detail"]["collision_index"] = 1
+        with unittest.mock.patch.object(
+                canvas_seed_mod, "_MAX_LENS_INTERVAL_NODES", 4):
+            layer = build_lens_layer("clue_lens1", item)
+        refs = [n["ref"] for n in layer["nodes"]
+                if n["kind"] == "function_result"]
+        # cap=4：3 个簇（前 3）+ 碰撞窗垫尾；第 4/5 簇截断
+        self.assertEqual(
+            ["burst:clue_lens1:1", "burst:clue_lens1:2",
+             "burst:clue_lens1:3", "collision:clue_lens1:1"], refs)
+        self.assertEqual({"shown": 4, "total": 6},
+                         layer["meta"]["intervals"])
+        # 留下的簇边仍按位置正确配对（第 3 簇 ──涉及──▶ call_3），
+        # 碰撞窗不被 zip 误当簇
+        targets = {t for _s, t, rel in layer["edges"]
+                   if rel == "涉及"}
+        self.assertIn(sys_node_id("object", "call:call_3"), targets)
+        # seed_canvas 口径一致（meta 透传）
+        with unittest.mock.patch.object(
+                canvas_seed_mod, "_MAX_LENS_INTERVAL_NODES", 4):
+            doc = seed_canvas(
+                clue_id="clue_lens1", detail=item, evidence=[],
+                verify_items=[], materials=[])
+        self.assertEqual({"shown": 4, "total": 6},
+                         doc["meta"]["lens"]["intervals"])
+        self.assertTrue(any(
+            (n.get("props") or {}).get("interval_kind") == "collision_window"
+            for n in doc["nodes"]))
+
+    def test_rhythm_legacy_artifact_without_metric_fields(self):
+        """旧产物缺 median_gap_days/burst_count：不报错，簇数按实际回退。"""
+        import copy
+        item = copy.deepcopy(_lens_rhythm_item())
+        del item["detail"]["median_gap_days"]
+        del item["detail"]["burst_count"]
+        layer = build_lens_layer("clue_lens1", item)
+        bursts = [n for n in layer["nodes"]
+                  if (n.get("props") or {}).get("interval_kind") == "burst"]
+        self.assertEqual(2, len(bursts))
+        for n in bursts:
+            self.assertNotIn("median_gap_days", n["props"])
+            # 旧产物无 burst_count → 按 detail 内实际簇数 2 回退
+            self.assertEqual(2, n["props"]["burst_count"])
 
     def test_reconcile_backfills_placeholder_canvas(self):
         """老画布（仅 unlinked 占位）reconcile：撤占位、补镜头节点与边，幂等。"""
@@ -527,6 +609,98 @@ class LensSeedTest(unittest.TestCase):
         self.assertEqual(0, n_nodes)
         self.assertEqual(0, n_edges)
         self.assertTrue(merged["meta"]["lens_seeded"])
+
+
+class ObservationLayerSeedTest(unittest.TestCase):
+    """build_observation_layer：obs_* 中文命名 props 透传泳道头。"""
+
+    def test_chinese_names_propagated_to_node_props(self):
+        rhythm = _lens_rhythm_item()
+        collision = _lens_collision_item()
+        with tempfile.TemporaryDirectory() as case_dir:
+            save_directed_observations(case_dir, [
+                Observation(
+                    observation_id="obs_rhythm_1",
+                    skill_id="timeline_rhythm",
+                    lens_name="周期节奏镜头",
+                    title=rhythm["title"],
+                    subject="张卫国",
+                    detail=rhythm["detail"],
+                    evidence_refs=rhythm["evidence_refs"],
+                    source="directed",
+                    origin={"clue_id": "clue_lens1"},
+                ),
+                Observation(
+                    observation_id="obs_collision_1",
+                    skill_id="timeline_cross_collision",
+                    lens_name="跨类型时间碰撞镜头",
+                    title=collision["title"],
+                    project="城东管网改造",
+                    detail=collision["detail"],
+                    evidence_refs=collision["evidence_refs"],
+                    source="directed",
+                    origin={"clue_id": "clue_lens1"},
+                ),
+                # 他线线索发起的观察不得并入本层
+                Observation(
+                    observation_id="obs_other_clue",
+                    skill_id="timeline_rhythm",
+                    lens_name="周期节奏镜头",
+                    subject="李四",
+                    detail=rhythm["detail"],
+                    origin={"clue_id": "clue_other"},
+                ),
+                # 旧档案：无 lens_name/title/subject → props 落空串，
+                # 不崩且 skill_id 仍在（前端按回退链显示）
+                Observation(
+                    observation_id="obs_legacy",
+                    skill_id="timeline_rhythm",
+                    detail=rhythm["detail"],
+                    evidence_refs=rhythm["evidence_refs"],
+                    origin={"clue_id": "clue_lens1"},
+                ),
+            ])
+            layer = build_observation_layer(case_dir, "clue_lens1")
+
+            self.assertEqual(3, layer["meta"]["expanded"])
+            self.assertTrue(layer["nodes"])
+            # 节点 id 全部加观察层前缀
+            self.assertTrue(all(n["id"].startswith(OBS_ID_PREFIX)
+                                for n in layer["nodes"]))
+
+            def props_of(oid: str) -> list[dict]:
+                return [n["props"] for n in layer["nodes"]
+                        if n["props"].get("obs_of") == oid]
+
+            rhythm_props = props_of("obs_rhythm_1")
+            collision_props = props_of("obs_collision_1")
+            legacy_props = props_of("obs_legacy")
+            self.assertTrue(rhythm_props and collision_props and legacy_props)
+            self.assertEqual([], props_of("obs_other_clue"))
+
+            p0 = rhythm_props[0]
+            self.assertEqual("周期节奏镜头", p0["obs_lens_name"])
+            self.assertEqual("张卫国", p0["obs_target"])
+            self.assertEqual(rhythm["title"], p0["obs_title"])
+            self.assertEqual("timeline_rhythm", p0["obs_skill_id"])
+            self.assertIs(True, p0["obs_layer"])
+            # 同组各节点命名 props 一致
+            self.assertTrue(all(p["obs_lens_name"] == "周期节奏镜头"
+                                and p["obs_target"] == "张卫国"
+                                for p in rhythm_props))
+
+            # 靶心：subject 缺省时取 project
+            self.assertTrue(all(p["obs_target"] == "城东管网改造"
+                                for p in collision_props))
+            self.assertEqual("跨类型时间碰撞镜头",
+                             collision_props[0]["obs_lens_name"])
+
+            # 旧档案缺字段 → 空串而非 KeyError，skill_id 不受影响
+            self.assertEqual("", legacy_props[0]["obs_lens_name"])
+            self.assertEqual("", legacy_props[0]["obs_target"])
+            self.assertEqual("", legacy_props[0]["obs_title"])
+            self.assertEqual("timeline_rhythm",
+                             legacy_props[0]["obs_skill_id"])
 
 
 if __name__ == "__main__":

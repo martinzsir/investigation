@@ -139,6 +139,31 @@ class TimelineFunctionTests(unittest.TestCase):
         self.assertEqual(set(burst["types"]),
                          {"transaction", "call", "trackpoint"})
         self.assertEqual(r["median_gap_days"], 1.5)
+        # 首末跨度 3 天 == 天窗：非链式簇
+        self.assertEqual(burst["span_days"], 3)
+        self.assertEqual(burst["max_gap_days"], 2)
+        self.assertFalse(burst["chain"])
+
+    def test_rhythm_chain_cluster_marked(self):
+        """相邻间隔都 ≤ 天窗但首末跨度超天窗 → chain=True（贪心链）。"""
+        c = self.store.conn
+        # 钱七原有 1 起远端通话（07-01）；新增连续 3 天轨迹（间隔各 1 天）
+        c.executemany("INSERT INTO obj_trackpoint VALUES (?,?,?,?)", [
+            ("track_c1", "钱七", "A 地", "2021-10-12"),
+            ("track_c2", "钱七", "B 地", "2021-10-13"),
+            ("track_c3", "钱七", "C 地", "2021-10-14"),
+        ])
+        r = self._invoke("timeline_rhythm",
+                         {"target": "钱七", "burst_days": 1})
+        self.assertTrue(r["hit"])
+        chain_bursts = [b for b in r["bursts"] if b["chain"]]
+        self.assertEqual(len(chain_bursts), 1)
+        b = chain_bursts[0]
+        self.assertEqual(b["start"], "2021-10-12")
+        self.assertEqual(b["end"], "2021-10-14")
+        self.assertEqual(b["span_days"], 2)
+        self.assertEqual(b["max_gap_days"], 1)
+        self.assertEqual(b["event_count"], 3)
 
     def test_rhythm_no_burst_when_spread_out(self):
         # 赵六事件 7-01/8-01/9-01 间隔均 31 天：burst_days=14 无 ≥2 起连续簇
@@ -175,6 +200,23 @@ class TimelineFunctionTests(unittest.TestCase):
         all_names = subjects
         self.assertNotIn("赵六", all_names)
         self.assertNotIn("宏业建设", all_names)
+
+    def test_cross_collision_self_loop_event_counted_once(self):
+        """自发自收（from_raw==to_raw）同一 event_pk 不得在主体桶里双计。"""
+        c = self.store.conn
+        c.execute("INSERT INTO obj_transaction VALUES "
+                  "('txn_self', '孙九', '孙九', 100, '2021-10-14')")
+        c.execute("INSERT INTO obj_call VALUES "
+                  "('call_self', '孙九', '李四', '2021-10-14')")
+        r = self._invoke("timeline_cross_collision",
+                         {"project": "市政道路工程", "window_days": 7})
+        row = next(x for x in r["rows"] if x["subject_raw"] == "孙九")
+        # 资金自发自收 1 笔 + 通话 1 起 = 2；修复前资金记两侧 → 3
+        self.assertEqual(row["event_count"], 2)
+        self.assertEqual(row["type_count"], 2)
+        pks = [(e["type"], e["event_pk"]) for e in row["events"]]
+        self.assertEqual(pks.count(("transaction", "txn_self")), 1)
+        self.assertEqual(len(pks), len(set(pks)))
 
     def test_cross_collision_min_event_types_three(self):
         r = self._invoke("timeline_cross_collision",
@@ -293,6 +335,41 @@ class TimelineFunctionTests(unittest.TestCase):
         pks = {e["event_pk"] for e in r["timeline"]}
         self.assertNotIn("call_bad1", pks)
         self.assertEqual(r["event_count"], 5)
+
+
+class ObservationFactsDedupTests(unittest.TestCase):
+    """core.observation._facts_from_detail 去重口径（与 _lens_events 对齐）。"""
+
+    def test_dedup_key_includes_source_type(self):
+        from core.observation import _facts_from_detail
+        detail = {
+            "timeline": [
+                # 跨类型同 PK：旧口径（仅 event_pk）会误杀第二条
+                {"date": "2021-10-13", "type": "transaction",
+                 "src_object": "transaction", "event_pk": "x1",
+                 "role": "转出", "brief": "转出 1 万"},
+                {"date": "2021-10-13", "type": "call",
+                 "src_object": "call", "event_pk": "x1",
+                 "role": "主叫", "brief": "主叫→李四"},
+                # 真重复（同源同 PK，来自 timeline + bursts 并集）应去掉
+                {"date": "2021-10-13", "type": "transaction",
+                 "src_object": "transaction", "event_pk": "x1",
+                 "role": "转出", "brief": "转出 1 万"},
+                {"date": None, "type": "trackpoint",
+                 "src_object": "trackpoint",
+                 "event_pk": None, "role": "出现", "brief": "脏行"},
+                {"date": None, "type": "trackpoint",
+                 "src_object": "trackpoint",
+                 "event_pk": None, "role": "出现", "brief": "另一条脏行"},
+            ],
+        }
+        facts = _facts_from_detail(detail)
+        keys = [(f["src_object"], f["event_pk"]) for f in facts]
+        # 跨类型同号保留 2 条；真重复去 1 条；两条无 PK 脏行内容不同均保留
+        self.assertEqual(
+            keys,
+            [("transaction", "x1"), ("call", "x1"),
+             ("trackpoint", None), ("trackpoint", None)])
 
 
 if __name__ == "__main__":

@@ -85,8 +85,6 @@ import {
   buildTimeAxis,
   layoutByTime,
   layoutTimeBands,
-  layoutObservationLayer,
-  OBS_LAYER_GAP,
   timeAxisSummary,
   type TimeMode,
 } from '../../domain/canvas-layout-time'
@@ -123,6 +121,7 @@ import FunctionQueryModal from './FunctionQueryModal.vue'
 import { useRouter } from 'vue-router'
 import LensRunModal from './LensRunModal.vue'
 import LensSwitchPanel from '../config/LensSwitchPanel.vue'
+import ObservationTimelinePanel from './ObservationTimelinePanel.vue'
 import {
   lensesApi,
   type LensRecommendation,
@@ -422,9 +421,6 @@ function toG6Data(d: CanvasDoc): unknown {
           // P1-② 人机来源（四态）：机器派生 / AI 建议 / 人工已采纳 / 人工新增
           provenance: provenanceOf(n),
           provenanceLabel: PROVENANCE_LABELS[provenanceOf(n)],
-          // 观察图层：展开的独立时间轴节点（外挂层，不属主画布研判上下文）
-          observationLayer: (n.props as Record<string, unknown> | undefined)
-            ?.obs_layer === true,
           // C 方案：本线索发起的深挖结果（跳观察详情，可再提升为线索）
           originLens: (n.props as Record<string, unknown> | undefined)
             ?.origin_lens === true,
@@ -722,34 +718,6 @@ const laidOutDoc = computed<CanvasDoc | null>(() => {
 })
 
 /**
- * 观察图层已定位的文档（独立坐标系）。
- *
- * 观察层用**自己的时间轴**算 x，整体 y 偏移到主内容下方，因此不与主画布
- * 的流程列坐标重合。轴与轨道带在此算出并向下传递，渲染侧复用同一份，
- * 保证「排的位置」与「画的宽度」同源。
- */
-const observationLayerDoc = computed(() => {
-  if (!observationLayerOn.value || !hasObservationLayer.value) return null
-  const raw = observationLayerRaw.value
-  const nodes = raw.nodes ?? []
-  const edges = (raw.edges ?? []).map(([source, target, rel], i) => ({
-    id: `obsedge:${i}`,
-    source,
-    target,
-    rel,
-    system: true,
-  }))
-  // y 偏移 = 主内容底边 + 留白。主层为空时从 0 起。
-  const baseNodes = laidOutDoc.value?.nodes ?? []
-  const mainBottom = baseNodes.length
-    ? Math.max(...baseNodes.map((n) => Number(n.y ?? 0)))
-    : 0
-  return layoutObservationLayer(
-    nodes, edges, effectiveTimeMode.value, mainBottom + OBS_LAYER_GAP,
-  )
-})
-
-/**
  * 时间轴口径：process=研判过程时间（节点何时产生）/ event=业务发生时间。
  * 业务时间需本体声明 semantic:event_time，未声明时强制回落 process——
  * 绝不靠中文列名猜测「哪个字段是时间」。
@@ -935,14 +903,8 @@ const graphDoc = computed<CanvasDoc | null>(() => {
     const edges = base.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
     merged = { ...base, nodes, edges }
   }
-  // 观察图层在折叠**之后**并入：obs:: 前缀节点不参与主画布折叠链路，
-  // 若在折叠前并入，ids 过滤会把图层边误删（端点不在主画布节点集）。
-  const layer = observationLayerDoc.value
-  if (!layer) return merged
-  return {
-    nodes: [...merged.nodes, ...layer.doc.nodes],
-    edges: [...merged.edges, ...layer.doc.edges],
-  }
+  // 观察图层已剥离到独立底部抽屉（ObservationTimelinePanel），不再并入 graphDoc
+  return merged
 })
 
 // ----------------------------------------------------------------------
@@ -2651,10 +2613,21 @@ function onToggleObservationLayer(): void {
   observationLayerOn.value = !observationLayerOn.value
   message.info(
     observationLayerOn.value
-      ? `已展开观察图层：${observationCount.value} 条深挖观察（独立时间轴，画在主画布下方）`
-      : '已收起观察图层',
+      ? `已展开观察时间轴：${observationCount.value} 条深挖观察（无遮罩全宽浮层，画布可照常操作）`
+      : '已收起观察时间轴',
   )
 }
+
+/**
+ * 观察时间轴浮层开闭：触发 G6 容器 resize（保险措施）。
+ * 浮层本身无遮罩、不挤压布局，resize 仅为消除尺寸缓存偏差；
+ * 面板外区域始终可直接操作画布，交互不依赖开合。
+ */
+watch(observationLayerOn, () => {
+  nextTick(() => {
+    try { inst?.resize?.() } catch { /* G6 实例可能未就绪 */ }
+  })
+})
 
 async function load(): Promise<void> {
   state.value = 'loading'
@@ -2736,11 +2709,6 @@ async function mountGraph(): Promise<void> {
             }
             if (d.data?.band === 'collision_window') {
               return canvasTokens.band.collision_window.stroke
-            }
-            // 观察图层最优先：它是展开的外挂独立时间轴，整层都要能一眼
-            // 认出"这不属于主画布的研判上下文"。
-            if (d.data?.observationLayer === true) {
-              return canvasTokens.strokeObservationLayer
             }
             // 深挖结果层优先：它是"本次研判发起的机器产出"，
             // 视觉上要能一眼认出"这是我刚才跑出来的"。
@@ -3012,9 +2980,7 @@ watch(perspective, () => pushGraphData({ refit: true }))
 // （仅 event 口径成带）都依赖 timeMode，必须显式重推
 watch(timeMode, () => pushGraphData({ refit: true }))
 
-// 观察图层开合：图层节点在 graphDoc 末尾并入，开合改变 graphDoc 但不影响
-// renderDoc/collapsedChain——必须有专用 watcher 重推，否则点了开关图层不出现
-watch(observationLayerOn, () => pushGraphData({ refit: true }))
+// 观察图层开合现在由底部抽屉 ObservationTimelinePanel 接管，不再影响 graphDoc/G6
 
 // 投影变化（展开集/层开关/模式）或维度懒取完成后重推
 watch(
@@ -3134,6 +3100,15 @@ function nodeLabel(id: string): string {
         @open-report="openReport"
         @expand-all-details="onExpandAllDetails"
         @collapse-all-details="onCollapseAllDetails"
+      />
+
+      <!-- 观察图层时间轴：无遮罩浮层（面板外画布照常操作），自带时间口径，不联动主画布视角 -->
+      <ObservationTimelinePanel
+        :show="observationLayerOn"
+        :nodes="observationLayerRaw.nodes ?? []"
+        :observation-count="observationCount"
+        @update:show="observationLayerOn = $event"
+        @pick-observation="openOriginLensObservation"
       />
 
       <!-- 空状态 -->

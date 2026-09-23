@@ -204,11 +204,18 @@ def _facts_from_detail(detail: dict, limit: int = 50) -> list[dict]:
                 if isinstance(e, dict):
                     events.append(e)
 
-    seen: set[str] = set()
+    seen: set = set()
     out: list[dict] = []
     for e in events:
-        key = str(e.get("event_pk") or "") or json.dumps(
-            e, sort_keys=True, ensure_ascii=False, default=str)
+        # 去重键必须带源对象：txn_id/call_id/track_id 各自独立编号，
+        # 只用 event_pk 会把跨类型同号事件误杀（与 canvas_seed._lens_events
+        # 的 (src_object, event_pk) 口径对齐）。缺 PK 的脏行回退整行哈希。
+        pk = e.get("event_pk")
+        if pk:
+            key: object = (str(e.get("src_object") or ""), str(pk))
+        else:
+            key = json.dumps(
+                e, sort_keys=True, ensure_ascii=False, default=str)
         if key in seen:
             continue
         seen.add(key)

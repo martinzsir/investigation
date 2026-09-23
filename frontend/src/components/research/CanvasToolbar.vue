@@ -355,15 +355,15 @@ const LAYOUT_OPTIONS = [
             @click="emit('toggle-observation-layer')"
           >
             <NIcon :component="LayersOutline" />
-            观察图层
+            观察时间轴
           </NButton>
         </template>
         {{
           !hasObservationLayer
-            ? '本线索还没有定向深挖结果：先在画布选中主体运行「定向镜头」，结果会成为可展开的观察图层'
+            ? '本线索还没有定向深挖结果：先在画布选中主体运行「定向镜头」，结果会成为可展开的观察时间轴'
             : observationLayerOn
-              ? `关闭观察图层（当前 ${observationCount ?? 0} 条深挖观察，独立时间轴）`
-              : `展开观察图层：${observationCount ?? 0} 条深挖观察按时间铺成独立时间轴，画在主画布下方`
+              ? `关闭观察时间轴（当前 ${observationCount ?? 0} 条深挖观察，底部抽屉）`
+              : `展开观察时间轴：${observationCount ?? 0} 条深挖观察按时间铺成独立时间轴（底部抽屉）`
         }}
       </NTooltip>
 

@@ -949,8 +949,11 @@ def _timeline_rhythm(store, params: dict, ctx=None) -> dict:
     intervals = [(b - a).days for a, b in zip(day_seq, day_seq[1:])]
     median_gap = statistics.median(intervals)
 
-    # 聚集簇：相邻事件日差 ≤ burst_days 贪心成团（仅 ≥2 起成簇）
-    bursts: list[dict] = []
+    # 聚集簇：相邻事件日差 ≤ burst_days 贪心成团（仅 ≥2 起成簇）。
+    # 注意判据是「相邻两两间隔」而非「首末跨度」：日期 0/3/6/9（每步≤3）
+    # 会链成跨度 9 天的一簇。span>burst_days 的簇打 chain=True，供下游
+    # 区分「单日/窗宽内簇」与「链式长簇」，读图时勿把带宽当窗宽。
+    bursts: list[list[dict]] = []
     cur = [events[0]]
     for e, d in zip(events[1:], day_seq[1:]):
         if (d - _date.fromisoformat(cur[-1]["date"])).days <= burst_days:
@@ -962,12 +965,21 @@ def _timeline_rhythm(store, params: dict, ctx=None) -> dict:
     if len(cur) >= 2:
         bursts.append(cur)
 
-    bursts_out = [{
-        "start": b[0]["date"], "end": b[-1]["date"],
-        "event_count": len(b),
-        "types": sorted({x["type"] for x in b}),
-        "events": b,
-    } for b in bursts]
+    def _burst_out(b: list[dict]) -> dict:
+        ds = [_date.fromisoformat(x["date"]) for x in b]
+        gaps = [(y - x).days for x, y in zip(ds, ds[1:])]
+        span = (ds[-1] - ds[0]).days
+        return {
+            "start": b[0]["date"], "end": b[-1]["date"],
+            "event_count": len(b),
+            "types": sorted({x["type"] for x in b}),
+            "events": b,
+            "span_days": span,
+            "max_gap_days": max(gaps) if gaps else 0,
+            "chain": span > burst_days,
+        }
+
+    bursts_out = [_burst_out(b) for b in bursts]
     return {
         "hit": bool(bursts_out),
         "subject": subject,
@@ -1049,7 +1061,14 @@ def _timeline_cross_collision(store, params: dict, ctx=None) -> dict:
             if not subject_name:
                 return
             bucket = by_subject.setdefault(
-                subject_name, {"types": set(), "events": []})
+                subject_name, {"types": set(), "events": [], "seen": set()})
+            # 自发自收去重：同一笔交易 from_raw==to_raw（或通话 caller==callee）
+            # 会在两侧各登记一次同一 event_pk，不拦会让 event_count 翻倍、
+            # events 列表出现重复行。键含类型，防跨对象 PK 撞号误杀。
+            sig = (entry_type, str(event.get("event_pk") or ""))
+            if sig in bucket["seen"]:
+                return
+            bucket["seen"].add(sig)
             bucket["types"].add(entry_type)
             bucket["events"].append(event)
 
