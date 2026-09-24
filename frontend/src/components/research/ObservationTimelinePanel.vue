@@ -49,9 +49,11 @@ const props = withDefaults(
   defineProps<{
     show: boolean
     nodes: CanvasNode[]
+    /** 观察层三元组边 [source, target, rel]：簇/窗 ──涉及──▶ 事件（确定性归属） */
+    edges?: Array<[string, string, string]>
     observationCount?: number
   }>(),
-  { observationCount: 0 },
+  { observationCount: 0, edges: () => [] },
 )
 
 const PANEL_HEIGHT = 340
@@ -89,8 +91,9 @@ function toggleMode(): void {
   // Timeline 以 :key=mode 重建并回到全览，旧视口坐标必须作废，
   // 否则随后按按钮平移/缩放会用另一口径的时间戳算目标区间
   currentViewport.value = null
-  // 两口径 item id 命名空间不同（proc: 聚合点 vs 节点 id），锚点一律作废
+  // 两口径 item id 命名空间不同（proc: 聚合点 vs 节点 id），锚点/悬停一律作废
   focusedId.value = null
+  hoveredId.value = null
 }
 
 const emit = defineEmits<{
@@ -99,19 +102,30 @@ const emit = defineEmits<{
   (e: 'pick-observation', observationId: string): void
 }>()
 
-interface TItem {
+interface TItemBase {
   id: string
   group: string
-  type: 'point' | 'range'
   start: number
   end?: number
   cssVariables?: Record<string, string>
   title?: string
+  /** 库外壳 class（background 无 slot，状态样式只能走 className） */
+  className?: string
+}
+/** 事件点（交易/通话/轨迹等，按 event_time 定位） */
+interface TPointItem extends TItemBase {
+  type: 'point'
+}
+/** 簇/窗铺底带：库原生 background 容器层，不参与分泳道、横贯泳道全高 */
+interface TBandItem extends TItemBase {
+  type: 'background'
+  end: number
   /** burst 链式簇：相邻间隔均 ≤ 天窗但首末跨度超天窗 */
   chain?: boolean
-  /** range 细分种类（徽标计数键防 burst/collision 同日跨类合并） */
+  /** 区间细分种类（徽标键防 burst/collision 同日跨类合并） */
   intervalKind?: IntervalBandKind
 }
+type TItem = TPointItem | TBandItem
 interface TGroup {
   id: string
   label: string
@@ -153,8 +167,11 @@ function groupLabelOf(m: ObsMeta, gid: string): { label: string; fullTitle: stri
   }
 }
 
-/** 间隔天数格式化：整数天不带小数，中位数可能为 .5 */
+/** 间隔天数格式化：整数天不带小数，中位数可能为 .5。
+ *  null/undefined/空串（后端缺字段，如旧产物无 span_days）必须返回 null——
+ *  Number(null)===0，会把「缺数据」谎报成「跨度 0 天」 */
 function fmtDays(v: unknown): string | null {
+  if (v === null || v === undefined || v === '') return null
   const n = Number(v)
   if (!Number.isFinite(n)) return null
   return Number.isInteger(n) ? String(n) : n.toFixed(1)
@@ -176,10 +193,70 @@ function fmtFocusTime(ts: number): string {
   return hm === '00:00' ? ymd : `${ymd} ${hm}`
 }
 
-/** 区间种类 → 背景色（与 design/tokens 的 band.stroke 对齐） */
-function bandColor(kind: 'burst' | 'collision_window'): string {
-  return kind === 'burst' ? '#FF7043' : '#6E87B5'
+/**
+ * 区间双色：主胶囊实色（视线焦点）+ 全高淡影（罩住多泳道成员点）。
+ * burst 橙、碰撞窗蓝灰；色族同时用于簇内点的描边，建立「带—点」色彩对应。
+ */
+const BAND_SHADOW_SUFFIX = '__bandshadow'
+function bandFill(kind: IntervalBandKind): string {
+  return kind === 'burst' ? 'rgba(255,112,67,0.42)' : 'rgba(110,135,181,0.42)'
 }
+function bandShadowFill(kind: IntervalBandKind): string {
+  return kind === 'burst' ? 'rgba(255,112,67,0.10)' : 'rgba(110,135,181,0.12)'
+}
+/* ------------------------------------------------------------------ */
+/* 簇归属：后端「簇/窗 ──涉及──▶ 事件」边是确定性成员关系（旧产物无边时  */
+/* 全部退化为散点，不做几何时间推断，链式簇跨度内也不会误判）。          */
+/* ------------------------------------------------------------------ */
+const bandMembers = computed(() => {
+  const byBand = new Map<string, Set<string>>()
+  const byEvent = new Map<string, Set<string>>()
+  for (const [src, tgt, rel] of props.edges) {
+    if (rel !== '涉及') continue
+    if (!byBand.has(src)) byBand.set(src, new Set())
+    byBand.get(src)!.add(tgt)
+    if (!byEvent.has(tgt)) byEvent.set(tgt, new Set())
+    byEvent.get(tgt)!.add(src)
+  }
+  return { byBand, byEvent }
+})
+
+/** 区间节点 id → 种类（成员点描边色按所属簇色族） */
+const bandKindById = computed(() => {
+  const m = new Map<string, IntervalBandKind>()
+  for (const n of props.nodes) {
+    const k = (n.props ?? {}) as Record<string, unknown>
+    if (k.interval_kind === 'burst' || k.interval_kind === 'collision_window') {
+      m.set(n.id, k.interval_kind)
+    }
+  }
+  return m
+})
+
+/** 节点 → 所属观察泳道 gid（簇带与事件点同用 obs_of 分泳道） */
+function nodeGroupOf(id: string): string | null {
+  const n = props.nodes.find((x) => x.id === id)
+  return n ? String(((n.props ?? {}) as Record<string, unknown>).obs_of ?? '_default') : null
+}
+
+/** 悬停点的主簇带：同泳道优先（一点可同时归属碰撞窗与其它泳道的聚集簇，
+ *  跨带全亮是高亮噪音，只亮读图焦点所在带）；同泳道无带时碰撞窗优先、
+ *  再退首个所属带。 */
+function primaryBandOf(hoverGroup: string | null, owners: Set<string>): string | null {
+  if (hoverGroup !== null) {
+    for (const b of owners) {
+      if (nodeGroupOf(b) === hoverGroup) return b
+    }
+  }
+  for (const b of owners) {
+    if (bandKindById.value.get(b) === 'collision_window') return b
+  }
+  return owners.values().next().value ?? null
+}
+
+/** 悬停锚点（仅指针未拖拽时更新）；点/带互高亮，离开时间轴清空 */
+const hoveredId = ref<string | null>(null)
+const hoverPos = ref<{ x: number; y: number } | null>(null)
 
 /** 节点 → 显示标题（label 优先，回退 ref） */
 function nodeTitle(n: CanvasNode): string {
@@ -194,12 +271,14 @@ function nodeTitle(n: CanvasNode): string {
  *   成 range；无业务时间的主体/项目节点不发 item，其所在观察组也不注册（不出空泳道）。
  * - process：同一次观察（obs_of）的全部节点共享同一个 created_at（镜头运行时刻），
  *   逐节点发 point 会在同一毫秒重叠成一堆。**按「观察+时刻」聚合成 1 个 point**，
- *   徽标显示节点数——过程口径回答的本来就是「何时做过哪次深挖」。
+ *   点放大一档标记聚合——过程口径回答的本来就是「何时做过哪次深挖」。
  *
- * 徽标计数（badgeById）：库 slot 给的 stackSize 是「重叠簇占用泳道数」，且随
+ * 聚合计数（badgeById）：库 slot 给的 stackSize 是「重叠簇占用泳道数」，且随
  * collisionWidth 在不同缩放下变化（全览时 ±8 天占位会把整段密集期连成一条
  * 长链，每个点都挂 ×4），不等于「同一时刻事件数」。这里按业务语义自算：
- * 同组同 start 的 point 数 / 同组同 start 的 range 数，>1 才挂到代表项。
+ * 同组同 start 的 point 数 / 同组同 start 的 range 数，>1 才挂到代表项
+ * （point 代表项放大点径 + 其余同刻 point 收起，background 簇带仍用
+ * ::after 数字徽标）。
  */
 const model = computed(() => {
   const items: TItem[] = []
@@ -207,6 +286,8 @@ const model = computed(() => {
   /** key → 计数；key 与代表 item id */
   const counts = new Map<string, number>()
   const badgeKeys = new Map<string, string>()
+  /** key → 同刻 item id 登记顺序（首个为代表点；其余同刻 point 收起不显示） */
+  const orders = new Map<string, string[]>()
 
   function ensureGroup(gid: string, m: ObsMeta): void {
     if (!groupMap.has(gid)) {
@@ -215,8 +296,8 @@ const model = computed(() => {
     }
   }
 
-  /** 登记一个 item 的同刻计数；返回该项是否为代表项（挂徽标）。
-   *  range 键必须带 interval_kind：burst 与 collision_window 同日起算时
+  /** 登记一个 item 的同刻计数与顺序（代表点放大、非代表 point 收起用）。
+   *  簇带键必须带 interval_kind：burst 与 collision_window 同日起算时
    *  不是同一语义的重叠，跨类合并会虚增徽标。 */
   function registerBadge(item: TItem): void {
     const key = item.type === 'point'
@@ -225,6 +306,43 @@ const model = computed(() => {
     const c = (counts.get(key) ?? 0) + 1
     counts.set(key, c)
     if (!badgeKeys.has(key)) badgeKeys.set(key, item.id)
+    const seq = orders.get(key)
+    if (seq) seq.push(item.id)
+    else orders.set(key, [item.id])
+  }
+
+  // ---- hover 联动派生（process 聚合点不挂簇归属，不参与）----
+  const emBands = new Set<string>()
+  const emPoints = new Set<string>()
+  /** 悬停源点（指针正下方那个点）：放大梯度高于同簇兄弟点 */
+  const emPrimary = new Set<string>()
+  let hoverGroup: string | null = null
+  const hv = mode.value === 'event' ? hoveredId.value : null
+  if (hv) {
+    const hoverNode = props.nodes.find((n) => n.id === hv)
+    const hp = (hoverNode?.props ?? {}) as Record<string, unknown>
+    hoverGroup = hoverNode ? String(hp.obs_of ?? '_default') : null
+    const owners = bandMembers.value.byEvent.get(hv)
+    if (owners && owners.size > 0) {
+      // 成员点盖在胶囊上层（z-index），纤细胶囊的可悬停面几乎全被点截获，
+      // 因此悬停簇内任意一点一律按「悬停整簇」处理。带只取主簇
+      // （primaryBandOf：同泳道优先），避免点亮其它泳道的聚集簇/碰撞窗。
+      emPrimary.add(hv)
+      emPoints.add(hv)
+      const primary = primaryBandOf(hoverGroup, owners)
+      if (primary) {
+        emBands.add(primary)
+        for (const e of bandMembers.value.byBand.get(primary) ?? []) emPoints.add(e)
+      }
+    } else if (bandKindById.value.has(hv)) {
+      // 直接悬停到簇带空白边缘：高亮带本身 + 全部成员点（无单一源点）
+      emBands.add(hv)
+      for (const e of bandMembers.value.byBand.get(hv) ?? []) emPoints.add(e)
+    } else {
+      // 簇外散点：源点显著放大，不暗化同泳道（无簇焦点时 dim 无对比意义）
+      emPrimary.add(hv)
+      emPoints.add(hv)
+    }
   }
 
   if (mode.value === 'process') {
@@ -267,11 +385,12 @@ const model = computed(() => {
       const p = (n.props ?? {}) as Record<string, unknown>
       const gid = String(p.obs_of ?? '_default')
       const meta = obsMetaOf(p)
-      // event 口径下区间节点成 range（burst/collision_window）
+      // event 口径下区间节点成 background 铺底带（burst/collision_window）：
+      // 不参与分泳道、横贯泳道全高，事件点自然画在「带内部」的上层
       const range = intervalRange(n)
       if (range) {
         // 显示层补宽：真实数据里大量 burst start==end（单日聚集簇），
-        // 零宽 range 在轴上不可见。补满 1 天仅影响渲染/聚焦，不改后端语义。
+        // 零宽带在轴上不可见。补满 1 天仅影响渲染/聚焦，不改后端语义。
         const end = range.end > range.start ? range.end : range.start + DAY_MS
         ensureGroup(gid, meta)
         const isChain = p.chain === true
@@ -291,31 +410,80 @@ const model = computed(() => {
         const title = detailParts.length > 0
           ? `${nodeTitle(n)}｜${detailParts.join(' · ')}`
           : nodeTitle(n)
+        const isFocused = focusedId.value === n.id
+        // 带提亮同样按泳道门禁（与成员点一致，防回退场景跨泳道亮带）
+        const isEm = hoverGroup !== null && hoverGroup === gid && emBands.has(n.id)
+        // 淡影先入（DOM 在下）：全高低透明，纯视觉、不接事件；
+        // 主胶囊后入（DOM 在上）：2em 居中实色，承载点击/hover/徽标/聚焦
+        const shadowState: string[] = []
+        if (isFocused) shadowState.push('otp-band-focus')
+        if (isEm) shadowState.push('otp-band-em')
+        items.push({
+          id: `${n.id}${BAND_SHADOW_SUFFIX}`,
+          group: gid,
+          type: 'background',
+          start: range.start,
+          end,
+          cssVariables: { '--item-background': bandShadowFill(range.kind) },
+          className: ['otp-band-shadow', ...shadowState].join(' '),
+        })
         const item: TItem = {
           id: n.id,
           group: gid,
-          type: 'range',
+          type: 'background',
           start: range.start,
           end,
-          cssVariables: { '--item-background': bandColor(range.kind) },
+          cssVariables: { '--item-background': bandFill(range.kind) },
           title,
           chain: isChain,
           intervalKind: range.kind,
+          className: [
+            'otp-band',
+            isChain ? 'otp-band-chain' : '',
+            isFocused ? 'otp-band-focus' : '',
+            isEm ? 'otp-band-em' : '',
+          ].filter(Boolean).join(' '),
         }
         items.push(item)
         registerBadge(item)
         continue
       }
-      // 时间戳节点成 point
+      // 时间戳节点成 point；簇内成员点按「涉及」边挂色族描边
       const t = nodeTimestamp(n, 'event')
       if (t !== null) {
         ensureGroup(gid, meta)
+        const cls = new Set<string>()
+        let memLabel = ''
+        const ownerBands = bandMembers.value.byEvent.get(n.id)
+        if (ownerBands && ownerBands.size > 0) {
+          let hasBurst = false
+          let hasCollision = false
+          for (const b of ownerBands) {
+            if (bandKindById.value.get(b) === 'collision_window') hasCollision = true
+            else if (bandKindById.value.get(b) === 'burst') hasBurst = true
+          }
+          // 同时归属两类时取簇橙（burst 样式在 CSS 中后定义以覆盖）
+          if (hasCollision) cls.add('otp-mem-collision')
+          if (hasBurst) cls.add('otp-mem-burst')
+          memLabel = hasBurst ? '聚集簇内事件' : '碰撞窗内事件'
+        }
+        // em 类按泳道门禁：「涉及」边可跨观察引用事件节点，同一事件 id 会在
+        // 其它泳道再渲染一个点实例；只亮读图焦点所在泳道的实例，防跨泳道高亮
+        const emHit = hoverGroup === gid && (emPrimary.has(n.id) || emPoints.has(n.id))
+        if (emHit) {
+          // 注意：Set.add 只接受一个参数，不能合并调用
+          cls.add('otp-pt-em')
+          if (emPrimary.has(n.id)) cls.add('otp-pt-em-primary')
+        }
+        // dim 仅在存在簇/窗焦点时有意义：同泳道非成员点弱化衬突成员
+        else if (emBands.size > 0 && hoverGroup === gid) cls.add('otp-pt-dim')
         const item: TItem = {
           id: n.id,
           group: gid,
           type: 'point',
           start: t,
-          title: nodeTitle(n),
+          title: memLabel ? `${nodeTitle(n)}｜${memLabel}` : nodeTitle(n),
+          className: cls.size > 0 ? Array.from(cls).join(' ') : undefined,
         }
         items.push(item)
         registerBadge(item)
@@ -329,6 +497,32 @@ const model = computed(() => {
   for (const [key, repId] of badgeKeys) {
     const c = counts.get(key) ?? 1
     if (c > 1) badgeById.set(repId, c)
+  }
+  // 簇带 ×N 徽标：background 无 slot，经 CSS 变量喂给 ::after；
+  // 无徽标时不写该变量，CSS 回落 content:none 不生成伪元素
+  for (const it of items) {
+    if (it.type !== 'background') continue
+    const c = badgeById.get(it.id)
+    if (c !== undefined) it.cssVariables!['--otp-badge'] = `"×${c}"`
+  }
+  // 聚合点（计数 >1 的代表点）：不挂数字胶囊，统一放大一档点径
+  // （12px→18px，库外壳 height/width 读 --item-point-size，居中平移不受影响），
+  // 精确聚合数进 hover title；同刻其余点在下方 hiddenIds 收起
+  for (const it of items) {
+    if (it.type !== 'point') continue
+    const c = badgeById.get(it.id)
+    if (c === undefined) continue
+    it.cssVariables = { ...(it.cssVariables ?? {}), '--item-point-size': '18px' }
+    it.title = `${it.title ?? ''}｜聚合 ${c} 起`
+  }
+  // 同刻聚合只显示代表点（已放大一档）：其余同刻点与其同一 x 堆叠，
+  // 大点下只露杂边且无独立语义，收起不发 item（代表点 title 已含
+  // 「聚合 N 起」；被收起节点仍可从画布打开档案）。簇带（r: 键）不收起
+  // ——每条是独立区间段。process 聚合点不经 registerBadge，orders 中无键。
+  const hiddenIds = new Set<string>()
+  for (const [key, seq] of orders) {
+    if (!key.startsWith('p:') || seq.length <= 1) continue
+    for (const id of seq.slice(1)) hiddenIds.add(id)
   }
   // 组级节奏摘要：直接从 props.nodes 的 burst 区间节点扫描（与口径无关：
   // process 口径下没有 range item，但摘要仍需显示）。同组各簇指标一致，
@@ -354,11 +548,11 @@ const model = computed(() => {
     if (m.count !== null) segs.push(`${m.count} 簇`)
     if (segs.length > 0) g.metric = segs.join(' · ')
   }
+  const visibleItems = items.filter(it => !hiddenIds.has(it.id))
   return {
-    items,
+    items: visibleItems,
     groups: Array.from(groupMap.values()),
-    hasTimeData: items.length > 0,
-    badgeById,
+    hasTimeData: visibleItems.length > 0,
   }
 })
 
@@ -417,11 +611,29 @@ const focusLabel = computed(() => {
   if (!f) return ''
   return `${fmtFocusTime(f.start)}｜${f.title || '时间项'}`
 })
-/** 收起面板：Timeline 随 v-if 销毁、重开回到全览，锚点状态同步作废 */
+
+/** 悬停提示统一走自绘跟随浮层（点/带同一套）。弃用原生 title：点 hover 高亮
+ *  会切换 transform scale，原生提示在出现的关键 0.5s 内被渲染层变化打断，
+ *  表现为「时有时无」；background 簇带又本就没有 slot/title。
+ *  point 取点自身 title（含「聚合 N 起」）+ 交互提示；background 取带 title。 */
+const hoverTip = computed(() => {
+  const id = hoveredId.value
+  if (!id) return ''
+  const it = model.value.items.find((i) => i.id === id)
+  if (!it) return ''
+  return it.type === 'point'
+    ? `${it.title ?? ''}（单击聚焦，双击打开观察档案）`
+    : (it.title ?? '')
+})
+
+/** 收起面板：Timeline 随 v-if 销毁、重开回到全览，锚点/悬停状态同步作废 */
 watch(
   () => props.show,
   (v) => {
-    if (!v) focusedId.value = null
+    if (!v) {
+      focusedId.value = null
+      hoveredId.value = null
+    }
   },
 )
 
@@ -487,9 +699,9 @@ function panView(dir: -1 | 1): void {
   applyView(cur.start + dir * step, cur.end + dir * step)
 }
 
-/** 单击 item 聚焦：point → 该日前后各 7 天；range → 区间两侧各留 3 天 */
+/** 单击 item 聚焦：point → 该日前后各 7 天；簇带 → 区间两侧各留 3 天 */
 function onItemFocus(item: TItem): void {
-  // 固化锚点：视口跳过去之后靠 .active 高亮 + 竖线 + 头部芯片辨认
+  // 固化锚点：视口跳过去之后靠簇带/点高亮 + 竖线 + 头部芯片辨认
   focusedId.value = item.id
   if (item.type === 'point') {
     applyView(item.start - 7 * DAY_MS, item.start + 7 * DAY_MS)
@@ -504,15 +716,33 @@ function onItemOpen(item: TItem): void {
 }
 
 /**
- * 单击/双击统一在 click 内判别：
- * 单击聚焦会 setViewport，库视口变化时 item DOM 会被重建，浏览器原生
- * dblclick 要求两次 click 落在同一元素，导致真实双击时 dblclick 丢失。
- * 250ms 内同 item 的第二次 click → 打开档案；超时 → 聚焦。
+ * 库事件统一在 Timeline 顶层接收（background 是裸 div、point 走 slot，
+ * 两者都由库 emit 同形载荷 {time,event,item}；marker/空白点击 item=null）。
+ * 单击/双击判别：单击聚焦会 setViewport，库视口变化时 item DOM 会被重建，
+ * 浏览器原生 dblclick 要求两次落在同一元素会丢失，故 250ms 内同 item
+ * 第二次 click → 打开档案；超时 → 聚焦。
  */
+interface TTimelinePayload {
+  time?: number
+  event: MouseEvent
+  item: { id: string; type: string } | null
+}
 const DBLCLICK_MS = 250
 let clickTimer: ReturnType<typeof setTimeout> | null = null
 let lastClickId = ''
-function onItemClick(item: TItem): void {
+
+function resolveItem(raw: TTimelinePayload['item']): TItem | null {
+  if (!raw) return null
+  // 淡影是合法的悬停/点击面（可见即可悬停），统一把 shadow id 归并到主胶囊
+  const id = raw.id.endsWith(BAND_SHADOW_SUFFIX)
+    ? raw.id.slice(0, -BAND_SHADOW_SUFFIX.length)
+    : raw.id
+  return model.value.items.find((i) => i.id === id) ?? null
+}
+
+function onTimelineClick(p: TTimelinePayload): void {
+  const item = resolveItem(p.item)
+  if (!item) return
   if (clickTimer !== null && lastClickId === item.id) {
     clearTimeout(clickTimer)
     clickTimer = null
@@ -525,6 +755,31 @@ function onItemClick(item: TItem): void {
     clickTimer = null
     onItemFocus(item)
   }, DBLCLICK_MS)
+}
+
+/** 悬停联动：拖拽平移（buttons 非 0）期间不更新，避免跟随视口抖动 */
+function onTimelinePointerMove(p: TTimelinePayload): void {
+  if (p.event.buttons !== 0) return
+  const item = resolveItem(p.item)
+  const id = item?.id ?? null
+  if (id !== hoveredId.value) hoveredId.value = id
+  if (id) hoverPos.value = { x: p.event.clientX, y: p.event.clientY }
+}
+
+/** 指针在时间轴空白区域移动时清除悬停。
+ *  库只在 item 上 stop 了 pointermove，mousemove 是另一种事件、仍从 item 冒泡到
+ *  时间轴根：同一次物理移动会先 pointermove(item) 再 mousemove(冒泡)。若不排除
+ *  item 冒泡源，hoveredId 会被以移动频率「设了又清」——鼠标一停终值为 null，
+ *  高亮即消失（此前悬停看不到效果的根因）。 */
+function onTimelineSpaceMove(p: { event: MouseEvent }): void {
+  if (p.event.buttons !== 0) return
+  const t = p.event.target as Element | null
+  if (t?.closest('.item, .background')) return
+  if (hoveredId.value !== null) hoveredId.value = null
+}
+
+function onTimelineLeave(): void {
+  hoveredId.value = null
 }
 
 onBeforeUnmount(() => {
@@ -671,6 +926,10 @@ onBeforeUnmount(() => {
             :active-items="activeItemIds"
             :markers="focusMarkers"
             @change-viewport="currentViewport = $event"
+            @click="onTimelineClick"
+            @pointermove="onTimelinePointerMove"
+            @mousemove-timeline="onTimelineSpaceMove"
+            @mouseleave-timeline="onTimelineLeave"
           >
             <template #group-label="{ group }">
               <span class="otp-group-col">
@@ -682,27 +941,25 @@ onBeforeUnmount(() => {
                 >{{ (group as TGroup).metric }}</span>
               </span>
             </template>
+            <!-- 仅 point 走 slot（background 簇带是裸 div，状态走 className/CSS 变量）。
+                 不设 title：原生提示会被 hover 高亮的 transform 切换打断，统一走 hoverTip 浮层 -->
             <template #item="{ item }">
-              <div
-                class="otp-item"
-                :class="[
-                  `otp-item--${(item as TItem).type}`,
-                  { 'otp-item--chain': (item as TItem).chain },
-                ]"
-                :title="`${(item as TItem).title || ''}（单击聚焦，双击打开观察档案）`"
-                @click="onItemClick(item as TItem)"
-              >
-                <span
-                  v-if="model.badgeById.get((item as TItem).id) !== undefined"
-                  class="otp-badge"
-                  :class="`otp-badge--${(item as TItem).type}`"
-                >×{{ model.badgeById.get((item as TItem).id) }}</span>
-              </div>
+              <div class="otp-item otp-item--point"></div>
             </template>
           </Timeline>
         </div>
       </div>
     </Transition>
+  </Teleport>
+  <!-- 悬停提示浮层（点/带统一，跟随指针；弃用原生 title，见 hoverTip）。
+       必须独立 Teleport 到 body：.otp-panel 的 backdrop-filter 会为后代建立
+       containing block，把 position:fixed 收编成面板相对坐标（浮层会飞出视口） -->
+  <Teleport to="body">
+    <div
+      v-if="hoverTip && hoverPos"
+      class="otp-hover-tip"
+      :style="{ left: `${hoverPos.x + 14}px`, top: `${hoverPos.y + 12}px` }"
+    >{{ hoverTip }}</div>
   </Teleport>
 </template>
 
@@ -859,22 +1116,122 @@ onBeforeUnmount(() => {
   color: #ffd54f;
   opacity: 0.85;
 }
+/* slot 内层只有 point（库外壳决定尺寸/底色），透明壳承载徽标与手型 */
 .otp-item {
   position: absolute;
   inset: 0;
   cursor: pointer;
-  border-radius: 3px;
-}
-.otp-item--point {
   border-radius: 50%;
 }
+
+/* ---- 层叠扶正：backgrounds 层 DOM 在 items 之后，默认会盖住点并截获     */
+/* 点击；显式铺底带 z-index:0、点 z-index:1（聚焦竖线 3、active 点 4） ---- */
+.otp-body :deep(.item.point) {
+  z-index: 1;
+  /* 点必须自身可命中：悬停放大、单击聚焦、双击开档案都走 item 的指针事件 */
+  pointer-events: auto;
+  /* 库默认 contain:strict（=size+layout+paint+style）：paint 裁剪会连元素
+     自身的 box-shadow 光环（簇色 ring、聚焦琥珀环）也裁进点盒。点盒尺寸
+     由库显式给定（不依赖内容），解除不影响布局；点自带 transform 仍是
+     绝对定位的 containing block。background 簇带保持 strict（徽标在带内） */
+  contain: none;
+}
+
+/* 淡影：保持库默认 top:0/bottom:0 的泳道全高，低透明罩住多泳道成员点。
+   交互上它就是「整簇悬停/点击面」——可见即可悬停（resolveItem 已把
+   shadow id 归并到主胶囊）；点 z-index:1 仍在其上，悬停点走点→簇联动 */
+.otp-body :deep(.background.otp-band-shadow) {
+  z-index: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* 主胶囊：2em 单行高、垂直居中（横向仍走库的 translate 独立属性，
+   这里只叠加 transform 做垂直居中，互不冲突） */
+.otp-body :deep(.background.otp-band) {
+  z-index: 0;
+  top: 50%;
+  bottom: auto;
+  height: var(--item-stack-height, 2em);
+  transform: translateY(-50%);
+  /* 无徽标时不生成 ::after；有徽标由 item cssVariables 覆盖为 "×N" */
+  --otp-badge: none;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+/* 簇带 ×N 徽标：background 无 slot，伪元素读 CSS 变量（none 时不生成） */
+.otp-body :deep(.background.otp-band)::after {
+  content: var(--otp-badge);
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  height: 12px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  /* 浅底深字：不依赖与彩色胶囊的对比，橙/蓝灰带上都清晰 */
+  color: #10212c;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(16, 33, 44, 0.28);
+  pointer-events: none;
+}
+
 /* 链式簇：带宽是贪心链首末跨度而非天窗宽，虚线描边提示读图区别 */
-.otp-item--chain {
+.otp-body :deep(.background.otp-band-chain) {
   outline: 1.5px dashed rgba(255, 255, 255, 0.85);
   outline-offset: -1px;
 }
-.otp-item:hover {
-  filter: brightness(1.2);
+
+/* ---- hover 联动：悬停簇带↔成员点互高亮，同泳道其余点弱化 ---- */
+/* 半透明胶囊上 brightness 变化肉眼偏弱，叠加白描边+外发光确保可感 */
+.otp-body :deep(.background.otp-band-em) {
+  filter: brightness(1.6);
+  box-shadow:
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.65),
+    0 0 10px rgba(255, 255, 255, 0.22);
+}
+.otp-body :deep(.background.otp-band-shadow.otp-band-em) {
+  filter: brightness(1.8);
+}
+.otp-body :deep(.item.point.otp-pt-dim) {
+  opacity: 0.2;
+}
+/* 同簇兄弟成员点：中等放大 + 轻白光（保留 mem 类自带的簇色 ring） */
+.otp-body :deep(.item.point.otp-pt-em) {
+  opacity: 1;
+  z-index: 5;
+  transform: translate(-50%, -50%) scale(1.4);
+  filter: brightness(1.15) drop-shadow(0 0 3px rgba(255, 255, 255, 0.75));
+}
+/* 指针正下方的源点/簇外散点：近两倍放大 + 强白光环，最醒目 */
+.otp-body :deep(.item.point.otp-pt-em.otp-pt-em-primary) {
+  z-index: 6;
+  transform: translate(-50%, -50%) scale(1.9);
+  filter: brightness(1.3)
+    drop-shadow(0 0 2px rgba(255, 255, 255, 0.95))
+    drop-shadow(0 0 7px rgba(255, 255, 255, 0.6));
+}
+
+/* ---- 簇内成员点：白芯 + 所属簇色族描边；同时归属两类时簇橙优先         */
+.otp-body :deep(.item.point.otp-mem-collision) {
+  --item-background: #dfe7f5;
+  box-shadow: 0 0 0 2px #8fa6cc;
+  opacity: 0.96;
+}
+.otp-body :deep(.item.point.otp-mem-burst) {
+  --item-background: #ffffff;
+  box-shadow:
+    0 0 0 2px #ff8a50,
+    0 0 4px rgba(255, 112, 67, 0.7);
+  opacity: 0.96;
 }
 
 /* ---- 聚焦锚点视觉 ---- */
@@ -898,10 +1255,17 @@ onBeforeUnmount(() => {
     0 0 0 3px rgba(255, 213, 79, 0.95),
     0 0 10px 2px rgba(255, 193, 7, 0.8);
 }
-.otp-body :deep(.item.range.active) {
+/* 簇带聚焦高亮（库不给 background 挂 .active，走 otp-band-focus） */
+.otp-body :deep(.background.otp-band.otp-band-focus) {
   outline: 2px solid #ffd54f;
   outline-offset: -1px;
-  box-shadow: 0 0 12px rgba(255, 213, 79, 0.55);
+  box-shadow:
+    0 0 12px rgba(255, 213, 79, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+/* 淡影聚焦：仅内侧细金线，不抢主胶囊焦点 */
+.otp-body :deep(.background.otp-band-shadow.otp-band-focus) {
+  box-shadow: inset 0 0 0 1px rgba(255, 213, 79, 0.65);
 }
 
 /* 头部焦点芯片 */
@@ -954,32 +1318,23 @@ onBeforeUnmount(() => {
   color: #000;
 }
 
-/* 同一时刻数量徽标（同组同 start，挂在代表项上，缩放无关） */
-.otp-badge {
-  position: absolute;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
+/* 悬停提示浮层：fixed 跟随指针，事件由库顶层回传 clientX/Y */
+.otp-hover-tip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 340px;
+  padding: 4px 8px;
+  border: 1px solid rgba(63, 191, 168, 0.4);
+  border-radius: 4px;
+  background: rgba(3, 17, 28, 0.95);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  color: #d7e6ee;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
-}
-.otp-badge--point {
-  inset: 0;
-  color: #fff;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
-}
-.otp-badge--range {
-  top: 1px;
-  right: 3px;
-  bottom: auto;
-  left: auto;
-  padding: 0 4px;
-  height: 12px;
-  border-radius: 6px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.45);
 }
 
 /* 显隐：自底部滑入 */

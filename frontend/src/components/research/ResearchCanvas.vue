@@ -3106,6 +3106,7 @@ function nodeLabel(id: string): string {
       <ObservationTimelinePanel
         :show="observationLayerOn"
         :nodes="observationLayerRaw.nodes ?? []"
+        :edges="observationLayerRaw.edges ?? []"
         :observation-count="observationCount"
         @update:show="observationLayerOn = $event"
         @pick-observation="openOriginLensObservation"
