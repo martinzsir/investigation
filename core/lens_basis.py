@@ -185,6 +185,63 @@ def _basis_common_neighbors(out: dict) -> tuple[str, list[str]]:
     return text, [f"共同关联 {len(common)} 个"]
 
 
+def _basis_site_profile(out: dict) -> tuple[str, list[str]]:
+    """geo_site_profile：落脚点归并规模、到访集中度、坐标覆盖率。"""
+    sites = out.get("sites") or []
+    if not sites:
+        return "未检出该主体的轨迹落脚点。", []
+    sub = _name(out.get("subject"))
+    top = sites[0]
+    visits = out.get("total_visits") or sum(s.get("visits") or 0 for s in sites)
+    cov = out.get("coord_coverage") or {}
+    with_c, total = cov.get("with_coords"), cov.get("total")
+    text = (f"{sub} 的轨迹归并为 {len(sites)} 个落脚点、共 {visits} 次到访；"
+            f"到访最多为「{top.get('std_address')}」"
+            f"（{top.get('visits')} 次，{top.get('first_date')}~"
+            f"{top.get('last_date')}）")
+    if with_c is not None and total:
+        text += f"；坐标覆盖 {with_c}/{total}"
+    text += _degraded_note(out)
+    claims = [
+        f"落脚点 {len(sites)} 个 / 到访 {visits} 次",
+        f"最高频落脚点「{top.get('std_address')}」{top.get('visits')} 次",
+    ]
+    if with_c is not None and total:
+        claims.append(f"坐标覆盖 {with_c}/{total}")
+    return text, claims
+
+
+def _basis_serial_profile(out: dict) -> tuple[str, list[str]]:
+    """geo_serial_profile：CGT 概率面只陈述事件规模与顶格区域，不给定址结论。"""
+    used = out.get("events_used")
+    if not used:
+        return "有效坐标事件不足，未生成地理画像概率面。", []
+    sub = _name(out.get("subject"))
+    grid = out.get("grid") or {}
+    gm = out.get("grid_meters")
+    if isinstance(gm, float):
+        gm = int(gm)
+    top = out.get("top_zone") or {}
+    n_zones = len(out.get("priority_zones") or [])
+    text = (f"{sub} 的 {used} 起带坐标事件按 Rossmo CGT 生成概率面"
+            f"（网格 {grid.get('rows')}×{grid.get('cols')}，格宽约 {gm} 米），"
+            f"顶格排查区位于 {round(top.get('lat'), 5) if top.get('lat') is not None else '?'},"
+            f"{round(top.get('lng'), 5) if top.get('lng') is not None else '?'}，"
+            f"共 {n_zones} 个优先排查网格；产出为排查优先级区域，非定址结论")
+    dropped = out.get("events_dropped_no_coord")
+    if dropped:
+        text += f"；{dropped} 起事件无坐标未纳入"
+    text += _degraded_note(out)
+    claims = [
+        f"纳入概率面事件 {used} 起",
+        f"网格 {grid.get('rows')}×{grid.get('cols')}（约 {gm} 米格宽）",
+        f"优先排查网格 {n_zones} 个，顶格区 "
+        f"{round(top.get('lat'), 5) if top.get('lat') is not None else '?'},"
+        f"{round(top.get('lng'), 5) if top.get('lng') is not None else '?'}",
+    ]
+    return text, claims
+
+
 _BASIS = {
     "timeline_sequence": _basis_sequence,
     "timeline_rhythm": _basis_rhythm,
@@ -192,6 +249,8 @@ _BASIS = {
     "relation_neighborhood": _basis_neighborhood,
     "relation_paths": _basis_paths,
     "relation_common_neighbors": _basis_common_neighbors,
+    "geo_site_profile": _basis_site_profile,
+    "geo_serial_profile": _basis_serial_profile,
 }
 
 # 证伪条件：回答「什么情况下这个判据不成立」。
@@ -204,6 +263,11 @@ _FALSIFICATION = {
     "relation_neighborhood": "若该主体为项目负责人，单点汇聚系职务性连接，非利益输送结构",
     "relation_paths": "若中间节点为同一单位代持主体，路径长度不构成亲密关系证据",
     "relation_common_neighbors": "若中间主体为共同参建单位且往来为工程款，则闭环属业务链路",
+    "geo_site_profile": "若高频地点系职务出行必经点（司机/外勤/巡线等岗位职责），"
+                        "则到访频次不构成私人落脚关联；坐标为区划质心时空间精度仅到县级",
+    "geo_serial_profile": "CGT 适用于系列侵财/人身案件；若事件点系职务必经点、"
+                          "坐标为区划质心（精度仅到县级）或有效事件不足声明下限，"
+                          "概率面不成立；产出是排查优先级区域，不是落脚点定址",
 }
 
 

@@ -92,6 +92,12 @@
       "transform": {"date": ["cn_date_norm", "pad_date"]}
     },
     {
+      "object": "location",
+      "_note": "维度实体：从 obj_trackpoint 反向物化（不新增数据源）。source_sql 中 std_address 先用 raw_address 占位，编译器物化后由 scripts/enrich_location.py UPDATE 修正为 dual_segment_key（路名主干+行政区划双段归并）。admin 五级归属由 AdminMatcher 离线匹配（重写实现，非 AGPL 源码）。geocode_cache 为 optional 二次 JOIN（未编码时坐标 NULL，不报错降级）。",
+      "source_sql": "SELECT DISTINCT location AS raw_address, location AS std_address, NULL AS province, NULL AS prefecture, NULL AS county, NULL AS township, NULL AS admin_code, NULL AS lat, NULL AS lng, 'GCJ-02' AS coord_sys, 'raw_fallback' AS geocode_source, NULL AS geocode_confidence, NULL AS geocoded_at FROM obj_trackpoint WHERE location IS NOT NULL AND location <> ''",
+      "clean": ["strip"]
+    },
+    {
       "object": "bid_project",
       "source": {
         "table": "招投标档案",
@@ -282,6 +288,19 @@
           "table": "obj_person",
           "on": "p.raw_name = a.raw_name",
           "select": "p.person_id"
+        }
+      ]
+    },
+    {
+      "link": "trackpoint_at",
+      "build_sql": "SELECT t.track_id, l.location_id, t.date FROM obj_trackpoint t JOIN obj_location l ON l.raw_address = t.location",
+      "normalize": [
+        {
+          "as": "location_id",
+          "alias": "l",
+          "table": "obj_location",
+          "on": "l.raw_address = t.location",
+          "select": "l.location_id"
         }
       ]
     }

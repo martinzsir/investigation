@@ -137,6 +137,43 @@
       },
       "hit_when": "rows_nonempty",
       "subject_column": "subject_raw"
+    },
+    {
+      "id": "R-GEO-1",
+      "stage": "xu_shi",
+      "title": "系列事件空间聚集画像",
+      "dimension": "behavior",
+      "jian_types": [
+        "死间"
+      ],
+      "assumption": "H5",
+      "rule_text": "同一主体关联的 5 起及以上事件在空间上呈聚集分布，且聚集区外缘存在缓冲区特征（紧邻常驻点的环带内反而低发）时，符合掠夺者型空间行为模式，可用地理画像产出优先排查区域。产出是排查优先级区域而非定址结论；事件不足 5 起或坐标覆盖率过低时本规则降级不命中，不得以缺口充数。定性权归正兵。",
+      "basis_text": "同一主体 ≥5 起带坐标事件空间聚集，CGT 概率面产出优先排查区",
+      "function": "geo_profile_cgt",
+      "params": {
+        "min_events": 5,
+        "grid_meters": 200
+      },
+      "hit_when": "result_hit"
+    },
+    {
+      "id": "R-GEO-2",
+      "stage": "xu_shi",
+      "title": "坐标距离同框（补强轨迹硬撞库）",
+      "dimension": "behavior",
+      "jian_types": [
+        "生间"
+      ],
+      "assumption": "H3",
+      "rule_text": "两个不同主体的轨迹事件落在 200 米距离阈值内且日期相差不超过 1 天时判为同框；坐标缺失的事件对回落到同县级行政区划判近邻并标注降级。本规则补强纯文本路名硬撞库对异名近址（如“滨江路 K3+200”与“滨江路辅路”）的漏报；坐标与行政区划均缺失的异名地点不擅自判同（保守不误判）。偶然同地概率随地点私密性上升而降低，同框只指向候选私下接触，定性权属正兵。",
+      "basis_text": "异主体轨迹事件坐标距离 ≤200m 且 ±1 天；无坐标对回落同县级区划近邻（降级标注）",
+      "function": "geo_co_located_radius",
+      "params": {
+        "radius_m": 200,
+        "window_days": 1
+      },
+      "hit_when": "result_hit",
+      "subject_column": "person_1"
     }
   ]
 }

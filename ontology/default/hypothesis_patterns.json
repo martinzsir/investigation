@@ -163,6 +163,38 @@
           "因间"
         ]
       }
+    },
+    {
+      "rule_ids": [
+        "R-GEO-1"
+      ],
+      "keywords": [
+        "空间聚集",
+        "地理画像"
+      ],
+      "hypothesis": {
+        "id": "H5",
+        "description": "系列事件空间聚集（掠夺者型空间行为模式）",
+        "evidence_object_types": [
+          "trackpoint",
+          "location"
+        ],
+        "evidence_notes": [
+          "现场勘验"
+        ],
+        "object_types": [
+          "trackpoint",
+          "location"
+        ],
+        "procedure": "轨迹调取已批",
+        "falsification": "事件点空间均匀分布或无缓冲区特征则证伪",
+        "dimension": [
+          "behavior"
+        ],
+        "jian_types": [
+          "死间"
+        ]
+      }
     }
   ]
 }

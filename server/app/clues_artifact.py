@@ -270,7 +270,8 @@ def load_origin_lens_runs(case_dir: str | Path, version: int,
 def save_lens_run(case_dir: str | Path, version: int, *, run_id: str,
                   skill_id: str, params: dict, operator: str,
                   clues: list | None = None, origin: dict | None = None,
-                  observations: list | None = None) -> Path:
+                  observations: list | None = None,
+                  notes: list | None = None) -> Path:
     """定向镜头运行线索落盘（原子写）。clues 为 LineageClue 或 dict 列表。
 
     origin（发起来源，可选）：{clue_id, node_id, subject, surface}。
@@ -298,6 +299,9 @@ def save_lens_run(case_dir: str | Path, version: int, *, run_id: str,
                                 or (o.get("observation_id") if isinstance(o, dict)
                                     else "") or "")
                             for o in (observations or [])],
+        # 函数层降级备注（如"有效坐标事件 2/7 < 5，概率面不可计算"）：
+        # 零线索运行的可审计原因，供前端/报告展示，区别于镜头异常隔离。
+        "notes": [dict(n) for n in (notes or []) if isinstance(n, dict)],
     }
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(

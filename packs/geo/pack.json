@@ -1,0 +1,115 @@
+{
+  "pack_id": "geo",
+  "version": "0.1.0",
+  "_note": "PLAN-GEO-001 P3 空间研判镜头包：经 core.pack_loader 自枚举挂载，零注册代码。计算全部走 ontology Function（geo_subject_sites / geo_profile_cgt），镜头只做编排与线索化，不自己写 SQL；坐标统一 GCJ-02，产出是落脚点结构与优先排查区域候选事实，不下定址/定性结论（定性权属正兵）。",
+  "skills": [
+    {
+      "skill_id": "geo_site_profile",
+      "name": "落脚点画像镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person，同名歧义时显式消歧"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:site_profile_lens",
+      "description": "把一个人的轨迹按地点归并，看他常去哪些落脚点、坐标覆盖多少",
+      "uses_functions": [
+        "geo_subject_sites"
+      ]
+    },
+    {
+      "skill_id": "geo_serial_profile",
+      "name": "系列案件地理画像镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）；系列案件 ≥5 起坐标事件才成画像",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person，同名歧义时显式消歧"
+        },
+        "min_events": {
+          "type": "integer",
+          "description": "成画像的最少有效坐标事件数 2-100，缺省 5；不足降级不产出"
+        },
+        "grid_meters": {
+          "type": "integer",
+          "description": "概率面网格边长（米）50-5000，缺省 200"
+        },
+        "buffer_m": {
+          "type": "integer",
+          "description": "Rossmo 缓冲区半径 B（米）100-50000，缺省 1000"
+        },
+        "top_n": {
+          "type": "integer",
+          "description": "优先排查区清单截断条数 1-200，缺省 60"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:serial_profile_lens",
+      "description": "对系列案件轨迹点跑 Rossmo CGT 概率面，给优先排查区域网格（不是定址）",
+      "uses_functions": [
+        "geo_profile_cgt"
+      ]
+    }
+  ]
+}

@@ -146,6 +146,19 @@
       "runtime": true,
       "_note": "P8 运行期链接：subject_type=bid_project 时写入；端点列 image_evidence_id/project_id。",
       "properties": {}
+    },
+    {
+      "name": "trackpoint_at",
+      "title": "轨迹点位于地点",
+      "from_obj": "trackpoint",
+      "to_obj": "location",
+      "_note": "事件→地点维度归一：轨迹事件经 std_address 关联 location 实体。检测判据在规则层，链接只表达归属关系。",
+      "properties": {"date": "date"},
+      "endpoints": {
+        "from": {"col": "track_id", "ref": {"object": "trackpoint", "key": "track_id", "name": "person_raw"}},
+        "to": {"col": "location_id", "ref": {"object": "location", "key": "location_id", "name": "std_address"}},
+        "extra": ["date"]
+      }
     }
   ]
 }

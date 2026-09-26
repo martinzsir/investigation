@@ -159,10 +159,13 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
     # 深挖完、一次重扫就没了。批量观察仍随版本重算（可复现、无需留手）。
     if observations:
         save_directed_observations(factory.case_dir(case.id), observations)
+    # 函数层降级备注（零观察运行的可审计原因，如事件不足/主体不存在）
+    notes = [n for n in ctx.get("lens_notes", []) if isinstance(n, dict)]
     path = save_lens_run(factory.case_dir(case.id), version,
                          run_id=run_id, skill_id=sid, params=lens_params,
                          operator=task.created_by, clues=[],
-                         observations=observations, origin=origin)
+                         observations=observations, origin=origin,
+                         notes=notes)
     degraded = [str(d.get("skill_id")) for d in ctx.get("degraded", [])
                 if isinstance(d, dict)]
     repo.record_ops("lens_run", case.id,
@@ -170,9 +173,10 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
                      "params": lens_params, "observations": len(observations),
                      "observation_ids": [o.observation_id
                                          for o in observations],
-                     "degraded": degraded, "artifact": str(path),
+                     "degraded": degraded, "notes": notes,
+                     "artifact": str(path),
                      "triggered_by": task.created_by})
     return {"run_id": run_id, "version": version,
             "observations": len(observations),
             "observation_ids": [o.observation_id for o in observations],
-            "artifact": str(path), "degraded": degraded}
+            "artifact": str(path), "degraded": degraded, "notes": notes}

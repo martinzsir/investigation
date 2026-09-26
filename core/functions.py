@@ -1356,3 +1356,9 @@ def invoke_function(store, name: str, params: dict | None = None,
 from core import geo as _geo  # noqa: E402
 
 register_function("location_colocated")(_geo.location_colocated)
+
+# PLAN-GEO-001 P2：空间研判 Function（实现同在 core/geo.py，只读离线）。
+register_function("geo_subject_sites")(_geo.geo_subject_sites)
+register_function("geo_co_located_radius")(_geo.geo_co_located_radius)
+register_function("geo_buffer_scan")(_geo.geo_buffer_scan)
+register_function("geo_profile_cgt")(_geo.geo_profile_cgt)

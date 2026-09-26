@@ -143,7 +143,8 @@ GROUPS = {
     # ---- REQ-G 统一降级协议（第三波：声明化）----
     "declconfig":  ("REQ-G-011/012/013 维度/枚举/间类声明化", [sys.executable, "-m", "unittest", "tests.test_decl_config"]),
     "anomalychannel":("REQ-G-019 异常线索通道（不参与交叉）", [sys.executable, "-m", "unittest", "tests.test_anomaly_channel"]),
-    "geo":         ("REQ-G-021 地点标准化/同框 Function", [sys.executable, "-m", "unittest", "tests.test_geo"]),
+    "geo":         ("REQ-G-021 地点标准化/同框 + PLAN-GEO-001 P2 空间函数（落脚点/距离同框/缓冲环带/CGT 概率面）", [sys.executable, "-m", "unittest", "tests.test_geo"]),
+    "geolens":     ("PLAN-GEO-001 P3 地理画像镜头包 packs/geo（自枚举挂载/落脚点+CGT 线索化/GeoJSON 产物/观察层并线/案件级启停）", [sys.executable, "-m", "unittest", "tests.test_geo_lens"]),
     "initcold":    ("REQ-G-014 冷层建表声明推导", [sys.executable, "-m", "unittest", "tests.test_init_cold"]),
     "exportendpoints":("REQ-G-015 端点列名声明化/导出通用化", [sys.executable, "-m", "unittest", "tests.test_export_endpoints"]),
     "reqpm1":      ("REQ-P M1 数据层缺陷修复（031~034）", [sys.executable, "-m", "unittest", "tests.test_reqp_m1"]),

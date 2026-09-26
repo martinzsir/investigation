@@ -174,6 +174,27 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
     finally:
         store.close()
 
+    # 与 scripts/build_ontology.py CLI 同口径：obj_location 物化后跑地点富化
+    # （AdminMatcher 离线区划 + geocode_cache 坐标 JOIN）。必须在 store.close()
+    # 之后——enrich_locations 自带连接，与 write 连接并发开库会锁冲突。
+    # 富化失败只降级留痕，不阻断版本切换（坐标缺失由镜头层 degraded 兜底）。
+    objs = result.get("objects", {}) if isinstance(result, dict) else {}
+    if isinstance(objs, dict) and "location" in objs:
+        try:
+            from scripts.enrich_location import enrich_locations
+            enr = enrich_locations(str(target))
+            if isinstance(enr, dict) and enr:
+                result["enrich_locations"] = enr
+                progress(94.0, "enrich", "地点富化完成",
+                         f"坐标：缓存命中 {enr.get('cache_matched', 0)} / "
+                         f"离线 {enr.get('offline_matched', 0)} / "
+                         f"共 {enr.get('total', 0)} 个地点")
+        except Exception as e:  # noqa: BLE001
+            repo.record_ops("location_enrich_failed", case.id,
+                            {"version": nxt,
+                             "error": f"{type(e).__name__}: {e}"})
+            progress(94.0, "enrich", "地点富化失败（已放行）", str(e)[:200])
+
     # D-M3-2：线索检测 + 报告产物（cases/<cid>/artifacts/clues_v<nxt>.json，
     # 随版本不可变；线索读面/处置均消费它）。检测失败视同 BUILD 失败：
     # 版本指针不前进，v<nxt> 残留由下次重试清理（H3 同语义）。

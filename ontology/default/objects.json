@@ -102,6 +102,31 @@
       }
     },
     {
+      "name": "location",
+      "title": "地点",
+      "pk": "location_id",
+      "key": {"column": "location_id", "strategy": "proxy", "prefix": "loc"},
+      "kind": "entity",
+      "name_property": "std_address",
+      "_note": "维度实体：从事件反向物化，非新数据源。坐标挂实体不挂事件（同源事件共享坐标）；代理键按 std_address 值分配——同标准地址天然归并为同一节点。坐标统一 GCJ-02。",
+      "properties": {
+        "std_address": "string",
+        "raw_address": "string",
+        "province": "string",
+        "prefecture": "string",
+        "county": "string",
+        "township": "string",
+        "admin_code": "string",
+        "lat": "decimal",
+        "lng": "decimal",
+        "coord_sys": "string",
+        "geocode_source": "string",
+        "geocode_confidence": "decimal",
+        "geocoded_at": "string"
+      },
+      "metadata_props": ["geocode_source", "geocode_confidence", "geocoded_at"]
+    },
+    {
       "name": "bid_project",
       "title": "招投标项目",
       "pk": "project_id",

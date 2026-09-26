@@ -5,7 +5,7 @@
   "dimensions": [
     {"code": "fund", "name": "资金", "note": "银行流水/资金往来异常", "source_object_types": ["transaction"]},
     {"code": "comm", "name": "通讯", "note": "通话/联系频次与对象", "source_object_types": ["call"]},
-    {"code": "behavior", "name": "行为", "note": "轨迹同框/行为模式", "source_object_types": ["trackpoint"]},
+    {"code": "behavior", "name": "行为", "note": "轨迹同框/行为模式/空间聚集", "source_object_types": ["trackpoint", "location"]},
     {"code": "relation", "name": "关系", "note": "工商/社会关系网络", "source_object_types": ["person", "org"]},
     {"code": "time", "name": "时间", "note": "时间耦合/先后顺序（跨对象属性）", "source_object_types": ["transaction", "call", "trackpoint"]}
   ]

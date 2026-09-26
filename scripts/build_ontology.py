@@ -58,6 +58,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  ⚠ 缺列降级 {d}")
     for d in stats.get("null_identity", ()):
         print(f"  ⚠ 无身份剔除 {d}")
+
+    # P11：obj_location 物化后富化（AdminMatcher 离线匹配 + geocode_cache 二次 JOIN）
+    if "location" in stats.get("objects", {}):
+        from scripts.enrich_location import enrich_locations
+        print("=== 地点实体富化（AdminMatcher + geocode_cache）===")
+        enrich_locations(store.db_path)
+
     print(f"  声明：{len(pack.objects)} 对象 / {len(pack.links)} 链接 / "
           f"{len(pack.actions)} 动作 / {len(pack.functions)} 函数")
 
