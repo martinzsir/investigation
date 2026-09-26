@@ -23,6 +23,9 @@ importers:
       '@vicons/ionicons5':
         specifier: ^0.13.0
         version: 0.13.0
+      leaflet:
+        specifier: ^1.9.4
+        version: 1.9.4
       naive-ui:
         specifier: ^2.43.0
         version: 2.45.3(vue@3.5.42(typescript@5.8.3))
@@ -39,6 +42,9 @@ importers:
         specifier: ^5.2.0
         version: 5.2.0(happy-dom@18.0.1)(msw@2.15.0(@types/node@24.13.3)(typescript@5.8.3))(typescript@5.8.3)(vite@7.3.6(@types/node@24.13.3))(vue-eslint-parser@10.4.1(eslint@10.11.0))(vue@3.5.42(typescript@5.8.3))
     devDependencies:
+      '@types/leaflet':
+        specifier: ^1.9.22
+        version: 1.9.22
       '@types/node':
         specifier: ^24.3.0
         version: 24.13.3
@@ -744,6 +750,9 @@ packages:
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+
+  '@types/leaflet@1.9.22':
+    resolution: {integrity: sha512-h3lhECYEKDasG7LFHu+GiHqAvsgLuQvlJvVZzJDGONo3sEL+wUOqSFLnwkZlK0qVxnxbuGFW8iBlJNYs5wgndA==}
 
   '@types/lodash-es@4.17.12':
     resolution: {integrity: sha512-0NgftHUcV4v34VhXm8QBSftKVXtbkBG3ViCjs6+eJ5a6y6Mi/jiFGPc1sC7QK+9BFhWrURE3EOggmWaSxL9OzQ==}
@@ -1567,6 +1576,9 @@ packages:
   kind-of@6.0.3:
     resolution: {integrity: sha512-dcS1ul+9tmeD95T+x28/ehLgd9mENa3LsvDTtzm3vyBEO7RPptvAD+t44WVXaUjTBRcrpFeFlC8WCruUR456hw==}
     engines: {node: '>=0.10.0'}
+
+  leaflet@1.9.4:
+    resolution: {integrity: sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==}
 
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
@@ -2898,6 +2910,10 @@ snapshots:
   '@types/json-schema@7.0.15':
     optional: true
 
+  '@types/leaflet@1.9.22':
+    dependencies:
+      '@types/geojson': 7946.0.16
+
   '@types/lodash-es@4.17.12':
     dependencies:
       '@types/lodash': 4.17.25
@@ -3833,6 +3849,8 @@ snapshots:
 
   kind-of@6.0.3:
     optional: true
+
+  leaflet@1.9.4: {}
 
   levn@0.4.1:
     dependencies:

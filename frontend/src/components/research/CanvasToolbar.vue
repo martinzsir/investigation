@@ -276,7 +276,7 @@ const LAYOUT_OPTIONS = [
             证据强度
           </NButton>
         </template>
-        切换研判视角：流程（血缘）↔ 证据强度（已锁死 / 待核实 / 推测三层）；Tier 3 节点半透后退
+        切换研判视角：流程（血缘）→ 证据强度（已锁死 / 待核实 / 推测三层）→ 时间轴（研判过程时间线）循环；Tier 3 节点半透后退
       </NTooltip>
       <NTooltip trigger="hover">
         <template #trigger>

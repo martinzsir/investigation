@@ -14,7 +14,7 @@
 // 但不占处置清单位置、不进看板计数。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NSpin, NSelect, NInput, NButton, NTag, NEmpty, useMessage } from 'naive-ui'
+import { NSpin, NSelect, NInput, NButton, NTag, NEmpty } from 'naive-ui'
 import { useCaseStore } from '../stores/case'
 import {
   observationsApi,
@@ -28,7 +28,6 @@ import EmptyState from '../components/common/EmptyState.vue'
 const cs = useCaseStore()
 const route = useRoute()
 const router = useRouter()
-const message = useMessage()
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -217,6 +216,15 @@ watch(page, () => {
           <div class="oc-head">
             <NTag size="tiny" round :type="dispositionType(o.disposition)">
               {{ o.disposition }}
+            </NTag>
+            <NTag
+              v-if="o.directed"
+              size="tiny"
+              round
+              type="info"
+              :title="`由正兵从线索画布定向发起${o.origin?.clue_id ? `（${o.origin.clue_id}）` : ''}：案件级保留、不随重扫失效；无此标记的同镜头同主体条目是建案/重扫自动批量产出（随版本重算）`"
+            >
+              定向
             </NTag>
             <span class="oc-lens">{{ o.lens_name }}</span>
             <span v-if="o.subject" class="oc-subject">{{ o.subject }}</span>

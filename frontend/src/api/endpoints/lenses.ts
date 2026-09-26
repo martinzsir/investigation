@@ -276,9 +276,10 @@ export const lensesApi = {
     clueId: string,
   ): Promise<{ recommendations: LensRecommendation[] }> {
     const q = encodeURIComponent(clueId)
-    return api.get<{ recommendations: LensRecommendation[] }>(
+    const res = await api.get<{ recommendations: LensRecommendation[] }>(
       `/cases/${encodeURIComponent(caseId)}/lenses/recommendations?clue_id=${q}`,
     )
+    return res.data
   },
 
   async paramCandidates(

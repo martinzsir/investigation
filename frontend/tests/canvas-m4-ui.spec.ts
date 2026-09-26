@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { setTransport } from '../src/api/transport'
 import type { RawResponse } from '../src/api/transport/types'
@@ -235,6 +236,8 @@ const CATALOG = {
 let wrapper: VueWrapper | null = null
 
 function mountWith(t: FakeTransport): VueWrapper {
+  // ResearchCanvas 经 useCaseOntologyConfig 触达 pinia store（拉取失败回落 DEFAULT，不阻塞）
+  setActivePinia(createPinia())
   setTransport(t)
   wrapper = mount({
     components: { NMessageProvider, NDialogProvider, ResearchCanvas },

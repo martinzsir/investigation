@@ -230,6 +230,7 @@ interface G6Instance {
   render?: () => Promise<unknown>
   setData?: (d: unknown) => void
   destroy?: () => void
+  resize?: () => Promise<unknown> | void
   on?: (event: string, handler: (ev: unknown) => void) => void
   off?: (event: string, handler: (ev: unknown) => void) => void
   fitView?: () => Promise<unknown>
@@ -1106,10 +1107,12 @@ function onNodeClick(ev: unknown, rawId: unknown): void {
     openFactPopover(node.id, oe?.clientX, oe?.clientY)
     return
   }
-  // 深挖结果代表节点：点击直接跳到观察详情（不延迟、不开抽屉）
-  if (g6Node.data?.originLens === true && g6Node.data?.originLensObsId) {
+  // 深挖结果代表节点：点击直接跳到观察详情（不延迟、不开抽屉）。
+  // 判定口径与 toG6Data 节点段一致：直接读 node.props.origin_lens/observation_id
+  // （toG6NodeData 重建的是扁平 data 负载，没有嵌套 .data，勿从 g6Node 取）
+  if (node.props?.origin_lens === true && node.props?.observation_id) {
     clearClickTimer()
-    openOriginLensObservation(String(g6Node.data.originLensObsId))
+    openOriginLensObservation(String(node.props.observation_id))
     return
   }
   // 连线模式下节点点击归 create-edge behavior，不开抽屉
@@ -1433,7 +1436,8 @@ function absorbExpand(nodeId: string, env: ExpandEnvelope): void {
 
 function absorbReload(env: { doc: CanvasDoc; version: number;
                              semantic_ready?: boolean;
-                             meta?: CanvasMeta }): void {
+                             meta?: CanvasMeta;
+                             observation_layer?: ObservationLayerPayload }): void {
   doc.value = env.doc
   version.value = env.version
   semanticReady.value = env.semantic_ready !== false

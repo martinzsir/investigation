@@ -169,6 +169,30 @@ export const canvasTokens = {
   },
 } as const
 
+/**
+ * 地理画像地图令牌（PLAN-GEO-001 P4）。
+ * 概率面五档色带（青→紫→橙→金，低概率冷色、顶格暖色），三渲染器
+ * （高德/Leaflet/离线 SVG）共用同一档位取色，底图切换不改图层语义。
+ * fill 为低透明叠加（底图路网仍可见），stroke 为同色实边。
+ */
+export const geoMapTokens = {
+  band: [
+    { fill: 'rgba(110,222,233,0.10)', stroke: '#2E6E8C' },
+    { fill: 'rgba(0,212,255,0.22)', stroke: '#00D4FF' },
+    { fill: 'rgba(124,107,240,0.30)', stroke: '#7C6BF0' },
+    { fill: 'rgba(255,112,67,0.38)', stroke: '#FF7043' },
+    { fill: 'rgba(242,181,77,0.52)', stroke: '#F2B54D' },
+  ],
+  /** 有坐标落脚点（暖金，区别于概率面冷色） */
+  site: { fill: '#F2B54D', stroke: '#7A5A12' },
+  /** 无坐标落脚点（不出图，仅表层列出；离线示意中以空心灰点占位） */
+  siteDegraded: { fill: 'rgba(90,116,132,0.25)', stroke: '#5A7484' },
+  /** 顶格排查区描边（红粉，最高优先） */
+  topZone: { fill: 'rgba(242,139,147,0.35)', stroke: '#F28B93' },
+  /** 底图背景（瓦片加载前/间隙，与 app 底色一致） */
+  mapBg: '#030A14',
+} as const
+
 /** FE-D-005：卡片 6px / 按钮 4px / 徽章 12px */
 export const radius = { card: '6px', button: '4px', badge: '12px' } as const
 

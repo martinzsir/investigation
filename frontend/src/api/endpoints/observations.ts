@@ -26,6 +26,14 @@ export interface ObservationFact {
 /** 处置态：正兵对观察的操作（跨版本持久，落 state.sqlite） */
 export type ObservationDisposition = '未认领' | '已认领' | '已归档' | '已提升'
 
+/** 定向深挖发起来源（仅 directed=true 时有值） */
+export interface ObservationOrigin {
+  clue_id?: string
+  node_id?: string
+  subject?: string
+  surface?: string
+}
+
 export interface ObservationItem {
   observation_id: string
   skill_id: string
@@ -50,6 +58,11 @@ export interface ObservationItem {
   promoted_hypothesis: string
   /** 认领过但已不在当前版本（重扫后靶心/数据变了）——不隐藏，显式标注 */
   stale?: boolean
+  /** 画布定向发起（true）还是建案/重扫自动批量（false/缺省）。
+   *  同镜头同靶心可能各有一条：批量随版本重算，定向跨版本持久且可回跳发起画布 */
+  directed?: boolean
+  origin?: ObservationOrigin
+  run_id?: string
 }
 
 export interface ObservationStats {
@@ -95,6 +108,9 @@ export interface ObservationDetailResult {
   operator: string
   promoted_clue_id: string
   promoted_hypothesis: string
+  directed?: boolean
+  origin?: ObservationOrigin
+  run_id?: string
 }
 
 /** 假设选项（本体声明，换本体自动跟随；不硬编码 H1..Hn） */

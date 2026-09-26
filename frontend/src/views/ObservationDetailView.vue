@@ -162,6 +162,8 @@ onMounted(load)
       <NButton size="tiny" text @click="router.back()">← 返回观察档案</NButton>
       <div v-if="data" class="od-tags">
         <NTag size="tiny" round>{{ data.lens_name }}</NTag>
+        <NTag v-if="data.directed" size="tiny" round type="info">定向</NTag>
+        <NTag v-else size="tiny" round :bordered="false">自动批量</NTag>
         <NTag
           size="tiny"
           round
@@ -183,6 +185,22 @@ onMounted(load)
           <span v-if="data.subject">主体：{{ data.subject }}</span>
           <span v-if="data.project"> · 项目：{{ data.project }}</span>
           <span v-if="data.param_source" class="dim"> · 靶心 {{ data.param_source }}</span>
+        </p>
+
+        <!-- 定向溯源：从哪条线索的画布发起，可回跳 -->
+        <p v-if="data.directed" class="od-origin">
+          由正兵从线索画布定向发起<span v-if="data.origin?.clue_id">
+            （发起线索 {{ data.origin.clue_id }}）</span>，
+          案件级保留、不随重扫失效。
+          <NButton
+            v-if="data.origin?.clue_id"
+            size="tiny"
+            text
+            type="primary"
+            @click="router.push(`/c/clue/${data.origin!.clue_id}`)"
+          >
+            回到发起线索 →
+          </NButton>
         </p>
 
         <!-- ① 判据：先读这一句 -->
@@ -345,6 +363,16 @@ onMounted(load)
   margin: 0 0 16px;
   font-size: 12px;
   color: var(--sun-text-secondary, #555);
+}
+.od-origin {
+  margin: -8px 0 16px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--sun-info-text, #2080f0);
+  background: var(--sun-info-bg, rgba(32, 128, 240, 0.08));
+  border: 1px solid var(--sun-info-border, rgba(32, 128, 240, 0.3));
+  border-radius: 4px;
 }
 .od-sec {
   margin-bottom: 18px;

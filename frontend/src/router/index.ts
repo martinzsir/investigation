@@ -68,6 +68,8 @@ export const router = createRouter({
         { path: 'c/escape', component: () => import('../views/EscapeHatchView.vue'), meta: { title: '代码逃生舱', mvp: 5 } },
         // P8 多模态图像研判（AI 草案 · 人验闭环）
         { path: 'c/vlm', component: () => import('../views/VlmView.vue'), meta: { title: '图像研判', mvp: 8 } },
+        // 地理画像（PLAN-GEO-001 P4：授权闸口 + CGT 概率面地图）
+        { path: 'c/geo', component: () => import('../views/GeoMapView.vue'), meta: { title: '地理画像', mvp: 5 } },
         // 六分组业务占位（FE-C-026）
         { path: 'c/:section', component: () => import('../views/PlaceholderView.vue') },
       ],

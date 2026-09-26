@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { NDialogProvider, NMessageProvider } from 'naive-ui'
 import { setTransport } from '../src/api/transport'
 import { FakeTransport, okEnvelope, errEnvelope, type FakeRoute } from './helpers'
@@ -110,6 +111,8 @@ function envelope(): CanvasEnvelope {
 let wrapper: VueWrapper | null = null
 
 function mountCanvas(env: CanvasEnvelope = envelope(), routes: FakeRoute[] = []) {
+  // ResearchCanvas 经 useCaseOntologyConfig 触达 pinia store（拉取失败回落 DEFAULT，不阻塞）
+  setActivePinia(createPinia())
   setTransport(new FakeTransport([
     { match: (r) => r.method === 'GET' && r.path === PATH,
       respond: () => okEnvelope(env) },
@@ -139,6 +142,13 @@ async function clickNode(id: string): Promise<void> {
   mocks.handlers['node:click']?.({ target: { id } })
   await new Promise((r) => setTimeout(r, 280))
   await flushPromises()
+}
+
+/** NDrawer 默认 teleport 到 body（与 m3/m4/expand 规格同口径，wrapper.find 查不到） */
+function bodyEl(testid: string): HTMLElement {
+  const el = document.body.querySelector(`[data-testid="${testid}"]`)
+  if (!el) throw new Error(`element not found in body: ${testid}`)
+  return el as HTMLElement
 }
 
 beforeEach(() => {
@@ -439,6 +449,7 @@ describe('P3 研判视角：证据强度三层', () => {
     expect(w.find('[data-testid="tb-perspective"]').exists()).toBe(true)
     expect(w.text()).toContain('视角：流程')
 
+    // 第一次：流程 → 证据强度（状态栏出三层计数）
     await w.find('[data-testid="tb-perspective"]').trigger('click')
     await flushPromises()
     expect(w.text()).toContain('视角：证据强度')
@@ -449,6 +460,14 @@ describe('P3 研判视角：证据强度三层', () => {
       'tb-btn',
     )
 
+    // 第二次：证据强度 → 时间轴（研判过程时间线，第三态）
+    await w.find('[data-testid="tb-perspective"]').trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('视角：时间轴')
+    expect(w.text()).toContain('过程时间')
+    expect(w.text()).not.toContain('已锁死 ·')
+
+    // 第三次：时间轴 → 回到流程
     await w.find('[data-testid="tb-perspective"]').trigger('click')
     await flushPromises()
     expect(w.text()).toContain('视角：流程')
@@ -523,21 +542,21 @@ describe('书证节点抽屉', () => {
     mountCanvas(evidenceEnvelope())
     await flushPromises()
     await clickNode('evidence:ev_1')
-    const drawer = wrapper!.findComponent({ name: 'CanvasNodeDrawer' })
-    expect(drawer.exists()).toBe(true)
-    const card = drawer.find('[data-testid="evidence-card"]')
-    expect(card.exists()).toBe(true)
-    expect(card.text()).toContain('缴款单')
-    expect(card.text()).toContain('王检察官')
-    expect(card.text()).toContain('2026-09-19T18:38:51')
-    expect(card.text()).toContain('ev_1')
+    // NDrawer 内容 teleport 到 body，须走 document.body 查询（同 m3/m4/expand 口径）
+    const card = bodyEl('evidence-card')
+    expect(card.textContent).toContain('缴款单')
+    expect(card.textContent).toContain('王检察官')
+    expect(card.textContent).toContain('2026-09-19T18:38:51')
+    expect(card.textContent).toContain('ev_1')
   })
 
-  const FINDINGS_PATH = '/cases/c1/clues/clue-1/vlm/findings'
+  // 实际端点：/cases/{cid}/vlm/findings?clue_id=（query 与 path 分离传输）
+  const FINDINGS_PATH = '/cases/c1/vlm/findings'
 
   function findingsRoute(): FakeRoute {
     return {
-      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH
+        && r.query?.clue_id === 'clue-1',
       respond: () => okEnvelope({
         findings: {
           ev_1: {
@@ -567,26 +586,26 @@ describe('书证节点抽屉', () => {
     await flushPromises()
     await clickNode('evidence:ev_1')
     await flushPromises()
-    const block = wrapper!.find('[data-testid="evidence-findings"]')
-    expect(block.exists()).toBe(true)
-    expect(block.find('[data-testid="finding-pending"]').exists()).toBe(true)
-    expect(block.find('[data-testid="finding-verified"]').exists()).toBe(true)
-    expect(block.text()).toContain('缴款单金额与流水不符')
-    expect(block.text()).toContain('把握度 0.86')
-    expect(block.text()).toContain('经比对原件属实')
-    expect(block.text()).toContain('王检察官')
+    const block = bodyEl('evidence-findings')
+    expect(block.querySelector('[data-testid="finding-pending"]')).not.toBeNull()
+    expect(block.querySelector('[data-testid="finding-verified"]')).not.toBeNull()
+    expect(block.textContent).toContain('缴款单金额与流水不符')
+    expect(block.textContent).toContain('把握度 0.86')
+    expect(block.textContent).toContain('经比对原件属实')
+    expect(block.textContent).toContain('王检察官')
   })
 
   it('findings 拉取失败：抽屉软提示，不阻塞登记信息', async () => {
     mountCanvas(evidenceEnvelope(), [{
-      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH,
+      match: (r) => r.method === 'GET' && r.path === FINDINGS_PATH
+        && r.query?.clue_id === 'clue-1',
       respond: () => errEnvelope(500, 'INTERNAL', 'boom'),
     }])
     await flushPromises()
     await clickNode('evidence:ev_1')
     await flushPromises()
-    expect(wrapper!.find('[data-testid="findings-error"]').exists()).toBe(true)
-    expect(wrapper!.find('[data-testid="evidence-card"]').exists()).toBe(true)
+    expect(document.body.querySelector('[data-testid="findings-error"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="evidence-card"]')).not.toBeNull()
   })
 })
 

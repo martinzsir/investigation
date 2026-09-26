@@ -15,7 +15,7 @@
  * （如 semantic: "event_time"），由装载器下发、画布读取——那是另一个改造。
  */
 import { RANK_Y_GAP } from './canvas-layout'
-import type { CanvasDoc, CanvasEdge, CanvasNode } from './canvas'
+import type { CanvasDoc, CanvasNode } from './canvas'
 
 /** 时间轴横向间距（像素/档；同档节点纵向堆叠） */
 export const TIME_X_GAP = 210

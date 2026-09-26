@@ -641,7 +641,9 @@ watch(
 /* 视口导航（set-viewport 范式）：全览 → 钻取                           */
 /* ------------------------------------------------------------------ */
 
-const timelineRef = ref<InstanceType<typeof Timeline> | null>(null)
+// Timeline 是泛型函数式 SFC，InstanceType<typeof Timeline> 无法满足构造签名约束
+// （TS2344）；此处只用到 expose 出的 setViewport，按实际用法声明最小结构类型。
+const timelineRef = ref<{ setViewport: (start?: number, end?: number) => void } | null>(null)
 /** 当前视口（由 @changeViewport 回传）；null 时按钮以初始全览为准 */
 const currentViewport = ref<{ start: number; end: number } | null>(null)
 
@@ -942,8 +944,9 @@ onBeforeUnmount(() => {
               </span>
             </template>
             <!-- 仅 point 走 slot（background 簇带是裸 div，状态走 className/CSS 变量）。
-                 不设 title：原生提示会被 hover 高亮的 transform 切换打断，统一走 hoverTip 浮层 -->
-            <template #item="{ item }">
+                 不设 title：原生提示会被 hover 高亮的 transform 切换打断，统一走 hoverTip 浮层；
+                 slot props（item/lane/...）此处用不到，不解构以避免 TS6133 -->
+            <template #item>
               <div class="otp-item otp-item--point"></div>
             </template>
           </Timeline>

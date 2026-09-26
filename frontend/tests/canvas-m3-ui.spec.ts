@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { NConfigProvider, NDialogProvider, NMessageProvider, zhCN } from 'naive-ui'
 import { setTransport } from '../src/api/transport'
 import { FakeTransport, okEnvelope } from './helpers'
@@ -101,6 +102,8 @@ function envelope(over: Partial<CanvasEnvelope> = {}): CanvasEnvelope {
 let wrapper: VueWrapper | null = null
 
 function mountWith(t: FakeTransport): VueWrapper {
+  // ResearchCanvas 经 useCaseOntologyConfig 触达 pinia store（拉取失败回落 DEFAULT，不阻塞）
+  setActivePinia(createPinia())
   setTransport(t)
   wrapper = mount({
     components: {
