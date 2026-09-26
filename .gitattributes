@@ -1,0 +1,15 @@
+# 全仓统一 LF（WSL 优先：CRLF 会打断 bash/venv 脚本）
+# 该文件优先于 core.autocrlf，Windows 检出同样保持 LF
+* text=auto eol=lf
+
+# 二进制：禁止任何换行符转换
+*.parquet binary
+*.xlsx binary
+*.xls binary
+*.sqlite binary
+*.duckdb binary
+*.lbug binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
