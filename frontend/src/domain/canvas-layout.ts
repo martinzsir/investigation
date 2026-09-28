@@ -22,6 +22,12 @@ export const RANK_X: Record<NodeKind, number> = {
   function_result: 480,
   source_row: 720,
   source_file: 960,
+  // P1 案件级研判画布（case# 域）四类——研判边流向：
+  // 主体(0) → 地点/事件/结论(260) → 假设(480)，支撑/反驳边保持左→右
+  subject: 0,
+  place: 260,
+  event: 260,
+  analysis_result: 260,
 }
 
 export const RANK_Y_GAP = 104

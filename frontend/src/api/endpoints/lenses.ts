@@ -31,8 +31,21 @@ export interface LensSpecItem {
   /**
    * 画布可用（与 enabled **分离**）：只影响正兵能否在画布手动带参跑。
    * 案件未覆盖 → 回落包级 enabled（包被吊销则画布也不可用）。
+   * 注意：既有面板语义（回落批量 enabled），启停面板消费方不变；
+   * 案件画布工具箱请用 `pack_canvas_enabled`（见下）。
    */
   canvas_enabled: boolean
+  /**
+   * 包级画布白名单（pack.json canvas_enabled，P3）。
+   * 案件画布工具箱可用性 = case_override !== null ? case_override
+   * : pack_canvas_enabled —— 与「自动批量跑」彻底分离。
+   */
+  pack_canvas_enabled?: boolean
+  /**
+   * 庙算假设挂钩（pack.json assumption，如 "H6"）：镜头产出回写案件画布时
+   * 自动挂「支撑」边到该假设节点；空 = 仅挂靶心不自动归因（开放项③）。
+   */
+  assumption?: string
   /** 有必填参数的定向镜头（批量检测跳过，画布/面板定向带参调度） */
   requires_params: boolean
   /** 数据就绪度（前置提示：缺哪些数据 → 跑了也会降级；null=未能判定） */
@@ -119,13 +132,16 @@ export interface LensRunBody {
    * 缺失表示无发起画布（如从启停面板发起），行为同旧版。
    */
   origin?: {
-    /** 发起线索 ID（必填，后端据此回挂） */
-    clue_id: string
+    /**
+     * 发起线索 ID（线索画布发起时必填，后端据此回挂并线）；
+     * 案件画布发起（P3）无 clue_id，只带 surface="case_canvas" + node_id。
+     */
+    clue_id?: string
     /** 画布选中节点 ID（把结果挂在选中主体下，建立视觉关联） */
     node_id?: string
     /** 发起主体名 */
     subject?: string
-    /** 发起面标识 */
+    /** 发起面标识：线索画布不传；案件画布固定 "case_canvas"（回写触发键） */
     surface?: string
   }
 }
@@ -208,6 +224,16 @@ export function validateLensParams(
   return errs
 }
 
+/** 轨迹时间精度：回答「时刻窗（window_minutes）现在能不能用」 */
+export interface TrackpointTimePrecision {
+  /** minute = 时刻窗可用；hour/date = 不生效（不判「同时」） */
+  time_precision: 'minute' | 'hour' | 'date'
+  total: number
+  with_ts: number
+  minute_level: number
+  note: string
+}
+
 /** 数据就绪度：跑之前就知道会不会因数据未接入而降级（不禁止运行） */
 export interface LensReadiness {
   skill_id: string
@@ -218,6 +244,8 @@ export interface LensReadiness {
   /** 声明的全部依赖 */
   deps: string[]
   note: string
+  /** 仅读轨迹的镜头带此字段；缺即未探测（UI 不提示） */
+  time_precision?: TrackpointTimePrecision | null
 }
 
 /** 单个镜头对某假设的贴合度 */

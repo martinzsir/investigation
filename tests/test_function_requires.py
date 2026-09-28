@@ -75,11 +75,16 @@ class FunctionRequiresTests(unittest.TestCase):
                 _load_functions(p, objects, links, required=False)
 
     def test_meta_tc_04_all_py_functions_have_requires(self):
-        """META-TC-04: 13 个 py 函数均声明 requires（+timeline_* P5）。"""
+        """META-TC-04: 所有 py 函数均声明 requires。
+
+        计数为什么改成下限：写死 13 会随新增函数立刻过期（geo 包扩容后实际
+        21 个，本次改动前就已失败）。契约要点是"每个 py 函数都声明 requires"，
+        不是"恰好有 N 个函数"，数量绑死只会制造假失败。
+        """
         invalidate_pack_cache()
         pack = load_pack("default")
         py_fns = {n: f for n, f in pack.functions.items() if f.impl == "py"}
-        self.assertEqual(len(py_fns), 13)
+        self.assertGreaterEqual(len(py_fns), 13)
         for name, f in py_fns.items():
             self.assertIn("requires", f.to_dict(),
                           f"{name} 应声明 requires")

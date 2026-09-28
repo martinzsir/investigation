@@ -286,8 +286,18 @@ class EntityResolver:
         return self._clusters
 
     def review_candidates(self) -> List[EntityCluster]:
-        """待正兵确认的人名对齐候选（needs_review=True 的簇）。"""
-        return [c for c in self.clusters() if c.needs_review]
+        """待正兵确认的人名对齐候选（needs_review=True 且非关系型指代）。
+
+        关系型指代（「张卫国配偶」等）不进人审队列：它与所指之人字面重叠，
+        但既非同一人亦非同名异人，进队列只会稀释真正的同名歧义裁决。
+        仍可从 clusters()/report()['relational_refs'] 查到，不静默丢弃。
+        """
+        return [c for c in self.clusters()
+                if c.needs_review and not _is_relational_ref(c.canonical_name)]
+
+    def relational_refs(self) -> List[EntityCluster]:
+        """关系型指代簇（不参与人审，但保留可见）。"""
+        return [c for c in self.clusters() if _is_relational_ref(c.canonical_name)]
 
     def report(self) -> dict:
         clusters = self.clusters()
@@ -301,7 +311,12 @@ class EntityResolver:
             ],
             "review_candidates": [
                 {"canonical": c.canonical_name, "variants": c.variants, "reason": c.merge_reason}
-                for c in clusters if c.needs_review
+                for c in self.review_candidates()
+            ],
+            "relational_refs": [
+                {"canonical": c.canonical_name, "variants": c.variants,
+                 "reason": "关系型指代（非人名实体），不进人审队列"}
+                for c in self.relational_refs()
             ],
             "clusters": [c.to_dict() for c in clusters],
         }
@@ -496,6 +511,31 @@ def _merge_by_shared_phone(clusters: List[EntityCluster],
         ))
         merged[-1]._recs = recs
     return merged
+
+
+def _is_relational_ref(name: str) -> bool:
+    """关系型指代（非人名实体）：「张卫国配偶」「某某之妻」「甲家属」等。
+
+    它与所指之人字面高度重叠，但既不是同一人、也不是同名异人——
+    是"某人的亲属/关联方"。若并入人名对齐：
+      · 会被字面相似度判为「张卫国」的别名 → 把两个人并成一个（错误合并）
+      · 会占着人审队列刷屏，稀释真正需要裁决的同名歧义
+    故显式排除：不进 review 队列，但仍保留在 clusters/report 中可见。
+
+    定位说明：本处是**导入期**人名对齐的排除；研判期（core/homonym.py）
+    另有同类排除，两处独立维护（职责与证据面不同，见 registry 注释）。
+    """
+    n = (name or "").strip()
+    if not n or len(n) < 3:
+        return False
+    # 「X配偶/妻/夫/家属/亲属/子女/父母/兄弟/姐妹/岳父/舅舅」等关系后缀
+    for suf in ("配偶", "之妻", "之夫", "妻子", "丈夫", "家属", "亲属", "子女",
+                "儿子", "女儿", "父亲", "母亲", "兄弟", "姐妹", "岳父", "岳母",
+                "舅舅", "姑姑", "姨", "侄子", "外甥", "好友", "同学", "司机",
+                "秘书", "助理", "情人", "女友", "男友"):
+        if n.endswith(suf) and len(n) > len(suf):
+            return True
+    return False
 
 
 def _make_id(name: str) -> str:

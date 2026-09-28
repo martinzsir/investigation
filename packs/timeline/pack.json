@@ -19,6 +19,7 @@
       ],
       "mode": "deterministic",
       "enabled": true,
+      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -71,6 +72,7 @@
       ],
       "mode": "deterministic",
       "enabled": true,
+      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -126,6 +128,7 @@
       ],
       "mode": "deterministic",
       "enabled": true,
+      "canvas_enabled": true,
       "params_schema": {
         "project": {
           "type": "string",

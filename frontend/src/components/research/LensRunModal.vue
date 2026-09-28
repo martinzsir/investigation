@@ -143,6 +143,22 @@ function lensReadiness(skillId: string) {
   return props.lenses.find((l) => l.skill_id === skillId)?.readiness ?? null
 }
 
+/**
+ * 轨迹时间精度提示：时刻窗（window_minutes）**现在能不能用**。
+ *
+ * 为什么必须提前说：该参数只在两条轨迹都精确到分钟时才过滤。轨迹只有日期
+ * 时，正兵填了、跑了、结果一样——无声无效是最糟的失败模式（没有任何反馈，
+ * 人只会以为是参数没生效的 bug）。所以选择镜头时就把结论摆出来。
+ *
+ * minute 档（可用）不打扰；其余档说明为什么不生效。
+ */
+const timePrecisionNote = computed<string>(() => {
+  const tp = lensReadiness(selectedId.value ?? '')?.time_precision
+  if (!tp) return ''
+  if (tp.time_precision === 'minute') return ''
+  return tp.note ?? ''
+})
+
 // ---------- 参数候选（自动推荐） ----------
 // 后端按「画布选中 > 画布可见 > 案件登记 > 线索 > 语义层」排序，语义层不做
 // 全量返回（真实案件数万主体，全量进下拉会 DOM 爆炸）。
@@ -311,6 +327,17 @@ function onSubmit(): void {
         data-testid="lens-run-empty"
       >
         暂无可定向调度的镜头（需要已启用的确定性镜头且声明必填参数）。
+      </NAlert>
+
+      <!-- 时刻窗可用性：填了不生效必须提前说，不能等跑完才沉默 -->
+      <NAlert
+        v-if="timePrecisionNote"
+        type="warning"
+        :show-icon="false"
+        :bordered="false"
+        data-testid="lens-time-precision-note"
+      >
+        {{ timePrecisionNote }}
       </NAlert>
 
       <!-- ===================== 业务模式：预设卡片 ===================== -->

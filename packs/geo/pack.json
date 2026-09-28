@@ -17,6 +17,7 @@
       ],
       "mode": "deterministic",
       "enabled": true,
+      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -63,6 +64,7 @@
       ],
       "mode": "deterministic",
       "enabled": true,
+      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -109,6 +111,325 @@
       "description": "对系列案件轨迹点跑 Rossmo CGT 概率面，给优先排查区域网格（不是定址）",
       "uses_functions": [
         "geo_profile_cgt"
+      ]
+    },
+    {
+      "skill_id": "geo_accompany",
+      "name": "时空伴随镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space",
+        "time"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "radius_m": {
+          "type": "integer",
+          "description": "坐标距离阈值（米）10-10000，缺省 200；仅坐标非质心时作实距判据"
+        },
+        "window_days": {
+          "type": "integer",
+          "description": "日期差上限（天）0-30，缺省 1；数据无时刻，仅判同地异时"
+        },
+        "min_meets": {
+          "type": "integer",
+          "description": "构成反复伴随的同框次数下限 1-100，缺省 2"
+        },
+        "max_pairs": {
+          "type": "integer",
+          "description": "输出事件对上限 1-5000，缺省 500"
+        },
+        "window_minutes": {
+          "type": "integer",
+          "description": "时刻窗（分钟）1-1440，留空不启用。仅在参与配对的两条轨迹**都含时刻且精确到分钟**时按真实间隔过滤；轨迹只有日期时不生效（仍按 window_days 天级判定，结论措辞不变）"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:accompany_lens",
+      "description": "异主体轨迹事件对经四级空间判据与日窗过滤，聚合为主体对，给反复同框的伴随结构（不出同行/同时结论）",
+      "uses_functions": [
+        "geo_spatiotemporal_accompany"
+      ],
+      "assumption": "H6"
+    },
+    {
+      "skill_id": "geo_buffer_scan",
+      "name": "缓冲区环带扫描镜头（反向追踪）",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space",
+        "time"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "description": "锚点主体（以其带坐标落脚点重心为圆心）；与 center_lat/center_lng 二选一"
+        },
+        "target_type": {
+          "type": "string",
+          "description": "主体类型，同名多类实体时须显式消歧（如 person）"
+        },
+        "center_lat": {
+          "type": "decimal",
+          "description": "显式锚点纬度（案发地点），与 target_subject 二选一"
+        },
+        "center_lng": {
+          "type": "decimal",
+          "description": "显式锚点经度（案发地点）"
+        },
+        "inner_radius_m": {
+          "type": "integer",
+          "description": "内环半径（米）50-100000，缺省 1000；内环为缓冲区低发带对照"
+        },
+        "outer_radius_m": {
+          "type": "integer",
+          "description": "外环半径（米）须大于内环且 ≤200000，缺省 5000；环带为排查带"
+        },
+        "date_from": {
+          "type": "string",
+          "description": "时间窗起点 YYYY-MM-DD（案发时），缺省不限"
+        },
+        "date_to": {
+          "type": "string",
+          "description": "时间窗终点 YYYY-MM-DD，缺省不限"
+        },
+        "exclude_anchor_subject": {
+          "type": "boolean",
+          "description": "是否排除锚点主体自身事件，缺省 true（扫自己周围找自己属循环论证）"
+        },
+        "max_subjects": {
+          "type": "integer",
+          "description": "输出主体条数上限，缺省 20"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:buffer_scan_lens",
+      "description": "以锚点为中心的双环带扫描：回答「谁在锚点附近出现过」。锚点可为主体落脚点重心或显式案发坐标；支持时间窗；锚点主体自身默认排除；距离必带坐标精度自陈（质心坐标下的米数是区级推算，不代表实际间距）",
+      "uses_functions": [
+        "geo_buffer_scan"
+      ]
+    },
+    {
+      "skill_id": "geo_segment",
+      "name": "轨迹分段镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space",
+        "time"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person，同名歧义时显式消歧"
+        },
+        "stay_radius_m": {
+          "type": "integer",
+          "description": "停留判定半径（米）10-10000，缺省 200；仅在坐标非质心时作实距判据"
+        },
+        "stay_min_minutes": {
+          "type": "integer",
+          "description": "停留最小时长（分钟）1-1440，缺省 30；低于此值归为途经点"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:segment_lens",
+      "description": "原始轨迹切分为停留段与移动段：按日切分不串段，跨日相邻停留之间不构成移动。轨迹无时刻（date 档）时不产出分段——拿日期编造停留时长是伪精确",
+      "uses_functions": [
+        "geo_trajectory_segment"
+      ]
+    },
+    {
+      "skill_id": "geo_anomaly",
+      "name": "异常轨迹镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space",
+        "time"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person，同名歧义时显式消歧"
+        },
+        "min_baseline_days": {
+          "type": "integer",
+          "description": "建立常驻基线所需的最少停留天数 3-365，缺省 7；低于此值不产出异常（样本越少越容易出现「只去过一次」的伪异常）"
+        },
+        "rare_ratio": {
+          "type": "decimal",
+          "description": "常驻判定阈值：地点到访天数占比，缺省 0.2；低于此值判为非常驻地点"
+        },
+        "stay_radius_m": {
+          "type": "integer",
+          "description": "停留判定半径（米），缺省 200，透传给分段"
+        },
+        "stay_min_minutes": {
+          "type": "integer",
+          "description": "停留最小时长（分钟），缺省 30，透传给分段"
+        },
+        "max_anomalies": {
+          "type": "integer",
+          "description": "输出偏离上限 1-500，缺省 50"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:anomaly_lens",
+      "description": "在主体自身常驻基线之上识别偏离：非常驻地点 / 非常态时段 / 非常态通勤，并在异常停留点上附加同日同地共现主体。偏离是结构事实，不等于可疑",
+      "uses_functions": [
+        "geo_anomaly_trajectory"
+      ]
+    },
+    {
+      "skill_id": "geo_activity_range",
+      "name": "活动范围镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "trackpoint",
+        "location",
+        "trackpoint_at"
+      ],
+      "produces_dims": [
+        "space"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "target_subject": {
+          "type": "string",
+          "required": true,
+          "description": "目标主体（raw_name 或代理键）",
+          "auto_from": {
+            "source": "focus_subjects",
+            "rank_by": "evidence_count",
+            "max": 5,
+            "object_types": [
+              "person"
+            ]
+          }
+        },
+        "target_type": {
+          "type": "string",
+          "description": "auto/person，同名歧义时显式消歧"
+        },
+        "date_from": {
+          "type": "date",
+          "description": "统计时间窗起点，缺省不限"
+        },
+        "date_to": {
+          "type": "date",
+          "description": "统计时间窗终点，缺省不限"
+        },
+        "sigma_multiplier": {
+          "type": "decimal",
+          "description": "标准差椭圆倍率，缺省 2（约含 86% 的点）"
+        },
+        "bandwidth_m": {
+          "type": "decimal",
+          "description": "核密度带宽（米），缺省 500"
+        },
+        "top_hotspots": {
+          "type": "integer",
+          "description": "热点排名输出条数上限，缺省 5"
+        },
+        "weight_by": {
+          "type": "string",
+          "enum": ["count", "uniform"],
+          "description": "count=按到访次数加权 / uniform=等权，缺省 count"
+        }
+      },
+      "scope": {
+        "reads": [
+          "trackpoint",
+          "location",
+          "trackpoint_at"
+        ]
+      },
+      "handler": "impl:activity_range_lens",
+      "description": "主体活动范围的描述统计：平均中心、标准距离、标准差椭圆（主轴方位与覆盖面积）、核密度网格与热点排名。不推断落脚点、不作行为定性；不挂假设——它是结构描述，不是可证伪的命题",
+      "uses_functions": [
+        "geo_activity_range"
       ]
     }
   ]

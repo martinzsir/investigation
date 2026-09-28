@@ -12,7 +12,7 @@ import { geoMapTokens } from '../../design/tokens'
 
 const props = defineProps<{
   model: GeoLayerModel
-  layersVisible: { cells: boolean; sites: boolean; top: boolean }
+  layersVisible: { cells: boolean; sites: boolean; top: boolean; links: boolean }
 }>()
 const emit = defineEmits<{
   selectSite: [site: GeoSite]
@@ -87,6 +87,25 @@ function draw(): void {
       fillOpacity: 0.25,
       interactive: false,
     }).addTo(layerGroup)
+  }
+
+  if (props.layersVisible.links) {
+    for (const link of props.model.links) {
+      if (!link.coordA || !link.coordB) continue
+      const tok = geoMapTokens.accompany
+      L.polyline(
+        [
+          [link.coordA.lat, link.coordA.lng],
+          [link.coordB.lat, link.coordB.lng],
+        ],
+        {
+          color: tok.stroke,
+          weight: tok.strokeWidth,
+          dashArray: tok.dash,
+          interactive: false,
+        },
+      ).addTo(layerGroup)
+    }
   }
 
   const b = boundsOf(props.model)

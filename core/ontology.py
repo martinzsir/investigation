@@ -119,6 +119,12 @@ class ObjectType:
     # REQ-D-013：复合列显式降级声明（properties 值为 {"type": "string", "composite": true}）
     # ——整列保留不拆分（路径 B），不参与实体关联/归一 JOIN 键/事件去重哈希（AC-3/AC-5）
     composite_props: tuple[str, ...] = ()
+    # 复合身份键：实体型默认仅按 name_property 去重并哈希代理键，同名必然同键——
+    # 这会让"同名异人"的证号证据在入库前就被折叠掉（自证死锁：能证明是两个人的
+    # 第二条记录永远进不了表）。声明本字段后，去重与代理键改用该组列组合。
+    # 典型：person_identity 的 ("raw_name", "id_card")——身份凭证的本质是「人名+证号」，
+    # 同名不同证号本就是两条不同记录，不得折叠。
+    identity_key: tuple[str, ...] = ()
     # REQ-D-016/D-002：属性 → 数据元 ID 引用（properties 值为 {"type": ..., "data_element": "DE_X"}）；
     # loader 装载期校验 ID 已注册（fail-closed）；合规扫描按引用定位扫描目标，
     # 未引用数据元的属性不扫（AC-8）。
@@ -550,6 +556,37 @@ def build_ontology(conn, pack: str = "default", base_dir=None) -> dict:
     from core.row_uri import snapshot_source_rows, BOOTSTRAP_PARTITION
     stats["row_snapshot"] = snapshot_source_rows(
         conn, ver.build_id, snap_batches, partition=BOOTSTRAP_PARTITION)
+
+    # ---- 6) 地点实体富化（区划离线匹配 + geocode_cache 二次 JOIN）----
+    # 为什么放在这里：此前只有 scripts/build_ontology.py 这个独立入口会富化，
+    # 而 CLI 主流程（run_all）与案件服务端都走本函数 → obj_location 的
+    # lat/lng 恒为 NULL、geocode_source 恒为 raw_fallback → 空间研判
+    # （落脚点画像 / CGT 概率面 / 坐标同框）整条链路空转。
+    # 富化只写 obj_location，与编译事务解耦，失败不阻断构建。
+    if "location" in stats.get("objects", {}):
+        try:
+            from scripts.enrich_location import enrich_locations
+            stats["location_enrich"] = enrich_locations(conn=conn)
+        except Exception as e:      # pragma: no cover - 富化失败不阻断
+            stats["location_enrich"] = {"error": f"{type(e).__name__}: {e}"}
+
+    # 同名异人检测（消歧须在哈希前完成，故在此产出诊断与 review 候选）。
+    # 只出建议、不改写语义层：accept 后经既有 review_loop 落 entity_mapping。
+    # 失败不阻断构建（证据缺失是常态，不是错误）。
+    try:
+        from core.homonym import detect_homonyms
+        hr = detect_homonyms(conn)
+        stats["homonym"] = hr
+        if hr["summary"]["pending"] or hr["summary"]["distinct"]:
+            from core.run_health import get_health
+            get_health().record(
+                "homonym_pending", "warning", source="ontology:homonym",
+                reason=(f"同名异人：distinct={hr['summary']['distinct']} "
+                        f"pending={hr['summary']['pending']}，"
+                        f"需人工确认后方可分列（系统不静默决定）"),
+                summary=hr["summary"])
+    except Exception as e:      # pragma: no cover - 检测失败不阻断
+        stats["homonym"] = {"error": f"{type(e).__name__}: {e}"}
 
     return stats
 
@@ -1202,17 +1239,30 @@ def _compute_object_rows(conn, otype: ObjectType, b: ObjectBinding,
                 stats.setdefault("null_identity", []).append(
                     f"obj_{otype.name}.{otype.name_property}: {len(null_rows)} 行"
                     f"实体名为 NULL（无身份，不入语义层）")
-        # 归并后变体行折叠为同一 canonical，按 name_property 去重
+        # 归并后变体行折叠为同一 canonical。默认按 name_property 去重；
+        # 声明 identity_key 时按该组列组合去重——否则同名异人的第二条身份记录
+        # （不同证号）会在入库前被丢弃，证号证据永远不可能触发（自证死锁）。
+        idk_idx = tuple(cols.index(p) for p in otype.identity_key
+                        if p in cols) if otype.identity_key else ()
+
+        def _ikey(r):
+            return tuple(str(r[i]) for i in idk_idx) if idk_idx else r[0]
+
         seen: set = set()
         deduped = []
         for r in rows:
-            if r[0] in seen:
+            k = _ikey(r)
+            if k in seen:
                 continue
-            seen.add(r[0])
+            seen.add(k)
             deduped.append(r)
         rows = deduped
-        proxy = _proxy_keys(sorted({r[0] for r in rows}), prefix)
-        keys = [proxy[r[0]] for r in rows]
+        if idk_idx:
+            keys = [f"{prefix}_{hashlib.sha1('|'.join(_ikey(r)).encode('utf-8')).hexdigest()[:12]}"
+                    for r in rows]
+        else:
+            proxy = _proxy_keys(sorted({r[0] for r in rows}), prefix)
+            keys = [proxy[r[0]] for r in rows]
     return cols, rows, keys, src_table
 
 

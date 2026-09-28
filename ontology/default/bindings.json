@@ -22,7 +22,11 @@
           "relation": "关联"
         }
       },
-      "optional_columns": ["法人", "状态", "关联"]
+      "optional_columns": [
+        "法人",
+        "状态",
+        "关联"
+      ]
     },
     {
       "object": "account",
@@ -41,11 +45,19 @@
           "date": "日期"
         }
       },
-      "optional_columns": ["币种"],
+      "optional_columns": [
+        "币种"
+      ],
       "_note_transform": "DE_AMOUNT/DE_DATE 的 clean_rule 在 py 层（fetch 后）执行，晚于编译期 TRY_CAST——千分位/中文日期必须在 SQL 投影内 CAST 前抢救（REQ-D-009 transform）。strip_currency 同链剥货币符与空白。",
       "transform": {
-        "amount": ["strip_thousands", "strip_currency"],
-        "date": ["cn_date_norm", "pad_date"]
+        "amount": [
+          "strip_thousands",
+          "strip_currency"
+        ],
+        "date": [
+          "cn_date_norm",
+          "pad_date"
+        ]
       }
     },
     {
@@ -62,7 +74,13 @@
           "case_type": "案件类别"
         }
       },
-      "optional_columns": ["证件类型", "身份证号", "手机号", "性别", "案件类别"],
+      "optional_columns": [
+        "证件类型",
+        "身份证号",
+        "手机号",
+        "性别",
+        "案件类别"
+      ],
       "_note": "数据接入演示源表（五格式夹具见 data/test/ingest/）。身份证/手机为 string 直通投影，DE clean_rule 经 prop_de_clean 在 py 层自动挂接（despace / strip_cc+digits_only），无需重复声明 transform。"
     },
     {
@@ -76,8 +94,15 @@
           "times": "次数"
         }
       },
-      "optional_columns": ["日期"],
-      "transform": {"date": ["cn_date_norm", "pad_date"]}
+      "optional_columns": [
+        "日期"
+      ],
+      "transform": {
+        "date": [
+          "cn_date_norm",
+          "pad_date"
+        ]
+      }
     },
     {
       "object": "trackpoint",
@@ -86,16 +111,31 @@
         "columns": {
           "person_raw": "主体",
           "location": "地点",
-          "date": "日期"
+          "date": "日期",
+          "timestamp": "时刻"
         }
       },
-      "transform": {"date": ["cn_date_norm", "pad_date"]}
+      "transform": {
+        "date": [
+          "cn_date_norm",
+          "pad_date"
+        ],
+        "timestamp": [
+          "cn_datetime_norm"
+        ]
+      },
+      "optional_columns": [
+        "时刻"
+      ],
+      "_note_time": "timestamp 声明为 optional_columns（B5-01）：源表「轨迹出行」当前只有日期列、无时刻列，缺列降级为类型化 NULL 而不硬失败。待接入手机信令/GPS 等带时刻数据源时，只需在源表补「时刻」列即自动生效，判据代码无需改动。"
     },
     {
       "object": "location",
       "_note": "维度实体：从 obj_trackpoint 反向物化（不新增数据源）。source_sql 中 std_address 先用 raw_address 占位，编译器物化后由 scripts/enrich_location.py UPDATE 修正为 dual_segment_key（路名主干+行政区划双段归并）。admin 五级归属由 AdminMatcher 离线匹配（重写实现，非 AGPL 源码）。geocode_cache 为 optional 二次 JOIN（未编码时坐标 NULL，不报错降级）。",
       "source_sql": "SELECT DISTINCT location AS raw_address, location AS std_address, NULL AS province, NULL AS prefecture, NULL AS county, NULL AS township, NULL AS admin_code, NULL AS lat, NULL AS lng, 'GCJ-02' AS coord_sys, 'raw_fallback' AS geocode_source, NULL AS geocode_confidence, NULL AS geocoded_at FROM obj_trackpoint WHERE location IS NOT NULL AND location <> ''",
-      "clean": ["strip"]
+      "clean": [
+        "strip"
+      ]
     },
     {
       "object": "bid_project",
@@ -108,8 +148,15 @@
           "leader": "分管领导"
         }
       },
-      "optional_columns": ["分管领导"],
-      "transform": {"pub_date": ["cn_date_norm", "pad_date"]}
+      "optional_columns": [
+        "分管领导"
+      ],
+      "transform": {
+        "pub_date": [
+          "cn_date_norm",
+          "pad_date"
+        ]
+      }
     },
     {
       "object": "clue",
@@ -138,7 +185,12 @@
           "content_raw": "内容"
         }
       },
-      "transform": {"submit_date": ["cn_date_norm", "pad_date"]}
+      "transform": {
+        "submit_date": [
+          "cn_date_norm",
+          "pad_date"
+        ]
+      }
     },
     {
       "object": "osint_article",
@@ -154,8 +206,16 @@
           "retention_days": "保留天数"
         }
       },
-      "optional_columns": ["采集时间", "保留天数"],
-      "transform": {"pub_date": ["cn_date_norm", "pad_date"]}
+      "optional_columns": [
+        "采集时间",
+        "保留天数"
+      ],
+      "transform": {
+        "pub_date": [
+          "cn_date_norm",
+          "pad_date"
+        ]
+      }
     }
   ],
   "link_bindings": [

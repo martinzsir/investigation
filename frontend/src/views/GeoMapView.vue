@@ -27,9 +27,11 @@ import { presentError } from '../api/errors'
 import { useMapConsent, type MapEngine } from '../composables/useMapConsent'
 import {
   boundsOf,
+  GEO_SKILL_ACCOMPANY,
   GEO_SKILL_SERIAL,
   GEO_SKILL_SITE,
   geocodeSourceLabel,
+  matchSiteByAddress,
   mergeSites,
   parseGeoObservation,
   type GeoLayerModel,
@@ -53,10 +55,11 @@ const detailLoading = ref(false)
 const mapError = ref('')
 const selectedSiteKey = ref('')
 
-const layersVisible = ref({ cells: true, sites: true, top: true })
+const layersVisible = ref({ cells: true, sites: true, top: true, links: true })
 
 const serialItems = computed(() => items.value.filter((i) => i.skill_id === GEO_SKILL_SERIAL))
 const siteItems = computed(() => items.value.filter((i) => i.skill_id === GEO_SKILL_SITE))
+const accompanyItems = computed(() => items.value.filter((i) => i.skill_id === GEO_SKILL_ACCOMPANY))
 
 /** 覆盖率口径随镜头类型切换文案 */
 const coverageText = computed<string>(() => {
@@ -97,13 +100,14 @@ async function loadList(): Promise<void> {
   listError.value = ''
   try {
     const cid = cs.currentCaseId
-    const [rSerial, rSites] = await Promise.all([
+    const [rSerial, rSites, rAccompany] = await Promise.all([
       observationsApi.list(cid, { skill: GEO_SKILL_SERIAL, page: 1, page_size: 200 }),
       observationsApi.list(cid, { skill: GEO_SKILL_SITE, page: 1, page_size: 200 }),
+      observationsApi.list(cid, { skill: GEO_SKILL_ACCOMPANY, page: 1, page_size: 200 }),
     ])
-    items.value = [...rSerial.observations, ...rSites.observations]
-    // 默认展示最近一次系列画像；没有则回落落脚点画像
-    const preferred = serialItems.value[0] ?? siteItems.value[0]
+    items.value = [...rSerial.observations, ...rSites.observations, ...rAccompany.observations]
+    // 默认展示最近一次系列画像；没有则回落落脚点画像，再回落伴随
+    const preferred = serialItems.value[0] ?? siteItems.value[0] ?? accompanyItems.value[0]
     if (preferred) await selectItem(preferred)
     else {
       selectedId.value = ''
@@ -140,6 +144,38 @@ async function selectItem(o: ObservationItem): Promise<void> {
         if (pm) m = mergeSites(m, pm.sites)
       }
     }
+    // accompany 观察：从两侧主体的 site 观察匹配坐标，补全连线端点
+    if (m.kind === 'accompany' && m.links.length) {
+      const link = m.links[0]
+      const findSites = async (personName: string) => {
+        const peer = items.value.find(
+          (x) => x.skill_id === GEO_SKILL_SITE && x.subject === personName,
+        )
+        if (!peer) return []
+        const pd = await observationsApi.detail(cid, peer.observation_id)
+        const pm = parseGeoObservation(pd)
+        return pm ? pm.sites : []
+      }
+      const [sitesA, sitesB] = await Promise.all([
+        findSites(link.personA),
+        findSites(link.personB),
+      ])
+      // 按 companion.locations 匹配地址取坐标（取第一个匹配点）
+      const locs = (detail.detail as Record<string, unknown>)?.companion
+        ?.locations as string[] | undefined
+      const firstLoc = locs?.[0] ?? ''
+      link.coordA = matchSiteByAddress(sitesA, firstLoc)
+      link.coordB = matchSiteByAddress(sitesB, firstLoc)
+      // 把两侧 sites 并轨进图层，让落脚点一并显示
+      const allSites = [...sitesA]
+      for (const s of sitesB) {
+        if (!allSites.some((x) => x.locationId === s.locationId
+          || x.stdAddress === s.stdAddress)) {
+          allSites.push(s)
+        }
+      }
+      m = { ...m, sites: allSites, links: [link] }
+    }
     model.value = m
   } catch (e) {
     listError.value = presentError(e).title
@@ -164,7 +200,11 @@ function openObservation(): void {
 }
 
 function lensLabel(o: ObservationItem): string {
-  return o.skill_id === GEO_SKILL_SERIAL ? '系列画像' : '落脚点'
+  return o.skill_id === GEO_SKILL_SERIAL
+    ? '系列画像'
+    : o.skill_id === GEO_SKILL_ACCOMPANY
+      ? '时空伴随'
+      : '落脚点'
 }
 
 function fmtCoord(v: number | null): string {
@@ -296,6 +336,32 @@ onMounted(() => void loadList())
               <NTag v-if="o.degraded" size="tiny" :bordered="false" type="error">降级</NTag>
             </div>
           </button>
+
+          <div v-if="accompanyItems.length" class="geo-rail__group">时空伴随</div>
+          <button
+            v-for="o in accompanyItems"
+            :key="o.observation_id"
+            type="button"
+            class="geo-obs"
+            :class="{ 'geo-obs--active': o.observation_id === selectedId }"
+            @click="void selectItem(o)"
+          >
+            <div class="geo-obs__line">
+              <span class="geo-obs__subject">{{ o.subject || (o.title?.split(' ')[0]) || '—' }}</span>
+              <NTag size="tiny" :bordered="false" type="success">{{ lensLabel(o) }}</NTag>
+            </div>
+            <div class="geo-obs__meta">
+              {{ o.created_at?.slice(0, 16) ?? '' }}
+              <NTooltip v-if="o.directed">
+                <template #trigger>
+                  <NTag size="tiny" :bordered="false" type="info">定向</NTag>
+                </template>
+                由正兵从线索画布定向发起{{ o.origin?.clue_id ? `（${o.origin.clue_id}）` : '' }}
+                ，案件级保留、不随重扫失效；另一条无此标记的是建案/重扫自动批量产出。
+              </NTooltip>
+              <NTag v-if="o.degraded" size="tiny" :bordered="false" type="error">降级</NTag>
+            </div>
+          </button>
         </div>
       </aside>
 
@@ -312,6 +378,7 @@ onMounted(() => void loadList())
             <NCheckbox v-model:checked="layersVisible.cells">概率面</NCheckbox>
             <NCheckbox v-model:checked="layersVisible.sites">落脚点</NCheckbox>
             <NCheckbox v-model:checked="layersVisible.top">顶格排查区</NCheckbox>
+            <NCheckbox v-if="model?.kind === 'accompany'" v-model:checked="layersVisible.links">伴随连线</NCheckbox>
             <span class="geo-map-toolbar__hint">
               产出为优先排查区域，非定址结论
             </span>
@@ -372,12 +439,42 @@ onMounted(() => void loadList())
       <aside class="geo-rail geo-rail--right">
         <template v-if="model">
           <div class="geo-rail__head">
-            {{ model.kind === 'serial' ? '系列地理画像' : '落脚点画像' }}
+            {{ model.kind === 'serial' ? '系列地理画像' : model.kind === 'accompany' ? '时空伴随' : '落脚点画像' }}
             <span class="geo-rail__sub">{{ model.subject }}</span>
           </div>
 
           <div v-if="model.degraded && model.degradedReason" class="geo-degrade">
             {{ model.degradedReason }}
+          </div>
+
+          <!-- accompany 专属信息卡片 -->
+          <div v-if="model.kind === 'accompany' && model.links.length" class="geo-card">
+            <div class="geo-card__title">伴随信息</div>
+            <div class="geo-link-info">
+              <div class="geo-link-pair">
+                <b>{{ model.links[0].personA }}</b>
+                <span class="geo-link-x">×</span>
+                <b>{{ model.links[0].personB }}</b>
+              </div>
+              <div class="geo-link-meta">
+                同框 <b>{{ model.links[0].meetCount }}</b> 次
+                <span v-if="model.links[0].repeated" class="geo-link-repeated">（反复伴随）</span>
+              </div>
+              <div class="geo-link-meta">
+                {{ model.links[0].firstDate ?? '—' }} ~ {{ model.links[0].lastDate ?? '—' }}
+                <span v-if="model.links[0].spanDays !== null">（跨度 {{ model.links[0].spanDays }} 天）</span>
+              </div>
+              <div class="geo-link-meta geo-link-note">{{ model.links[0].spatialNote }}</div>
+              <div class="geo-link-meta">
+                端点定位：
+                <span :class="model.links[0].coordA ? 'geo-link-ok' : 'geo-link-miss'">
+                  {{ model.links[0].coordA ? '✓' : '✗' }} {{ model.links[0].personA }}
+                </span>
+                <span :class="model.links[0].coordB ? 'geo-link-ok' : 'geo-link-miss'">
+                  {{ model.links[0].coordB ? '✓' : '✗' }} {{ model.links[0].personB }}
+                </span>
+              </div>
+            </div>
           </div>
 
           <div class="geo-card">
@@ -765,6 +862,37 @@ onMounted(() => void loadList())
 .geo-cov__hint code {
   font-family: var(--sun-font-mono);
   color: var(--sun-warn-text);
+}
+
+.geo-link-ok {
+  color: var(--sun-success-text);
+  margin-right: 8px;
+}
+.geo-link-miss {
+  color: var(--sun-error-text);
+  margin-right: 8px;
+}
+.geo-link-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.geo-link-x {
+  color: var(--sun-text-tertiary);
+}
+.geo-link-meta {
+  font-size: 11px;
+  color: var(--sun-text-secondary);
+  line-height: 1.7;
+}
+.geo-link-repeated {
+  color: var(--sun-warn-text);
+}
+.geo-link-note {
+  color: var(--sun-text-tertiary);
+  font-style: italic;
 }
 
 .geo-table {

@@ -40,13 +40,24 @@ def load_geocode_cache() -> pd.DataFrame:
     return pd.read_parquet(cache_path)
 
 
-def enrich_locations(db_path: str = "data/investigation.duckdb") -> dict:
+def enrich_locations(db_path: str = "data/investigation.duckdb",
+                     conn=None) -> dict:
     """主入口：富化 obj_location。
 
     返回统计信息：{total, offline_matched, cache_matched, fallback}
+
+    conn：可选。传入已建立的连接时**复用该连接**（同一事务视图，能看到
+    build_ontology 刚 COMMIT 的 obj_location），用完不关闭（调用方所有）。
+    不传则自行 connect(db_path) 并在结束时关闭。
+
+    为什么需要 conn：core.ontology.build_ontology 编译完直接调用本函数，
+    若另开连接，duckdb_databases() 只给出库名（不带 .duckdb 后缀），
+    拼出的路径会指向另一个库，导致 "obj_location not found, skip enrich"
+    ——空间研判链路因此恒为空转。
     """
     import duckdb
-    con = duckdb.connect(db_path)
+    own_conn = conn is None
+    con = conn if conn is not None else duckdb.connect(db_path)
     try:
         # 检查 obj_location 是否存在
         tables = con.execute("SHOW TABLES").fetchall()
@@ -76,6 +87,11 @@ def enrich_locations(db_path: str = "data/investigation.duckdb") -> dict:
             admin = parse_admin_path(raw)
             std_key = dual_segment_key(raw)
 
+            # geocoded_at 语义：经**在线/外部服务**编码的时间。
+            # 离线区划查表是编译期确定性推导，没有"编码时刻"概念——写入
+            # now() 会让同输入两次构建的 obj_location 逐行不一致，破坏
+            # 编译幂等（tests/test_ontology 的 TestBuildIdempotent 实测捕获）。
+            # 故离线轨留空；缓存轨沿用缓存写入时的时间（缓存文件不变则确定）。
             update = {
                 "location_id": row["location_id"],
                 "std_address": std_key,
@@ -125,7 +141,6 @@ def enrich_locations(db_path: str = "data/investigation.duckdb") -> dict:
 
         # 批量 UPDATE
         if updates:
-            now = datetime.now().isoformat()
             for u in updates:
                 con.execute("""
                     UPDATE obj_location SET
@@ -152,7 +167,8 @@ def enrich_locations(db_path: str = "data/investigation.duckdb") -> dict:
                     u["lng"],
                     u["geocode_source"],
                     u["geocode_confidence"],
-                    u.get("geocoded_at") or now,
+                    # 不再回落 now()：离线/未编码行留 NULL，保证编译幂等
+                    u.get("geocoded_at"),
                     u["location_id"],
                 ])
 
@@ -163,7 +179,8 @@ def enrich_locations(db_path: str = "data/investigation.duckdb") -> dict:
         return stats
 
     finally:
-        con.close()
+        if own_conn:
+            con.close()
 
 
 if __name__ == "__main__":

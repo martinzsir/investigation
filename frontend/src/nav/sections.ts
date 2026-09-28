@@ -24,6 +24,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: 'miaosuan', label: '庙算工作台', mvp: 5 },
       { key: 'graph', label: '知识图谱', mvp: 5 },
       { key: 'geo', label: '地理画像', mvp: 5 },
+      { key: 'convergence', label: '三维交汇', mvp: 5 },
+      { key: 'canvas', label: '研判画布', mvp: 6 },
       { key: 'vlm', label: '图像研判', mvp: 8 },
     ],
   },

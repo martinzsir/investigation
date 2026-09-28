@@ -6,7 +6,7 @@ core/hypotheses.py
 - 数据驱动：auto_from_findings() 把异常扫描 findings 按模式库映射为候选假设
 - 规则约束：≤5 条 / 四字段必备 / 超授权边界标受限(待授权) / 数据源缺失标降级
 - 人机协同：add / remove / reorder / promote 受控接口，全程写审计
-- 覆盖完整性：五维度覆盖度（<80% 报警）、间类缺口、假设证据冲突、枚举候补池
+- 覆盖完整性：维度覆盖度（缺任一维即报警）、间类缺口、假设证据冲突、枚举候补池
 每条假设自带：所需证据 / 可调用数据源 / 对应程序 / 证伪条件 / 维度 / 间类 / 溯源行
 """
 
@@ -53,6 +53,44 @@ def _dim_names(codes, pack: str = "default", base_dir=None) -> list[str]:
     return [labels.get(str(c)) or str(c) for c in (codes or [])]
 
 
+def _dim_codes(values, dims: list[str], pack: str = "default",
+               base_dir=None) -> set[str]:
+    """任意写法 → 维度 code（展示名/中文 name 一并归一）。
+
+    为什么需要
+    ----------
+    本体声明「code 为机器标识符，name 仅作展示名」，但**产出侧并未全部
+    跟上**：用间/奇正线索的 detail["维度"] 落的是中文展示名（如"行为"），
+    而实证轨按 code 求交 → 这些证据**一律被算成实证缺口**。
+
+    实测：建沙盘时虚实 findings 用 code（4 维命中），用间/奇正用中文名
+    （全落空）——实证覆盖因此长期偏低，且缺口指向错误维度，正兵按提示
+    去补的数据源其实早已命中。
+
+    归一规则：先认 code，再按本体 name→code 反查，都认不出则丢弃
+    （未声明维度不参与覆盖统计，不静默充数）。
+    """
+    declared = set(dims or [])
+    if not declared:
+        return set()
+    try:
+        from core.ontology_loader import load_dimension_labels
+        labels = load_dimension_labels(pack, base_dir)
+    except Exception:
+        labels = {}
+    name_to_code = {str(v): str(k) for k, v in (labels or {}).items()}
+    out: set[str] = set()
+    for v in values or ():
+        s = str(v).strip()
+        if not s:
+            continue
+        if s in declared:
+            out.add(s)
+        elif s in name_to_code and name_to_code[s] in declared:
+            out.add(name_to_code[s])
+    return out
+
+
 # 本体声明 → Hypothesis 的合法字段集（过滤未知键，避免声明笔误炸装载）
 _HYPOTHESIS_FIELDS = frozenset(
     f for f in Hypothesis.__dataclass_fields__
@@ -80,16 +118,84 @@ def _row_key(r) -> str:
     return str(r)
 
 
+def match_finding_pattern(text: str, rule_id: str = "",
+                          pack: str = "default", base_dir=None,
+                          patterns=None):
+    """finding → 假设模板（单一真相源）。
+
+    为什么需要
+    ----------
+    庙算（``auto_add_from_findings``）与 skills 线索构建原本**各写一份**
+    匹配逻辑，且两份不等价：庙算那份支持「① rule_ids 精确命中 →
+    ② keywords 弱回落」两段式，skills 那份只做关键词循环，丢了 rule_ids
+    优先，且读的是**类属性** ``MiaoSuan.FINDING_PATTERNS``（内置中文回退），
+    而非实例属性（已由本体 hypothesis_patterns.json 替换为 code 化）。
+
+    实测后果：R-GEO-3（时空反复同框）的线索标题含"同框"，被内置模式里
+    ``keywords=["同框"] → H3`` 命中，维度落 ``["通讯","行为"]``；而本体为
+    R-GEO-3 声明的是 H6、``["space","time"]``。**空间证据被记成了通讯与
+    行为**，维度覆盖统计因此统计不到空间，实证缺口也指向错误维度。
+
+    本函数把两段匹配收为唯一实现，两侧共用，杜绝再次分叉。
+
+    返回
+    ----
+    ``(chain, jian, dims, reason)``；未命中返回 ``([], [], [], 原因)``。
+    """
+    pats = patterns
+    if pats is None:
+        try:
+            from core.ontology_loader import load_hypothesis_patterns
+            pats = load_hypothesis_patterns(pack, base_dir)
+        except Exception:
+            pats = None
+    if not pats:
+        # 本体缺失 → 回落内置类属性（中文维度，旧包兼容路径）
+        pats = MiaoSuan.FINDING_PATTERNS
+
+    f_rule = str(rule_id or "")
+    text = str(text or "")
+    for p in pats:
+        rids = p.get("rule_ids") or []
+        # ① rule_ids 精确命中（优先于文本匹配）
+        # ② rule_ids 未命中 → 回落 keywords 文本弱匹配
+        if f_rule and rids:
+            if f_rule not in rids:
+                continue
+        elif not any(k in text for k in (p.get("keywords") or [])):
+            continue
+        tpl = p.get("hypothesis")
+        if tpl is None:
+            continue
+        hid = getattr(tpl, "id", None) or (tpl.get("id") if isinstance(tpl, dict) else None)
+        jian = list(getattr(tpl, "jian_types", None)
+                    if not isinstance(tpl, dict) else tpl.get("jian_types") or [])
+        dims = list(getattr(tpl, "dimension", None)
+                    if not isinstance(tpl, dict) else tpl.get("dimension") or [])
+        via = f"rule_id={f_rule} 精确命中" if (f_rule and rids) else "关键词弱匹配"
+        return ([hid] if hid else []), jian, dims, f"{via} → {hid or '?'}"
+    return [], [], [], ("无模式命中"
+                        + (f"（rule_id={f_rule}）" if f_rule else ""))
+
+
 class MiaoSuan:
     """庙算沙盘：假设 ≤5 条，自动证伪条件，知己强制非空"""
 
     MAX_HYPOTHESES = 5
 
-    # 五大侦查维度（覆盖度模型）
-    DIMENSIONS = ["资金", "通讯", "行为", "关系", "时间"]
+    # 侦查维度（覆盖度模型）。实际取值来自 dimensions.json 的 code；
+    # 此处为文件缺失时的内置回退，**必须与 dimensions.json 的 code 同口径**
+    # （旧版写中文，导致类属性与实例属性不等价——线索侧读类属性时拿到中文
+    # 模板，正是维度归一的同类分叉源）。
+    # P-GEO：新增空间维——空间证据此前混记在 behavior 名下。
+    DIMENSIONS = ["fund", "comm", "behavior", "space", "relation", "time"]
     # 五间（间类覆盖检查）
     JIAN_ALL = ["生间", "反间", "因间", "死间", "内间"]
-    # 维度覆盖度报警阈值
+    # 维度覆盖度报警阈值：见 _coverage() 内说明。
+    # **不再按固定比例判报警**——比例阈值与维度个数绑定，5 维时缺 1 维
+    # （4/5=0.80）触发，扩到 6 维后缺 1 维（5/6≈0.83）反而不触发，等于
+    # 加维度就静默关掉报警。REQ-G-009 的本意是"缺任一维都该报"，故改为
+    # 按缺维数量判（见下）。保留常量仅为兼容外部引用。
     DIMENSION_ALARM = 0.8
 
     # ---- 数据驱动：异常模式 → 假设模板（模式库，按维度标注） ----
@@ -314,15 +420,16 @@ class MiaoSuan:
         score = len(used & set(data_files)) / len(data_files) if data_files else 0
         return {"score": round(score * 100, 1), "unused": unused}
 
-    # ---------- 反遗漏规则 2（F）：五维度覆盖度 ----------
+    # ---------- 反遗漏规则 2（F）：维度覆盖度 ----------
     def dimension_coverage(self, findings: list[dict] | None = None) -> dict:
-        """维度覆盖 = 已覆盖维度 / 5。
+        """维度覆盖 = 已覆盖维度 / 声明维度总数（由 dimensions.json 声明）。
 
         REQ-G-008：双轨口径——
           - 声明轨（declared）：假设里**声明**了哪些维度（理论覆盖）；
           - 经验轨（empirical）：虚实扫描实际命中的 finding 落在哪些维度（实证覆盖）。
         声明覆盖 ≠ 经验覆盖：假设写了维度但扫描无命中，属"有假设无证据"，须可见。
-        REQ-G-009：报警阈值 < 改为 <=（4/5=80% 仍缺 1 维，应报警）；alarm_text 枚举缺维名。
+        REQ-G-009：缺任一维即报警（alarm_text 枚举缺维名）；
+          原实现按固定比例 0.8 判，比例与维度个数绑定，扩维后会静默失效。
         REQ-G-024：实证缺口独立报警（empirical_alarm/empirical_alarm_text）——
           声明缺口="压根没想到"（补假设/人工注入），实证缺口="想到了但没查到"
           （补数据/查检测器是否失效）；两者不共用 alarm，双轨数字可见且可行动。
@@ -337,14 +444,22 @@ class MiaoSuan:
                 return {v} if v else set()
             return set(v)
 
-        declared = {d for h in self.hypotheses for d in _dims(h.dimension)} & set(self.DIMENSIONS)
+        declared = _dim_codes(
+            {d for h in self.hypotheses for d in _dims(h.dimension)},
+            self.DIMENSIONS, self.pack, self.base_dir)
         declared_missing = [d for d in self.DIMENSIONS if d not in declared]
-        empirical = {d for f in findings for d in _dims(f.get("dimension"))} & set(self.DIMENSIONS)
+        empirical = _dim_codes(
+            {d for f in findings for d in _dims(f.get("dimension"))},
+            self.DIMENSIONS, self.pack, self.base_dir)
         empirical_missing = [d for d in self.DIMENSIONS if d not in empirical]
 
         score = len(declared) / len(self.DIMENSIONS)
-        # G-009：4/5=0.80 仍缺 1 维 → 报警（< 改 <=）
-        alarm = score <= self.DIMENSION_ALARM if declared_missing else False
+        # G-009 原意：4/5=0.80 仍缺 1 维 → 报警（< 改 <=）。
+        # 但"比例阈值"与维度个数强绑定：5 维时缺 1 维必触发（0.80<=0.80），
+        # 扩到 6 维后缺 1 维得 0.83>0.80 反而不报警——加一个维度就静默关掉
+        # 了检查，且这个失效完全不可见。故改为**缺维数判据**：缺任一维即报，
+        # 与维度总数无关（score 仍保留供展示与下游消费）。
+        alarm = bool(declared_missing)
         alarm_text = ""
         if alarm:
             alarm_text = (f"假设维度覆盖不完整（{len(declared)}/{len(self.DIMENSIONS)}），"
@@ -404,7 +519,7 @@ class MiaoSuan:
 
     # ---------- 枚举空间（I）：笛卡尔积候选池 + 候补清单 ----------
     def enumerate_space(self, space: dict[str, list[str]] | None = None) -> dict:
-        """五维组合展开候选池。
+        """维度组合展开候选池。
 
         - 行为值命中 ENUM_BEHAVIOR_MAP → 有检测器支撑（可转正，幂等去重）
         - 其余 → 候补池 backlog（按行为去重），正兵可 promote() 手动转正

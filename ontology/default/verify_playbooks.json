@@ -1,61 +1,156 @@
 {
-  "schema_version": 1,
-  "playbooks": [
-    {
-      "id": "r6_fund_tw_rerun",
-      "channel": "function",
-      "match": {"rule_id": "R6", "assumption": "H1"},
-      "function": "time_window_collision",
-      "fallback_function": "integer_transfer_aggregates",
-      "text": "复跑 {subject} 的整数资金时间窗核查：{project_count} 笔整数资金落在中标公示 ±20 天窗口，逐一确认是否对公工程往来",
-      "falsification": "窗口期资金均为对公工程尾款、无个人账户整数进出"
-    },
-    {
-      "id": "r6_call_window",
-      "channel": "function",
-      "match": {"rule_id": "R6", "assumption": ["H1", "H4"]},
-      "function": "call_frequency_spike",
-      "text": "补查 {subject} 在 R6 中标窗口期（公示日前后 20 天）与中标方联系人的通话频次"
-    },
-    {
-      "id": "r6_bid_archive",
-      "channel": "external",
-      "match": {"rule_id": "R6"},
-      "external": {
-        "target": "住建局招标办",
-        "material": "中标项目招投标底档及资金审批联签单"
-      },
-      "text": "向住建局招标办调取 {subject} 关联中标项目招投标底档及资金审批联签单"
-    },
-    {
-      "id": "r1_quarter_end_deposit_rerun",
-      "channel": "function",
-      "match": {"rule_id": "R1"},
-      "function": "quarter_end_integer_deposits",
-      "fallback_function": "integer_transfer_aggregates",
-      "text": "复跑季度末整数现金存入核查：对季末边界（3/31、6/30、9/30、12/31 及其邻日）±15 天内 1 万元整数倍、对方摘要为“现金存入”的交易逐笔复核，确认存款人与账户主体的关系",
-      "falsification": "季末整数现金存入均有合理来源（工资奖金兑现、经营货款现金回收）且非集中时点突击存入"
-    },
-    {
-      "id": "r1_deposit_slip_archive",
-      "channel": "external",
-      "match": {"rule_id": "R1"},
-      "external": {
-        "target": "开户银行",
-        "material": "季末整数现金存入的存款凭证、柜台/ATM 影像及经手人信息"
-      },
-      "text": "向开户银行调取季末整数现金存入的存款凭证、柜台或 ATM 影像及经手人信息"
-    },
-    {
-      "id": "r1_image_original_match",
-      "channel": "external",
-      "match": {"rule_id": "R1"},
-      "external": {
-        "target": "图像原件/书证来源",
-        "material": "VLM 草案对应图像原件，逐要素比对"
-      },
-      "text": "比对原件核验 VLM 图像草案：草案所述要素须在原件中逐项可见；核验通过后图像证据入卷并挂接 {subject}，模型名/prompt版本/模型分独立登记（模型分不参与确定性计分）",
-      "falsification": "草案要素在原件中不可见或与原件不符——驳回草案，图像不入证据"
-    }
-  ]
+ "schema_version": 1,
+ "playbooks": [
+  {
+   "id": "r6_fund_tw_rerun",
+   "channel": "function",
+   "match": {
+    "rule_id": "R6",
+    "assumption": "H1"
+   },
+   "function": "time_window_collision",
+   "fallback_function": "integer_transfer_aggregates",
+   "text": "复跑 {subject} 的整数资金时间窗核查：{project_count} 笔整数资金落在中标公示 ±20 天窗口，逐一确认是否对公工程往来",
+   "falsification": "窗口期资金均为对公工程尾款、无个人账户整数进出"
+  },
+  {
+   "id": "r6_call_window",
+   "channel": "function",
+   "match": {
+    "rule_id": "R6",
+    "assumption": [
+     "H1",
+     "H4"
+    ]
+   },
+   "function": "call_frequency_spike",
+   "text": "补查 {subject} 在 R6 中标窗口期（公示日前后 20 天）与中标方联系人的通话频次"
+  },
+  {
+   "id": "r6_bid_archive",
+   "channel": "external",
+   "match": {
+    "rule_id": "R6"
+   },
+   "external": {
+    "target": "住建局招标办",
+    "material": "中标项目招投标底档及资金审批联签单"
+   },
+   "text": "向住建局招标办调取 {subject} 关联中标项目招投标底档及资金审批联签单"
+  },
+  {
+   "id": "r1_quarter_end_deposit_rerun",
+   "channel": "function",
+   "match": {
+    "rule_id": "R1"
+   },
+   "function": "quarter_end_integer_deposits",
+   "fallback_function": "integer_transfer_aggregates",
+   "text": "复跑季度末整数现金存入核查：对季末边界（3/31、6/30、9/30、12/31 及其邻日）±15 天内 1 万元整数倍、对方摘要为“现金存入”的交易逐笔复核，确认存款人与账户主体的关系",
+   "falsification": "季末整数现金存入均有合理来源（工资奖金兑现、经营货款现金回收）且非集中时点突击存入"
+  },
+  {
+   "id": "r1_deposit_slip_archive",
+   "channel": "external",
+   "match": {
+    "rule_id": "R1"
+   },
+   "external": {
+    "target": "开户银行",
+    "material": "季末整数现金存入的存款凭证、柜台/ATM 影像及经手人信息"
+   },
+   "text": "向开户银行调取季末整数现金存入的存款凭证、柜台或 ATM 影像及经手人信息"
+  },
+  {
+   "id": "r1_image_original_match",
+   "channel": "external",
+   "match": {
+    "rule_id": "R1"
+   },
+   "external": {
+    "target": "图像原件/书证来源",
+    "material": "VLM 草案对应图像原件，逐要素比对"
+   },
+   "text": "比对原件核验 VLM 图像草案：草案所述要素须在原件中逐项可见；核验通过后图像证据入卷并挂接 {subject}，模型名/prompt版本/模型分独立登记（模型分不参与确定性计分）",
+   "falsification": "草案要素在原件中不可见或与原件不符——驳回草案，图像不入证据"
+  },
+  {
+   "id": "rgeo1_cgt_rerun",
+   "channel": "function",
+   "match": {
+    "rule_id": "R-GEO-1",
+    "assumption": [
+     "H5"
+    ]
+   },
+   "function": "geo_profile_cgt",
+   "fallback_function": "geo_activity_range",
+   "text": "按空间尺度自检建议的 buffer_m 复跑系列事件空间聚集画像：确认事件点在调整后影响域内是否形成多点叠加中心，而非孤岛式分布",
+   "falsification": "调整尺度后事件点仍呈空间均匀分布或无缓冲区特征，概率面不成立"
+  },
+  {
+   "id": "rgeo1_grid_visit",
+   "channel": "external",
+   "match": {
+    "rule_id": "R-GEO-1",
+    "assumption": [
+     "H5"
+    ]
+   },
+   "external": {
+    "target": "优先排查区属地派出所/街道办",
+    "material": "排查区内场所登记信息、权属及常驻人员核查"
+   },
+   "text": "实地走访优先排查区网格：逐格核实场所性质与权属，确认是否存在落脚点、仓储点等与主体关联的隐蔽场所",
+   "falsification": "排查区内无与主体关联的场所，或均为公共/无关场所"
+  },
+  {
+   "id": "rgeo2_site_archive",
+   "channel": "external",
+   "match": {
+    "rule_id": "R-GEO-2",
+    "assumption": [
+     "H3"
+    ]
+   },
+   "external": {
+    "target": "同框坐标处场所管理方",
+    "material": "场所登记信息、权属证明及出入登记记录"
+   },
+   "text": "调取 {subject} 与对端主体同框坐标处的场所登记信息与出入记录：确认场所性质（职务性场所/商务场所/私人住所）及双方出入时间",
+   "falsification": "同框处为职务性场所，双方出入系工作常态"
+  },
+  {
+   "id": "rgeo3_site_nature",
+   "channel": "external",
+   "match": {
+    "rule_id": "R-GEO-3",
+    "assumption": [
+     "H6"
+    ]
+   },
+   "external": {
+    "target": "同框路段场所管理方/物业",
+    "material": "场所登记信息、权属证明及出入登记记录"
+   },
+   "text": "实地核实反复同框路段的场所性质与权属：确认是否属项目现场、会议场所或办公区等职务性地点，调取场所出入记录比对双方到访时间",
+   "falsification": "同框地点为职务性场所，时空接近系工作常态"
+  },
+  {
+   "id": "rgeo3_relation_check",
+   "channel": "external",
+   "match": {
+    "rule_id": "R-GEO-3",
+    "assumption": [
+     "H6"
+    ]
+   },
+   "external": {
+    "target": "两主体所在单位人事部门",
+    "material": "任职部门、项目组成员名单及岗位职责说明"
+   },
+   "text": "核实反复同框两主体的单位与项目组关系：确认是否同属一单位或同一项目组，职务往来是否足以解释时空接近",
+   "falsification": "两主体同属一单位或同一项目组，时空接近系工作常态"
+  }
+ ]
 }

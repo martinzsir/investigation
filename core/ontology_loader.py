@@ -74,7 +74,16 @@ ALLOWED_SIDE_EFFECTS = {"set_clue_status", "create_decision",
 ALLOWED_IMPL_KINDS = {"sql", "py"}
 ALLOWED_OUTPUT_TYPES = {"rows", "scalar", "report"}
 ALLOWED_RULE_STAGES = {"xu_shi", "qi_zheng", "yong_jian"}
-ALLOWED_DIMENSIONS = {"资金", "通讯", "行为", "关系", "时间"}
+# 内置维度回退：**双语**——code 是机器标识符（rules.json /
+# hypothesis_patterns.json 引用它），name 是展示名。
+#
+# 为什么必须双语：dimensions.json 缺失时（精简测试包/旧案件包）回退生效，
+# 而官方包的规则与假设模式库已全部写 code（fund/comm/...）。旧版回退是
+# 「code=name=中文」，于是 code 化规则在缺声明时会被误判为未声明维度而
+# 硬失败；反过来只写 code 又会拒掉旧包的中文声明。双语回退让两种写法都
+# 合法——校验处已做 code|name 并集。
+ALLOWED_DIMENSIONS = {"fund", "comm", "behavior", "space", "relation", "time",
+                      "资金", "通讯", "行为", "空间", "关系"}
 # v1.2 §3.0.6：数据元全域化行业白名单（pack_meta.json industry 字段取值）
 ALLOWED_INDUSTRIES = {"金融", "医疗"}
 ALLOWED_HIT_WHEN = {"rows_nonempty", "result_hit"}
@@ -168,7 +177,14 @@ def load_pack(pack: str = "default", base_dir: Path | None = None) -> OntologyPa
 
 
 # REQ-G-011：维度缺省内置集（dimensions.json 缺失时回落，保证旧案件包/精简测试包兼容）
-DEFAULT_DIMENSIONS = ["资金", "通讯", "行为", "关系", "时间"]
+# 一律写 **code**（与 dimensions.json 的 code 同口径）。展示名见
+# _BUILTIN_DIMENSION_NAMES；回退声明同时给出 code 与 name，使旧包的中文
+# 声明与新包的 code 声明都能通过校验。
+DEFAULT_DIMENSIONS = ["fund", "comm", "behavior", "space", "relation", "time"]
+_BUILTIN_DIMENSION_NAMES = {
+    "fund": "资金", "comm": "通讯", "behavior": "行为",
+    "space": "空间", "relation": "关系", "time": "时间",
+}
 
 
 def _as_dim_list(v) -> list[str]:
@@ -282,8 +298,11 @@ def load_dimension_declarations(pack: str = "default",
     root = (base_dir or PACK_ROOT) / pack
     p = root / "dimensions.json"
     if not p.exists():
-        return [{"code": n, "name": n, "note": "", "source_object_types": []}
-                for n in DEFAULT_DIMENSIONS]
+        # 回退：code 与 name 分离（旧版 code=name=中文，导致 code 化规则
+        # 在缺声明时被误拒）。双语齐全，两种写法都能通过校验。
+        return [{"code": c, "name": _BUILTIN_DIMENSION_NAMES.get(c, c),
+                 "note": "", "source_object_types": []}
+                for c in DEFAULT_DIMENSIONS]
     data = _read_json(p)
     dims = data.get("dimensions", [])
     out: list[dict] = []
@@ -1440,6 +1459,24 @@ def _load_objects(path: Path,
                 f"对象 '{name}' 未声明 key，回落 pk='{o['pk']}' 隐式推断策略"
                 f"（P1 建议显式声明 key：column/strategy/prefix）",
                 stacklevel=2)
+        # 复合身份键：实体型默认仅按 name_property 去重，同名异人的证号证据会被折叠。
+        # 声明后去重与代理键改用该组列组合（fail-closed：引用未声明属性/非实体型硬失败）。
+        idk = o.get("identity_key", [])
+        if not isinstance(idk, list) or any(
+                not isinstance(x, str) or not x.strip() for x in idk):
+            raise ValueError(
+                f"{ctx}（{name}）identity_key 必须是非空字符串列表")
+        if idk:
+            if kind != "entity":
+                raise ValueError(
+                    f"{ctx}（{name}）identity_key 只允许实体型对象声明"
+                    f"（当前 kind={kind}）")
+            unknown_ik = [x for x in idk if x not in props]
+            if unknown_ik:
+                raise ValueError(
+                    f"{ctx}（{name}）identity_key 引用未声明属性：{unknown_ik}")
+            if len(set(idk)) != len(idk):
+                raise ValueError(f"{ctx}（{name}）identity_key 存在重复项")
         # REQ-P-034：元数据/内容属性排除声明（不参与实体连接与画像）
         md = o.get("metadata_props", [])
         if not isinstance(md, list) or any(
@@ -1461,6 +1498,7 @@ def _load_objects(path: Path,
             enum_values=enum_values,
             metadata_props=tuple(md),
             composite_props=tuple(composite),
+            identity_key=tuple(idk),
             prop_data_elements=prop_de,
             prop_de_clean=prop_de_clean,
         ))

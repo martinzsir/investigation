@@ -166,6 +166,13 @@ export const canvasTokens = {
     hypothesis: { chip: '#FF9D4D', ink: '#3D1F04' },
     note: { chip: '#AAB6C2', ink: '#1C242C' },
     function_result: { chip: '#6E87B5', ink: '#0E1B2E' },
+    // P1 案件级研判画布四类：主体蓝 / 地点青绿（同观察层描边语义）/
+    // 事件暖橙（同 minute 档符号色）/ 研判结论紫（同 origin_lens 描边）——
+    // 色相与既有语义对齐，四类互异可一眼分型
+    subject: { chip: '#5B8DEF', ink: '#0A1B36' },
+    place: { chip: '#3FBFA8', ink: '#06302A' },
+    event: { chip: '#FF7043', ink: '#3A1204' },
+    analysis_result: { chip: '#7C6BF0', ink: '#150E38' },
   },
 } as const
 
@@ -189,6 +196,8 @@ export const geoMapTokens = {
   siteDegraded: { fill: 'rgba(90,116,132,0.25)', stroke: '#5A7484' },
   /** 顶格排查区描边（红粉，最高优先） */
   topZone: { fill: 'rgba(242,139,147,0.35)', stroke: '#F28B93' },
+  /** 时空伴随连线（琥珀虚线，与落脚点同色系但透明） */
+  accompany: { stroke: '#F2B54D', strokeWidth: 2, dash: '6,4' },
   /** 底图背景（瓦片加载前/间隙，与 app 底色一致） */
   mapBg: '#030A14',
 } as const

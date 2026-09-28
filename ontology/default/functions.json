@@ -695,6 +695,27 @@
           "type": "integer",
           "default": 5000,
           "description": "外环半径（米，排查带外缘），须大于内环且 ≤200000"
+        },
+        "date_from": {
+          "type": "date",
+          "description": "时间窗起点（反向追踪的「案发时」），缺省不限"
+        },
+        "date_to": {
+          "type": "date",
+          "description": "时间窗终点，缺省不限"
+        },
+        "exclude_anchor_subject": {
+          "type": "boolean",
+          "default": true,
+          "description": "排除锚点主体自身事件；扫某人周围却扫出他自己属循环论证，缺省 true"
+        },
+        "center_lat": {
+          "type": "decimal",
+          "description": "显式锚点纬度（案发地点），与 target 二选一"
+        },
+        "center_lng": {
+          "type": "decimal",
+          "description": "显式锚点经度（案发地点）"
         }
       },
       "output_type": "report",
@@ -749,12 +770,295 @@
           "type": "integer",
           "default": 60,
           "description": "优先排查区清单截断条数（按概率降序），1-200"
+        },
+        "scale_check": {
+          "type": "boolean",
+          "default": true,
+          "description": "空间尺度自检开关。开启后先判事件点空间尺度与影响域（2B）是否匹配：孤岛点占比超 max_isolated_ratio 或最近邻距离中位数超影响域 max_dispersion_ratio 倍时判定 CGT 不适用，不产出概率面（伪峰比无结论更危险），仅留降级原因与建议 buffer_m"
+        },
+        "max_isolated_ratio": {
+          "type": "decimal",
+          "default": 0.5,
+          "description": "适用的孤岛点占比上限（影响域内无任何邻居的点占比超过此值即判定不适用）"
+        },
+        "max_dispersion_ratio": {
+          "type": "decimal",
+          "default": 2.0,
+          "description": "适用的离散比上限（最近邻距离中位数 / 影响域 2B 超过此值即判定数据与参数尺度错配）"
         }
       },
       "output_type": "report",
       "impl": "py",
       "impl_ref": "geo_profile_cgt",
-      "description": "空间研判 P2：系列事件点集的 Rossmo CGT 确定性分段概率面（d≤B 衰减项 / B<d<2B 缓冲带外项 / ≥2B 归零，概率按最大值归一化）。target 给出时单主体画像（附 GeoJSON 概率面与优先排查区清单）；缺省时全主体分组扫描（每组摘要+顶格，不嵌 GeoJSON）。产出是排查优先级区域而非定址结论"
+      "description": "空间研判 P2：系列事件点集的 Rossmo CGT 确定性分段概率面（d≤B 衰减项 / B<d<2B 缓冲带外项 / ≥2B 归零，概率按最大值归一化）。target 给出时单主体画像（附 GeoJSON 概率面与优先排查区清单）；缺省时全主体分组扫描（每组摘要+顶格，不嵌 GeoJSON）。产出是排查优先级区域而非定址结论。默认开启空间尺度自检：事件点两两距离均超影响域时（孤岛拼盘）不产出概率面，改为标注不适用并给出建议 buffer_m——Rossmo 建模掠夺者型出行，跨区县/通勤者型的轨迹不适用本模型"
+    },
+    {
+      "name": "geo_spatiotemporal_accompany",
+      "title": "时空伴随（主体对聚合）",
+      "inputs": [
+        "obj_trackpoint",
+        "lnk_trackpoint_at",
+        "obj_location"
+      ],
+      "requires": {
+        "objects": [
+          "trackpoint",
+          "location"
+        ],
+        "links": [
+          "trackpoint_at"
+        ],
+        "props": {
+          "trackpoint": [
+            "person_raw",
+            "date"
+          ],
+          "location": [
+            "lat",
+            "lng",
+            "admin_code",
+            "geocode_source",
+            "province",
+            "prefecture",
+            "county",
+            "township"
+          ]
+        }
+      },
+      "parameters": {
+        "radius_m": {
+          "type": "integer",
+          "default": 200,
+          "description": "坐标距离阈值（米），10-10000；仅在坐标非质心时作为实距判据"
+        },
+        "window_days": {
+          "type": "integer",
+          "default": 1,
+          "description": "事件日期差上限（天），0-30；数据无时刻，仅能判同地异时"
+        },
+        "window_minutes": {
+          "type": "integer",
+          "description": "时刻窗（分钟），1-1440；**可选**（无 default 键即不启用）。仅当配对的两事件均精确到 minute/second 档时按真实秒间隔过滤（超窗不算同框），date/hour 档仍按 window_days 天级判定——数据无时刻时语义零变化"
+        },
+        "min_meets": {
+          "type": "integer",
+          "default": 2,
+          "description": "构成「反复伴随」的同框次数下限，1-100"
+        },
+        "max_pairs": {
+          "type": "integer",
+          "default": 500,
+          "description": "输出事件对上限（防爆），1-5000"
+        },
+        "repeated_only": {
+          "type": "boolean",
+          "default": false,
+          "description": "仅当存在达到 min_meets 下限的反复同框主体对时才算命中；规则路径（R-GEO-3）置 true 使反复同框升格为命题，镜头路径置 false 使单次同框仍出观察"
+        }
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "geo_spatiotemporal_accompany",
+      "description": "空间研判 P5：异主体事件对经四级空间判据（same_address 同址 / same_road 同路段 / geocode 门牌级实距 / centroid 区县质心 / admin_path 同区县）与 ±window_days 日窗过滤，聚合到**主体对**并给出同框次数、跨度、地点集与精度分布。与 geo_co_located_radius 的分工：后者出事件对（一次同框一条），本函数出主体对（反复同框才是伴随）。时间口径自陈 date 无时刻，不宣称同时/同行"
+    },
+    {
+      "name": "geo_trajectory_segment",
+      "title": "轨迹分段与停留点识别",
+      "inputs": [
+        "obj_trackpoint",
+        "lnk_trackpoint_at",
+        "obj_location"
+      ],
+      "requires": {
+        "objects": [
+          "trackpoint",
+          "location"
+        ],
+        "links": [
+          "trackpoint_at"
+        ],
+        "props": {
+          "trackpoint": [
+            "person_raw",
+            "date",
+            "timestamp"
+          ],
+          "location": [
+            "lat",
+            "lng",
+            "admin_code",
+            "geocode_source",
+            "province",
+            "prefecture",
+            "county",
+            "township"
+          ]
+        }
+      },
+      "parameters": {
+        "stay_radius_m": {
+          "type": "integer",
+          "default": 200,
+          "description": "停留判定半径（米），10-10000；仅在坐标非质心时作为实距判据"
+        },
+        "stay_min_minutes": {
+          "type": "integer",
+          "default": 30,
+          "description": "停留最小时长（分钟），1-1440；低于此值归为途经点"
+        }
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "geo_trajectory_segment",
+      "description": "原始轨迹切分为停留段与移动段：同一地点（或半径内）持续超过阈值 → 停留段；同日相邻停留之间 → 移动段。时刻为硬前提（date 档不产出分段，避免拿日期编造停留时长）；坐标为区划质心时不给距离。按日切分，跨日不串段。",
+      "display_name": "轨迹分段与停留点识别"
+    },
+    {
+      "name": "geo_anomaly_trajectory",
+      "title": "异常轨迹检测",
+      "inputs": [
+        "obj_trackpoint",
+        "lnk_trackpoint_at",
+        "obj_location"
+      ],
+      "requires": {
+        "objects": [
+          "trackpoint",
+          "location"
+        ],
+        "links": [
+          "trackpoint_at"
+        ],
+        "props": {
+          "trackpoint": [
+            "person_raw",
+            "date",
+            "timestamp"
+          ],
+          "location": [
+            "lat",
+            "lng",
+            "admin_code",
+            "geocode_source",
+            "province",
+            "prefecture",
+            "county",
+            "township"
+          ]
+        }
+      },
+      "parameters": {
+        "min_baseline_days": {
+          "type": "integer",
+          "default": 7,
+          "description": "建立常驻基线所需的最少停留天数，3-365"
+        },
+        "rare_ratio": {
+          "type": "decimal",
+          "default": 0.2,
+          "description": "常驻判定阈值：地点到访天数占比（0-1，可用小数），低于此值判为非常驻地点"
+        },
+        "stay_radius_m": {
+          "type": "integer",
+          "default": 200,
+          "description": "停留判定半径（米），透传给轨迹分段"
+        },
+        "stay_min_minutes": {
+          "type": "integer",
+          "default": 30,
+          "description": "停留最小时长（分钟），透传给轨迹分段"
+        },
+        "max_anomalies": {
+          "type": "integer",
+          "default": 50,
+          "description": "输出偏离条数上限"
+        }
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "geo_anomaly_trajectory",
+      "description": "在主体自身常驻基线之上识别偏离：非常驻地点（off_route）/ 常驻地点的非常态时段（off_hours）/ 非常态通勤组合（off_path），并在异常停留点上附加同日同地共现主体。基线不足声明天数或轨迹无时刻时不产出异常",
+      "display_name": "异常轨迹检测"
+    },
+    {
+      "name": "geo_activity_range",
+      "title": "活动范围画像",
+      "inputs": [
+        "obj_trackpoint",
+        "lnk_trackpoint_at",
+        "obj_location"
+      ],
+      "requires": {
+        "objects": [
+          "trackpoint",
+          "location"
+        ],
+        "links": [
+          "trackpoint_at"
+        ],
+        "props": {
+          "trackpoint": [
+            "person_raw",
+            "date"
+          ],
+          "location": [
+            "lat",
+            "lng",
+            "admin_code",
+            "geocode_source",
+            "province",
+            "prefecture",
+            "county",
+            "township"
+          ]
+        }
+      },
+      "parameters": {
+        "sigma_multiplier": {
+          "type": "decimal",
+          "default": 2.0,
+          "description": "标准差椭圆倍率 0.5-3，缺省 2（约含 86% 的点）；1σ 仅约 39%，不是活动边界"
+        },
+        "bandwidth_m": {
+          "type": "decimal",
+          "default": 500,
+          "description": "核密度带宽（米）≥50，缺省 500；越大越平滑、越小越贴近点位"
+        },
+        "grid_size": {
+          "type": "integer",
+          "default": 40,
+          "description": "核密度网格边长 8-80，缺省 40（1600 格）"
+        },
+        "min_points": {
+          "type": "integer",
+          "default": 3,
+          "description": "有效坐标落脚点下限 ≥3，低于此值平均中心与椭圆统计不成立；不足 5 个时产出附 small_sample_note"
+        },
+        "top_hotspots": {
+          "type": "integer",
+          "default": 5,
+          "description": "热点排名输出条数上限 1-20"
+        },
+        "weight_by": {
+          "type": "string",
+          "default": "count",
+          "enum": ["count", "uniform"],
+          "description": "count=按到访次数加权（频率加权平均中心，活动空间研究通行口径）/ uniform=等权"
+        },
+        "date_from": {
+          "type": "date",
+          "description": "起始日期 YYYY-MM-DD，缺省不限"
+        },
+        "date_to": {
+          "type": "date",
+          "description": "结束日期 YYYY-MM-DD，缺省不限"
+        }
+      },
+      "output_type": "report",
+      "impl": "py",
+      "impl_ref": "geo_activity_range",
+      "description": "主体活动范围的描述统计：频率加权平均中心、标准距离、标准差椭圆（含主轴方位角与覆盖面积）、高斯核密度网格与热点排名。不推断落脚点、不作行为定性。坐标为区划质心时距离为区级推算；去重后位置不足 3 个时椭圆与密度不成立",
+      "display_name": "活动范围画像"
     }
   ]
 }

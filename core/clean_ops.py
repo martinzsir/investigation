@@ -188,6 +188,46 @@ register_op("strip_thousands", impl="sql", layer="any", fn=_strip_thousands,
 register_op("strip_currency", impl="sql", layer="any", fn=_strip_currency,
             sql_template=r"regexp_replace({col}, '[¥￥$€£\s]', '', 'g')",
             description="货币符号剥离：￥1,280.50 → 1,280.50")
+def _cn_datetime_norm(v, _ctx=None):
+    """中文日期时间归一（含时刻）。
+
+    为什么不能复用 cn_date_norm：后者只替换年月日，pad_date 按 "-" 切段补零时
+    末段是 "8 14:30"（非纯数字）→ 补零静默失效 → TRY_CAST 得 NULL。表现为
+    "没有时刻数据"，与真实无时刻无法区分（静默失败比报错危险）。
+    本 op 先拆出时间部分、日期段单独补零、再拼回，时刻原样保留。
+    """
+    s = str(v if v is not None else "").strip()
+    if not s:
+        return s
+    for zh in ("年", "月"):
+        s = s.replace(zh, "-")
+    s = s.replace("日", " ").replace("时", ":").replace("分", ":").replace("秒", "")
+    s = s.replace("T", " ").strip()
+    # 日期段与时间段分离：仅对日期段补零，时刻段保持 "H:MM:SS" 不补零
+    segs = [x for x in s.split(" ") if x]
+    dseg = segs[0] if segs else ""
+    tseg = " ".join(segs[1:]).strip()
+    dseg = "-".join(pp.zfill(2) if pp.isdigit() else pp
+                    for pp in dseg.split("-"))
+    if tseg:
+        # 时刻段按 ":" 补零并剔除空段（"14:5:" → "14:05"，尾随冒号不得残留）
+        tp = [pp.zfill(2) if pp.isdigit() else pp
+              for pp in tseg.split(":")]
+        while tp and tp[-1] == "":
+            tp.pop()
+        tseg = ":".join(tp)
+    out = dseg + ((" " + tseg) if tseg else "")
+    return out.strip()
+
+
+register_op("cn_datetime_norm", impl="sql", layer="any", fn=_cn_datetime_norm,
+            sql_template=(
+                "regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+                "regexp_replace({col}, '年', '-'), '月', '-'), '日', ' '), "
+                "'时', ':'), '[分秒]', '', 'g')"),
+            description="中文日期时间归一：2024年3月15日 14时5分 → 2024-03-15 14:05（时刻保留，TRY_CAST TIMESTAMP 可解析）")
+
+
 register_op("cn_date_norm", impl="sql", layer="any", fn=_cn_date_norm,
             sql_template=("regexp_replace(regexp_replace(regexp_replace("
                           "{col}, '年', '-'), '月', '-'), '日', '')"),

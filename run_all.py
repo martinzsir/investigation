@@ -194,6 +194,22 @@ def main():
         print(f"  ⚠ TRY_CAST 脏值降级 {n_dirty} 项（已置 NULL，诊断 kind=source_value_cast_failed）")
         for d in ontology_stats["dirty"]:
             print(f"    · {d}")
+    # date 与 timestamp 并存的口径冲突（只报不裁决，修数据权归接入层）
+    from core.time_semantics import scan_time_conflicts
+    from core.run_health import record_time_field_conflicts
+    _conflicts: list[dict] = []
+    for _obj in ("trackpoint",):
+        try:
+            _conflicts += scan_time_conflicts(
+                store.conn if hasattr(store, "conn") else store,
+                f"obj_{_obj}", pk_col="track_id" if _obj == "trackpoint" else "")
+        except Exception:
+            pass
+    n_tc = record_time_field_conflicts(store, _conflicts, run_id=health.run_id)
+    if n_tc:
+        print(f"  ⚠ date/timestamp 口径冲突 {n_tc} 项（kind=time_field_conflict，不静默取舍）")
+        for _c in _conflicts:
+            print(f"    · {_c['object']}#{_c['pk']} date={_c['date']} vs ts={_c['timestamp']}")
     n_deg = record_build_degraded(store, ontology_stats, run_id=health.run_id)
     if n_deg:
         print(f"  ⚠ 可选源列缺失降级 {n_deg} 项（已置类型化 NULL，诊断 kind=source_column_missing）")
@@ -445,6 +461,21 @@ def main():
         json.dumps({"observations": [o.to_dict() for o in observations]},
                    ensure_ascii=False, indent=2, default=str),
         encoding="utf-8")
+    # ---- 三维交汇：关系/时间/空间证据归到同一「人-时-地」锚点 ----
+    # 放在观察落盘之后：交汇层消费观察产出，不改任何镜头逻辑。
+    # 失败不得中断管线——交汇是增益层，不是主干。
+    _obs_dicts = [o.to_dict() for o in observations]
+    try:
+        from core.convergence import build_convergence
+        _conv = build_convergence(_obs_dicts, conn=store.conn)
+        (out_dir / "convergence.json").write_text(
+            json.dumps(_conv, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8")
+        print(f"  ✅ {out_dir / 'convergence.json'}"
+              f"（锚点 {_conv['total_anchors']}，"
+              f"多维命中 {_conv['total_hit']}）")
+    except Exception as _ce:
+        print(f"  ⚠️ 三维交汇生成失败（不中断管线）：{str(_ce)[:200]}")
     # 合并 person/org 映射供操作台展示（按类型分组，accepted 不再被整体标为 org）
     merged_person = dict(final_person_mapping)
     merged_person.update(accepted_by_type.get("person", {}))
@@ -576,8 +607,15 @@ def _build_miaosuan(store, ctx, health=None):
     added = miao.auto_from_findings(findings)
     print(f"  数据驱动：异常扫描 {len(findings)} 项 → 自动生成假设 "
           f"{[h.id for h in added]}")
-    # 第 3 层 人机协同：正兵手动补充 H5（受限演示：房产车辆未调取）
-    miao.add(Hypothesis(
+    # 第 3 层 人机协同：正兵手动补充 H5（受限演示：房产车辆未调取）。
+    # H5 现已由本体声明（系列事件空间聚集）；数据驱动若已生成 H5 则跳过——
+    # 手动的"隐匿财产"与本体 H5 是两条不同假设，共用 id 会语义打架，且
+    # MAX_HYPOTHESES=5 在自动生成 5 条后已无余位（实测 RuntimeError）。
+    if any(h.id == "H5" for h in miao.hypotheses):
+        print("  人机协同：H5 已由数据驱动生成（本体声明），跳过手动补充")
+        miao_add = None
+    else:
+        miao_add = Hypothesis(
         id="H5",
         description="张卫国隐匿财产",
         evidence_needed=["房产", "车辆"],
@@ -586,7 +624,9 @@ def _build_miaosuan(store, ctx, health=None):
         falsification="资产与合法收入匹配则证伪",
         dimension=["行为"],
         jian_types=["内间"],
-    ))
+    )
+    if miao_add is not None:
+        miao.add(miao_add)
     # 第 2 层 规则约束：受限/降级标记（build 内置）
     miao.build(ctx["可用数据"], ctx["未调取"])
     # 第 3 层 枚举空间：笛卡尔积候选池 + 候补清单
@@ -594,7 +634,9 @@ def _build_miaosuan(store, ctx, health=None):
     # 覆盖完整性量化指标（维度/数据源/间类/冲突）
     cov = miao.report(ctx["可用数据"])
     dc = cov["dimension_coverage"]
-    print(f"  覆盖度：维度 {len(dc['covered'])}/5（{dc['score']:.0%}）"
+    # 分母取声明维度数（P-GEO 起为 6），不再写死 5
+    print(f"  覆盖度：维度 {len(dc['covered'])}/{len(miao.DIMENSIONS)}"
+          f"（{dc['score']:.0%}）"
           f" 数据源 {cov['data_source_coverage']['score']}%"
           f" → {'⚠ ' + dc['alarm_text'] if dc['alarm'] else '无报警'}")
     # REQ-G-024：实证缺口独立于声明报警，控制台同步可见（否则声明满覆盖时

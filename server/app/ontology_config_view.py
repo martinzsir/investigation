@@ -1,6 +1,6 @@
 """
 server/app/ontology_config_view.py
-Ontology 配置下发（六项解耦·共性基建 P0）：把案件包声明（兵法五间 / 侦查五维 /
+Ontology 配置下发（六项解耦·共性基建 P0）：把案件包声明（兵法五间 / 侦查维度 /
 交叉等级 / 状态机 / 动作 / 计分）组装成前端可直接消费的一份只读配置。
 
 纯读 core 加载器，不查 DuckDB、不读产物；案件快照 ontology 根作 base_dir，

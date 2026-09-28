@@ -53,6 +53,10 @@ def _note_degraded(ctx, skill_id: str, out: dict, r: dict) -> None:
     })
 
 
+# 时空伴随镜头服务的假设（与 packs/geo/pack.json 的 assumption 一致）
+_ACCOMPANY_ASSUMPTION = "H6"
+
+
 def _clean(params: dict, keys: list[str]) -> dict:
     return {k: params[k] for k in keys if params.get(k) is not None}
 
@@ -142,6 +146,191 @@ def site_profile_lens(miao=None, store=None, ctx=None, params=None,
     return [clue]
 
 
+def accompany_lens(miao=None, store=None, ctx=None, params=None,
+                   health=None) -> list:
+    """时空伴随 → 每**主体对**一条观察（反复同框才是伴随，单次只是同框）。
+
+    为什么按主体对出条
+    ------------------
+    事件对粒度无法承载"反复"这个语义：3 次同框与 3 对各同框一次，在事件
+    对列表里长得一样。按主体对聚合后，同框次数/跨度/地点集/精度分布都
+    进 detail，正兵一眼能看出这是"关系"还是"巧合"。
+
+    未达 min_meets 的主体对**仍出观察**，但 repeated=False 且标题不称
+    "伴随"——单次同框是事实，只是不足以支撑关系判断。留着比丢掉好：
+    它可能是未来补足数据的入口。
+    """
+    params = params or {}
+    fn_params = _clean(params, ["radius_m", "window_days", "min_meets",
+                                "max_pairs", "window_minutes"])
+    out = _invoke(store, "geo_spatiotemporal_accompany", fn_params, health)
+    r = out.get("result") or {}
+    if not r.get("hit"):
+        _note_degraded(ctx, "geo_accompany", out, r)
+        return []
+
+    clues: list = []
+    for c in r.get("companions") or []:
+        refs: list[dict] = []
+        for pk in (c.get("event_pks") or [])[:_EVENT_REF_LIMIT]:
+            refs.append(_trackpoint_ref(pk))
+        refs.append({"kind": "aggregate", "metric": "meet_count",
+                     "value": c["meet_count"]})
+        refs.append({"kind": "aggregate", "metric": "span_days",
+                     "value": c.get("span_days")})
+        refs.append({"kind": "aggregate", "metric": "location_count",
+                     "value": c.get("location_count")})
+
+        # 主体引用归一：两端各自挂引用字典（不合并成一个字段——
+        # 一端歧义另一端不歧义是常态，合并就会丢失哪端待裁决）。
+        from core.entity_ref import person_ref_dict as _prd
+        from core.entity_ref import resolve_person as _rp
+        _pr = _rp([c.get("person_a"), c.get("person_b")],
+                  conn=getattr(store, "conn", None))
+        c["person_a_ref"] = _prd(c.get("person_a"), persons=_pr)
+        c["person_b_ref"] = _prd(c.get("person_b"), persons=_pr)
+        _b = basis_for("geo_accompany", {**r, **c})
+        repeated = bool(c.get("repeated"))
+        head = ("反复同框" if repeated else "单次同框")
+        clue = LineageClue(
+            skill_id="geo_accompany",
+            title=f"{c['person_a']} × {c['person_b']} 时空{head}"
+                  f"{c['meet_count']} 次（{c.get('first_date')}~"
+                  f"{c.get('last_date')}，判据：{c.get('spatial_note')}）",
+            evidence_refs=refs,
+            detail={
+                "function": "geo_spatiotemporal_accompany",
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
+                "source_type": _SOURCE_TYPE,
+                # 观察本身不带假设链（不是命题），但声明它服务于哪个假设：
+                # 正兵提升为线索时以此作为默认候选，避免"提升了却不知道
+                # 在验证什么"。与 packs/geo/pack.json 的 assumption 同步。
+                "assumed_hypothesis": _ACCOMPANY_ASSUMPTION,
+                "hypothesis": (
+                    f"{c['person_a']} 与 {c['person_b']} 在 ±"
+                    f"{r.get('window_days')} 天内先后出现于 "
+                    f"{c.get('location_count')} 个地点共 {c['meet_count']} 次"
+                    + ("，达反复伴随下限" if repeated else "，未达反复下限")
+                    + "；是否构成私下接触待正兵核查（只出时空结构，不作定性）"),
+                "evidence_level": "观察",
+                "companion": c,
+                "radius_m": r.get("radius_m"),
+                "window_days": r.get("window_days"),
+                "min_meets": r.get("min_meets"),
+                "time_granularity": r.get("time_granularity"),
+                "time_note": r.get("time_note"),
+                # 时刻窗自陈：让正兵在观察详情里就能看到这次是按分钟判的还是
+                # 按天判的——"填了 window_minutes 却没变化"必须有据可查，
+                # 否则只能靠猜。
+                "window_minutes": r.get("window_minutes"),
+                "time_window_mode": r.get("time_window_mode"),
+                "minute_windowed_pairs": r.get("minute_windowed_pairs"),
+                "pair_count": r.get("pair_count"),
+                "repeated": repeated,
+                "degraded": bool(c.get("degraded")),
+                "degraded_reason": r.get("degraded_reason"),
+            },
+        )
+        clues.append(clue)
+    return clues
+
+
+
+def buffer_scan_lens(miao=None, store=None, ctx=None, params=None,
+                     health=None) -> list:
+    """反向追踪：以锚点为中心的双环带扫描 → 每**主体**一条观察。
+
+    为什么按主体出条
+    ----------------
+    反向追踪要回答「谁在那儿」。事件列表粒度回答不了——正兵拿到 11 条
+    事件还得自己数人头。按主体归并后每个主体一条，可直接对该主体深挖
+    或提升为线索。
+
+    三处刻意与旧实现不同
+    --------------------
+    1) 锚点主体自身事件默认排除：以某人重心为锚却扫出他自己，是循环论证；
+    2) 距离必带 coord_precision：质心坐标下的米数是区级推算，不是实距；
+    3) 支持时间窗：反向追踪的核心是「案发时」谁在现场附近，无窗则跨全时段
+       且必须自陈，否则正兵会当成同期。
+    """
+    params = params or {}
+    fn_params = _clean(params, ["inner_radius_m", "outer_radius_m",
+                                "date_from", "date_to", "center_lat",
+                                "center_lng", "target_type",
+                                "exclude_anchor_subject", "max_subjects"])
+    tgt = (params.get("target_subject") or params.get("target")
+           or "").strip()
+    if tgt:
+        fn_params["target"] = tgt
+    out = _invoke(store, "geo_buffer_scan", fn_params, health)
+    r = out.get("result") or {}
+    if not r.get("hit"):
+        _note_degraded(ctx, "geo_buffer_scan", out, r)
+        return []
+
+    max_subjects = int(params.get("max_subjects", 20) or 20)
+    subs = (r.get("subjects") or [])[:max_subjects]
+    inner, outer = r.get("inner_radius_m"), r.get("outer_radius_m")
+    anchor = r.get("anchor") or {}
+    win = ""
+    if r.get("date_from") or r.get("date_to"):
+        win = (f"{r.get('date_from') or '不限'}~{r.get('date_to') or '不限'}")
+    else:
+        win = "全时段"
+    prec = r.get("coord_precision")
+
+    clues: list = []
+    for s in subs:
+        refs: list[dict] = []
+        for ev in (r.get("ring_events") or []) + (r.get("inner_events") or []):
+            if (ev.get("subject_raw") or "").strip() == s.get("name"):
+                refs.append(_trackpoint_ref(ev.get("event_pk")))
+            if len(refs) >= _EVENT_REF_LIMIT:
+                break
+        refs.append({"kind": "aggregate", "metric": "visit_count",
+                     "value": s.get("count")})
+        refs.append({"kind": "aggregate", "metric": "distance_m",
+                     "value": s.get("min_distance_m")})
+
+        _b = basis_for("geo_buffer_scan", {**r, "subjects": [s]})
+        clue = LineageClue(
+            skill_id="geo_buffer_scan",
+            # 标题说"范围内"不说"环带"：事件可能全落内环，说环带会误导
+            title=(f"{s.get('name')} 在锚点 {outer} 米范围内出现 "
+                   f"{s.get('count')} 次"
+                   f"（{s.get('first_date')}~{s.get('last_date')}，{win}）"),
+            evidence_refs=refs,
+            detail={
+                "function": "geo_buffer_scan",
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
+                "source_type": _SOURCE_TYPE,
+                "hypothesis": (
+                    f"锚点 {anchor.get('source')} 周边检出 {s.get('name')} "
+                    f"{s.get('count')} 次到访；仅陈述该主体到过锚点附近，"
+                    f"不构成接触/同行/利益关联结论（定性权属正兵）"),
+                "evidence_level": "观察",
+                "traced_subject": s,
+                "anchor": anchor,
+                "inner_radius_m": inner,
+                "outer_radius_m": outer,
+                "date_from": r.get("date_from"),
+                "date_to": r.get("date_to"),
+                "subject_count": r.get("subject_count"),
+                "self_count": r.get("self_count"),
+                "out_of_window": r.get("out_of_window"),
+                "coord_precision": prec,
+                "distance_note": r.get("distance_note"),
+                "degraded": bool(r.get("degraded")),
+                "degraded_reason": r.get("degraded_reason"),
+            },
+        )
+        clues.append(clue)
+    return clues
+
 def serial_profile_lens(miao=None, store=None, ctx=None, params=None,
                         health=None) -> list:
     """目标主体系列事件 CGT 概率面 → 1 条聚合线索（优先排查区域，非定址）。"""
@@ -205,6 +394,272 @@ def serial_profile_lens(miao=None, store=None, ctx=None, params=None,
             "priority_zones": zones,
             # P4 地图展示直接消费（GCJ-02 FeatureCollection，授权后叠高德无偏移）
             "geojson": r.get("geojson"),
+            "degraded": bool(r.get("degraded")),
+            "degraded_reason": r.get("degraded_reason"),
+        },
+    )
+    return [clue]
+
+
+def segment_lens(miao=None, store=None, ctx=None, params=None,
+                 health=None) -> list:
+    """轨迹分段 → 1 条主体级观察（停留段 / 移动段）。
+
+    为什么是观察而不是线索
+    ----------------------
+    分段只回答"这个人怎么移动"，是结构描述，不是可证伪的命题——它不
+    指向任何假设。硬挂假设会重蹈"凭间类硬认亲"的覆辙（分段产出与任何
+    现有假设的证据类型都对不上）。等有了明确的业务假设（如"异常停留"
+    该挂哪条）再声明，此处不猜。
+    """
+    params = params or {}
+    fn_params = _clean(params, ["stay_radius_m", "stay_min_minutes",
+                                "target_type"])
+    fn_params["target"] = params.get("target_subject", "")
+    out = _invoke(store, "geo_trajectory_segment", fn_params, health)
+    r = out.get("result") or {}
+    if not r.get("hit"):
+        _note_degraded(ctx, "geo_segment", out, r)
+        return []
+
+    subject = r["subject"]
+    # ---- 主体引用归一 ----
+    # 空间侧写姓名、关系侧写代理键，不固化对齐就联动不了（只能手工 join）。
+    # 这里把三件套挂上：pk 供引用、name 供展示、ambiguous 供前端区分
+    # 「待裁决」与「查无此人」——后者会让正兵以为数据缺失。
+    from core.entity_ref import (attach_person_ref, person_ref_dict,
+                                 resolve_person)
+    _names = [subject.get("name")]
+    for _a in r.get("anomalies") or []:
+        _names.extend(_a.get("co_present") or [])
+    _persons = resolve_person([_n for _n in _names if _n],
+                              conn=getattr(store, "conn", None))
+    attach_person_ref(subject, subject.get("name"), persons=_persons)
+    for _a in r.get("anomalies") or []:
+        _a["co_present_refs"] = [
+            person_ref_dict(_n, persons=_persons)
+            for _n in (_a.get("co_present") or [])]
+    refs = [_person_ref(subject)]
+    seen: set = set()
+    for s in r.get("stays") or []:
+        if s.get("location_id"):
+            refs.append(_location_ref(s["location_id"]))
+        for pk in s.get("event_pks") or []:
+            if pk not in seen and len(seen) < _EVENT_REF_LIMIT:
+                refs.append(_trackpoint_ref(pk))
+                seen.add(pk)
+    refs.append({"kind": "aggregate", "metric": "stay_count",
+                 "value": r["stay_count"]})
+    refs.append({"kind": "aggregate", "metric": "move_count",
+                 "value": r["move_count"]})
+
+    _b = basis_for("geo_trajectory_segment", r)
+    top = (r.get("stays") or [{}])[0]
+    clue = LineageClue(
+        skill_id="geo_segment",
+        title=f"{subject['name']} 轨迹分段：{r['stay_count']} 个停留段、"
+              f"{r['move_count']} 个移动段（累计停留 "
+              f"{r.get('total_stay_minutes')} 分钟）",
+        evidence_refs=refs,
+        detail={
+            "function": "geo_trajectory_segment",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
+            "source_type": _SOURCE_TYPE,
+            "hypothesis": (f"{subject['name']} 的轨迹切分为 "
+                           f"{r['stay_count']} 段停留与 {r['move_count']} 段移动"
+                           f"，最长停留「{top.get('std_address')}」"
+                           f"{top.get('duration_minutes')} 分钟；仅陈述移动结构，"
+                           f"不作行为定性"),
+            "evidence_level": "观察",
+            "subject": subject,
+            "stays": r.get("stays"), "moves": r.get("moves"),
+            "coord_precision": r.get("coord_precision"),
+            "sampling_note": r.get("sampling_note"),
+            "degraded": bool(r.get("degraded")),
+            "degraded_reason": r.get("degraded_reason"),
+        },
+    )
+    return [clue]
+
+
+def anomaly_lens(miao=None, store=None, ctx=None, params=None,
+                 health=None) -> list:
+    """常驻基线之上的偏离 → 1 条主体级观察（不作"可疑"定性）。
+
+    为什么一条而不是每处一条
+    ------------------------
+    偏离是**同一个主体**相对自身基线的多种表现，按处拆条会在画布上堆出
+    十几条同主体观察，把"这个人有几类偏离"这个整体判断打碎。共现信息不
+    埋在 detail 里就算了——标题明示"其中 N 处另有他人同在"，那是研判抓手。
+    """
+    params = params or {}
+    fn_params = _clean(params, ["stay_radius_m", "stay_min_minutes",
+                                "min_baseline_days", "rare_ratio",
+                                "max_anomalies", "target_type"])
+    fn_params["target"] = params.get("target_subject", "")
+    out = _invoke(store, "geo_anomaly_trajectory", fn_params, health)
+    r = out.get("result") or {}
+    if not r.get("hit"):
+        _note_degraded(ctx, "geo_anomaly", out, r)
+        return []
+
+    subject = r["subject"]
+    # ---- 主体引用归一 ----
+    # 空间侧写姓名、关系侧写代理键，不固化对齐就联动不了（只能手工 join）。
+    # 这里把三件套挂上：pk 供引用、name 供展示、ambiguous 供前端区分
+    # 「待裁决」与「查无此人」——后者会让正兵以为数据缺失。
+    from core.entity_ref import (attach_person_ref, person_ref_dict,
+                                 resolve_person)
+    _names = [subject.get("name")]
+    for _a in r.get("anomalies") or []:
+        _names.extend(_a.get("co_present") or [])
+    _persons = resolve_person([_n for _n in _names if _n],
+                              conn=getattr(store, "conn", None))
+    attach_person_ref(subject, subject.get("name"), persons=_persons)
+    for _a in r.get("anomalies") or []:
+        _a["co_present_refs"] = [
+            person_ref_dict(_n, persons=_persons)
+            for _n in (_a.get("co_present") or [])]
+    refs = [_person_ref(subject)]
+    seen: set = set()
+    for a in r.get("anomalies") or []:
+        if a.get("location_id"):
+            refs.append(_location_ref(a["location_id"]))
+        for pk in a.get("event_pks") or []:
+            if pk not in seen and len(seen) < _EVENT_REF_LIMIT:
+                refs.append(_trackpoint_ref(pk))
+                seen.add(pk)
+    for k, v in sorted((r.get("by_kind") or {}).items()):
+        refs.append({"kind": "aggregate", "metric": f"deviation_{k}", "value": v})
+
+    _b = basis_for("geo_anomaly_trajectory", r)
+    by = r.get("by_kind") or {}
+    co = [a for a in r["anomalies"] if a.get("co_present")]
+    head = "、".join(
+        p for p in (f"非常驻地点 {by['off_route']} 次" if by.get("off_route") else "",
+                    f"非常态时段 {by['off_hours']} 次" if by.get("off_hours") else "",
+                    f"非常态通勤 {by['off_path']} 次" if by.get("off_path") else "")
+        if p)
+    tail = ""
+    if co:
+        names = sorted({n for a in co for n in a["co_present"]})
+        tail = f"，其中 {len(co)} 处另有{'、'.join(names[:3])}同在"
+    clue = LineageClue(
+        skill_id="geo_anomaly",
+        title=f"{subject['name']} 偏离常驻模式 {r['anomaly_count']} 处"
+              f"（{head}）{tail}",
+        evidence_refs=refs,
+        detail={
+            "function": "geo_anomaly_trajectory",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
+            "source_type": _SOURCE_TYPE,
+            "hypothesis": (f"{subject['name']} 在其 "
+                           f"{r['baseline'].get('days')} 天常驻基线之上出现 "
+                           f"{r['anomaly_count']} 处偏离；偏离是结构事实，"
+                           f"是否可疑须正兵核查（出差、外勤、采样缺失均会致偏离）"),
+            "evidence_level": "观察",
+            "subject": subject,
+            "baseline": r.get("baseline"),
+            "anomalies": r.get("anomalies"),
+            "by_kind": by,
+            "coord_precision": r.get("coord_precision"),
+            "anomaly_note": r.get("anomaly_note"),
+            "degraded": bool(r.get("degraded")),
+            "degraded_reason": r.get("degraded_reason"),
+        },
+    )
+    return [clue]
+
+
+def activity_range_lens(miao=None, store=None, ctx=None, params=None,
+                        health=None) -> list:
+    """活动范围画像 → 1 条主体级观察（不推断落脚点、不作行为定性）。
+
+    为什么不挂假设
+    --------------
+    "活动范围多大、朝哪个方向延展、密度集中在哪"是**描述统计**：它不指向任何
+    现有假设的证据类型，也不是可证伪的命题——"某人活动范围 12 平方公里"没有
+    对应的证伪条件。硬挂假设会重蹈"凭间类硬认亲"的覆辙。它回答的是研判中的
+    背景问题（这个人日常在哪一片活动），为异常检测与时空同框提供参照面，
+    本身不构成疑点。
+
+    为什么不按热点拆条
+    ------------------
+    拆条会在画布上堆出多条同主体观察，把"整体活动范围"这个判断打碎。热点
+    作为 detail 里的排名给出，标题只给几何摘要。
+    """
+    params = params or {}
+    fn_params = _clean(params, ["date_from", "date_to", "sigma_multiplier",
+                                "bandwidth_m", "grid_size", "min_points",
+                                "top_hotspots", "weight_by", "target_type"])
+    fn_params["target"] = params.get("target_subject", "")
+    out = _invoke(store, "geo_activity_range", fn_params, health)
+    r = out.get("result") or {}
+    if not r.get("hit"):
+        _note_degraded(ctx, "geo_activity_range", out, r)
+        return []
+
+    subject = r["subject"]
+    # ---- 主体引用归一 ----
+    # 空间侧写姓名、关系侧写代理键，不固化对齐就联动不了（只能手工 join）。
+    # 这里把三件套挂上：pk 供引用、name 供展示、ambiguous 供前端区分
+    # 「待裁决」与「查无此人」——后者会让正兵以为数据缺失。
+    from core.entity_ref import (attach_person_ref, person_ref_dict,
+                                 resolve_person)
+    _names = [subject.get("name")]
+    for _a in r.get("anomalies") or []:
+        _names.extend(_a.get("co_present") or [])
+    _persons = resolve_person([_n for _n in _names if _n],
+                              conn=getattr(store, "conn", None))
+    attach_person_ref(subject, subject.get("name"), persons=_persons)
+    for _a in r.get("anomalies") or []:
+        _a["co_present_refs"] = [
+            person_ref_dict(_n, persons=_persons)
+            for _n in (_a.get("co_present") or [])]
+    refs = [_person_ref(subject)]
+    for h in r.get("hotspots") or []:
+        if h.get("location_id"):
+            refs.append(_location_ref(h["location_id"]))
+    e = r.get("std_ellipse") or {}
+    refs.append({"kind": "aggregate", "metric": "standard_distance_m",
+                 "value": r.get("standard_distance_m")})
+    refs.append({"kind": "aggregate", "metric": "ellipse_area_km2",
+                 "value": e.get("area_km2")})
+
+    _b = basis_for("geo_activity_range", r)
+    mc = r.get("mean_center") or {}
+    clue = LineageClue(
+        skill_id="geo_activity_range",
+        title=(f"{subject['name']} 活动范围：{r['point_count']} 个落脚点、"
+               f"标准距离 {r.get('standard_distance_m')} 米、"
+               f"{e.get('sigma_multiplier')}σ 椭圆约 {e.get('area_km2')} 平方公里"),
+        evidence_refs=refs,
+        detail={
+            "function": "geo_activity_range",
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
+            "source_type": _SOURCE_TYPE,
+            "hypothesis": (f"{subject['name']} 的 {r['point_count']} 个落脚点"
+                           f"呈平均中心 ({mc.get('lat')}, {mc.get('lng')})、"
+                           f"跨度 {r.get('span_km')} 公里的分布；仅描述活动范围"
+                           f"几何，不推断落脚点、不作行为定性"),
+            "evidence_level": "观察",
+            "subject": subject,
+            "mean_center": mc,
+            "std_ellipse": e,
+            "kde": r.get("kde"),
+            "hotspots": r.get("hotspots"),
+            "bbox": r.get("bbox"),
+            "span_km": r.get("span_km"),
+            "weight_by": r.get("weight_by"),
+            "coord_precision": r.get("coord_precision"),
+            "coord_note": r.get("coord_note"),
+            "small_sample_note": r.get("small_sample_note"),
             "degraded": bool(r.get("degraded")),
             "degraded_reason": r.get("degraded_reason"),
         },

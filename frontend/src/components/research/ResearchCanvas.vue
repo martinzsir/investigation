@@ -281,6 +281,11 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   hypothesis: '假',
   note: '备',
   function_result: '查',
+  // P1 案件级专属四类（case# 域节点在线索画布不出图，仅类型完备）
+  subject: '人',
+  place: '地',
+  event: '事',
+  analysis_result: '结',
 }
 
 /** 五维名 → 色（canvas 不能消费 CSS 变量，取 tokens 常量） */

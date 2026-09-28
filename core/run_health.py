@@ -60,6 +60,7 @@ KINDS = (
     "diagnostic_run",             # 手动运行诊断印记（DIAGNOSE 任务每次发起落一条 info：零问题也有留痕）
     "skill_failed",               # P3 镜头运行期异常被失败隔离捕获（单镜头降级空转）
     "skill_disabled",             # P3 镜头 enabled=false 被调度短路（过期调用方留痕）
+    "time_field_conflict",       # 同事件 date 与 timestamp 日期部分不一致（两字段并存时的口径冲突）
 )
 
 SEVERITIES = ("info", "warning", "critical")
@@ -269,6 +270,33 @@ def get_health(health) -> RunHealth | NullRunHealth:
     if health is None:
         return NullRunHealth()
     return health
+
+
+def record_time_field_conflicts(db: Any, pairs: list[dict] | None,
+                                run_id: str | None = None,
+                                source: str = "build_ontology") -> int:
+    """把 date/timestamp 并存冲突落 run_diagnostic（kind=time_field_conflict）。
+
+    ``pairs`` 每项形如 ``{"object": ..., "pk": ..., "date": ..., "timestamp": ...}``，
+    由调用方（扫描语义层）给出；只报**两者都有值且日期部分不等**的行。
+
+    为什么不静默取舍：date 与 timestamp 并存时选一个用是"偷偷裁决"，正兵永远
+    不知道系统取了哪个。此处只报警、不修数据——裁决权归接入/清洗层。
+    """
+    from core.time_semantics import time_conflict
+    bad = [e for e in (pairs or []) if time_conflict(e.get("date"),
+                                                     e.get("timestamp"))]
+    if not bad:
+        return 0
+    rh = RunHealth(db, run_id=run_id)
+    for e in bad:
+        rh.record("time_field_conflict", severity="warning", source=source,
+                  reason=(f"{e.get('object')}#{e.get('pk')} date="
+                          f"{e.get('date')} 与 timestamp={e.get('timestamp')} "
+                          f"日期部分不一致（不静默取舍，须接入层修数据）"),
+                  object=e.get("object"), pk=e.get("pk"),
+                  date=str(e.get("date")), timestamp=str(e.get("timestamp")))
+    return len(bad)
 
 
 def record_build_dirty(db: Any, stats: dict | None, run_id: str | None = None,

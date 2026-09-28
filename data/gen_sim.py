@@ -60,8 +60,72 @@ def gen_business():
 
 
 def gen_traj():
-    rows = [{"日期": pd.Timestamp(b) + pd.DateOffset(days=1), "主体": "张卫国", "地点": f"项目{name}"}
-            for name, b in PROJECTS]
+    """轨迹出行：地点为杭州市真实行政区划 + 真实道路门牌。
+
+    为什么必须是真实地址
+    --------------------
+    旧版用「项目{name}」占位，parse_admin_path 无法解析 → 三轨编码全部
+    落空 → obj_location.geocode_source='raw_fallback'、lat/lng 全 NULL
+    → 空间研判（落脚点画像 / CGT 概率面 / 坐标同框）整条链路空转。
+
+    设计要点
+    --------
+    1) 每个项目一个真实地址，保留「张卫国于公示日 +1 天到项目现场」的叙事；
+    2) 同一路段（文三路）不同门牌 → dual_segment_key 相同 → 归并为同一
+       location，张/李先后到访构成同框（R4 与 geo_co_located_radius）；
+    3) 张卫国有效坐标事件 ≥5 → geo_profile_cgt 可成概率面。
+    4) **新增时刻列**：源表带真实非零时刻（非 00:00:00），接入后 timestamp
+       可判 minute/second 档，支持「同时同地」等时刻级判据；时刻全零会
+       被 derive_time_precision 降级为 date 档（见 core/time_semantics.py）。
+    """
+    proj_addr = {
+        "滨江路改造": "浙江省杭州市滨江区滨江路1288号",
+        "城东管网":   "浙江省杭州市上城区庆春路200号",
+        "安置房一期": "浙江省杭州市西湖区文三路100号",
+        "桥梁加固":   "浙江省杭州市拱墅区莫干山路111号",
+        "市政绿化":   "浙江省杭州市上城区秋涛北路456号",
+        "智慧交通":   "浙江省杭州市滨江区江南大道3688号",
+        "安置房二期": "浙江省杭州市余杭区文一西路1500号",
+    }
+    # 项目现场到访：分配工作时段时刻（上午/下午）
+    # 时刻列必须是完整日期时间（cn_datetime_norm 按空格拆日期段/时刻段，
+    # 纯时间无日期段会导致 TRY_CAST TIMESTAMP 落 NULL）
+    proj_times = ["09:30:00", "14:00:00", "10:15:00", "16:45:00",
+                  "08:50:00", "15:20:00", "11:00:00"]
+    rows = []
+    for (name, b), ts in zip(PROJECTS, proj_times):
+        d = pd.Timestamp(b) + pd.DateOffset(days=1)
+        rows.append({"日期": d,
+                     "时刻": f"{d.strftime('%Y-%m-%d')} {ts}",
+                     "主体": "张卫国",
+                     "地点": proj_addr[name]})
+
+    # 张卫国高频落脚点（文三路，与「安置房一期」项目地址同路段）
+    # 晚间时刻 → 体现下班后到访
+    zhang_late_times = ["19:30:00", "20:15:00", "21:00:00", "18:45:00", "22:10:00"]
+    for d, ts in zip(("2020-01-08", "2020-07-15", "2021-02-20", "2022-06-11", "2023-03-09"),
+                     zhang_late_times):
+        rows.append({"日期": pd.Timestamp(d),
+                     "时刻": f"{d} {ts}",
+                     "主体": "张卫国",
+                     "地点": "浙江省杭州市西湖区文三路100号"})
+
+    # 李志强：相邻日到访同路段（文三路259号与 100 号归并为同一 location）
+    li_times = ["18:00:00", "21:30:00", "17:15:00"]
+    for d, ts in zip(("2020-01-07", "2020-07-14", "2021-02-21"), li_times):
+        rows.append({"日期": pd.Timestamp(d),
+                     "时刻": f"{d} {ts}",
+                     "主体": "李志强",
+                     "地点": "浙江省杭州市西湖区文三路259号"})
+    # 李志强自有落脚点
+    li_own_times = ["13:00:00", "09:45:00"]
+    for (d, a), ts in zip((("2020-05-09", "浙江省杭州市滨江区江陵路88号"),
+                            ("2021-11-23", "浙江省杭州市拱墅区莫干山路111号")),
+                           li_own_times):
+        rows.append({"日期": pd.Timestamp(d),
+                     "时刻": f"{d} {ts}",
+                     "主体": "李志强", "地点": a})
+
     pd.DataFrame(rows).to_parquet(OUT / "轨迹出行.parquet", index=False)
 
 

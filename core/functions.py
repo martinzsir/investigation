@@ -1302,7 +1302,10 @@ class FunctionExecutor:
         merged = {k: v.get("default") for k, v in spec.parameters.items()
                   if isinstance(v, dict) and "default" in v}
         merged.update(params or {})
-        params_used = {k: merged[k] for k in spec.parameters}
+        # 无 default 的参数 = 可选参数（未传时给 None），实现侧用 .get() 取值。
+        # 旧实现用 merged[k] 硬取 KeyError，导致可选参数被迫编造默认值
+        # （如日期参数只能写 1900-01-01 哨兵）。
+        params_used = {k: merged.get(k) for k in spec.parameters}
 
         try:
             if spec.impl == "sql":
@@ -1362,3 +1365,8 @@ register_function("geo_subject_sites")(_geo.geo_subject_sites)
 register_function("geo_co_located_radius")(_geo.geo_co_located_radius)
 register_function("geo_buffer_scan")(_geo.geo_buffer_scan)
 register_function("geo_profile_cgt")(_geo.geo_profile_cgt)
+register_function("geo_spatiotemporal_accompany")(_geo.geo_spatiotemporal_accompany)
+# 轨迹分段与停留点识别（时刻为硬前提；逐日切分，跨日不串段）
+register_function("geo_trajectory_segment")(_geo.geo_trajectory_segment)
+register_function("geo_anomaly_trajectory")(_geo.geo_anomaly_trajectory)
+register_function("geo_activity_range")(_geo.geo_activity_range)

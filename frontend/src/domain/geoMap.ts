@@ -9,11 +9,12 @@
 
 import type { ObservationDetailResult } from '../api/endpoints/observations'
 
-/** P3 地理镜头包的两个 skill_id（packs/geo/pack.json 同源值） */
+/** P3 地理镜头包的 skill_id（packs/geo/pack.json 同源值） */
 export const GEO_SKILL_SITE = 'geo_site_profile'
 export const GEO_SKILL_SERIAL = 'geo_serial_profile'
+export const GEO_SKILL_ACCOMPANY = 'geo_accompany'
 
-export type GeoLayerKind = 'site' | 'serial'
+export type GeoLayerKind = 'site' | 'serial' | 'accompany'
 
 /** 落脚点（geo_subject_sites 产物条目；坐标缺失时 coordDegraded=true） */
 export interface GeoSite {
@@ -52,6 +53,21 @@ export interface GeoCoordCoverage {
   withCoords: number
 }
 
+/** 时空伴随连线（accompany 观察，从 companion 提取） */
+export interface GeoLink {
+  personA: string
+  personB: string
+  meetCount: number
+  repeated: boolean
+  firstDate: string | null
+  lastDate: string | null
+  spanDays: number | null
+  spatialNote: string
+  /** 连线端点坐标（从 site 观察匹配；缺坐标端点为 null 时跳过绘制） */
+  coordA: { lat: number; lng: number } | null
+  coordB: { lat: number; lng: number } | null
+}
+
 /** 一次地理画像观察解析出的完整图层模型 */
 export interface GeoLayerModel {
   kind: GeoLayerKind
@@ -64,6 +80,8 @@ export interface GeoLayerModel {
   zones: GeoZone[]
   /** 概率面多边形（serial 观察 detail.geojson） */
   cells: GeoCell[]
+  /** 时空伴随连线（accompany 观察） */
+  links: GeoLink[]
   topZone: GeoZone | null
   grid: { rows: number | null; cols: number | null }
   gridMeters: number | null
@@ -190,6 +208,49 @@ function parseCoverage(detail: Record<string, unknown>): GeoCoordCoverage | null
   return null
 }
 
+/** 解析 accompany 观察的 companion 字段为 GeoLink（不含坐标，由视图层补） */
+export function parseAccompany(detail: Record<string, unknown>): GeoLink | null {
+  const c = rec(detail.companion)
+  const personA = str(c.person_a)
+  const personB = str(c.person_b)
+  if (!personA || !personB) return null
+  return {
+    personA,
+    personB,
+    meetCount: num(c.meet_count) ?? 0,
+    repeated: bool(c.repeated),
+    firstDate: c.first_date ? str(c.first_date) : null,
+    lastDate: c.last_date ? str(c.last_date) : null,
+    spanDays: num(c.span_days),
+    spatialNote: str(c.spatial_note),
+    coordA: null,
+    coordB: null,
+  }
+}
+
+/** 按文本地址在 sites 中匹配坐标（accompany 连线端点定位用） */
+export function matchSiteByAddress(
+  sites: GeoSite[],
+  address: string,
+): { lat: number; lng: number } | null {
+  if (!address) return null
+  // 精确匹配
+  for (const s of sites) {
+    if (s.stdAddress === address && s.lat !== null && s.lng !== null) {
+      return { lat: s.lat, lng: s.lng }
+    }
+  }
+  // 前缀匹配（site stdAddress 可能带省市区前缀，companion.locations 也可能带）
+  const norm = (a: string) => a.replace(/^浙江省\//, '').replace(/^杭州市\//, '')
+  const addrNorm = norm(address)
+  for (const s of sites) {
+    if (norm(s.stdAddress) === addrNorm && s.lat !== null && s.lng !== null) {
+      return { lat: s.lat, lng: s.lng }
+    }
+  }
+  return null
+}
+
 /**
  * 观察详情 → 图层模型。skill_id 非 geo_* 返回 null（调用方据此忽略）。
  * 解析全程容错：镜头产物演进时旧观察缺字段只降级为空图层，不抛异常。
@@ -203,7 +264,9 @@ export function parseGeoObservation(
       ? 'site'
       : skillId === GEO_SKILL_SERIAL
         ? 'serial'
-        : null
+        : skillId === GEO_SKILL_ACCOMPANY
+          ? 'accompany'
+          : null
   if (kind === null) return null
 
   const detail = rec(obs.detail)
@@ -219,6 +282,11 @@ export function parseGeoObservation(
     zones.sort((a, b) => a.rank - b.rank)
   }
   const cells = kind === 'serial' ? parseCells(detail.geojson) : []
+  const links: GeoLink[] = []
+  if (kind === 'accompany') {
+    const link = parseAccompany(detail)
+    if (link) links.push(link)
+  }
   const topRaw = parseZone(detail.top_zone)
   const gridRec = rec(detail.grid)
 
@@ -230,6 +298,7 @@ export function parseGeoObservation(
     sites,
     zones,
     cells,
+    links,
     topZone: topRaw ?? (zones[0] ? zones[0] : null),
     grid: { rows: num(gridRec.rows), cols: num(gridRec.cols) },
     gridMeters: num(detail.grid_meters),
@@ -287,7 +356,7 @@ export interface GeoBounds {
   maxLng: number
 }
 
-/** 图层可见坐标范围（概率格 + 有坐标落脚点 + 顶格区）；无任何坐标返回 null */
+/** 图层可见坐标范围（概率格 + 有坐标落脚点 + 顶格区 + 连线端点）；无任何坐标返回 null */
 export function boundsOf(model: GeoLayerModel): GeoBounds | null {
   let minLat = Infinity
   let maxLat = -Infinity
@@ -304,6 +373,10 @@ export function boundsOf(model: GeoLayerModel): GeoBounds | null {
   }
   for (const s of model.sites) {
     if (s.lat !== null && s.lng !== null) touch(s.lat, s.lng)
+  }
+  for (const l of model.links) {
+    if (l.coordA) touch(l.coordA.lat, l.coordA.lng)
+    if (l.coordB) touch(l.coordB.lat, l.coordB.lng)
   }
   if (model.topZone) touch(model.topZone.lat, model.topZone.lng)
   if (!Number.isFinite(minLat)) return null

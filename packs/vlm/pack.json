@@ -15,6 +15,7 @@
       ],
       "mode": "draft",
       "enabled": true,
+      "canvas_enabled": true,
       "external_services": [
         "vlm"
       ],

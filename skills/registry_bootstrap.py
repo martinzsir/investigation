@@ -35,12 +35,16 @@ _HIT_STR_RE = re.compile(r"^(.+?)→(\S+?)\((\d+)行\)$")
 # ----------------------------------------------------------------------
 
 # 间类 → 侦查维度映射（雷达五轴数据来源）
+# 一律写 **维度 code**（本体 dimensions.json 的 code 字段），不写中文展示名。
+# 原因：实证轨/维度覆盖统计按 code 求交，中文名一律被算成缺口（历史上
+# 空间证据因此"隐身"）。前端 ontologyConfig 已做 code→name 翻译并兼容
+# 旧中文值，改 code 不影响展示。
 _JIAN_TO_DIM: dict[str, str] = {
-    "生间": "资金",   # 银行流水异常
-    "反间": "资金",   # 过桥资金
-    "因间": "关系",   # 利益关联
-    "死间": "行为",   # 行为轨迹/OSINT
-    "内间": "通讯",   # 举报线索/通讯
+    "生间": "fund",      # 银行流水异常
+    "反间": "fund",      # 过桥资金
+    "因间": "relation",  # 利益关联
+    "死间": "behavior",  # 行为轨迹/OSINT
+    "内间": "comm",      # 举报线索/通讯
 }
 
 
@@ -52,6 +56,47 @@ def _dims_for_jian(jian_types: list[str]) -> list[str]:
         if d and d not in seen:
             seen.append(d)
     return seen
+
+
+def _expand_link_types(hits: set[str], pack: str = "default",
+                       base_dir=None) -> set[str]:
+    """命中类型里的**链接表**展开为其两端实体类型。
+
+    为什么需要
+    ----------
+    用间的"本间独立数据源"取自语义表，其中既有实体表也有链接表。而假设
+    声明的 evidence_object_types 是**实体**类型。两者不同层，直接求交
+    会漏。
+
+    实测反间：命中 obj_type = transfers（lnk_transfers）、time_window
+    （lnk_time_window），而 H4 证据类型是 transaction/org——字面零交集，
+    反间被误判"证据类型不符"。但 time_window 的本体声明是
+    bid_project ↔ transaction，它本来就在说转账。
+
+    展开规则来自本体 links.json 的 from_obj / to_obj，是声明式的——
+    新增链接无需改代码。实体类型（不在 links 里）原样保留；链接表
+    展开失败（本体没声明）也保留原名，不吞掉证据。
+    """
+    if not hits:
+        return hits
+    try:
+        from core.ontology_loader import load_pack
+        pk = load_pack(pack, base_dir=base_dir)
+    except Exception:
+        return hits
+    link_ends: dict[str, set[str]] = {}
+    for lt in getattr(pk, "links", None) or []:
+        nm = str(getattr(lt, "name", "") or "")
+        if not nm:
+            continue
+        ends = {str(getattr(lt, "from_obj", "") or ""),
+                str(getattr(lt, "to_obj", "") or "")}
+        link_ends[nm] = {e for e in ends if e}
+    out: set[str] = set()
+    for t in hits:
+        out.add(t)
+        out |= link_ends.get(t, set())
+    return out
 
 
 def _hypothesis_for_jian(jian_name: str, hit_object_types: list[str],
@@ -103,8 +148,28 @@ def _hypothesis_for_jian(jian_name: str, hit_object_types: list[str],
 
     if not cands:
         return "", f"本体未为间类「{jian_name}」声明假设"
+
+    hits = {str(t) for t in hit_object_types if t}
+    hits = _expand_link_types(hits, pack, base_dir)
+
     if len(cands) == 1:
         hid = next(iter(cands))
+        # 唯一候选也须过证据类型校验：间类对得上不等于假设对得上。
+        # 反例：死间线索命中的是 osint_article/org（公开情报+工商内档），
+        # 而本体为死间声明的 H5 证据类型是 trackpoint/location（轨迹+地点）
+        # ——零重叠。凭间类硬认亲，等于给一条 OSINT 线索安了个"空间行为
+        # 模式"的证伪目标，正兵会去查根本不存在的轨迹证据。留空反而
+        # 正确：标 needs_hypothesis，正兵手动指定或补声明。
+        # hits 为空（无法反推命中类型）时不校验——那会误杀所有唯一候选。
+        if hits:
+            h = cands[hid]
+            ev = {str(x) for x in (h.get("evidence_object_types") or [])}
+            if not ev:
+                ev = {str(x) for x in (h.get("object_types") or [])}
+            if ev and not (hits & ev):
+                return "", (f"间类「{jian_name}」唯一候选 {hid} 的证据类型"
+                            f"（{'、'.join(sorted(ev))}）与命中对象类型"
+                            f"（{'、'.join(sorted(hits))}）无交集，不挂")
         return hid, f"间类「{jian_name}」唯一映射到 {hid}"
 
     # 多候选：用命中对象类型与 evidence_object_types 的交集消歧
@@ -129,14 +194,23 @@ def _hypothesis_for_jian(jian_name: str, hit_object_types: list[str],
         f"（交集 {scored[0][0]} 项）")
 
 
-def _chain_jian_dim_for(text: str) -> tuple[list[str], list[str], list[str]]:
-    """按庙算模式库把 finding 文本映射为 (假设链, 间类, 维度)。"""
-    from core.hypotheses import MiaoSuan  # 延迟导入：core 不依赖 skills，无循环
-    for p in MiaoSuan.FINDING_PATTERNS:
-        if any(k in text for k in p["keywords"]):
-            tpl = p["hypothesis"]
-            return [tpl.id], list(tpl.jian_types), list(tpl.dimension)
-    return [], [], []
+def _chain_jian_dim_for(text: str, rule_id: str = "",
+                        pack: str = "default", base_dir=None
+                        ) -> tuple[list[str], list[str], list[str]]:
+    """finding → (假设链, 间类, 维度)。
+
+    走 core.hypotheses.match_finding_pattern（单一真相源），与庙算
+    auto_add_from_findings 同口径：① rule_ids 精确命中 → ② 关键词弱回落。
+
+    此前本函数是**另写一份**的简化匹配：只读类属性 FINDING_PATTERNS
+    （内置中文回退）、且忽略 rule_id。后果是 R-GEO-3 这类新规则被旧关键词
+    （"同框"）误挂到 H3、维度落中文 ["通讯","行为"]，而本体声明的是
+    H6 / ["space","time"]——空间证据被记成通讯与行为。
+    """
+    from core.hypotheses import match_finding_pattern  # 延迟导入，无循环依赖
+    chain, jian, dims, _reason = match_finding_pattern(
+        text, rule_id, pack, base_dir)
+    return chain, jian, dims
 
 
 def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
@@ -145,8 +219,10 @@ def _clue_from_xu_shi(spec: SkillSpec, result: dict) -> list[LineageClue]:
     findings = result.get("虚实扫描", {}).get("findings", [])
     for i, f in enumerate(findings):
         text = f"{f.get('候选虚处', '')}{f.get('依据', '')}"
-        # 假设链/间类/维度：规则手册声明（rules.json）优先；未声明时回落模式库映射/关键词兜底
-        chain, jian, dims = _chain_jian_dim_for(text)
+        # 假设链/间类/维度：规则 id 精确命中本体模式库 → 关键词弱回落。
+        # 必须传 rule_id：不传则退回关键词，新规则（如 R-GEO-3 含"同框"）
+        # 会被旧模式的关键词误挂到 H3、维度落通讯/行为。
+        chain, jian, dims = _chain_jian_dim_for(text, f.get("rule_id") or "")
         if f.get("assumption"):
             chain = [f["assumption"]]
         if f.get("jian_types"):

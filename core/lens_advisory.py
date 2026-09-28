@@ -157,3 +157,69 @@ def advisories(specs: list[Any], materialized: list[str] | None,
         r["name"] = getattr(s, "name", sid)
         out.append(r)
     return out
+
+
+# ----------------------------------------------------------------------
+# ③ 时间精度前置探测（时刻窗能不能用）
+# ----------------------------------------------------------------------
+
+def trackpoint_time_precision(store) -> dict[str, Any] | None:
+    """探测 obj_trackpoint 的实际时间精度 → 回答「时刻窗现在能不能用」。
+
+    为什么需要
+    ----------
+    window_minutes（时刻窗）只在参与配对的两条轨迹**都精确到分钟档**时才
+    按真实秒间隔过滤。数据是纯日期时，正兵填了也不会有任何变化——这是最
+    糟的失败模式：**无声无效**（填了、跑了、结果一样，没有任何提示）。
+
+    所以把它前移到选择镜头时告知，与 readiness 同理念（跑之前说，不跑完才说）。
+
+    判定口径与 core.time_semantics 一致：时刻全零（整点）派生为 hour 档，
+    不是"有 timestamp 就等于精确"——否则同落 00:00:00 会被判成同时。
+
+    返回 {time_precision, total, with_ts, minute_level, note}；
+    表/列不存在或探测失败 → None（如实说不知道，不谎报 ready）。
+    """
+    try:
+        cols = {str(r[0] if not isinstance(r, dict) else r.get("column_name"))
+                for r in store.query(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'obj_trackpoint'")}
+    except Exception:
+        return None
+    if "timestamp" not in cols:
+        return None
+    try:
+        rows = store.query(
+            "SELECT count(*) AS total, "
+            "  sum(CASE WHEN timestamp IS NULL THEN 0 ELSE 1 END) AS with_ts, "
+            "  sum(CASE WHEN timestamp IS NOT NULL AND ("
+            "      EXTRACT(minute FROM timestamp) > 0 "
+            "      OR EXTRACT(second FROM timestamp) > 0) "
+            "      THEN 1 ELSE 0 END) AS minute_level "
+            "FROM obj_trackpoint")
+        r = rows[0] if rows else None
+        if not r:
+            return None
+        total = int(r[0] if not isinstance(r, dict) else r.get("total") or 0)
+        with_ts = int(r[1] if not isinstance(r, dict) else r.get("with_ts") or 0)
+        minute_level = int(r[2] if not isinstance(r, dict)
+                           else r.get("minute_level") or 0)
+    except Exception:
+        return None
+    if total <= 0:
+        return None
+    if minute_level > 0:
+        precision = "minute"
+        note = (f"{minute_level}/{total} 条轨迹含分钟级时刻，"
+                f"时刻窗（window_minutes）可用")
+    elif with_ts > 0:
+        precision = "hour"
+        note = (f"{with_ts}/{total} 条轨迹含时刻但均为整点（hour 档），"
+                f"时刻窗不生效——整点派生为小时精度，不判「同时」")
+    else:
+        precision = "date"
+        note = (f"{total} 条轨迹均无时刻（date 档），时刻窗不生效；"
+                f"仍按 window_days 天级判定同地异时")
+    return {"time_precision": precision, "total": total,
+            "with_ts": with_ts, "minute_level": minute_level, "note": note}

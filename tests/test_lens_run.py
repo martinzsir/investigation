@@ -10,10 +10,14 @@ tests/test_lens_run.py
   ③ 权限与边界：正兵 403；未知镜头 404；内置技能/包级停用/草案镜头/
      案件停用 400；未声明参数/必填缺失 400（路由预检不入队）；
   ④ 幂等：同版本同参数重提返回同任务；
-  ⑤ 失败路径：无生效版本任务 FAILED（NO_VERSION）。
+  ⑤ 失败路径：无生效版本任务 FAILED（NO_VERSION）；
+  ⑥ P3 案件画布：origin 放开（surface+node_id 无 clue_id 保留）、
+     画布发起回写集成（零观察 progress 透出原因、ops 记 surface）、
+     线索画布 origin 不触发案件画布回写。
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -256,6 +260,66 @@ class LensRunTest(unittest.TestCase):
         self.assertEqual(row.error_code, "NO_VERSION")
         # 失败不落补充产物
         self.assertFalse(lens_run_dir(self.case_dir, 1).exists())
+
+    # ---- ⑥ P3：案件画布 origin 放开与回写 --------------------------------
+    def test_run_origin_case_canvas_preserved(self):
+        """P3 origin 放开：无 clue_id 的案件画布发起（surface+node_id）
+        任一已知键非空即保留，不再要求 clue_id。"""
+        self._make_version1()
+        r = self._run(origin={"surface": "case_canvas",
+                              "node_id": "case#cn_x", "subject": "张三"})
+        self.assertEqual(r.status_code, 202, r.text)
+        task_id = r.json()["data"]["task"]["id"]
+        row = next(t for t in self.repo.list_tasks(case_id="c1")
+                   if t.id == task_id)
+        origin = row.params["origin"]
+        self.assertEqual("case_canvas", origin["surface"])
+        self.assertEqual("case#cn_x", origin["node_id"])
+        self.assertEqual("张三", origin["subject"])
+        self.assertNotIn("clue_id", origin)
+
+    def test_case_canvas_origin_writeback_flow(self):
+        """P3 回写集成（空库零观察路径）：画布发起 → 任务成功、
+        progress_detail 透出未产生观察的原因（不再无声失败），
+        ops 记 surface，零观察不回写、画布无 analysis_result。"""
+        self._make_version1()
+        g = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        self.assertEqual(g.status_code, 200, g.text)  # 惰性 seed
+        r = self._run(origin={"surface": "case_canvas",
+                              "node_id": "case#cn_t", "subject": "张三"})
+        self.assertEqual(r.status_code, 202, r.text)
+        task_id = r.json()["data"]["task"]["id"]
+        self.pool.run_until_drained(max_idle_rounds=40)
+        row = next(t for t in self.repo.list_tasks(case_id="c1")
+                   if t.id == task_id)
+        self.assertEqual(row.status, TASK_SUCCEEDED, row.error_message)
+        self.assertIn("镜头完成：未产生观察", row.progress_detail)
+        payload = json.loads(
+            self.repo.list_ops(kind="lens_run")[0]["payload"])
+        self.assertEqual("case_canvas", payload["surface"])
+        self.assertIsNone(payload["canvas_writeback"])  # 零观察不回写
+        g2 = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        nodes = g2.json()["data"]["doc"]["nodes"]
+        self.assertNotIn("analysis_result", [n["kind"] for n in nodes])
+
+    def test_clue_origin_no_writeback(self):
+        """线索画布 origin 走读面并线（既有行为零回归）：不触发案件画布
+        回写，progress 也不写回写文案。"""
+        self._make_version1()
+        self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        r = self._run(origin={"clue_id": "clue-1", "surface": "clue_canvas"})
+        self.assertEqual(r.status_code, 202, r.text)
+        task_id = r.json()["data"]["task"]["id"]
+        self.pool.run_until_drained(max_idle_rounds=40)
+        row = next(t for t in self.repo.list_tasks(case_id="c1")
+                   if t.id == task_id)
+        self.assertEqual(row.status, TASK_SUCCEEDED, row.error_message)
+        self.assertNotIn("回写画布", row.progress_detail)
+        payload = json.loads(
+            self.repo.list_ops(kind="lens_run")[0]["payload"])
+        self.assertEqual("clue_canvas", payload["surface"])
+        g = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        self.assertEqual([], g.json()["data"]["doc"]["nodes"])
 
 
 if __name__ == "__main__":

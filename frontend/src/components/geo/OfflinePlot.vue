@@ -11,7 +11,7 @@ import { geoMapTokens } from '../../design/tokens'
 
 const props = defineProps<{
   model: GeoLayerModel
-  layersVisible: { cells: boolean; sites: boolean; top: boolean }
+  layersVisible: { cells: boolean; sites: boolean; top: boolean; links: boolean }
 }>()
 const emit = defineEmits<{ selectSite: [site: GeoSite] }>()
 
@@ -73,6 +73,18 @@ const siteDots = computed(() => {
     })
 })
 
+const linkLines = computed(() => {
+  const p = projection.value
+  if (!p || !props.layersVisible.links) return []
+  return props.model.links
+    .filter((l) => l.coordA && l.coordB)
+    .map((l) => {
+      const [x1, y1] = p.project(l.coordA!.lng, l.coordA!.lat)
+      const [x2, y2] = p.project(l.coordB!.lng, l.coordB!.lat)
+      return { l, x1, y1, x2, y2 }
+    })
+})
+
 const topMark = computed(() => {
   const p = projection.value
   const z = props.model.topZone
@@ -120,6 +132,21 @@ const bands = geoMapTokens.band
         />
         <title>{{ s.stdAddress }}｜到访 {{ s.visits }} 次</title>
       </g>
+      <!-- 时空伴随连线 -->
+      <line
+        v-for="(ln, i) in linkLines"
+        :key="`link:${i}`"
+        :x1="ln.x1"
+        :y1="ln.y1"
+        :x2="ln.x2"
+        :y2="ln.y2"
+        :stroke="geoMapTokens.accompany.stroke"
+        :stroke-width="geoMapTokens.accompany.strokeWidth"
+        :stroke-dasharray="geoMapTokens.accompany.dash"
+        stroke-linecap="round"
+      >
+        <title>{{ ln.l.personA }} × {{ ln.l.personB }}｜同框 {{ ln.l.meetCount }} 次</title>
+      </line>
       <!-- 顶格排查区 -->
       <polygon
         v-if="topMark"

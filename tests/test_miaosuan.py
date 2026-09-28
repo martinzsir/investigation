@@ -183,12 +183,13 @@ class TestRuleConstraints(unittest.TestCase):
 
 
 class TestDimensionCoverage(unittest.TestCase):
-    """F. 五维度覆盖度（资金/通讯/行为/关系/时间）"""
+    """F. 维度覆盖度（维度集由 dimensions.json 声明，P-GEO 起含 space）"""
 
     def test_假设携带维度字段(self):
         m = _miao()
         h = m.auto_from_findings([EXT_FINDINGS[0]])[0]
-        self.assertEqual(h.dimension, ["资金", "时间"])
+        # 本体口径：机器标识符为 code（fund/time…），中文名为展示名
+        self.assertEqual(h.dimension, ["fund", "time"])
         self.assertEqual(h.jian_types, ["生间"])
 
     def test_五维全覆盖无报警(self):
@@ -202,7 +203,9 @@ class TestDimensionCoverage(unittest.TestCase):
         m = _miao()
         m.auto_from_findings(FINDINGS)  # 仅 H1/H4 → 资金+时间
         dc = m.dimension_coverage()
-        self.assertEqual(dc["score"], 0.4)
+        # 不写死 0.4：分母随维度数（P-GEO 起为 6）变化，
+        # 断言"声明 2 维 / 全量维度"这个关系而非具体小数。
+        self.assertAlmostEqual(dc["score"], 2 / len(m.DIMENSIONS), places=2)
         self.assertTrue(dc["alarm"])
         # REQ-G-009：报警文案枚举缺失维度名
         self.assertIn("覆盖不完整", dc["alarm_text"])
@@ -213,13 +216,18 @@ class TestDimensionCoverage(unittest.TestCase):
         self.assertTrue(m.report()["dimension_coverage"]["alarm"])
 
     def test_报警阈值边界(self):
-        # REQ-G-009：4/5=0.80 仍缺 1 维 → 必须报警（阈值由严格 < 改为 <=）
+        # REQ-G-009 本意：只缺 1 维也必须报警。
+        # 比例阈值（0.8）与维度个数绑定，5 维时缺 1 维=0.80 触发，
+        # 6 维时缺 1 维≈0.83 反而不触发——故实现改为按缺维数判，
+        # 此处断言"缺 1 维即报警"这个语义本身，不绑具体比例。
         m = _miao()
         m.auto_from_findings(FINDINGS[:2] + [EXT_FINDINGS[2]])
         dc = m.dimension_coverage()
-        self.assertEqual(dc["score"], 0.8)
         self.assertTrue(dc["alarm"])
-        self.assertEqual(dc["missing"], ["关系"])
+        self.assertEqual(len(dc["missing"]), 1)
+        self.assertEqual(dc["missing"], ["relation"])
+        # 展示名独立出 labels，UI/文案不直接消费 code
+        self.assertEqual(dc["missing_labels"], ["关系"])
 
     def test_g008_双轨口径_声明与经验分离(self):
         """REQ-G-008：声明 5 维但实证 finding 只落 2 维 → declared_missing 空、empirical_missing 非空。"""
@@ -229,12 +237,17 @@ class TestDimensionCoverage(unittest.TestCase):
         dc = m.dimension_coverage(findings)
         self.assertEqual(dc["declared_missing"], [])
         self.assertFalse(dc["alarm"])  # 声明轨满覆盖，不报警
-        self.assertEqual(sorted(dc["empirical_covered"]), ["资金", "通讯"])
-        self.assertIn("关系", dc["empirical_missing"])
-        self.assertIn("行为", dc["empirical_missing"])
+        # 产出侧维度写法不统一（虚实落 code、用间落中文展示名），
+        # 实证轨须双向归一，否则中文维度证据一律被误算成缺口。
+        self.assertEqual(sorted(dc["empirical_covered"]), ["comm", "fund"])
+        self.assertIn("relation", dc["empirical_missing"])
+        self.assertIn("behavior", dc["empirical_missing"])
         # finding.dimension 为字符串也能归一
         dc2 = m.dimension_coverage([{"dimension": "资金"}])
-        self.assertEqual(dc2["empirical_covered"], ["资金"])
+        self.assertEqual(dc2["empirical_covered"], ["fund"])
+        # code 写法同样成立（旧口径不被破坏）
+        dc3 = m.dimension_coverage([{"dimension": "comm"}])
+        self.assertEqual(dc3["empirical_covered"], ["comm"])
 
     # ---- REQ-G-024：实证缺口独立报警 ----
     def test_g024_ac1_声明满覆盖实证缺维独立报警(self):
@@ -247,12 +260,13 @@ class TestDimensionCoverage(unittest.TestCase):
         self.assertFalse(dc["alarm"])
         self.assertEqual(dc["missing"], [])
         self.assertEqual(dc["covered"], sorted(m.DIMENSIONS))
-        # AC1：实证轨独立报警，缺维按 DIMENSIONS 顺序枚举
+        # AC1：实证轨独立报警，缺维按 DIMENSIONS 顺序枚举（机器侧 code）
         self.assertTrue(dc["empirical_alarm"])
-        self.assertEqual(dc["empirical_missing"], ["行为", "时间"])
+        self.assertEqual(dc["empirical_missing"], ["behavior", "space", "time"])
+        # 报警文案给人看中文名
         self.assertIn("行为", dc["empirical_alarm_text"])
         self.assertIn("时间", dc["empirical_alarm_text"])
-        self.assertIn("3/5", dc["empirical_alarm_text"])
+        self.assertIn("3/%d" % len(m.DIMENSIONS), dc["empirical_alarm_text"])
 
     def test_g024_ac4_双轨满覆盖不误报(self):
         """AC4：声明 5/5 且实证 5/5 → 两轨均不报警、文案为空。"""
@@ -271,8 +285,9 @@ class TestDimensionCoverage(unittest.TestCase):
         dc = m.dimension_coverage([])
         self.assertTrue(dc["empirical_alarm"])
         self.assertEqual(dc["empirical_missing"], list(m.DIMENSIONS))
-        for d in m.DIMENSIONS:
-            self.assertIn(d, dc["empirical_alarm_text"])
+        # 文案列的是展示名（code 不直接出现在正文里）
+        for name in dc["empirical_missing_labels"]:
+            self.assertIn(name, dc["empirical_alarm_text"])
 
 
 class TestDimensionGapDiagnostics(unittest.TestCase):
@@ -290,7 +305,7 @@ class TestDimensionGapDiagnostics(unittest.TestCase):
         return [r for r in self.health.rows() if r["kind"] == "coverage_gap"]
 
     def test_ac2_实证缺口使健康度非healthy(self):
-        """AC2：声明 5/5 实证 3/5 → 1 条 warning 诊断，健康度不再 healthy。"""
+        """AC2：声明满覆盖、实证缺 3 维 → 1 条 warning 诊断，健康度不再 healthy。"""
         m = _full_miao()
         dc = m.dimension_coverage(
             [{"dimension": d} for d in ("关系", "资金", "通讯")])
@@ -299,7 +314,7 @@ class TestDimensionGapDiagnostics(unittest.TestCase):
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0]["source"], "miaosuan:dimension:empirical")
         self.assertEqual(gaps[0]["severity"], "warning")
-        self.assertEqual(gaps[0]["detail"]["missing"], ["行为", "时间"])
+        self.assertEqual(gaps[0]["detail"]["missing"], ["behavior", "space", "time"])
         section = self.health.health_section()
         self.assertNotEqual(section["status"], "healthy")
         self.assertGreaterEqual(section["计数"]["warning"], 1)
@@ -335,7 +350,8 @@ class TestPatternLibrary(unittest.TestCase):
         m = _miao()
         added = m.auto_from_findings([EXT_FINDINGS[2]])
         self.assertEqual([h.id for h in added], ["H3"])
-        self.assertIn("通讯", added[0].dimension)
+        # 维度 code 化：机器标识符 comm/behavior，中文名仅供展示
+        self.assertIn("comm", added[0].dimension)
 
     def test_同框与频次幂等同假设(self):
         m = _miao()
@@ -346,7 +362,7 @@ class TestPatternLibrary(unittest.TestCase):
         m = _miao()
         added = m.auto_from_findings([EXT_FINDINGS[4]])
         self.assertEqual([h.id for h in added], ["H2"])
-        self.assertEqual(added[0].dimension, ["关系"])
+        self.assertEqual(added[0].dimension, ["relation"])
 
     def test_溯源行随发现留存(self):
         m = _miao()

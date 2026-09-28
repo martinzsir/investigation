@@ -6,7 +6,11 @@
       "name": "person",
       "title": "自然人",
       "pk": "person_id",
-      "key": {"column": "person_id", "strategy": "proxy", "prefix": "person"},
+      "key": {
+        "column": "person_id",
+        "strategy": "proxy",
+        "prefix": "person"
+      },
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
@@ -18,7 +22,11 @@
       "name": "org",
       "title": "组织",
       "pk": "org_id",
-      "key": {"column": "org_id", "strategy": "proxy", "prefix": "org"},
+      "key": {
+        "column": "org_id",
+        "strategy": "proxy",
+        "prefix": "org"
+      },
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
@@ -35,7 +43,11 @@
       "name": "account",
       "title": "账户",
       "pk": "account_id",
-      "key": {"column": "account_id", "strategy": "proxy", "prefix": "account"},
+      "key": {
+        "column": "account_id",
+        "strategy": "proxy",
+        "prefix": "account"
+      },
       "kind": "entity",
       "name_property": "raw_name",
       "properties": {
@@ -46,45 +58,80 @@
       "name": "person_identity",
       "title": "人员信息",
       "pk": "identity_id",
-      "key": {"column": "identity_id", "strategy": "proxy", "prefix": "identity"},
+      "key": {
+        "column": "identity_id",
+        "strategy": "proxy",
+        "prefix": "identity"
+      },
       "kind": "entity",
       "name_property": "raw_name",
       "_note": "数据接入全流程演示对象：人员建档信息承载 5 个数据元落点（DE_IDCARD/DE_PHONE/DE_GENDER/DE_ID_TYPE/DE_CASE_TYPE；金额/日期/币种落点在 transaction）。源表「人员信息」缺失时 binding optional 跳过；身份证 clean_rule(despace)/手机(strip_cc+digits_only) 经 prop_de_clean 在 py 层自动挂接。",
       "properties": {
         "raw_name": "string",
-        "id_card": {"data_element": "DE_IDCARD"},
-        "phone": {"data_element": "DE_PHONE"},
-        "gender": {"data_element": "DE_GENDER"},
-        "id_type": {"data_element": "DE_ID_TYPE"},
-        "case_type": {"data_element": "DE_CASE_TYPE"}
-      }
+        "id_card": {
+          "data_element": "DE_IDCARD"
+        },
+        "phone": {
+          "data_element": "DE_PHONE"
+        },
+        "gender": {
+          "data_element": "DE_GENDER"
+        },
+        "id_type": {
+          "data_element": "DE_ID_TYPE"
+        },
+        "case_type": {
+          "data_element": "DE_CASE_TYPE"
+        }
+      },
+      "identity_key": [
+        "raw_name",
+        "id_card"
+      ]
     },
     {
       "name": "transaction",
       "title": "交易",
       "pk": "txn_id",
-      "key": {"column": "txn_id", "strategy": "proxy", "prefix": "txn"},
+      "key": {
+        "column": "txn_id",
+        "strategy": "proxy",
+        "prefix": "txn"
+      },
       "kind": "event",
       "name_property": "from_raw",
       "properties": {
         "from_raw": "string",
         "to_raw": "string",
-        "amount": {"type": "decimal", "data_element": "DE_AMOUNT"},
-        "currency": {"data_element": "DE_CURRENCY"},
-        "date": {"data_element": "DE_DATE"}
+        "amount": {
+          "type": "decimal",
+          "data_element": "DE_AMOUNT"
+        },
+        "currency": {
+          "data_element": "DE_CURRENCY"
+        },
+        "date": {
+          "data_element": "DE_DATE"
+        }
       }
     },
     {
       "name": "call",
       "title": "通话",
       "pk": "call_id",
-      "key": {"column": "call_id", "strategy": "proxy", "prefix": "call"},
+      "key": {
+        "column": "call_id",
+        "strategy": "proxy",
+        "prefix": "call"
+      },
       "kind": "event",
       "name_property": "caller_raw",
       "properties": {
         "caller_raw": "string",
         "callee_raw": "string",
-        "date": {"data_element": "DE_DATE"},
+        "date": {
+          "data_element": "DE_DATE"
+        },
         "times": "integer"
       }
     },
@@ -92,20 +139,34 @@
       "name": "trackpoint",
       "title": "轨迹点",
       "pk": "track_id",
-      "key": {"column": "track_id", "strategy": "proxy", "prefix": "track"},
+      "key": {
+        "column": "track_id",
+        "strategy": "proxy",
+        "prefix": "track"
+      },
       "kind": "event",
       "name_property": "person_raw",
       "properties": {
         "person_raw": "string",
         "location": "string",
-        "date": {"data_element": "DE_DATE"}
-      }
+        "date": {
+          "data_element": "DE_DATE"
+        },
+        "timestamp": {
+          "data_element": "DE_DATETIME"
+        }
+      },
+      "_note_time": "date 与 timestamp 并存：date 为日期级事实（DE_DATE，现有规则/链接表 date_diff 口径不变），timestamp 为带时刻的升级字段（DE_DATETIME，可空）。**无时刻时 timestamp 留 NULL，不得补 00:00:00 伪装时刻**——否则日期级判据会伪装成时刻级判据（「两人同时同地」的伪精确）。判「是否可同时」须读 time_precision（由值派生、可被接入层覆盖），而非仅看类型。"
     },
     {
       "name": "location",
       "title": "地点",
       "pk": "location_id",
-      "key": {"column": "location_id", "strategy": "proxy", "prefix": "loc"},
+      "key": {
+        "column": "location_id",
+        "strategy": "proxy",
+        "prefix": "loc"
+      },
       "kind": "entity",
       "name_property": "std_address",
       "_note": "维度实体：从事件反向物化，非新数据源。坐标挂实体不挂事件（同源事件共享坐标）；代理键按 std_address 值分配——同标准地址天然归并为同一节点。坐标统一 GCJ-02。",
@@ -124,19 +185,29 @@
         "geocode_confidence": "decimal",
         "geocoded_at": "string"
       },
-      "metadata_props": ["geocode_source", "geocode_confidence", "geocoded_at"]
+      "metadata_props": [
+        "geocode_source",
+        "geocode_confidence",
+        "geocoded_at"
+      ]
     },
     {
       "name": "bid_project",
       "title": "招投标项目",
       "pk": "project_id",
-      "key": {"column": "project_id", "strategy": "proxy", "prefix": "project"},
+      "key": {
+        "column": "project_id",
+        "strategy": "proxy",
+        "prefix": "project"
+      },
       "kind": "entity",
       "name_property": "title",
       "properties": {
         "title": "string",
         "winner_raw": "string",
-        "pub_date": {"data_element": "DE_DATE"},
+        "pub_date": {
+          "data_element": "DE_DATE"
+        },
         "leader": "string"
       },
       "metadata_props": [
@@ -147,7 +218,10 @@
       "name": "clue",
       "title": "线索",
       "pk": "clue_id",
-      "key": {"column": "clue_id", "strategy": "natural"},
+      "key": {
+        "column": "clue_id",
+        "strategy": "natural"
+      },
       "kind": "entity",
       "name_property": "clue_id",
       "_note_naming": "name_property 等于 pk（自引用）：线索无自然名，代理键即标识",
@@ -168,7 +242,10 @@
       "name": "decision",
       "title": "处置决定",
       "pk": "decision_id",
-      "key": {"column": "decision_id", "strategy": "natural"},
+      "key": {
+        "column": "decision_id",
+        "strategy": "natural"
+      },
       "kind": "entity",
       "name_property": "decision_id",
       "runtime": true,
@@ -205,13 +282,19 @@
       "name": "tipoff",
       "title": "举报线索（内间）",
       "pk": "tipoff_id",
-      "key": {"column": "tipoff_id", "strategy": "proxy", "prefix": "tipoff"},
+      "key": {
+        "column": "tipoff_id",
+        "strategy": "proxy",
+        "prefix": "tipoff"
+      },
       "kind": "event",
       "name_property": "title",
       "_note": "五间映射：内间（内部线索/举报材料）。五间由 packs/wujian 提供。",
       "properties": {
         "title": "string",
-        "submit_date": {"data_element": "DE_DATE"},
+        "submit_date": {
+          "data_element": "DE_DATE"
+        },
         "target_raw": "string",
         "reporter_raw": "string",
         "content_raw": "string"
@@ -226,14 +309,20 @@
       "name": "osint_article",
       "title": "公开OSINT文章（死间）",
       "pk": "article_id",
-      "key": {"column": "article_id", "strategy": "proxy", "prefix": "article"},
+      "key": {
+        "column": "article_id",
+        "strategy": "proxy",
+        "prefix": "article"
+      },
       "kind": "event",
       "name_property": "raw_name",
       "_note": "五间映射：死间（公开OSINT交叉验证）。五间由 packs/wujian 提供。",
       "properties": {
         "raw_name": "string",
         "info_text": "string",
-        "pub_date": {"data_element": "DE_DATE"},
+        "pub_date": {
+          "data_element": "DE_DATE"
+        },
         "source_name": "string",
         "crawled_at": "timestamp",
         "retention_days": "duration_days"
@@ -250,7 +339,10 @@
       "name": "image_evidence",
       "title": "图像证据（人验通过）",
       "pk": "image_evidence_id",
-      "key": {"column": "image_evidence_id", "strategy": "natural"},
+      "key": {
+        "column": "image_evidence_id",
+        "strategy": "natural"
+      },
       "kind": "entity",
       "name_property": "image_evidence_id",
       "runtime": true,

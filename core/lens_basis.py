@@ -242,6 +242,196 @@ def _basis_serial_profile(out: dict) -> tuple[str, list[str]]:
     return text, claims
 
 
+def _basis_accompany(out: dict) -> tuple[str, list[str]]:
+    """geo_accompany：只陈述反复同框的时空结构，不给同行/同时结论。"""
+    comps = out.get("companions") or []
+    if not comps:
+        return "未检出异主体时空同框事件对。", []
+    top = comps[0]
+    lv = top.get("spatial_level")
+    note = top.get("spatial_note") or lv
+    wd = out.get("window_days")
+    text = (f"{top.get('person_a')} 与 {top.get('person_b')} 在 ±{wd} 天窗口内"
+            f"先后出现于相近时空 {top.get('meet_count')} 次"
+            f"（{top.get('first_date')}~{top.get('last_date')}，"
+            f"跨度 {top.get('span_days')} 天，涉及 {top.get('location_count')} 个地点）；"
+            f"空间判据：{note}")
+    if top.get("repeated"):
+        text += f"；达到反复伴随下限（≥{out.get('min_meets')} 次）"
+    # ---- 精度构成自陈（不加这一句，次数就会骗人）----
+    # 12 次里若全是日期级，只证明「前后一天先后出现在同一路段」，
+    # 每一次都是独立巧合；时刻级才证明时间窗真重叠。正兵只看
+    # 「同框 N 次」无法分辨，故必须把构成写出来。
+    _mn = int(top.get("minute_level_meets") or 0)
+    _dn = int(top.get("date_level_meets") or 0)
+    if _mn or _dn:
+        text += (f"；其中 {_mn} 次可判时刻重叠、{_dn} 次仅能判同地异时"
+                 f"（加权有效同框 {top.get('effective_meet_score')}）")
+    if len(comps) > 1:
+        text += f"；另有 {len(comps) - 1} 组主体对"
+    text += f"；{out.get('time_note') or '数据无时刻，仅判同地异时'}"
+    text += _degraded_note(out)
+    claims = [
+        f"同框 {top.get('meet_count')} 次，跨度 {top.get('span_days')} 天",
+        f"空间判据 {lv}（{note}）",
+        f"涉及地点 {top.get('location_count')} 个",
+        f"时刻级 {_mn} 次 / 日期级 {_dn} 次（加权有效 "
+        f"{top.get('effective_meet_score')}）",
+    ]
+    return text, claims
+
+
+def _basis_buffer_scan(out: dict) -> tuple[str, list[str]]:
+    """geo_buffer_scan：只陈述「谁在锚点附近出现过」，不给接触/定性结论。
+
+    必须自陈的两件事：坐标精度（质心则距离不代表实际间距）、时间窗
+    （无窗则跨全时段，不等于同期）。不自陈就会出现"距离 2156.8 米"
+    看起来是精确实距、实际是区级推算的伪精确。
+    """
+    subs = out.get("subjects") or []
+    if not subs:
+        return "缓冲区环带内未检出任何主体轨迹事件。", []
+    top = subs[0]
+    prec = out.get("coord_precision")
+    prec_note = ("坐标为区县质心，距离不代表实际间距" if prec != "geocode"
+                 else "门牌级坐标实距")
+    win = ""
+    if out.get("date_from") or out.get("date_to"):
+        win = (f"时间窗 {out.get('date_from') or '（起点不限）'}~"
+               f"{out.get('date_to') or '（终点不限）'}内")
+    else:
+        win = "未设时间窗（跨全时段）"
+    # 事件数须含内环+环带：只报 ring_count 会出现"0 起事件却有 9 次到访"
+    # 的自相矛盾（显式锚点 500m 内环时事件全落内环）。
+    band = (out.get("ring_count") or 0) + (out.get("inner_count") or 0)
+    text = (f"以锚点为圆心、半径 {out.get('outer_radius_m')} 米范围内，{win}"
+            f"检出 {out.get('subject_count')} 个主体、{band} 起事件"
+            f"（其中内环 {out.get('inner_count')} 起、环带 "
+            f"{out.get('ring_count')} 起）")
+    if out.get("self_count"):
+        text += f"；锚点主体自身 {out['self_count']} 起已排除（不自我循环）"
+    text += (f"；其中 {top.get('name')} 出现 {top.get('count')} 次"
+             f"（{top.get('first_date')}~{top.get('last_date')}）")
+    if len(subs) > 1:
+        text += f"，另有 {len(subs) - 1} 个主体"
+    text += f"；空间精度：{prec_note}"
+    if out.get("out_of_window"):
+        text += f"；{out['out_of_window']} 起落在时间窗外未计入"
+    text += _degraded_note(out)
+    claims = [
+        f"{out.get('outer_radius_m')} 米内 {out.get('subject_count')} 个主体",
+        f"{top.get('name')} 出现 {top.get('count')} 次",
+        f"空间精度 {prec}",
+    ]
+    return text, claims
+
+
+def _basis_trajectory_segment(out: dict):
+    """geo_trajectory_segment：只陈述停留/移动的结构，不给行为定性。
+
+    必须自陈的两件事：采样稀疏度（duration 是首尾间隔，不等于连续驻留）、
+    坐标精度（质心则距离不可用）。不自陈就会出现"停留 10080 分钟"这类
+    把 7 个工作日误并成一次驻留的伪结论。
+    """
+    stays = out.get("stays") or []
+    if not stays:
+        return "未识别出停留段。", []
+    top = max(stays, key=lambda s: s.get("duration_minutes") or 0)
+    text = (f"轨迹切分出 {out.get('stay_count')} 个停留段、"
+            f"{out.get('move_count')} 个移动段，累计停留 "
+            f"{out.get('total_stay_minutes')} 分钟")
+    if out.get("total_move_minutes"):
+        text += f"、移动 {out['total_move_minutes']} 分钟"
+    text += (f"；最长停留「{top.get('std_address')}」"
+             f"{top.get('duration_minutes')} 分钟，到访 "
+             f"{out.get('stay_count')} 段")
+    text += f"；空间精度：{out.get('coord_precision')}"
+    if out.get("trackpoint_usable") is not None:
+        text += (f"；可用轨迹 {out['trackpoint_usable']}/"
+                 f"{out.get('trackpoint_total')} 条")
+    text += _degraded_note(out)
+    claims = [
+        f"停留段 {out.get('stay_count')} 个",
+        f"移动段 {out.get('move_count')} 个",
+        f"累计停留 {out.get('total_stay_minutes')} 分钟",
+    ]
+    return text, claims
+
+
+def _basis_anomaly_trajectory(out: dict):
+    """geo_anomaly_trajectory：只陈述"偏离了什么"，不说"可疑"。
+
+    判据必须写清基线规模（多少天的常驻模式）——没有基线规模的偏离
+    声明等于无据。三类偏离分别计数，共现只在异常点上附加。
+    """
+    base = out.get("baseline") or {}
+    anoms = out.get("anomalies") or []
+    if not anoms:
+        return (f"在 {base.get('days')} 天常驻基线上未检出偏离。", [])
+    by = out.get("by_kind") or {}
+    parts = []
+    if by.get("off_route"):
+        parts.append(f"非常驻地点 {by['off_route']} 次")
+    if by.get("off_hours"):
+        parts.append(f"非常态时段 {by['off_hours']} 次")
+    if by.get("off_path"):
+        parts.append(f"非常态通勤 {by['off_path']} 次")
+    top = anoms[0]
+    text = (f"以该主体 {base.get('days')} 天、{base.get('stay_count')} 段停留"
+            f"建立的常驻基线（{base.get('site_count')} 个地点，常驻阈值 "
+            f"{base.get('rare_ratio')}）之上，检出 {out.get('anomaly_count')} "
+            f"处偏离：" + "、".join(parts))
+    text += (f"；其中「{top.get('std_address') or top.get('to') or ''}」"
+             f"{top.get('date', '')}")
+    co = [a for a in anoms if a.get("co_present")]
+    if co:
+        text += (f"；{len(co)} 处偏离另有他人同日同地出现（"
+                 f"{co[0].get('co_present')}）")
+    text += f"；空间精度：{out.get('coord_precision')}"
+    text += _degraded_note(out)
+    claims = [f"基线 {base.get('days')} 天",
+              f"偏离 {out.get('anomaly_count')} 处"]
+    for k, v in sorted(by.items()):
+        claims.append(f"{k} {v}")
+    return text, claims
+
+
+def _basis_activity_range(out: dict):
+    """geo_activity_range：只描述活动范围几何，不推断落脚点、不作行为定性。
+
+    必须自陈三件事：椭圆倍率（1σ 只含约 39% 的点，不是活动边界）、坐标精度
+    （质心档是区级推算）、权重口径（默认按到访次数加权）。不自陈就会出现
+    "把 1σ 椭圆当活动边界"或"把质心算出的密度当门牌级热度"这两类误读。
+    """
+    e = out.get("std_ellipse") or {}
+    c = out.get("mean_center") or {}
+    mc = f"({c.get('lat')}, {c.get('lng')})" if c.get("lat") is not None else "—"
+    text = (f"{out.get('point_count')} 个落脚点的平均中心 {mc}，"
+            f"标准距离 {out.get('standard_distance_m')} 米")
+    if e.get("semi_major_m") is not None:
+        text += (f"；{e.get('sigma_multiplier')}σ 椭圆长半轴 "
+                 f"{e.get('semi_major_m')} 米、短半轴 {e.get('semi_minor_m')} 米、"
+                 f"主轴方位 {e.get('azimuth_deg')}°、覆盖约 "
+                 f"{e.get('area_km2')} 平方公里")
+    text += f"；点位跨度 {out.get('span_km')} 公里"
+    text += f"；权重口径：按{'到访次数' if out.get('weight_by') != 'uniform' else '等权'}"
+    hs = out.get("hotspots") or []
+    if hs:
+        top = hs[0]
+        text += (f"；密度最高「{top.get('std_address')}」到访 "
+                 f"{top.get('visits')} 次、相对密度 {top.get('density')}")
+    text += f"；坐标精度：{out.get('coord_precision')}"
+    text += _degraded_note(out)
+    claims = [f"落脚点 {out.get('point_count')} 个",
+              f"标准距离 {out.get('standard_distance_m')} 米"]
+    if e.get("semi_major_m") is not None:
+        claims.append(f"{e.get('sigma_multiplier')}σ 长半轴 {e.get('semi_major_m')} 米")
+        claims.append(f"主轴方位 {e.get('azimuth_deg')}°")
+    for h in hs[:3]:
+        claims.append(f"热点「{h.get('std_address')}」密度 {h.get('density')}")
+    return text, claims
+
+
 _BASIS = {
     "timeline_sequence": _basis_sequence,
     "timeline_rhythm": _basis_rhythm,
@@ -251,6 +441,11 @@ _BASIS = {
     "relation_common_neighbors": _basis_common_neighbors,
     "geo_site_profile": _basis_site_profile,
     "geo_serial_profile": _basis_serial_profile,
+    "geo_accompany": _basis_accompany,
+    "geo_buffer_scan": _basis_buffer_scan,
+    "geo_trajectory_segment": _basis_trajectory_segment,
+    "geo_anomaly_trajectory": _basis_anomaly_trajectory,
+    "geo_activity_range": _basis_activity_range,
 }
 
 # 证伪条件：回答「什么情况下这个判据不成立」。
@@ -265,9 +460,22 @@ _FALSIFICATION = {
     "relation_common_neighbors": "若中间主体为共同参建单位且往来为工程款，则闭环属业务链路",
     "geo_site_profile": "若高频地点系职务出行必经点（司机/外勤/巡线等岗位职责），"
                         "则到访频次不构成私人落脚关联；坐标为区划质心时空间精度仅到县级",
+    "geo_accompany": "同框若均发生在项目现场、会议场所等职务性地点，或两主体本就属同一单位/同一项目组，则时空接近系工作常态；坐标为区划质心时距离不代表实际间距；数据无时刻，不支持同时/同行结论",
+    "geo_buffer_scan": "环带内出现仅说明该主体到过锚点附近，不构成接触/同行/利益关联结论；若锚点为项目现场、办公场所等职务性地点，或主体本就属同一单位/同一项目组，则空间接近系工作常态；坐标为区划质心时距离不代表实际间距；未设时间窗时跨全时段，不等于同期",
     "geo_serial_profile": "CGT 适用于系列侵财/人身案件；若事件点系职务必经点、"
                           "坐标为区划质心（精度仅到县级）或有效事件不足声明下限，"
                           "概率面不成立；产出是排查优先级区域，不是落脚点定址",
+    "geo_trajectory_segment": "停留时长为稀疏采样下的当日首尾点间隔，不等于连续驻留；"
+                              "跨日不串段、跨日相邻停留之间不构成移动；坐标为区县质心时"
+                              "不给出距离，停留判定改按地点实体",
+    "geo_anomaly_trajectory": "偏离常驻模式不等于可疑：若偏离系临时出差、职务性外勤、"
+                              "数据补录或采样缺失所致，或该地点本就属其工作范围，则偏离"
+                              "不成立；基线不足声明天数时不产出异常",
+    "geo_activity_range": "活动范围椭圆与核密度是描述统计，不推断落脚点、不作行为定性："
+                          "若坐标为区划质心（精度仅到区级）或去重后位置不足 3 个，"
+                          "椭圆与密度不成立；椭圆倍率决定覆盖比例（1σ≈39%、2σ≈86%、"
+                          "3σ≈99%），椭圆外仍可能有活动；热点不等于落脚点，高频地点"
+                          "若系职务必经点（司机/外勤/巡线）则不构成私人落脚关联",
 }
 
 

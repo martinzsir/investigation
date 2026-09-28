@@ -87,7 +87,7 @@ def clue_from_diagnostic(row: dict) -> dict | None:
         missing = d.get("missing") or d.get("declared_missing") or []
         title = f"[异常·待核实] 维度覆盖缺口：{'、'.join(map(str, missing)) or '未知'}"
         basis = row.get("reason") or "庙算维度覆盖不足，部分维度无任何线索支撑"
-        rule_text = ("庙算五维覆盖出现缺口（coverage_gap）：被声明的侦查维度无对应线索支撑。"
+        rule_text = ("庙算维度覆盖出现缺口（coverage_gap）：被声明的侦查维度无对应线索支撑。"
                      "覆盖缺口不等于无异常，须人工补充侦查或确认数据边界。")
         out_dim = _dimension_of(row)
 

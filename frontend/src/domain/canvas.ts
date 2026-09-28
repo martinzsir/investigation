@@ -15,6 +15,12 @@ export const NODE_KINDS = [
   'hypothesis',
   'note',
   'function_result',
+  // P1 案件级研判画布（case# 域）新增四类——线索画布不出图，
+  // 服务端 validate_doc_shape 在线索域拒绝（域隔离；后端 canvas_case.py）
+  'subject',
+  'place',
+  'event',
+  'analysis_result',
 ] as const
 export type NodeKind = (typeof NODE_KINDS)[number]
 
@@ -30,6 +36,11 @@ export const KIND_LABELS: Record<NodeKind, string> = {
   hypothesis: '假设',
   note: '备注',
   function_result: '查询结果',
+  // P1 案件级研判画布（线索画布不出现这四类）
+  subject: '主体',
+  place: '地点',
+  event: '事件',
+  analysis_result: '研判结论',
 }
 
 /** 降级列表分组顺序 */
@@ -65,6 +76,68 @@ export type ManualRel = (typeof MANUAL_RELS)[number]
 /** 人工节点只有两类 */
 export const MANUAL_NODE_KINDS = ['hypothesis', 'note'] as const
 export type ManualNodeKind = (typeof MANUAL_NODE_KINDS)[number]
+
+// ======================================================================
+// 案件级研判画布（case# 域，P1；后端 server/app/canvas_case.py）
+// 与线索画布共用 NodeKind/样式令牌，但两域各持一份顺序与人工类型清单：
+// KIND_ORDER/MANUAL_NODE_KINDS 保持线索域口径不变（域隔离零回归），
+// 案件域在此单独声明。
+// ======================================================================
+
+/** 仅案件级画布出现的节点类型（线索画布图例/降级分组不含） */
+export const CASE_ONLY_KINDS = [
+  'subject',
+  'place',
+  'event',
+  'analysis_result',
+] as const
+export type CaseOnlyKind = (typeof CASE_ONLY_KINDS)[number]
+
+/** 案件级画布人工可新增的节点类型（analysis_result 仅研判回写产生，人工添加后端 400） */
+export const CASE_MANUAL_NODE_KINDS = [
+  'hypothesis',
+  'note',
+  'subject',
+  'place',
+  'event',
+] as const
+export type CaseManualNodeKind = (typeof CASE_MANUAL_NODE_KINDS)[number]
+
+/** 案件级画布节点分组/图例顺序（研判边流向：主体→地点/事件，结论→假设） */
+export const CASE_KIND_ORDER: NodeKind[] = [
+  'subject',
+  'place',
+  'event',
+  'analysis_result',
+  'hypothesis',
+  'note',
+]
+
+/** 研判边 5 类（案件画布人工可画；后端 canvas_edit.RESEARCH_RELS 同口径） */
+export const RESEARCH_RELS = ['位于', '发生于', '支撑', '反驳', '同现'] as const
+export type ResearchRel = (typeof RESEARCH_RELS)[number]
+
+/** 案件级画布域键前缀（复用 clue_canvas 存储，canvas_id = case#<case_id>） */
+export const CASE_CANVAS_PREFIX = 'case#'
+
+export function caseCanvasId(caseId: string): string {
+  return `${CASE_CANVAS_PREFIX}${caseId}`
+}
+
+/** GET/POST .../cases/{cid}/canvas 响应 data（无 clue_id，追加域标记） */
+export interface CaseCanvasEnvelope {
+  canvas_id: string
+  doc: CanvasDoc
+  version: number
+  created_by?: string
+  created_at?: string
+  updated_by?: string
+  updated_at?: string
+  /** 本次 GET 是否触发了惰性 seed */
+  seeded?: boolean
+  canvas_domain: 'case'
+  readonly: boolean
+}
 
 /** 字段长度（与 server/app/canvas_edit.py 同口径，前端先拒、后端兜底） */
 export const LIMITS = {
@@ -167,6 +240,117 @@ export function allowedRels(
   tgtKind: NodeKind,
 ): ManualRel[] {
   return MANUAL_RELS.filter((rel) => canConnect(srcKind, tgtKind, rel).ok)
+}
+
+// ======================================================================
+// P1/P2 案件级连线矩阵（后端 canvas_edit.can_connect 案件分支同口径，
+// 单测与后端真相表对拍）：人工 4 类 + 研判边 5 类共用一个矩阵。
+// ======================================================================
+
+/** 全量关系枚举（与后端 allowed_rels 同序：人工 4 类在前，研判 5 类在后） */
+export const CASE_EDGE_RELS = [
+  ...MANUAL_RELS,
+  ...RESEARCH_RELS,
+] as const
+
+/**
+ * 案件级连线合法性（穷举纯函数，分支顺序与后端 can_connect 逐一对应）：
+ *  通用拒绝：非法关系 / note 只能作起点 / 数据行·数据源禁入；
+ *  研判 5 类：同现 subject↔subject（同 kind 异节点，先于 kind 级自连）、
+ *  位于 →place（subject/analysis_result）、发生于 →event（同前）、
+ *  支撑/反驳 analysis_result→hypothesis；
+ *  人工 4 类：同线索域矩阵。
+ *  同一节点 id 自连由调用方拦截（后端 add_manual_edge 同口径）。
+ */
+export function caseCanConnect(
+  srcKind: NodeKind,
+  tgtKind: NodeKind,
+  rel: string,
+): ConnectResult {
+  const isCaseRel = (r: string): r is ManualRel | ResearchRel =>
+    (MANUAL_RELS as readonly string[]).includes(r) ||
+    (RESEARCH_RELS as readonly string[]).includes(r)
+  if (!isCaseRel(rel)) {
+    return { ok: false, code: 'bad_rel', reason: '非法关系类型' }
+  }
+  if (tgtKind === 'note') {
+    return {
+      ok: false,
+      code: 'note_target',
+      reason: '备注节点只能作为连线起点',
+    }
+  }
+  if (FORBIDDEN_EDGE_TARGETS.has(tgtKind)) {
+    return {
+      ok: false,
+      code: 'forbidden_target',
+      reason: '数据行/数据源节点仅可由系统溯源连线关联',
+    }
+  }
+  if (rel === '同现') {
+    return srcKind === 'subject' && tgtKind === 'subject'
+      ? { ok: true }
+      : {
+          ok: false,
+          code: 'matrix',
+          reason: '「同现」只能连接两个主体节点',
+        }
+  }
+  if (rel === '位于') {
+    return tgtKind === 'place' && (srcKind === 'subject' || srcKind === 'analysis_result')
+      ? { ok: true }
+      : {
+          ok: false,
+          code: 'matrix',
+          reason: '「位于」只能由主体或研判结论指向地点',
+        }
+  }
+  if (rel === '发生于') {
+    return tgtKind === 'event' && (srcKind === 'subject' || srcKind === 'analysis_result')
+      ? { ok: true }
+      : {
+          ok: false,
+          code: 'matrix',
+          reason: '「发生于」只能由主体或研判结论指向事件',
+        }
+  }
+  if (rel === '支撑' || rel === '反驳') {
+    return srcKind === 'analysis_result' && tgtKind === 'hypothesis'
+      ? { ok: true }
+      : {
+          ok: false,
+          code: 'matrix',
+          reason: `「${rel}」只能由研判结论指向假设`,
+        }
+  }
+  if (srcKind === tgtKind) {
+    return { ok: false, code: 'self', reason: '不能连接节点自身' }
+  }
+  if (rel === '补充说明') {
+    return srcKind === 'note'
+      ? { ok: true }
+      : {
+          ok: false,
+          code: 'note_source_only',
+          reason: '「补充说明」只能由备注节点发起',
+        }
+  }
+  if (tgtKind !== 'hypothesis') {
+    return { ok: false, code: 'matrix', reason: '该两类节点不能建立该关系' }
+  }
+  if (rel === '推断为' && INFER_SOURCES.has(srcKind)) return { ok: true }
+  if ((rel === '证实' || rel === '查否') && VERDICT_SOURCES.has(srcKind)) {
+    return { ok: true }
+  }
+  return { ok: false, code: 'matrix', reason: '该两类节点不能建立该关系' }
+}
+
+/** 案件级：给定两端允许的关系（全量 9 类枚举过滤） */
+export function caseAllowedRels(
+  srcKind: NodeKind,
+  tgtKind: NodeKind,
+): Array<ManualRel | ResearchRel> {
+  return CASE_EDGE_RELS.filter((rel) => caseCanConnect(srcKind, tgtKind, rel).ok)
 }
 
 /** 同两端同关系是否已存在人工/系统边（重复边拒连） */

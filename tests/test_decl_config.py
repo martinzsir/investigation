@@ -83,7 +83,12 @@ def _write_pack(root: Path, *, dimensions=None, enum_space=None,
 class DimensionsDeclTests(unittest.TestCase):
     def test_default_pack_dimensions_from_declaration(self):
         dims = load_dimensions("default")
-        self.assertEqual(dims, ["资金", "通讯", "行为", "关系", "时间"])
+        # 维度标识符已 code 化（code 为机器标识、中文 name 仅展示），
+        # 且 P-GEO 新增 space——写死中文全集会随本体扩展反复失效。
+        self.assertEqual(dims,
+                         ["fund", "comm", "behavior", "space", "relation",
+                          "time"])
+        self.assertIn("space", dims)
         # MiaoSuan 维度来自声明（实例属性覆盖类默认）
         m = MiaoSuan()
         self.assertEqual(m.DIMENSIONS, dims)

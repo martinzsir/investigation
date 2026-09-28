@@ -168,6 +168,14 @@ class SkillSpec:
     produces_dims: list[str] = field(default_factory=list)
     mode: str = "deterministic"
     enabled: bool = True
+    # 画布白名单（PRD V1.0.0 功能 4 / P3 生长能力）：pack.json 声明
+    # canvas_enabled=true 的镜头才进研判画布工具箱清单。与 enabled 分离：
+    # 自动批量跑 ≠ 正兵在画布上手动带参能用（案件级覆盖见 lenses.json）。
+    canvas_enabled: bool = False
+    # 庙算假设挂钩（如 "H6"）：镜头产出回写案件画布时，若画布存在绑定
+    # 该假设的 hypothesis 节点（props.assumption_id），自动挂「支撑」边。
+    # 未声明 = 业务未确认归属 → 仅挂靶心不自动挂假设（PRD 开放项③）。
+    assumption: str = ""
     params_schema: dict[str, Any] = field(default_factory=dict)
     external_services: list[str] = field(default_factory=list)
     timeout_ms: int = 0
@@ -836,17 +844,68 @@ def reset_registry() -> SkillRegistry:
 # ----------------------------------------------------------------------
 # 人名实体对齐：从 Store(DuckDB) 采集（供 core.entity 一站式入口调用）
 # ----------------------------------------------------------------------
+def _table_exists(conn, table: str) -> bool:
+    try:
+        conn.execute(f'SELECT * FROM "{table}" LIMIT 0')
+        return True
+    except Exception:
+        return False
+
+
+def _declared_person_sources() -> set:
+    """本体 bindings 里 person 对象声明的摄入源表（防对齐器漏采）。
+
+    新增源表后若忘了同步 name_sources，对齐器会少一路证据且不报错——
+    这是"静默失效"的高发处，故交叉校验并落诊断。失败不影响主流程。
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "ontology"
+    out: set = set()
+    for path in sorted(root.rglob("bindings.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for b in (data.get("object_bindings") or []):
+            if b.get("object") != "person":
+                continue
+            if b.get("source_table"):
+                out.add(b["source_table"])
+            src = b.get("source") or {}
+            if src.get("table"):
+                out.add(src["table"])
+            for t in re.findall(r"FROM\s+([^\s,;)]+)", b.get("source_sql") or ""):
+                out.add(t.strip('"'))
+    return out
+
+
 def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     """
     从 DuckDB 中采集「人名类」实体记录，跑通人名对齐。
-    采集范围：银行流水(主体/对方)、通话记录(主体/对端)、招投标档案(分管领导)、人员表(姓名)。
-    若源表存在电话/身份证类列（如鲁棒性案例的人员表），一并采集作为强证据——
+
+    【定位：导入期实体对齐检查】（与 core/homonym.py 分工，职责不重叠）
+      本函数 = 摄入阶段的人名归一：读**原始业务表**，证据 = 身份证号/手机号互斥。
+      产出 entity_mapping（别名→canonical）+ review 队列，供后续所有研判用统一 ID。
+      core/homonym.py = 研判前置检查：读**语义层**，额外含本项目特有的
+      「空间互斥」强证据（同一时刻出现在物理不可达的两地 → 必然是两个人）。
+      两者都守红线 R-1（同名不同人不得按名静默合并），但证据面与介入时机不同：
+      本处在哈希归并之前、那处在语义层建成之后。不要互相替代。
+
+    采集范围：银行流水、通话记录、招投标档案、轨迹出行、公开OSINT、举报材料、
+    人员信息（含证号/手机等强证据列）。
+    若源表存在电话/身份证类列，一并采集作为强证据——
     红线 R-1：同名不同人（互斥强证据）须由对齐器拆簇待裁决，而非按名静默合并。
-    返回已 ingest 但未 resolve 的 EntityResolver（调用方再 add_aliases + resolve）。
+
+    缺表/缺列不再静默跳过（REQ-G-006）：落 entity_table_skipped 诊断。
+    强证据源缺失后果严重——对齐器退化为"只按名字合并"，会把同名异人并成一个，
+    且**没有任何标志**提示这里并了两个实体（表内重复至少可见，哈希合并无声）。
     """
     # 延迟导入：entity_resolution 与 core.registry 互相解耦
     # 复用 core.entity 的路径安全加载器（按绝对路径加载，避免同名包遮蔽 sys.path）
     from .entity import _load_person_resolver, classify_entity_type
+    from .run_health import get_health
+    _health = get_health(health)
     EntityResolver = _load_person_resolver(health=health)
     resolver = EntityResolver()
     conn = getattr(store, "conn", None)
@@ -856,10 +915,18 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
     # 强证据列候选名（探测式：源表存在才采集，缺列降级只取名字）
     _PHONE_CANDS = ("电话", "手机", "手机号", "联系电话", "联系方式")
     _ID_CANDS = ("身份证号", "身份证", "证件号")
+    # 与本体 bindings 中 person.source_sql 声明的摄入源对齐（补 轨迹出行/公开OSINT/
+    # 举报材料；"人员表"→实际表名"人员信息"，此前写错导致强证据列整条静默失效）。
+    _SOFT_SOURCES = {"人员表"}   # 同义候选表名：缺失不算异常（与人员信息二选一）
     name_sources = [
         ("银行流水", "主体"), ("银行流水", "对方"),
         ("通话记录", "主体"), ("通话记录", "对端"),
-        ("招投标档案", "分管领导"), ("人员表", "姓名"),
+        ("招投标档案", "分管领导"),
+        ("轨迹出行", "主体"), ("公开OSINT", "主体"), ("举报材料", "被举报人"),
+        ("人员信息", "姓名"),
+        # 同义候选：不同数据源命名不一（人员表/人员信息），二者取其一即可；
+        # 缺失不算异常（info），但若**两者皆缺**则强证据整条丢失——由下方全缺检查报警。
+        ("人员表", "姓名"),
     ]
     seen: set[tuple] = set()   # (name, phone, id_card) 去重；同名不同强证据 → 多条 → 对齐器拆簇
     records: list[dict] = []
@@ -867,9 +934,21 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
         try:
             cols = [d[0] for d in conn.execute(
                 f'SELECT * FROM "{table}" LIMIT 0').description]
-        except Exception:
-            continue   # 表不存在则跳过，容错
+        except Exception as e:
+            if table in _SOFT_SOURCES:
+                continue   # 同义候选，缺失不报（与人员信息二选一，非异常）
+            # 不再静默：强证据源缺失会让对齐器退化成"只按名合并"，后果不可见
+            _health.record("entity_table_skipped", "warning",
+                           source=f"table:{table}.{col}",
+                           reason=(f"人名对齐采集跳过：表 {table} 不可查"
+                                   f"（{str(e)[:80]}）；该源若有证号/手机强证据将全部丢失"),
+                           table=table, column=col, stage="person_align")
+            continue
         if col not in cols:
+            _health.record("entity_table_skipped", "info",
+                           source=f"table:{table}.{col}",
+                           reason=f"人名对齐采集跳过：表 {table} 缺列 {col}",
+                           table=table, column=col, stage="person_align")
             continue
         phone_col = next((c for c in _PHONE_CANDS if c in cols), None)
         id_col = next((c for c in _ID_CANDS if c in cols), None)
@@ -894,9 +973,17 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
             # 一律排除；unknown 交由人审队列裁决，不强制归入。
             if classify_entity_type(name) != "person":
                 continue
-            phone = str(row[1]).strip() if phone_col and row[1] is not None else ""
-            id_card = (str(row[2]).strip()
-                       if id_col and len(row) > 2 and row[2] is not None else "")
+            # 按游标取值，不得写死 row[1]/row[2]：
+            # sel 长度随"该表有没有电话列"变化，缺电话列时证号在 row[1]，
+            # 写死 row[2] 会越界静默置空——表现为"表里有证号却采不到"。
+            _i = 1
+            phone = ""
+            if phone_col:
+                phone = str(row[_i]).strip() if row[_i] is not None else ""
+                _i += 1
+            id_card = ""
+            if id_col and len(row) > _i:
+                id_card = str(row[_i]).strip() if row[_i] is not None else ""
             key = (name, phone, id_card)
             if key in seen:
                 continue
@@ -907,4 +994,31 @@ def _resolve_person_from_store(store, health=None) -> "EntityResolver":
             records.append(rec)
 
     resolver.ingest(records)
+
+    # 红线兜底：一条强证据都没采到时，对齐器退化为「只按名合并」。
+    # 这是最危险的静默失效——同名异人被并成一个实体，且**没有任何标志**
+    # 提示这里并了两个实体（表内重复至少可见，哈希合并无声）。
+    # 不管源表叫什么名，只要强证据全缺就报警，比逐表检查更本质。
+    if records and not any(r.get("id_card") or r.get("phone") for r in records):
+        _health.record("entity_table_skipped", "warning",
+                       source="person_align",
+                       reason=("人名对齐未采到任何证号/手机强证据，已退化为「只按名合并」："
+                               "同名不同人将被静默并为一个实体。请检查人员信息/人员表等"
+                               "强证据源是否已导入，或表内是否缺证号/手机号列。"),
+                       stage="person_align", records=len(records))
+
+    # 交叉校验：本体声明的摄入源是否都被采集（漏采=少一路证据，须可见）
+    try:
+        collected = {t for t, _ in name_sources}
+        missing = sorted(t for t in _declared_person_sources()
+                         if t and t not in collected and _table_exists(conn, t))
+        for t in missing:
+            _health.record("entity_table_skipped", "warning",
+                           source=f"table:{t}",
+                           reason=(f"本体声明 person 摄入源 {t}，但人名对齐器未采集"
+                                   f"（须补 name_sources，否则该源证据丢失）"),
+                           table=t, stage="person_align")
+    except Exception:
+        pass  # 校验失败不阻断主流程
+
     return resolver

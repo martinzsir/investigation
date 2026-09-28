@@ -14,7 +14,12 @@ PLAN-GEO-001 P2 空间研判 Function：
 """
 from __future__ import annotations
 
+import json
+import re
 import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
 
 from core import Store
 from core import geo
@@ -321,6 +326,126 @@ class GeoBufferScanTests(_SpatialFixture):
         self.assertEqual(res["anchor"]["sites_used"], 5)
 
 
+class GeoBufferScanReverseTests(_SpatialFixture):
+    """反向追踪（PLAN-GEO-002）：时间窗 / 主体聚合 / 自主体排除 / 精度自陈。
+
+    这四项是 geo_buffer_scan 从「环带扫描」升级为「反向追踪」的核心。
+    缺任何一项都会产出误导结论：无时间窗则跨全时段被当成同期；无主体
+    聚合则正兵要自己数人头；不排除锚点主体则"扫自己周围扫出自己"；
+    无精度自陈则区级质心算出的米数被当成实距。
+    """
+
+    def test_time_window_filters(self):
+        out = self.invoke("geo_buffer_scan",
+                          {"center_lat": 30.0, "center_lng": 120.0,
+                           "inner_radius_m": 200, "outer_radius_m": 500,
+                           "date_from": "2026-01-06", "date_to": "2026-01-31"})
+        res = out["result"]
+        # 窗内仅 t3(01-09,内环) / t4(01-13,环带) / t5(01-17,内环)
+        self.assertEqual(res["inner_count"], 2)
+        self.assertEqual(res["ring_count"], 1)
+        # t1/t6(01-01) t7(01-02) t2(01-05) 窗内前被滤；t8(01-10) 在窗内但远在外环
+        self.assertEqual(res["out_of_window"], 4)
+        self.assertTrue(res["hit"])
+
+    def test_subjects_aggregated(self):
+        out = self.invoke("geo_buffer_scan",
+                          {"center_lat": 30.0, "center_lng": 120.0,
+                           "inner_radius_m": 200, "outer_radius_m": 500,
+                           "date_from": "2026-01-06"})
+        res = out["result"]
+        names = [s["name"] for s in res["subjects"]]
+        self.assertEqual(names, ["张三"])       # 窗内三起均属张三
+        self.assertEqual(res["subjects"][0]["count"], 3)
+        self.assertEqual(res["subjects"][0]["first_date"], "2026-01-09")
+        self.assertEqual(res["subjects"][0]["last_date"], "2026-01-17")
+
+    def test_anchor_subject_excluded_by_default(self):
+        """以张三重心为锚，默认排除张三自己 → 只剩李四。
+
+        旧判据 hit=bool(ring_events) 在此恒真（张三自己就在那儿），
+        属循环论证；新判据按「检出主体」计，排除自身后才有意义。
+        """
+        out = self.invoke("geo_buffer_scan",
+                          {"target": "张三", "inner_radius_m": 200,
+                           "outer_radius_m": 500})
+        res = out["result"]
+        names = [s["name"] for s in res["subjects"]]
+        self.assertNotIn("张三", names)
+        self.assertEqual(res["self_count"], 5)
+
+    def test_anchor_subject_kept_when_disabled(self):
+        out = self.invoke("geo_buffer_scan",
+                          {"target": "张三", "inner_radius_m": 200,
+                           "outer_radius_m": 500,
+                           "exclude_anchor_subject": False})
+        res = out["result"]
+        names = [s["name"] for s in res["subjects"]]
+        self.assertIn("张三", names)
+        self.assertEqual(res["self_count"], 0)
+
+
+class GeoBufferScanPrecisionTests(unittest.TestCase):
+    """坐标精度自陈：质心坐标下的米数必须标注，不得冒充实距。"""
+
+    def setUp(self):
+        self.store = Store(db_path=":memory:")
+        s = self.store
+        s.execute("CREATE TABLE obj_person(person_id VARCHAR, raw_name VARCHAR)")
+        s.execute(
+            "CREATE TABLE obj_location(location_id VARCHAR, std_address VARCHAR, "
+            "raw_address VARCHAR, province VARCHAR, prefecture VARCHAR, "
+            "county VARCHAR, township VARCHAR, admin_code VARCHAR, "
+            "lat DOUBLE, lng DOUBLE, coord_sys VARCHAR, geocode_source VARCHAR, "
+            "geocode_confidence DOUBLE, geocoded_at VARCHAR)")
+        s.execute(
+            "CREATE TABLE obj_trackpoint(track_id VARCHAR, person_raw VARCHAR, "
+            "location VARCHAR, date DATE)")
+        s.execute(
+            "CREATE TABLE lnk_trackpoint_at(track_id VARCHAR, "
+            "location_id VARCHAR, date DATE)")
+        s.execute("INSERT INTO obj_person VALUES ('p1', '张三')")
+        # 两个不同地址，坐标同为西湖区质心（离线区划轨的典型产出）
+        for lid, addr in (("L1", "文三路100号"), ("L2", "庆春路50号")):
+            s.execute(
+                "INSERT INTO obj_location VALUES (?, ?, ?, NULL, NULL, "
+                "'西湖区', NULL, '330106', 30.272934, 120.147376, 'GCJ-02', "
+                "'admin_offline', 0.6, NULL)", (lid, addr, addr))
+        for tid, person, lid, d in (("t1", "张三", "L1", "2026-01-01"),
+                                    ("t2", "张三", "L2", "2026-02-01")):
+            s.execute("INSERT INTO obj_trackpoint VALUES (?, ?, ?, ?)",
+                      (tid, person, addr, d))
+            s.execute("INSERT INTO lnk_trackpoint_at VALUES (?, ?, ?)",
+                      (tid, lid, d))
+
+    def tearDown(self):
+        self.store.close()
+
+    def test_centroid_coord_self_declares(self):
+        out = invoke_function(self.store, "geo_buffer_scan",
+                              {"center_lat": 30.272934, "center_lng": 120.147376,
+                               "inner_radius_m": 500, "outer_radius_m": 5000})
+        res = out["result"]
+        # 两点坐标相同 → 距离都算 0.0，但必须自陈为 centroid 而非实距
+        self.assertEqual(res["coord_precision"], "centroid")
+        self.assertIn("质心", res["distance_note"] or "")
+        self.assertTrue(res["degraded"])
+        self.assertIn("质心", res["degraded_reason"] or "")
+        for ev in res["inner_events"] + res["ring_events"]:
+            self.assertEqual(ev["coord_precision"], "centroid")
+            self.assertIsNotNone(ev["distance_note"])
+
+    def test_geocode_coord_not_marked_centroid(self):
+        self.store.execute(
+            "UPDATE obj_location SET geocode_source = 'amap'")
+        out = invoke_function(self.store, "geo_buffer_scan",
+                              {"center_lat": 30.272934, "center_lng": 120.147376,
+                               "inner_radius_m": 500, "outer_radius_m": 5000})
+        res = out["result"]
+        self.assertEqual(res["coord_precision"], "geocode")
+        self.assertIsNone(res["distance_note"])
+
+
 class GeoProfileCgtTests(_SpatialFixture):
     def test_single_subject_profile(self):
         out = self.invoke("geo_profile_cgt",
@@ -396,6 +521,170 @@ class P2DeclarationTests(unittest.TestCase):
         self.assertIn("R-GEO-2", spec.rules)
         self.assertEqual(spec.rules["R-GEO-1"].function, "geo_profile_cgt")
         self.assertEqual(spec.rules["R-GEO-2"].function, "geo_co_located_radius")
+
+
+class AccompanyTimeWindowTests(unittest.TestCase):
+    """时空伴随的**时刻窗**（window_minutes）——时空伴随 P5 的时刻档升级。
+
+    设计红线：时刻窗只在参与配对的两事件**都精确到 minute/second 档**时按
+    真实秒间隔过滤；date/hour 档绝不进入该分支——否则就是"同落 00:00:00
+    当同时"，与空间侧 distance_m=0.0 同属伪精确。
+
+    三人同 location_id（same_address 最准一级），排除空间判据干扰，纯测时间窗。
+    """
+
+    def setUp(self):
+        self.store = Store(db_path=":memory:")
+        s = self.store
+        s.execute("CREATE TABLE obj_person(person_id VARCHAR, raw_name VARCHAR)")
+        s.execute(
+            "CREATE TABLE obj_location(location_id VARCHAR, std_address VARCHAR, "
+            "raw_address VARCHAR, province VARCHAR, prefecture VARCHAR, "
+            "county VARCHAR, township VARCHAR, admin_code VARCHAR, "
+            "lat DOUBLE, lng DOUBLE, coord_sys VARCHAR, geocode_source VARCHAR, "
+            "geocode_confidence DOUBLE, geocoded_at VARCHAR)")
+        # 关键：带 timestamp 列（升级后的可选列）
+        s.execute(
+            "CREATE TABLE obj_trackpoint(track_id VARCHAR, person_raw VARCHAR, "
+            "location VARCHAR, date DATE, timestamp TIMESTAMP)")
+        s.execute(
+            "CREATE TABLE lnk_trackpoint_at(track_id VARCHAR, "
+            "location_id VARCHAR, date DATE)")
+        for pid, name in (("p1", "张三"), ("p2", "李四"), ("p3", "王五")):
+            s.execute("INSERT INTO obj_person VALUES (?, ?)", (pid, name))
+        s.execute(
+            "INSERT INTO obj_location VALUES ('loc_A', '甲路', '甲路', NULL, "
+            "NULL, '某县', NULL, '330108', 30.0, 120.0, 'GCJ-02', "
+            "'test', 0.9, NULL)")
+
+    def tearDown(self):
+        self.store.close()
+
+    def _seed(self, times):
+        """times: [(track_id, person, 'YYYY-MM-DD HH:MM:SS' or None), ...]"""
+        for tid, person, ts in times:
+            d = ts[:10] if ts else None
+            self.store.execute(
+                "INSERT INTO obj_trackpoint VALUES (?, ?, ?, ?, ?)",
+                (tid, person, "甲路", d, ts))
+            self.store.execute(
+                "INSERT INTO lnk_trackpoint_at VALUES (?, ?, ?)",
+                (tid, "loc_A", d))
+
+    def _run(self, **kw):
+        return invoke_function(
+            self.store, "geo_spatiotemporal_accompany", kw)["result"]
+
+    # ---- ① minute 档 + 窗：按真实秒间隔过滤 ----
+    def test_minute_window_filters_distant_pair(self):
+        self._seed([("t1", "张三", "2026-01-08 09:05:00"),
+                    ("t2", "李四", "2026-01-08 09:30:00"),   # 隔 25 分钟
+                    ("t3", "王五", "2026-01-08 15:20:00")])  # 隔 6h15m
+        r = self._run(radius_m=200, window_days=1, window_minutes=30)
+        self.assertEqual(r["time_granularity"], "minute")
+        self.assertEqual(r["time_window_mode"], "minutes")
+        self.assertEqual(r["pair_count"], 1)          # 王五被 30 分钟窗滤掉
+        self.assertEqual(r["minute_windowed_pairs"], 1)
+        p = r["pairs"][0]
+        self.assertEqual(p["time_span"], 1500)        # 25 分钟 = 1500 秒
+        self.assertTrue(p["simultaneous_judgeable"])
+        self.assertIn("30 分钟窗判定同时间窗", r["time_note"])
+
+    # ---- ② 不传窗：不过滤（与原行为一致）----
+    def test_without_window_minutes_no_filter(self):
+        self._seed([("t1", "张三", "2026-01-08 09:05:00"),
+                    ("t2", "李四", "2026-01-08 09:30:00"),
+                    ("t3", "王五", "2026-01-08 15:20:00")])
+        r = self._run(radius_m=200, window_days=1)
+        self.assertEqual(r["pair_count"], 3)          # 全部保留
+        self.assertEqual(r["time_window_mode"], "days")
+
+    # ---- ③ hour 档（整点）+ 传窗：不生效（防伪精确核心）----
+    def test_hour_precision_ignores_minute_window(self):
+        self._seed([("t1", "张三", "2026-01-08 09:00:00"),
+                    ("t2", "李四", "2026-01-08 10:00:00"),
+                    ("t3", "王五", "2026-01-08 15:00:00")])
+        r = self._run(radius_m=200, window_days=1, window_minutes=30)
+        self.assertEqual(r["time_granularity"], "hour")
+        self.assertEqual(r["minute_windowed_pairs"], 0)
+        self.assertEqual(r["pair_count"], 3)          # 不因传了窗就过滤
+        self.assertFalse(r["simultaneous_judgeable"])
+        self.assertIn("不支持同时/同行结论", r["time_note"])
+
+    # ---- ④ 混合精度：木桶效应，低精度档不越级 ----
+    def test_mixed_precision_falls_to_weaker(self):
+        self._seed([("t1", "张三", "2026-01-08 09:05:00"),   # minute
+                    ("t2", "李四", "2026-01-08 09:30:00"),   # minute
+                    ("t3", "王五", "2026-01-08 15:00:00")])  # hour（整点）
+        r = self._run(radius_m=200, window_days=1, window_minutes=30)
+        # 两个字段含义不同，都要对：
+        #   time_granularity = 整体可比精度（木桶效应取最低档）→ hour
+        #   time_window_mode = 本次是否**实际启用**了分钟窗 → 有 1 对走了，故 minutes
+        self.assertEqual(r["time_granularity"], "hour")
+        self.assertEqual(r["time_window_mode"], "minutes")
+        # 张三×李四 都精确到分 → 走分钟窗；与王五（整点 hour）的配对走天级
+        self.assertEqual(r["minute_windowed_pairs"], 1)
+        self.assertEqual(r["pair_count"], 3)
+        # 天级配对**不得**声称同时——只有走分钟窗的那对可以
+        sim = {tuple(sorted((p["person_1"], p["person_2"]))):
+               p["simultaneous_judgeable"] for p in r["pairs"]}
+        self.assertTrue(sim[("张三", "李四")])
+        self.assertFalse(sim[("李四", "王五")])
+        self.assertFalse(sim[("张三", "王五")])
+
+    # ---- ⑤ 参数边界 ----
+    def test_window_minutes_bounds(self):
+        for bad in (0, 1441):
+            with self.assertRaises(ValueError):
+                self._run(radius_m=200, window_minutes=bad)
+
+
+class PackParamPlumbingTests(unittest.TestCase):
+    """pack.json 声明的参数 ↔ impl.py 传参白名单 必须一致。
+
+    为什么单独立测试
+    ----------------
+    加参数要改**两处**：pack.json 的 params_schema（决定前端表单有没有这个
+    输入框）+ impl.py 的 _clean 白名单（决定值能不能传到 Function）。
+    只改一处会造出最糟的失败模式——**表单能填、传不进去**，正兵填了、跑了、
+    结果不变，且没有任何报错。实测已抓到两个：
+      geo_accompany.window_minutes（时刻窗）
+      geo_buffer_scan.max_subjects（输出条数上限）
+    """
+
+    def setUp(self):
+        self.pack = json.loads(
+            (ROOT / "packs" / "geo" / "pack.json").read_text(encoding="utf-8"))
+        self.impl_src = (ROOT / "packs" / "geo" / "impl.py").read_text(
+            encoding="utf-8")
+
+    def _whitelist(self) -> set[str]:
+        blocks = re.findall(r"_clean\(params,\s*(\[[^\]]*\])\)",
+                            self.impl_src, re.S)
+        out: set[str] = set()
+        for b in blocks:
+            out |= set(re.findall(r'"([a-z_]+)"', b))
+        return out
+
+    def test_declared_params_reach_function(self):
+        wl = self._whitelist()
+        leaked = []
+        for s in self.pack.get("skills", []):
+            for k in (s.get("params_schema") or {}):
+                # target_subject/target 由 target 分支单独赋值，不走 _clean
+                if k in ("target_subject", "target"):
+                    continue
+                if k not in wl:
+                    leaked.append(f"{s['skill_id']}.{k}")
+        self.assertEqual(leaked, [],
+                         f"声明了但传不进 Function 的参数（表单能填、值被丢）：{leaked}")
+
+    def test_window_minutes_declared_and_plumbed(self):
+        """时刻窗：既要在表单出现，也要真能传进去。"""
+        acc = next(s for s in self.pack["skills"]
+                   if s["skill_id"] == "geo_accompany")
+        self.assertIn("window_minutes", acc["params_schema"])
+        self.assertIn("window_minutes", self._whitelist())
 
 
 if __name__ == "__main__":

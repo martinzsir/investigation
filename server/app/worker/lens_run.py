@@ -168,6 +168,44 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
                          notes=notes)
     degraded = [str(d.get("skill_id")) for d in ctx.get("degraded", [])
                 if isinstance(d, dict)]
+
+    # P3 案件画布回写（PRD V1.0.0 功能 4）：仅案件画布发起的定向镜头把
+    # 观察回写为 analysis_result 节点（挂靶心 + 按声明挂假设）；线索画布
+    # origin 走读面并线（build_origin_lens_layer），行为不变零回归。
+    canvas_summary: dict | None = None
+    if origin and origin.get("surface") == "case_canvas":
+        try:
+            from server.app.canvas_writeback import writeback_observations
+            canvas_summary = writeback_observations(
+                case.id,
+                state_path=factory.case_dir(case.id) / "state.sqlite",
+                observations=observations,
+                assumption_of=lambda s: (reg.skill(s).assumption
+                                         if s in reg else ""),
+                operator=task.created_by)
+        except Exception as e:  # noqa: BLE001
+            # 回写失败不炸任务：观察已持久化（directed_observations.json），
+            # 画布可人工补；留 ops 事件可审计
+            repo.record_ops("canvas_writeback_failed", case.id,
+                            {"run_id": run_id, "skill_id": sid,
+                             "error": f"{type(e).__name__}: {e}"})
+
+    # 结果透出（TaskRow 无 result 字段）：写 progress_detail 供前端轮询
+    # GET /tasks/{tid} 读取，回写上图/无观察原因不再无声
+    if origin and origin.get("surface") == "case_canvas":
+        if observations and canvas_summary:
+            detail = (f"回写画布：新增 {canvas_summary['nodes_added']} 结论"
+                      f"节点、{canvas_summary['edges_added']} 条连线")
+            if canvas_summary["hypothesis_linked"]:
+                detail += f"（挂假设 {canvas_summary['hypothesis_linked']} 条）"
+        else:
+            reasons = [str(n.get("degraded_reason") or n.get("note") or "")
+                       for n in notes if isinstance(n, dict)]
+            reason = next((r for r in reasons if r), "")[:200]
+            detail = f"镜头完成：未产生观察（{reason or '镜头无结构产出'}）"
+        repo.update_progress(task.id, pct=100.0, stage="writeback",
+                             stage_label="画布回写", detail=detail)
+
     repo.record_ops("lens_run", case.id,
                     {"run_id": run_id, "skill_id": sid, "version": version,
                      "params": lens_params, "observations": len(observations),
@@ -175,8 +213,11 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
                                          for o in observations],
                      "degraded": degraded, "notes": notes,
                      "artifact": str(path),
+                     "surface": (origin or {}).get("surface") or "",
+                     "canvas_writeback": canvas_summary,
                      "triggered_by": task.created_by})
     return {"run_id": run_id, "version": version,
             "observations": len(observations),
             "observation_ids": [o.observation_id for o in observations],
-            "artifact": str(path), "degraded": degraded, "notes": notes}
+            "artifact": str(path), "degraded": degraded, "notes": notes,
+            "canvas_writeback": canvas_summary}

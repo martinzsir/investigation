@@ -119,11 +119,48 @@ def dedupe_and_merge(
                 if k not in seen:
                     seen.add(k)
                     rows.append(r)
+        # detail 合并：此前只写 merged_from，parts 的「依据/维度/等级/
+        # 本间独立源数/行集口径/rule_id」全丢，导致合并线索在证据构建与
+        # 维度覆盖统计里是"空壳"（ADR-V-5 记录过，方案 b 侧曾在供给层按
+        # 标题反查规则目录回填规则字段，但补不回维度等非规则字段）。
+        #
+        # 标量字段取根线索（与 clue_id/skill_id/定性_policy 同口径，避免
+        # 多部件取值冲突时静默挑一个）；列表字段取并集（与 jian_types /
+        # assumption_chain 取并集同口径）。
+        merged_detail = dict(base.detail or {})
+        # merged_from：叶子 id 并集（二次合并时不被覆盖）
+        leaf_ids: list[str] = []
+        for p in parts:
+            p_detail = p.detail if isinstance(p.detail, dict) else {}
+            prior = p_detail.get("merged_from") or []
+            for cid in (prior or [p.clue_id]):
+                if cid and cid not in leaf_ids:
+                    leaf_ids.append(cid)
+        merged_detail["merged_from"] = leaf_ids
+        # 维度：并集（保序）；为空时按合并后的间类推断
+        dims: list[str] = []
+        for c in parts:
+            d = c.detail.get("维度") if isinstance(c.detail, dict) else None
+            for one in (d or []):
+                if one and one not in dims:
+                    dims.append(one)
+        if dims:
+            merged_detail["维度"] = dims
+        # rule_id/rule_text：根线索优先；多规则合并线索由供给侧
+        # backfill_rule_fields 按标题反查逐条回填（detail["rules"]）。
+        if not merged_detail.get("rule_id"):
+            for c in parts[1:]:
+                if isinstance(c.detail, dict) and c.detail.get("rule_id"):
+                    merged_detail["rule_id"] = c.detail["rule_id"]
+                    if c.detail.get("rule_text"):
+                        merged_detail["rule_text"] = c.detail["rule_text"]
+                    break
+
         merged_clue = LineageClue(
             clue_id=base.clue_id,  # 保留根线索 id，便于追溯
             skill_id=base.skill_id,
             title=" | ".join(sorted({p.title for p in parts if p.title})),
-            detail={"merged_from": [p.clue_id for p in parts]},
+            detail=merged_detail,
             assumption_chain=assump,
             source_rows=rows,
             jian_types=jian,

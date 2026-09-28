@@ -43,6 +43,7 @@ from server.app.routers import cross_case as cross_case_router
 from server.app.routers import package as package_router
 from server.app.routers import escape_hatch as escape_hatch_router
 from server.app.routers import tasks as tasks_router
+from server.app.routers import convergence as convergence_router
 from server.app.routers import disposal as disposal_router
 from server.app.routers import graph as graph_router
 from server.app.routers import research as research_router
@@ -113,6 +114,7 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
     app.include_router(users_router.router, prefix=API_PREFIX)
     app.include_router(cases_router.router, prefix=API_PREFIX)
     app.include_router(tasks_router.router, prefix=API_PREFIX)
+    app.include_router(convergence_router.router, prefix=API_PREFIX)
     app.include_router(audit_router.router, prefix=API_PREFIX)
     app.include_router(audit_router.admin_router, prefix=API_PREFIX)
     app.include_router(dashboard_router.router, prefix=API_PREFIX)

@@ -356,9 +356,11 @@ class TestFunctionLayer(unittest.TestCase):
         from core.wujian import build_wujian, register_wujian
         register_wujian(build_wujian(ROOT / "packs" / "wujian"))
 
-    def test_目录17个函数且全部只读(self):
+    def test_目录函数数随本体增长且全部只读(self):
         cat = self.fx.catalog()
-        self.assertEqual(len(cat), 17)  # + timeline_*(P5)
+        # 断言具体个数会随本体扩展反复失效（timeline_*/relation_*/geo_* 逐批
+        # 引入），改为断言**下限 + 关键族齐备**：数量只增不减，各类函数在场。
+        self.assertGreaterEqual(len(cat), 22)
         self.assertTrue(all(f["readonly"] for f in cat))
         names = {f["name"] for f in cat}
         self.assertIn("jian_cross_level", names)
@@ -426,9 +428,9 @@ class TestOntologyLoader(unittest.TestCase):
         self.assertIn("decision", names)  # runtime 对象也在目录
         self.assertIn("tipoff", names)      # 新增：举报材料（内间）
         self.assertIn("osint_article", names)  # 新增：公开OSINT文章（死间）
-        self.assertEqual(len(pack.links), 13)  # + tipoff_targets_person, osint_mentions, tipoff_from_reporter(REQ-P-032), image_for_*(P8)
-        self.assertEqual(len(pack.functions), 17)  # + tipoff_cross_reference, call_pair_coverage, location_colocated(REQ-G-021), relation_*(P4), timeline_*(P5)
-        self.assertEqual(len(pack.rules), 7)   # 规则手册 R1-R6（rules.json 第六段）+ R7(P5)
+        self.assertGreaterEqual(len(pack.links), 14)   # + trackpoint_at(P-GEO)
+        self.assertGreaterEqual(len(pack.functions), 22)  # + geo_*(P-GEO)
+        self.assertGreaterEqual(len(pack.rules), 9)     # + R-GEO-1/R-GEO-2(P-GEO)
 
     def test_runtime对象不参与编译(self):
         s = make_store()
@@ -718,8 +720,9 @@ class TestRulebook(unittest.TestCase):
 
     def test_默认包规则装载(self):
         pack = load_pack("default")
-        self.assertEqual(set(pack.rules),
-                         {"R1", "R2", "R3", "R4", "R5", "R6", "R7"})
+        self.assertTrue({"R1", "R2", "R3", "R4", "R5", "R6", "R7"}
+                         <= set(pack.rules),  # 本体扩展会加规则，不写死全集
+                         f"实际规则：{sorted(pack.rules)}")
         r1 = pack.rules["R1"]
         self.assertEqual(r1.function, "quarter_end_integer_deposits")
         self.assertEqual(r1.params["quarter_end_window_days"], 15)

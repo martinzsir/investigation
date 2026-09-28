@@ -13,7 +13,7 @@ import { loadAmap } from './amapLoader'
 
 const props = defineProps<{
   model: GeoLayerModel
-  layersVisible: { cells: boolean; sites: boolean; top: boolean }
+  layersVisible: { cells: boolean; sites: boolean; top: boolean; links: boolean }
 }>()
 const emit = defineEmits<{
   selectSite: [site: GeoSite]
@@ -118,6 +118,26 @@ function draw(): void {
       bubble: true,
       clickable: false,
     }))
+  }
+
+  if (props.layersVisible.links) {
+    for (const link of props.model.links) {
+      if (!link.coordA || !link.coordB) continue
+      const tok = geoMapTokens.accompany
+      next.push(new AMap.Polyline({
+        path: [
+          [link.coordA.lng, link.coordA.lat],
+          [link.coordB.lng, link.coordB.lat],
+        ],
+        strokeColor: tok.stroke,
+        strokeWeight: tok.strokeWidth,
+        strokeStyle: 'dashed',
+        strokeDasharray: [6, 4],
+        zIndex: 40,
+        bubble: true,
+        clickable: false,
+      }))
+    }
   }
 
   map.add(next)

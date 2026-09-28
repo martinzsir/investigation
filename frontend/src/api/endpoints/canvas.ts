@@ -9,6 +9,7 @@ import type {
   CanvasEnvelope,
   CanvasNode,
   CanvasSuggestionEnvelope,
+  CaseCanvasEnvelope,
   EdgeMutateEnvelope,
   ExpandDirection,
   ExpandEnvelope,
@@ -562,5 +563,100 @@ export const canvasApi = {
     return api.getBlob(
       `${base(caseId, clueId)}/reports/${encodeURIComponent(reportId)}/export.docx`,
     )
+  },
+}
+
+// ---------------------------------------------------------------
+// 案件级研判画布（case# 域，P1 读面 + P2 编辑/开窗；后端 GET /cases/{cid}/canvas）：
+// 惰性 seed 幂等；结构编辑走专用端点（逐动作审计、409 冲突透出）。
+// ---------------------------------------------------------------
+const caseBase = (caseId: string) => `/cases/${encodeURIComponent(caseId)}/canvas`
+
+export const caseCanvasApi = {
+  /** GET .../cases/{cid}/canvas —— 案件画布（首次访问后端惰性 seed 空白图） */
+  async get(caseId: string): Promise<CaseCanvasEnvelope> {
+    const res = await api.get<CaseCanvasEnvelope>(caseBase(caseId))
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** POST .../canvas/nodes —— 案件级人工节点（subject/place/event/hypothesis/note） */
+  async createNode(
+    caseId: string,
+    body: {
+      kind: CaseManualNodeKind
+      props: CanvasNode['props']
+      x: number
+      y: number
+      version: number
+    },
+  ): Promise<NodeMutateEnvelope & { canvas_domain: 'case' }> {
+    const res = await api.post<
+      NodeMutateEnvelope & { canvas_domain: 'case' }
+    >(caseBase(caseId) + '/nodes', body)
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** PATCH .../canvas/nodes/{nodeId} —— props 编辑（按 kind 重校验） */
+  async updateNode(
+    caseId: string,
+    nodeId: string,
+    body: { props: CanvasNode['props']; version: number },
+  ): Promise<NodeMutateEnvelope & { canvas_domain: 'case' }> {
+    const res = await api.patch<NodeMutateEnvelope & { canvas_domain: 'case' }>(
+      `${caseBase(caseId)}/nodes/${encodeURIComponent(nodeId)}`,
+      body,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** DELETE .../canvas/nodes/{nodeId} —— 级联删人工边 */
+  async deleteNode(
+    caseId: string,
+    nodeId: string,
+    version: number,
+  ): Promise<NodeDeleteEnvelope & { canvas_domain: 'case' }> {
+    const res = await api.delete<
+      NodeDeleteEnvelope & { canvas_domain: 'case' }
+    >(
+      `${caseBase(caseId)}/nodes/${encodeURIComponent(nodeId)}?version=${version}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** POST .../canvas/edges —— 人工 4 类 + 研判 5 类（后端矩阵单一真相） */
+  async createEdge(
+    caseId: string,
+    body: {
+      source: string
+      target: string
+      rel: string
+      note?: string | null
+      version: number
+    },
+  ): Promise<EdgeMutateEnvelope & { canvas_domain: 'case' }> {
+    const res = await api.post<
+      EdgeMutateEnvelope & { canvas_domain: 'case' }
+    >(caseBase(caseId) + '/edges', body)
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /** DELETE .../canvas/edges/{edgeId} */
+  async deleteEdge(
+    caseId: string,
+    edgeId: string,
+    version: number,
+  ): Promise<EdgeMutateEnvelope & { canvas_domain: 'case' }> {
+    const res = await api.delete<
+      EdgeMutateEnvelope & { canvas_domain: 'case' }
+    >(
+      `${caseBase(caseId)}/edges/${encodeURIComponent(edgeId)}?version=${version}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
   },
 }

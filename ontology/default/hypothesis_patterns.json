@@ -96,7 +96,8 @@
         "falsification": "通话/轨迹无异常则证伪",
         "dimension": [
           "comm",
-          "behavior"
+          "behavior",
+          "space"
         ],
         "jian_types": [
           "生间"
@@ -126,7 +127,8 @@
         "falsification": "通话/轨迹无异常则证伪",
         "dimension": [
           "comm",
-          "behavior"
+          "behavior",
+          "space"
         ],
         "jian_types": [
           "生间"
@@ -189,10 +191,47 @@
         "procedure": "轨迹调取已批",
         "falsification": "事件点空间均匀分布或无缓冲区特征则证伪",
         "dimension": [
-          "behavior"
+          "behavior",
+          "space"
         ],
         "jian_types": [
           "死间"
+        ]
+      }
+    },
+    {
+      "rule_ids": [
+        "R-GEO-3"
+      ],
+      "keywords": [
+        "同框",
+        "伴随",
+        "时空"
+      ],
+      "hypothesis": {
+        "id": "H6",
+        "description": "私下接触（异主体时空反复同框）",
+        "evidence_object_types": [
+          "trackpoint",
+          "location"
+        ],
+        "evidence_notes": [
+          "实地走访",
+          "门牌级坐标核验"
+        ],
+        "object_types": [
+          "trackpoint",
+          "location",
+          "person"
+        ],
+        "procedure": "轨迹调取已批",
+        "falsification": "同框均发生在项目现场/会议场所等职务性地点，或两主体本属同一单位、同一项目组则证伪；坐标若为区划质心则距离不代表实际间距；数据无时刻，不支持同时/同行结论",
+        "dimension": [
+          "space",
+          "time"
+        ],
+        "jian_types": [
+          "生间"
         ]
       }
     }
