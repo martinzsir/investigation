@@ -23,7 +23,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -70,7 +69,9 @@
       "description": "看一个人的资金、通讯、轨迹上有哪些关联人和账户",
       "uses_functions": [
         "relation_neighborhood"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },
     {
       "skill_id": "relation_common_neighbors",
@@ -92,7 +93,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "subject_a": {
           "type": "string",
@@ -152,7 +152,9 @@
       "description": "看两个人之间有没有共同的账户、单位或联系人",
       "uses_functions": [
         "relation_common_neighbors"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },
     {
       "skill_id": "relation_paths",
@@ -174,7 +176,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "subject_a": {
           "type": "string",
@@ -242,6 +243,71 @@
       "description": "看两个人之间经过几步、通过谁连起来",
       "uses_functions": [
         "relation_paths"
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
+    },
+    {
+      "skill_id": "relation_org_interest",
+      "name": "单位利益关联镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "org"
+      ],
+      "produces_dims": [
+        "relation"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {},
+      "scope": {
+        "reads": [
+          "org"
+        ]
+      },
+      "handler": "impl:org_interest_lens",
+      "description": "关系维度（REQ-024）：法人/关联人命中案件知识包主体/关系人即候选；人名只来自知识包，过期断言自动排除，无知识包零命中不报错（规则 R5 挂钩）",
+      "uses_functions": [
+        "org_interest_links"
+      ],
+      "assumption": "H2"
+    },
+    {
+      "skill_id": "relation_jian_cross_level",
+      "name": "五间交叉等级镜头",
+      "stage": "用间",
+      "consumes_objects": [
+        "transaction",
+        "call",
+        "trackpoint",
+        "org",
+        "bid_project",
+        "tipoff",
+        "osint_article",
+        "time_window"
+      ],
+      "produces_dims": [],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {},
+      "scope": {
+        "reads": [
+          "transaction",
+          "call",
+          "trackpoint",
+          "org",
+          "bid_project",
+          "tipoff",
+          "osint_article",
+          "time_window"
+        ]
+      },
+      "handler": "impl:jian_cross_level_lens",
+      "description": "用间：语义代理表非空即命中；单源=观察/双源=线索/三源+=可立案依据候选；未建模数据源诚实标缺口。注意：本镜头产出的是**观察分级**而非证据假设，故不声明 assumption——交叉等级回答材料充分到什么程度，不回答在验证哪条假设",
+      "uses_functions": [
+        "jian_cross_level"
       ]
     }
   ]

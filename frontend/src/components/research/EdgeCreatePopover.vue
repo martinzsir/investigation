@@ -8,18 +8,18 @@ import {
   LIMITS,
   validateEdgeNote,
   type CanvasNode,
-  type ManualRel,
+  type CaseEdgeRel,
 } from '../../domain/canvas'
 
 const props = defineProps<{
   show: boolean
   source: CanvasNode | null
   target: CanvasNode | null
-  rels: ManualRel[]
+  rels: CaseEdgeRel[]
 }>()
 
 const emit = defineEmits<{
-  (e: 'pick', payload: { rel: ManualRel; note: string }): void
+  (e: 'pick', payload: { rel: CaseEdgeRel; note: string }): void
   (e: 'cancel'): void
 }>()
 
@@ -36,16 +36,21 @@ watch(
   },
 )
 
-const relHints: Record<ManualRel, string> = {
+const relHints: Record<CaseEdgeRel, string> = {
   推断为: '该事实/实体支持推出此假设',
   证实: '该待核实项/书证支持假设成立',
   查否: '该待核实项/书证否定该假设',
   补充说明: '备注对该节点的补充说明',
+  位于: '该主体/结论位于此地点',
+  发生于: '该主体/结论发生于此事件',
+  支撑: '该研判结论支持此假设',
+  反驳: '该研判结论否定此假设',
+  同现: '两个主体同时出现于同一时空',
 }
 
 const single = computed(() => props.rels.length === 1)
 
-function pick(rel: ManualRel): void {
+function pick(rel: CaseEdgeRel): void {
   const err = validateEdgeNote(note.value)
   if (err) {
     noteErr.value = err

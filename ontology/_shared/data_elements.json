@@ -22,7 +22,10 @@
       "clean_rule": [
         "strip_cc",
         "digits_only"
-      ]
+      ],
+      "sensitive": true,
+      "mask": "partial",
+      "_note": "个人信息（PIPL）：装载期 fail-closed 要求引用本元素的属性已在 policies.json 声明遮蔽；遮蔽后明文不可用于关联，join 键改 digest（D11 连带口径）"
     },
     "DE_GENDER": {
       "name": "性别",
@@ -92,6 +95,119 @@
       ],
       "semantic": "event_time",
       "_note": "REQ-041 精确到秒的时间点（对应 DuckDB TIMESTAMP）。与 DE_DATE 的关系：DE_DATE 是日期级事实（无时刻），DE_DATETIME 是带时刻的升级字段；二者可并存于同一事件对象（如 trackpoint 的 date + timestamp），由接入层按源数据实际精度填写——**无时刻时留 NULL，不得补 00:00:00 伪装时刻**。判定是否可比「同时」须读 time_precision（由值派生、可被接入层覆盖），而非仅看类型。"
+    },
+    "DE_ITEM_TYPE": {
+      "name": "物品类型",
+      "type": "enum",
+      "enum": [
+        "vehicle",
+        "realestate",
+        "invoice",
+        "drug_batch",
+        "device",
+        "portable",
+        "goods_other"
+      ],
+      "enum_space_dim": "item_type",
+      "enum_meta": {
+        "vehicle": {
+          "label": "车辆",
+          "identifier_kind": "plate",
+          "source_labels": ["车辆"]
+        },
+        "realestate": {
+          "label": "房产",
+          "identifier_kind": "property_cert",
+          "source_labels": ["房产"]
+        },
+        "invoice": {
+          "label": "票据",
+          "identifier_kind": "invoice_code_no",
+          "source_labels": ["票据"]
+        },
+        "drug_batch": {
+          "label": "药品批号",
+          "identifier_kind": "batch_no",
+          "source_labels": ["药品批号"]
+        },
+        "device": {
+          "label": "设备",
+          "identifier_kind": "serial",
+          "source_labels": ["设备"]
+        },
+        "portable": {
+          "label": "便携物",
+          "_note": "无 source_labels：中文源表不收「便携物」，预装配收到该词应继续报未知类型（与收编前 ITEM_TYPE_SOURCE_MAP 行为逐字对齐）"
+        },
+        "goods_other": {
+          "label": "其他物品",
+          "identifier_kind": "none",
+          "source_labels": ["涉案物品"],
+          "_note": "label 与源词不同形：中文源表写「涉案物品」，界面显示「其他物品」——展示与接入分离正是 enum_meta 的意义"
+        }
+      },
+      "_note": "R2/D1：统一 item 类型 + item_type 子分类，不做\"每物一类型\"。行业包经 enum_space.json code_tables.item_type 追加取值，不改 Python。enum_meta 承载三类词汇：label（人读，界面显示）、identifier_kind（该类型默认凭证种类，引用 DE_ITEM_IDENTIFIER_KIND）、source_labels（中文源表接入词汇 → ITEM_TYPE_SOURCE_MAP）；三者分属展示/类型/管道，互不替代。"
+    },
+    "DE_ITEM_IDENTIFIER_KIND": {
+      "name": "物品标识符种类",
+      "type": "enum",
+      "enum": [
+        "plate",
+        "property_cert",
+        "invoice_code_no",
+        "imei",
+        "msisdn",
+        "batch_no",
+        "serial",
+        "none"
+      ],
+      "enum_space_dim": "item_identifier_kind",
+      "enum_meta": {
+        "plate": {
+          "label": "车牌号",
+          "aliases": ["车牌", "号牌", "号牌号码"]
+        },
+        "property_cert": {
+          "label": "不动产权证号",
+          "aliases": ["权证号", "产权证号", "不动产权号"]
+        },
+        "invoice_code_no": {
+          "label": "发票代码+号码",
+          "aliases": ["发票号码", "发票代码", "发票"]
+        },
+        "imei": {
+          "label": "设备识别码",
+          "sensitive": true
+        },
+        "msisdn": {
+          "label": "手机号码",
+          "aliases": ["手机号"],
+          "sensitive": true
+        },
+        "batch_no": {
+          "label": "药品批号",
+          "aliases": ["食品批号", "批号"]
+        },
+        "serial": {
+          "label": "出厂序列号",
+          "aliases": ["序列号"]
+        },
+        "none": {
+          "label": "无凭证",
+          "aliases": ["无"],
+          "_note": "仅用于 D4 类物品（赃物、管制物品）：无唯一凭证，只作描述性实体，各成实体不静默合并"
+        }
+      },
+      "_note": "R3/R13：标识符种类词汇表。label 是规范中文名（人读）；aliases 是登记入口认可的表外说法（label 与代码本身隐式参与匹配，不必重复列入）；sensitive=true 的种类属个人信息，按敏感口径遮蔽且明文不可用于关联。归一化（去空格/下划线/连字符并小写）后跨种类抢名 → 装载期硬失败，宁崩不歧义。别名只增不删：删掉一个别名会让旧输入静默落进 None。"
+    },
+    "DE_CREDIT_CODE": {
+      "name": "统一社会信用代码",
+      "type": "string",
+      "length": 18,
+      "format": "^[0-9ABCDEFGHJKLMNPQRTUWXY]{18}$",
+      "checksum": "credit_code_mod31",
+      "sensitive": false,
+      "_note": "GB 32100-2015。公开信息不标 sensitive（与 DE_IDCARD 区分）；校验位非法仅标 verified=false，不硬失败（D10）。"
     }
   }
 }

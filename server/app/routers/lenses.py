@@ -24,6 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from core.lens_origin import normalize_origin
 from core.pack_loader import BUILTIN_PACK_ID
 
 from server.app import clues_view
@@ -210,20 +211,11 @@ def list_lenses(case_id: str,
             # 生效值：案件覆盖优先；未覆盖回落包声明
             "enabled": spec.enabled if case_enabled is None else case_enabled,
             # 画布可用（与批量启停分离）：只影响正兵能否在画布手动带参跑。
-            # 案件未覆盖 → 回落包声明（包被吊销则画布也不可用）。
+            # 案件未覆盖 → 回落包级 enabled（包被吊销则画布也不可用）。
             "canvas_enabled": (
                 canvas_overrides[spec.skill_id]
                 if spec.skill_id in canvas_overrides
                 else spec.enabled),
-            # 包级画布白名单（pack.json canvas_enabled，P3）：案件画布
-            # 工具箱可用性 = case_override ?? pack_canvas_enabled。
-            # 上面的 canvas_enabled 是既有语义（回落批量 enabled），
-            # 启停面板消费方保持不变零回归。
-            "pack_canvas_enabled": bool(
-                getattr(spec, "canvas_enabled", False)),
-            # 庙算假设挂钩（pack.json assumption，如 "H6"）：镜头产出回写
-            # 案件画布时自动挂「支撑」边到该假设节点；空 = 仅挂靶心
-            "assumption": getattr(spec, "assumption", "") or "",
             "requires_params": has_required,
             # ---- 启停决策所需说明（此前缺失，用户只能凭中文名盲开关）----
             # 用途说明（pack.json 声明；缺失由 UI 按维度/依赖兜底描述）
@@ -507,18 +499,9 @@ def run_lens(case_id: str, skill_id: str, body: LensRunIn,
         _precheck_unknown_only(spec, body.params)
 
     version = ctx.repo.current_version(case_id)
-    # origin 只保留已知键（不落任意结构），并强制为字符串。
-    # 案件画布发起（P3）无 clue_id（surface="case_canvas" + node_id）——
-    # 任一已知键非空即保留 origin；线索画布发起仍带 clue_id，行为不变。
-    origin: dict[str, Any] | None = None
-    if isinstance(body.origin, dict):
-        origin = {}
-        for k in ("clue_id", "node_id", "subject", "surface"):
-            v = body.origin.get(k)
-            if v not in (None, ""):
-                origin[k] = str(v)
-        if not origin:
-            origin = None
+    # origin 归一化见 core/lens_origin：只保留已知键、强制字符串，
+    # 且**案件级画布（有 node_id 无 clue_id）不得丢弃**——丢了图上就不挂结果。
+    origin = normalize_origin(body.origin)
     task = enqueue_task(
         ctx.repo, case_id=case_id, task_type=TASK_LENS_RUN,
         params={"skill_id": skill_id, "params": body.params, "auto": body.auto,

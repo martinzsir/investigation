@@ -72,8 +72,8 @@ export const router = createRouter({
         { path: 'c/geo', component: () => import('../views/GeoMapView.vue'), meta: { title: '地理画像', mvp: 5 } },
         // 三维交汇（人-时-地锚点：关系/时间/空间三类证据归集；读面，非线索）
         { path: 'c/convergence', component: () => import('../views/ConvergenceView.vue'), meta: { title: '三维交汇', mvp: 5 } },
-        // 案件级研判画布（case# 域：P1 契约与骨架，P2 复合节点开窗框架）
-        { path: 'c/canvas', component: () => import('../views/CanvasView.vue'), meta: { title: '研判画布', mvp: 6 } },
+        // 研判层画布（案件级总图）：与线索级 ResearchCanvas 物理分离，节点键 case# 前缀可跨线索并图
+        { path: 'c/canvas', component: () => import('../views/CanvasView.vue'), meta: { title: '研判画布', mvp: 5 } },
         // 六分组业务占位（FE-C-026）
         { path: 'c/:section', component: () => import('../views/PlaceholderView.vue') },
       ],

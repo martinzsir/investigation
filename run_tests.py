@@ -246,6 +246,10 @@ GROUPS = {
     "lensrun":     ("画布定向镜头带参调度（202 入队/参数预检/权限边界/lens_runs 补充产物/线索读面并线）", [sys.executable, "-m", "unittest", "tests.test_lens_run"]),
     # ---- P1 案件级研判画布（case# 域种子/研判节点 props/连线矩阵扩展/API 域隔离） ----
     "canvascase":  ("案件级研判画布（case# 域种子幂等/研判节点 props 校验/研判边矩阵/API 域隔离/红线 R2 重名留空）", [sys.executable, "-m", "unittest", "tests.test_canvas_case"]),
+    # ---- CAN-19+ 研判结果层：渐进式揭示/线索域/坐标收割/悬空边防御 ----
+    "canvasgrowth": ("研判结果挂靶心（CAN-19 分组/精度/假设自动入图 + 渐进式揭示集/线索 clue 域/meta.lens_layout 坐标收割复活/合并悬空边剔除/HTTP 揭示链路）", [sys.executable, "-m", "unittest", "tests.test_canvas_growth", "tests.test_canvas_case_store", "tests.test_canvas_case_http"]),
+    # ---- 物品本体收编（方案 A：prep 预装配 digest 口径 + 语义层单轨物品层） ----
+    "itemsource":  ("物品收编本体（prep 预装配 P1 digest 对拍/R14 无明文/精度分流 + 画布物品层单轨 obj_item/obj_hold_record/重建层剥离 + 词汇 enum_meta 派生对拍）", [sys.executable, "-m", "unittest", "tests.test_prep_item_registry", "tests.test_canvas_item_source", "tests.test_item_kind_norm"]),
 }
 
 

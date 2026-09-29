@@ -34,6 +34,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from core.lens_origin import origin_context_key
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -151,11 +153,19 @@ def observation_from_clue(clue: Any, *, source: str = "batch",
     # param_source 含靶心来源（如 focus:case_aliases#1:张卫国），
     # 用它做参数指纹能区分不同靶心；靶心变化 → 观察不同 → id 不同。
     params_key = str(detail.get("param_source") or "") or params_key
-    # 定向深挖可能与批量扫描「同镜头 + 同靶心」→ id 相撞。把发起线索并入
+    # 定向深挖可能与批量扫描「同镜头 + 同靶心」→ id 相撞。把发起上下文并入
     # 指纹：「在 A 线索下深挖张卫国」与「全案批量扫张卫国」是两条不同观察，
     # 前者带研判上下文，后者是全案视角。
     if source == "directed":
-        _ocid = str((origin or {}).get("clue_id") or "")
+        # 发起上下文取 clue_id，取不到则取 node_id（案件级研判画布没有
+        # 发起线索，靶心就是画布节点 id）。口径统一在 core/lens_origin，
+        # 避免两处各写一份又分叉。
+        #
+        # 为什么 node_id 必须参与：定向观察按 observation_id upsert。
+        # 只用 clue_id 时，案件级画布上「对张卫国跑异常轨迹」与「对李志强
+        # 跑异常轨迹」会算出**同一个 id**，后一次直接覆盖前一次——正兵看到
+        # 的后果是：换个人再跑一次，上一个人在图上的结论就消失了。
+        _ocid = origin_context_key(origin)
         if _ocid:
             params_key = (f"{params_key}|origin:{_ocid}" if params_key
                           else f"origin:{_ocid}")

@@ -1,0 +1,119 @@
+{
+  "pack_id": "fund",
+  "version": "1.0.0",
+  "_note": "PLAN-FUND-001 资金研判镜头包：经 core.pack_loader 自枚举挂载，零注册代码。计算全部走 ontology Function（integer_transfer_aggregates / quarter_end_integer_deposits / overpass_two_hop / time_window_collision），镜头只做编排与线索化，不自己写 SQL。产出是资金结构与时间窗碰撞事实，不下定性结论（定性权属正兵）。\n\n为什么需要这个包：上述 4 个 Function 此前是无 Lens 包装的「裸 Function」——只能经画布 RC-204 白名单直连调用，进不了镜头目录，因此无法批量调度、无法进画布节点、也拿不到 basis 判据。包装后它们与其它镜头同构：统一调度、统一线索化、统一挂假设。\n\n假设归属纪律：assumption 一律由 core.lens_assumption.resolve_function_assumption 从本体（functions.json 的 description 规则挂钩 + hypothesis_patterns.json 的 rule→hypothesis）反查，本文件只**抄录反查结果**供人阅读，不另立真相。tests/test_lens_assumption.py 会逐条断言二者一致，抄错即红。\n\n靶心说明：本包 4 个 Function 均为**全局聚合**口径（整表扫描，非单主体画像），故不声明 auto_from 靶心参数——硬加一个函数不消费的参数会让正兵以为选中某人即按他过滤，那是骗人。",
+  "skills": [
+    {
+      "skill_id": "fund_integer_transfer",
+      "name": "整数转账聚合镜头",
+      "stage": "用间",
+      "consumes_objects": ["transaction"],
+      "produces_dims": ["fund"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（元），缺省 10000（1 万元整数倍）；整万元转账是本项目的结构化异常标记"
+        }
+      },
+      "scope": {
+        "reads": ["transaction"]
+      },
+      "handler": "impl:integer_transfer_lens",
+      "description": "资金维度：整数转账 from→to 聚合，识别第三方过桥结构（规则 R2 挂钩）。产出按主体对聚合的转账结构，不声称资金性质",
+      "uses_functions": ["integer_transfer_aggregates"],
+      "assumption": "H4"
+    },
+    {
+      "skill_id": "fund_quarter_deposit",
+      "name": "季末整数存入镜头",
+      "stage": "用间",
+      "consumes_objects": ["transaction"],
+      "produces_dims": ["fund", "time"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（元），缺省 10000"
+        },
+        "quarter_end_window_days": {
+          "type": "integer",
+          "default": 15,
+          "description": "距最近季末边界天数阈值 0-90，缺省 15；0=不按日期过滤（复现旧口径，仅作对照）"
+        },
+        "cash_summary_tokens": {
+          "type": "string",
+          "enum": ["现金存入"],
+          "default": "现金存入",
+          "description": "现金类交易对方摘要标记；对公转账归整数转账聚合镜头"
+        }
+      },
+      "scope": {
+        "reads": ["transaction"]
+      },
+      "handler": "impl:quarter_deposit_lens",
+      "description": "资金维度：季末窗口内整万元现金存入按季度聚合（规则 R1 挂钩）。产出季度级聚合事实，不声称来源与性质",
+      "uses_functions": ["quarter_end_integer_deposits"],
+      "assumption": "H1"
+    },
+    {
+      "skill_id": "fund_overpass_two_hop",
+      "name": "两跳过桥路径镜头",
+      "stage": "用间",
+      "consumes_objects": ["transfers"],
+      "produces_dims": ["fund"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "max_gap_days": {
+          "type": "integer",
+          "description": "两跳之间的最大间隔天数 0-3650，留空不过滤。留空时**不声称过桥成立**——相隔数年的两笔转账不构成一条过桥路径，间隔不可判定的路径标 gap_unknown 保留"
+        }
+      },
+      "scope": {
+        "reads": ["transfers"]
+      },
+      "handler": "impl:overpass_two_hop_lens",
+      "description": "资金链路两跳：上游→过桥方→下游（规则 R2 挂钩），与图库 Cypher 轨互为校验。默认不过滤间隔，启用 max_gap_days 后按真实日期差判定",
+      "uses_functions": ["overpass_two_hop"],
+      "assumption": "H4"
+    },
+    {
+      "skill_id": "fund_time_window_collision",
+      "name": "中标资金时间窗碰撞镜头",
+      "stage": "用间",
+      "consumes_objects": ["time_window", "bid_project"],
+      "produces_dims": ["fund", "time"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "round_unit": {
+          "type": "integer",
+          "default": 10000,
+          "description": "整数金额单位（元），缺省 10000"
+        },
+        "exclude_org_suffix": {
+          "type": "string",
+          "enum": ["公司"],
+          "default": "公司",
+          "description": "资金主体名含该后缀视为对公单位，从个人时间窗碰撞中排除"
+        }
+      },
+      "scope": {
+        "reads": ["time_window", "bid_project"]
+      },
+      "handler": "impl:time_window_collision_lens",
+      "description": "时间维度：中标公示 ±20 天邻接边上，整数资金且主体为个人的碰撞（规则 R6 挂钩）。判据在规则层不在链接层，本镜头只给碰撞事实",
+      "uses_functions": ["time_window_collision"],
+      "assumption": "H4"
+    }
+  ]
+}

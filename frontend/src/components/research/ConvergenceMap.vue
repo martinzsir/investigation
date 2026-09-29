@@ -42,7 +42,10 @@ const emit = defineEmits<{ (e: 'select', key: string): void }>()
 
 // 授权闸口与既有地理画像视图同一套：未授权零外联，授权可撤销
 const consent = useMapConsent()
-const { current: mapEngine, isOnline } = consent
+// useMapConsent 返回 { engine, isOnline, ... }，没有 current——
+// 解构 current 会让 mapEngine 恒为 undefined，授权后在线引擎永远不渲染。
+const isOnline = consent.isOnline
+const mapEngine = computed(() => consent.engine.value)
 
 const model = computed(() => buildConvergenceGeo(props.items, { coords: props.coords }))
 const projected = computed<ConvProjectedPoint[]>(() => projectConvergencePoints(

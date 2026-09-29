@@ -209,7 +209,9 @@ class CanvasApiTest(unittest.TestCase):
 
         nodes = {n["id"]: n for n in d["doc"]["nodes"]}
         item_node = nodes[f"verify_item:{item_id}"]
-        self.assertEqual("待核实", item_node["label"])
+        # label = 核查任务文本（节点标题，可区分）；「未核实」状态由 props.status
+        # 与 adopted 承载——label 恒显「待核实」会让全部核查项同名
+        self.assertEqual("核查微信图片来源", item_node["label"])
         self.assertTrue(item_node["adopted"])
         self.assertEqual("待核查", item_node["props"]["status"])
         ev_link = nodes["evidence:ev_link"]

@@ -665,3 +665,114 @@ def activity_range_lens(miao=None, store=None, ctx=None, params=None,
         },
     )
     return [clue]
+
+
+# ----------------------------------------------------------------------
+# 旧口径兼容：同地点对（规则 R-GEO-3 → H6）
+# ----------------------------------------------------------------------
+# 为什么保留：该 Function 在画布 RC-204 白名单里可直连调用（co_located_pairs），
+# 包装后与 geo_accompany 同构、可批量调度并出 basis。
+# 为什么标注重叠：geo_accompany 有四级空间判据与精度加权，本镜头读的是
+# lnk_co_located 语义链接的既有结果，无空间判据。**优先使用 geo_accompany**，
+# 本镜头存在只为兼容既有白名单口径，不代表推荐路径。
+
+def _raw_person_ref(store, value):
+    """person 引用：**pk 与 raw_name 两种入参都认**。查不到返回 None，不猜不造。
+
+    为什么必须两种都认：lnk_co_located 的 person_1/person_2 存的是**主键**
+    （如 person_ecb52c3719fc），而其它语义链接里可能存 raw_name。早前只按
+    raw_name 匹配，遇主键即查不到 → 引用静默缺失，线索看着正常却挂不上人。
+    """
+    v = str(value or "").strip()
+    if not v or store is None:
+        return None
+    for col in ("person_id", "raw_name"):
+        try:
+            rows = store.query(
+                f"SELECT person_id FROM obj_person WHERE {col} = ? LIMIT 1", (v,))
+        except Exception:
+            continue
+        if rows:
+            return {"kind": "node",
+                    "ref": f"obj_person#{rows[0]['person_id']}",
+                    "key_column": "person_id"}
+    return None
+
+
+def _person_display(store, value):
+    """显示名：主键反查姓名，查不到原样返回（不编造姓名）。"""
+    v = str(value or "").strip()
+    if not v or store is None:
+        return v
+    try:
+        rows = store.query(
+            "SELECT raw_name FROM obj_person WHERE person_id = ? LIMIT 1", (v,))
+    except Exception:
+        return v
+    return rows[0]["raw_name"] if rows else v
+
+
+def co_located_pairs_lens(miao=None, store=None, ctx=None, params=None,
+                          health=None) -> list:
+    """同地点对 → 每个主体对一个地点一条观察（旧口径，无空间判据）。
+
+    按「主体对 × 地点」聚合出条，而不是逐行出条：同一对人在同一地点
+    多次同框才构成"反复"，逐行摊开等于没做研判。
+    """
+    params = params or {}
+    fn = "co_located_pairs"
+    out = _invoke(store, fn, _clean(params, []), health)
+    rows = out.get("rows") or []
+    if not rows:
+        _note_degraded(ctx, "geo_co_located_pairs", out, out)
+        return []
+
+    from core.lens_assumption import resolve_function_assumption as _rfa
+    hyp, _why = _rfa(fn)
+
+    # 按 (person_1, person_2, location) 聚合
+    buckets: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r.get("person_1"), r.get("person_2"), r.get("location"))
+        b = buckets.setdefault(key, {"count": 0, "dates": []})
+        b["count"] += 1
+        d = r.get("date")
+        if d is not None:
+            b["dates"].append(str(d))
+
+    clues: list = []
+    for (p1, p2, loc), b in buckets.items():
+        refs: list[dict] = []
+        for name in (p1, p2):
+            ref = _raw_person_ref(store, name)
+            if ref:
+                refs.append(ref)
+        refs.append({"kind": "aggregate", "metric": "co_located_count",
+                     "value": b["count"]})
+        dates = sorted(b["dates"])
+        _b = basis_for("geo_co_located_pairs",
+                       {"person_1": p1, "person_2": p2, "location": loc,
+                        "count": b["count"], "dates": dates})
+        clues.append(LineageClue(
+            skill_id="geo_co_located_pairs",
+            title=f"{_person_display(store, p1)} × {_person_display(store, p2)}"
+                  f" 于 {loc} 同地点 {b['count']} 次"
+                  f"（{'~'.join([dates[0], dates[-1]]) if dates else '日期未标注'}）",
+            evidence_refs=refs,
+            detail={
+                "function": fn,
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
+                "source_type": _SOURCE_TYPE,
+                "assumed_hypothesis": hyp,
+                "person_1": p1, "person_2": p2, "location": loc,
+                "count": b["count"],
+                "dates": dates,
+                # 精度纪律：本口径无时刻，只知同地异时，不得声称"同框/同时"
+                "precision": "date",
+                "not_claiming": "同时出现",
+                "superseded_by": "geo_accompany",
+            },
+        ))
+    return clues

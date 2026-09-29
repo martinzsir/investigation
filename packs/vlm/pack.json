@@ -15,7 +15,6 @@
       ],
       "mode": "draft",
       "enabled": true,
-      "canvas_enabled": true,
       "external_services": [
         "vlm"
       ],
@@ -55,7 +54,9 @@
         ]
       },
       "handler": "impl:inspect_lens",
-      "description": "对图像证据做视觉分析，产出草案线索（须人工核验才成证据）"
+      "description": "对图像证据做视觉分析，产出草案线索（须人工核验才成证据）",
+      "canvas_enabled": false,
+      "_canvas_enabled_note": "CAN-16 暂不开：produces_dims 为「图像」，不在六维维度声明内，开了会让图像证据不进覆盖度统计却仍占用画布入口；且 mode=draft，草案提案不可直入生产画布。待维度口径归一（归入已有维度或新增声明）后再开。"
     }
   ]
 }

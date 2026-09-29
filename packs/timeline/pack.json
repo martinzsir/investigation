@@ -19,7 +19,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -54,7 +53,9 @@
       "description": "把某个人的转账、通话、出行按时间排成一条线",
       "uses_functions": [
         "timeline_event_sequence"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中主体带入（auto_from.source=canvas_selection）"
     },
     {
       "skill_id": "timeline_rhythm",
@@ -72,7 +73,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -110,7 +110,9 @@
       "description": "看某个人在哪些天突然密集转账、通话或出行",
       "uses_functions": [
         "timeline_rhythm"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中主体带入（auto_from.source=canvas_selection）"
     },
     {
       "skill_id": "timeline_cross_collision",
@@ -128,7 +130,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "project": {
           "type": "string",
@@ -163,7 +164,9 @@
       "description": "看项目公示日前后，哪些人集中出现多类异常活动",
       "uses_functions": [
         "timeline_cross_collision"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中主体带入（auto_from.source=canvas_selection）"
     }
   ]
 }

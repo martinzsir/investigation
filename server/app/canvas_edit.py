@@ -24,26 +24,36 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-# 人工节点只有两类：假设 / 备注
-# （研判层 subject/place/event 仅案件级画布可摆，见 canvas_case.CASE_MANUAL_NODE_KINDS；
-#   线索画布矩阵与形状校验保持原域不变，零回归）
-MANUAL_NODE_KINDS = frozenset({"hypothesis", "note"})
+# 人工节点：假设 / 备注 / 研判主体
+# ------------------------------------------------------------------
+# 为什么加 subject（CAN-07）
+# 正兵常需要把一个**数据里没有的人**摆上图（走访听到、举报提到、尚未调证）。
+# 过去只有 hypothesis/note 两类可加，主体只能由系统种子产出——于是"先加人
+# 再查他"这条最自然的路走不通，只能反过来等某个镜头碰巧带出来。
+#
+# 人工 subject 的关键约束：**未锚定**。它没有语义层主键（数据里没人），
+# 跑不出任何研判。所以节点必须显式声明 anchored=False 并写明原因，
+# 否则正兵会以为工具坏了。锚定主体走 core/canvas_case.build_subject_node
+# （system=True，可删不可改），两条路径互不混淆。
+MANUAL_NODE_KINDS = frozenset({"hypothesis", "note", "subject"})
 
 # 人工关系 4 类（与 canvas_seed.SYSTEM_RELS 互斥）
 MANUAL_RELS = frozenset({"推断为", "证实", "查否", "补充说明"})
 
-# 研判边 5 类（PRD V1.0.0 §2.3；仅案件级画布的 4 类研判节点间可成立，
-# 线索画布不含研判 kind，矩阵分支天然不可达，零影响）
-RESEARCH_RELS = frozenset({"位于", "发生于", "支撑", "反驳", "同现"})
-
-# 推断为：事实/实体 → 假设
-_INFER_SOURCES = frozenset({"fact", "object"})
+# 推断为：事实/实体/研判结论/研判主体 → 假设
+# ------------------------------------------------------------------
+# 加 analysis_result：研判结论（异常轨迹、过桥路径、通话高频…）是挂假设的
+# 主力证据，过去不在源集合里，正兵只能靠人工边连——而人工边与系统推断边
+# 视觉无差别，机器推的和人认的混在一起，后面无法区分。
+# 加 subject：正兵常需直接表达"这个人涉某假设"。
+_INFER_SOURCES = frozenset({"fact", "object", "analysis_result", "subject"})
 # 证实/查否：待核实/书证 → 假设
 _VERDICT_SOURCES = frozenset({"verify_item", "evidence"})
 # 人工关系禁入目标：只能承载系统边
 _FORBIDDEN_TARGETS = frozenset({"source_row", "source_file"})
 
 HYPOTHESIS_TITLE_MAX = 50
+SUBJECT_NAME_MAX = 50
 CONTENT_MAX = 500
 EDGE_NOTE_MAX = 200
 SNAPSHOT_LABEL_MAX = 100
@@ -53,6 +63,17 @@ _LABEL_LIMIT = 28
 
 class CanvasEditError(ValueError):
     """人工编辑业务校验失败：路由层统一转 400 VALIDATION。"""
+
+
+def system_only_rels() -> frozenset[str]:
+    """只能由系统建立的边关系（CAN-12）。
+
+    与 MANUAL_RELS 必须**零交集**——一旦重叠，人工边就能冒充系统推断边，
+    而两者视觉上不同（灰细线 vs 实粗线），正兵会据此判断"这条机器推的
+    还没经我认可"，交集会让这个判断失去依据。
+    """
+    from server.app.canvas_case import SYSTEM_RELS_CASE
+    return frozenset(SYSTEM_RELS_CASE)
 
 
 # ----------------------------------------------------------------------
@@ -77,38 +98,21 @@ def can_connect(src_kind: str, tgt_kind: str, rel: str) -> tuple[bool, str]:
     本函数只判定 kind×kind×rel 矩阵与通用拒绝（自连/禁入目标/备注方向）；
     端点存在性、重复边由 add_manual_edge 在具体文档上判定。
     """
-    if rel not in MANUAL_RELS and rel not in RESEARCH_RELS:
-        return False, "非法关系类型"
+    if rel in system_only_rels():
+        # CAN-12：系统边与人工四类互斥。给出专属原因而不是笼统的
+        # "非法关系类型"——否则正兵会以为是自己用错了，反复重试。
+        return False, f"「{rel}」只能由系统建立，不可人工连线"
+    if rel not in MANUAL_RELS:
+        return False, "非法人工关系类型"
     if src_kind == tgt_kind and src_kind == "note" and tgt_kind == "note":
         # 落在「任意节点 → note 不允许」（备注方向固定为源）
         return False, "备注节点只能作为连线起点"
     if tgt_kind == "note":
         return False, "备注节点只能作为连线起点"
-    if tgt_kind in _FORBIDDEN_TARGETS:
-        return False, "数据行/数据源节点仅可由系统溯源连线关联"
-
-    # 研判边 5 类（PRD §2.3）：subject/place/event/analysis_result 之间的
-    # 业务关系。同现允许 subject↔subject（同 kind 异节点），故置于
-    # kind 级「自连」检查之前；同一节点 id 的自连由 add_manual_edge 拦。
-    if rel == "同现":
-        if src_kind == "subject" and tgt_kind == "subject":
-            return True, ""
-        return False, "「同现」只能连接两个主体节点"
-    if rel == "位于":
-        if tgt_kind == "place" and src_kind in ("subject", "analysis_result"):
-            return True, ""
-        return False, "「位于」只能由主体或研判结论指向地点"
-    if rel == "发生于":
-        if tgt_kind == "event" and src_kind in ("subject", "analysis_result"):
-            return True, ""
-        return False, "「发生于」只能由主体或研判结论指向事件"
-    if rel in ("支撑", "反驳"):
-        if src_kind == "analysis_result" and tgt_kind == "hypothesis":
-            return True, ""
-        return False, f"「{rel}」只能由研判结论指向假设"
-
     if src_kind == tgt_kind:
         return False, "不能连接节点自身"
+    if tgt_kind in _FORBIDDEN_TARGETS:
+        return False, "数据行/数据源节点仅可由系统溯源连线关联"
 
     if rel == "补充说明":
         # note → 任意（已排除 note 目标、自连、数据行/数据源禁入）
@@ -126,9 +130,8 @@ def can_connect(src_kind: str, tgt_kind: str, rel: str) -> tuple[bool, str]:
 
 
 def allowed_rels(src_kind: str, tgt_kind: str) -> list[str]:
-    """矩阵正向枚举：给定两端允许的人工/研判关系（关系选择气泡用）。"""
-    return [rel for rel in ("推断为", "证实", "查否", "补充说明",
-                            "位于", "发生于", "支撑", "反驳", "同现")
+    """矩阵正向枚举：给定两端允许的人工关系（关系选择气泡用）。"""
+    return [rel for rel in ("推断为", "证实", "查否", "补充说明")
             if can_connect(src_kind, tgt_kind, rel)[0]]
 
 
@@ -146,6 +149,8 @@ def validate_node_props(kind: str, props: Any) -> dict[str, str]:
 
     hypothesis：title 1..50（去空格后非空）、content 1..500 非空
     note      ：content 1..500 非空
+    subject   ：name 1..50（去空格后非空）；sub_type 可选，默认 person
+                content 可选——未收录人员的说明
     """
     if kind not in MANUAL_NODE_KINDS:
         raise CanvasEditError(f"非法人工节点类型：{kind}")
@@ -153,6 +158,25 @@ def validate_node_props(kind: str, props: Any) -> dict[str, str]:
         raise CanvasEditError("节点内容必须是对象")
 
     cleaned: dict[str, str] = {}
+    if kind == "subject":
+        name = _clean_text(props.get("name"), "主体名称")
+        if not name:
+            raise CanvasEditError("请填写主体名称")
+        if len(name) > SUBJECT_NAME_MAX:
+            raise CanvasEditError(f"主体名称不超过 {SUBJECT_NAME_MAX} 字")
+        cleaned["name"] = name
+        sub_type = str(props.get("sub_type") or "person").strip()
+        cleaned["sub_type"] = sub_type or "person"
+        # 人工主体一律未锚定：数据里没有这个人，跑不出任何研判。
+        # 显式声明，避免正兵点了工具没反应却不知道为什么。
+        cleaned["anchored"] = "false"
+        cleaned["person_pk"] = ""
+        note = str(props.get("content") or "").strip()
+        if note:
+            if len(note) > CONTENT_MAX:
+                raise CanvasEditError(f"主体说明不超过 {CONTENT_MAX} 字")
+            cleaned["content"] = note
+        return cleaned
     if kind == "hypothesis":
         title = _clean_text(props.get("title"), "假设标题")
         if not title:
@@ -224,39 +248,30 @@ def _find_node(doc: dict[str, Any], node_id: str) -> dict[str, Any] | None:
 
 
 def _require_manual_node(doc: dict[str, Any], node_id: str,
-                         *, action: str,
-                         allowed: frozenset[str] | None = None) -> dict[str, Any]:
-    """取人工节点；allowed 缺省为线索域 MANUAL_NODE_KINDS（案件级传入
-    CASE_MANUAL_NODE_KINDS 以支持研判节点，见 canvas_case.py）。"""
+                         *, action: str) -> dict[str, Any]:
     node = _find_node(doc, node_id)
     if node is None:
         raise CanvasEditError(f"画布节点不存在：{node_id}")
     if node.get("system") is True:
         raise CanvasEditError(
             f"系统节点不可{action}（仅可移动/钉住）")
-    if node.get("kind") not in (allowed if allowed is not None
-                                else MANUAL_NODE_KINDS):
-        # 防御：非系统节点却不是允许的人工类型，同样拒绝
+    if node.get("kind") not in MANUAL_NODE_KINDS:
+        # 防御：非系统节点却不是人工类型，同样拒绝
         raise CanvasEditError(f"该节点类型不支持{action}")
     return node
 
 
 def add_manual_node(doc: dict[str, Any], *, kind: str, props: dict[str, str],
                     node_id: str, x: Any, y: Any,
-                    operator: str, now: str,
-                    label: str | None = None) -> dict[str, Any]:
-    """新增人工节点（幂等性由随机 id 保证；ref=id）。
-
-    label 缺省按 hypothesis/note 口径重算；案件级研判节点
-    （subject/place/event）由 canvas_case 传入 kind 专属 label。
-    """
+                    operator: str, now: str) -> dict[str, Any]:
+    """新增人工节点（幂等性由随机 id 保证；ref=id）。"""
     if _find_node(doc, node_id) is not None:
         raise CanvasEditError(f"节点 id 已存在：{node_id}")
     node = {
         "id": node_id,
         "kind": kind,
         "ref": node_id,
-        "label": label if label is not None else _manual_label(kind, props),
+        "label": _manual_label(kind, props),
         "system": False,
         "pinned": False,
         "x": _coordinate(x, "x"),
@@ -271,34 +286,23 @@ def add_manual_node(doc: dict[str, Any], *, kind: str, props: dict[str, str],
 
 
 def update_manual_node(doc: dict[str, Any], *, node_id: str,
-                       props: dict[str, str], now: str,
-                       validator=None, labeler=None,
-                       allowed: frozenset[str] | None = None) -> dict[str, Any]:
-    """编辑人工节点标题/内容（label 同步重算；created_by/at 不动）。
-
-    validator/labeler：案件级研判节点校验与 label 口径钩子
-    （canvas_case.validate_case_node_props / _case_label）；
-    缺省保持线索域 hypothesis/note 行为，按节点既有 kind 重校验。
-    allowed：人工类型白名单钩子（案件级传 CASE_MANUAL_NODE_KINDS）。
-    """
-    node = _require_manual_node(doc, node_id, action="编辑", allowed=allowed)
+                       props: dict[str, str], now: str) -> dict[str, Any]:
+    """编辑人工节点标题/内容（label 同步重算；created_by/at 不动）。"""
+    node = _require_manual_node(doc, node_id, action="编辑")
     # 按该节点既有 kind 重新校验（不允许借编辑改类型）
-    cleaned = (validator if validator is not None else validate_node_props)(
-        node["kind"], props)
+    cleaned = validate_node_props(node["kind"], props)
     node["props"] = cleaned
-    node["label"] = (labeler if labeler is not None else _manual_label)(
-        node["kind"], cleaned)
+    node["label"] = _manual_label(node["kind"], cleaned)
     node["updated_at"] = now
     return node
 
 
-def delete_manual_node(doc: dict[str, Any], *, node_id: str,
-                       allowed: frozenset[str] | None = None) -> list[str]:
+def delete_manual_node(doc: dict[str, Any], *, node_id: str) -> list[str]:
     """删除人工节点；级联删除其**人工边**，系统边一律保留。
 
     返回被删除的人工边 id 列表（供审计与前端文案）。
     """
-    _require_manual_node(doc, node_id, action="删除", allowed=allowed)
+    _require_manual_node(doc, node_id, action="删除")
     doc["nodes"] = [n for n in doc["nodes"] if n.get("id") != node_id]
     removed: list[str] = []
     kept: list[dict[str, Any]] = []
@@ -319,10 +323,6 @@ def add_manual_edge(doc: dict[str, Any], *, source: str, target: str,
                     rel: str, note: str, operator: str,
                     now: str) -> dict[str, Any]:
     """新增人工边：端点存在 → 矩阵 → 重复边，任一不过抛 CanvasEditError。"""
-    if source == target:
-        # id 级自连拦截：研判边「同现」放开 subject↔subject 同 kind 连线后，
-        # 同一节点自身的连线必须在此硬拒（kind 级检查已无法覆盖）。
-        raise CanvasEditError("不能连接节点自身")
     src_node = _find_node(doc, source)
     tgt_node = _find_node(doc, target)
     if src_node is None or tgt_node is None:

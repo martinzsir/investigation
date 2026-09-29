@@ -216,6 +216,60 @@
           "pad_date"
         ]
       }
+    },
+    {
+      "object": "item",
+      "optional": true,
+      "source": {
+        "table": "物品登记",
+        "columns": {
+          "title": "名称",
+          "item_type": "类型",
+          "identifiers": "标识",
+          "primary_digest": "标识摘要",
+          "descriptors": "特征",
+          "location": "地点",
+          "lat": "纬度",
+          "lng": "经度",
+          "track": "轨迹"
+        }
+      },
+      "optional_columns": [
+        "标识",
+        "标识摘要",
+        "特征",
+        "地点",
+        "纬度",
+        "经度",
+        "轨迹"
+      ],
+      "_note": "源表由 scripts/prep_item_registry.py 预装配（物品台账+物品轨迹 → 宽表）：digest/类型映射/轨迹序列化在 py 层完成（R14 摘要口径唯一），SQL 层只做等值投影。optional:true → 源表缺失时跳过（与 clue 尾段同口径），不阻断既有管线。持有不入本表——多段时态归 hold_record + lnk_holds。"
+    },
+    {
+      "object": "hold_record",
+      "optional": true,
+      "source": {
+        "table": "物品持有",
+        "columns": {
+          "holder_raw": "持有人",
+          "item_title": "物品名称",
+          "item_type": "类型",
+          "primary_digest": "标识摘要",
+          "start_date": "开始日期",
+          "end_date": "结束日期",
+          "start_time": "开始时刻",
+          "end_time": "结束时刻",
+          "reg_order": "登记序号"
+        }
+      },
+      "optional_columns": [
+        "开始日期",
+        "结束日期",
+        "开始时刻",
+        "结束时刻",
+        "登记序号"
+      ],
+      "_note": "源表由 scripts/prep_item_registry.py 预装配（物品持有登记 + 进程内索引关联 → 携带派生键 类型/标识摘要）。日期/时刻已在 prep 层按精度分流（R5 缺失=NULL 无哨兵），此处直通 TRY_CAST，无需 transform。R14：源表无凭证明文列，关联键只有 (类型, 标识摘要)。"
     }
   ],
   "link_bindings": [
@@ -361,6 +415,27 @@
           "table": "obj_location",
           "on": "l.raw_address = t.location",
           "select": "l.location_id"
+        }
+      ]
+    },
+    {
+      "link": "holds",
+      "_note": "R2/D2 时态持有边物化：hold_record 事件 → person→item 边。person 侧 raw_name 等值归一（LEFT JOIN 未命中不丢边，与 transfers 同口径）；item 侧按 (item_type, primary_digest) 等值关联——R14 下摘要即唯一可用关联键。边属性 start_date/end_date 之外保留 start_time/end_time（时刻级套牌判定）与 reg_order（错序信号），判据一律在 core/hold_chain.py，链接只表达关系。",
+      "build_sql": "SELECT hr.hold_id AS hold_id, hr.holder_raw AS holder_raw, p.person_id AS person_id, hr.item_title AS item_title, hr.item_type AS item_type, hr.primary_digest AS primary_digest, i.item_id AS item_id, hr.start_date AS start_date, hr.end_date AS end_date, hr.start_time AS start_time, hr.end_time AS end_time, hr.reg_order AS reg_order FROM obj_hold_record hr LEFT JOIN obj_person p ON p.raw_name = hr.holder_raw LEFT JOIN obj_item i ON i.item_type = hr.item_type AND i.primary_digest = hr.primary_digest",
+      "normalize": [
+        {
+          "as": "person_id",
+          "alias": "p",
+          "table": "obj_person",
+          "on": "p.raw_name = hr.holder_raw",
+          "select": "p.person_id"
+        },
+        {
+          "as": "item_id",
+          "alias": "i",
+          "table": "obj_item",
+          "on": "i.item_type = hr.item_type AND i.primary_digest = hr.primary_digest",
+          "select": "i.item_id"
         }
       ]
     }

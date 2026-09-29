@@ -48,10 +48,7 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   hypothesis: '假',
   note: '备',
   function_result: '查',
-  // P1 案件级专属四类（本图例遍历 KIND_ORDER，线索画布不出现）
-  subject: '人',
-  place: '地',
-  event: '事',
+  subject: '主',
   analysis_result: '结',
 }
 

@@ -13,14 +13,14 @@
         "type": "object",
         "required": ["id", "stage", "title", "rule_text", "function", "hit_when"],
         "properties": {
-          "id": {"type": "string", "pattern": "^R\\d+$"},
+          "id": {"type": "string", "pattern": "^R[A-Za-z0-9_-]+$"},
           "stage": {"enum": ["xu_shi", "qi_zheng", "yong_jian"]},
           "title": {"type": "string", "minLength": 1},
           "rule_text": {"type": "string", "minLength": 30},
           "function": {"type": "string"},
           "params": {"type": "object"},
           "hit_when": {"enum": ["rows_nonempty", "result_hit"]},
-          "dimension": {"enum": ["", "fund", "comm", "behavior", "relation", "time", "资金", "通讯", "行为", "关系", "时间"]},
+          "dimension": {"enum": ["", "fund", "comm", "behavior", "space", "relation", "time", "资金", "通讯", "行为", "空间", "关系", "时间"]},
           "jian_types": {
             "type": "array",
             "items": {"enum": ["因间", "内间", "反间", "死间", "生间"]}

@@ -42,12 +42,20 @@ class CanvasNotFound(Exception):
 
 
 class CanvasVersionConflict(Exception):
-    """RC-205 自动保存版本基准过期（前端确认后带新版本重试=后写覆盖）。"""
+    """RC-205 自动保存版本基准过期（前端确认后带新版本重试=后写覆盖）。
 
-    def __init__(self, clue_id: str, *, expected: int, current: int):
+    ``scope`` 区分线索级与案件级画布：两者 id 体系不同，冲突提示必须说清
+    是哪一张画布，否则正兵改的是研判画布、提示里的 clue= 会把他引到线索
+    画布上去找——排查方向直接错。
+    """
+
+    def __init__(self, clue_id: str, *, expected: int, current: int,
+                 scope: str = "clue"):
         super().__init__(
-            f"画布版本冲突：clue={clue_id} 基准 v{expected} ≠ 服务端 v{current}")
+            f"画布版本冲突：{scope}={clue_id} 基准 v{expected} "
+            f"≠ 服务端 v{current}")
         self.clue_id = clue_id
+        self.scope = scope
         self.expected = expected
         self.current = current
 
@@ -307,6 +315,27 @@ CREATE TABLE IF NOT EXISTS clue_canvas_chat (
     created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cchat_clue ON clue_canvas_chat(clue_id);
+
+-- ---- 案件级研判画布（研判层画布；每案件单画布，惰性创建）----
+-- 与 clue_canvas 分开建表：**两套 id 体系不能混**。
+--   线索级节点 id = {kind}:{ref}（锁在单条线索内）
+--   案件级节点 id = case#{case_id}:{kind}:{ref}（可跨线索并图）
+-- 混在一张表里，同名 id 会互相覆盖——而两者服务的是两种用途：
+-- 线索画布回答"这条线索凭什么"，研判画布回答"这个案子查到什么、下一步查什么"。
+--
+-- doc_json 只存**可落库部分**（人工节点 / 提升产物 / 人工边 / 坐标与钉住）。
+-- 镜头重建层由定向观察档案每次 GET 重建，落库会让它僵死——剥离逻辑在
+-- server/app/canvas_case_doc.py（纯函数），本层不判断，只存取。
+CREATE TABLE IF NOT EXISTS case_canvas (
+    canvas_id  TEXT PRIMARY KEY,           -- 1:1 案件，值 = case_id
+    case_id    TEXT UNIQUE NOT NULL,
+    doc_json   TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 # 旧库幂等迁移：clue_verify_item 在 REQ-V-018 字段加入前可能已存在，
@@ -1114,6 +1143,73 @@ class StateStore:
         if cur.rowcount == 0:
             raise CanvasNotFound(clue_id)
         return self.get_canvas(clue_id)  # type: ignore[return-value]
+
+    # ==================================================================
+    # 案件级研判画布（研判层画布；每案件单画布，惰性创建）
+    # 只存取与版本戳；什么该落库由 server/app/canvas_case_doc.py 判断。
+    # 与线索级分开两套方法：混用会让两种 id 体系在同一张表里互相覆盖。
+    # ==================================================================
+    def get_case_canvas(self, case_id: str) -> dict | None:
+        """取案件级画布；不存在 → None。"""
+        import json as _json
+        row = self._conn.execute(
+            "SELECT * FROM case_canvas WHERE case_id=?",
+            [case_id]).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        try:
+            d["doc"] = _json.loads(d.pop("doc_json") or "{}")
+        except _json.JSONDecodeError:
+            d["doc"] = {"nodes": [], "edges": []}
+        return d
+
+    def insert_case_canvas(self, *, case_id: str, doc: dict,
+                           created_by: str, created_at: str) -> dict | None:
+        """惰性落库（INSERT OR IGNORE 保幂等）：重复 GET 只有第一次生效，
+        其余返回 None（调用方回读已存画布）。"""
+        import json as _json
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO case_canvas "
+            "(canvas_id, case_id, doc_json, version, updated_by, updated_at, "
+            " created_by, created_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?)",
+            [case_id, case_id,
+             _json.dumps(doc, ensure_ascii=False, default=str),
+             created_by, created_at, created_by, created_at])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_case_canvas(case_id)
+
+    def update_case_canvas_doc(self, case_id: str, doc: dict, *,
+                               operator: str, updated_at: str,
+                               expected_version: int | None = None) -> dict:
+        """整文档自动保存：version+1。
+
+        expected_version 与当前不一致 → CanvasVersionConflict（RC-205：
+        服务端不静默覆盖他人版本）；画布不存在 → CanvasNotFound。
+        """
+        import json as _json
+        cur_row = self._conn.execute(
+            "SELECT version FROM case_canvas WHERE case_id=?",
+            [case_id]).fetchone()
+        if cur_row is None:
+            raise CanvasNotFound(case_id)
+        current_version = int(cur_row["version"])
+        if expected_version is not None \
+                and int(expected_version) != current_version:
+            raise CanvasVersionConflict(
+                case_id, expected=int(expected_version),
+                current=current_version, scope="case")
+        cur = self._conn.execute(
+            "UPDATE case_canvas SET doc_json=?, version=?, updated_by=?, "
+            "updated_at=? WHERE case_id=?",
+            [_json.dumps(doc, ensure_ascii=False, default=str),
+             current_version + 1, operator, updated_at, case_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            raise CanvasNotFound(case_id)
+        return self.get_case_canvas(case_id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # RC-206：快照不可变（只提供 insert/get/list，不提供任何更新/删除

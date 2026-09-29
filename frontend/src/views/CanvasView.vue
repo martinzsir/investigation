@@ -1,1080 +1,973 @@
 <script setup lang="ts">
-// 案件级研判画布（case# 域，P2 窗口框架；PRD V1.0.0 功能 2/3）。
-// P2 交付：G6 成图渲染（research-card 复合节点）+ 卡内迷你符号
-// （精度点/时间条/待裁决——规格经 domain/canvas-window 单一来源）+
-// 复合节点「窗口」按钮 + 贴附浮窗宿主（未钉住 1 / 钉住 3、Esc/空白关闭、
-// 视口跟随、放大入口）+ 添加节点/连线编辑通路 + 底部状态条。
-// 纪律：G6 动态 import；结构写操作走案件级专用端点（逐动作审计）；
-// 连线矩阵前端 caseCanConnect 先拒、后端 can_connect 单一真相兜底。
-import {
-  computed,
-  nextTick,
-  onBeforeUnmount,
-  onMounted,
-  reactive,
-  ref,
-  watch,
-  type Component,
-} from 'vue'
-import { NButton, NDropdown, NIcon, NSpin, useMessage } from 'naive-ui'
-import { AddOutline, GitNetworkOutline, RefreshOutline } from '@vicons/ionicons5'
+/**
+ * 研判层画布（案件级独立页面，CAN-01）
+ *
+ * 为什么是独立页面而不是嵌在线索里
+ * --------------------------------
+ * `ResearchCanvas` 只挂在 ClueDetailView 内，是**线索级**溯源画布：
+ * 节点键 sha1("{clue_id}|fact|{i}") 锁死在单条线索内，长不成案件总图。
+ * 研判层画布是**案件总图**——多线索并入同一张图，所以它必须独立成页。
+ *
+ * 与线索级画布的关系
+ * ------------------
+ * 两者共用 domain 层（canvas-symbol / canvas-window / subject-picker），
+ * 但持久化端点分开：这里走 GET/PATCH /cases/{cid}/case-canvas。
+ * 页面独立 ≠ 数据模型独立——共用 domain 才不会演化成分叉的真相。
+ *
+ * 保存语义（阶段 3）
+ * ------------------
+ * 镜头层由定向观察档案每次 GET 重建，**不落库**；保存时服务端剥掉
+ * `generated_by = 'lens_layer'` 的节点只存人工层。前端只管整文档入，
+ * 且**绝不用 PATCH 返回覆盖本地 doc**（返回不含 doc，覆盖会抹成空图）。
+ *
+ * 两条红线
+ * --------
+ * 1. 符号口径统一：卡片/连线/窗口三处都取 nodeSymbol/edgeSymbol（SYM-01）。
+ *    日期级画成实线粗边，会让 12 条模糊记录压过 4 条精确记录。
+ * 2. 空态必须写原因：名录读不出、镜头层为空，都要显示 why，
+ *    静默空列表会被读成「确实没有」。
+ */
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCaseStore } from '../stores/case'
-import { caseCanvasApi } from '../api/endpoints/canvas'
-import { tasksApi } from '../api/endpoints/tasks'
-import { failureSummary, isTerminal, type TaskRow } from '../domain/task'
-import { presentError } from '../api/errors'
+import { NAlert, NButton, NCheckbox, NEmpty, NSpin, NTag, useMessage } from 'naive-ui'
+import { canvasApi } from '../api/endpoints/canvas'
+import { lensesApi, type LensSpecItem } from '../api/endpoints/lenses'
+import { TaskWaitTimeoutError, waitForTerminal } from '../api/endpoints/tasks'
 import {
-  caseAllowedRels,
-  caseCanConnect,
+  PRECISION_LABEL,
+  asPrecision,
+  edgeSymbol,
+  nodeSymbol,
+} from '../domain/canvas-symbol'
+import {
   KIND_LABELS,
+  type CanvasDoc,
+  type CanvasEdge,
   type CanvasNode,
-  type CaseCanvasEnvelope,
-  type CaseManualNodeKind,
-  type NodeKind,
+  type CaseCanvasLensGroup,
+  type CaseCanvasLensLayer,
 } from '../domain/canvas'
 import {
-  hasWindow,
-  precisionSymbol,
-  timeAxisRangeOf,
-  timeBarSpec,
-  windowFor,
-  windowEnlargeRoute,
-  type WindowKind,
-  AMBIGUOUS_BORDER,
-} from '../domain/canvas-window'
-import { canvasTokens } from '../design/tokens'
-import { contentBox, contentCenter, fitScale } from '../domain/canvas-viewport'
-import type { ToolboxNode } from '../domain/canvas-toolbox'
-import EmptyState from '../components/common/EmptyState.vue'
-import CanvasNodeWindow from '../components/research/CanvasNodeWindow.vue'
-import CanvasToolbox from '../components/research/CanvasToolbox.vue'
-import CaseNodeModal from '../components/research/CaseNodeModal.vue'
-import RelationWindow from '../components/research/win/RelationWindow.vue'
-import MapWindow from '../components/research/win/MapWindow.vue'
-import TimeWindow from '../components/research/win/TimeWindow.vue'
-import EvidenceWindow from '../components/research/win/EvidenceWindow.vue'
-import HypothesisWindow from '../components/research/win/HypothesisWindow.vue'
-import { RESEARCH_CARD_NODE, ensureResearchCardNode } from '../components/research/g6-card-node'
+  allRevealedKeys,
+  groupRowsByTarget,
+  readRevealedGroups,
+  revealKey,
+  toggleRevealedGroup,
+  unrevealedCountByTarget,
+  withRevealedGroups,
+} from '../domain/case-growth'
+import NodeWindow from '../components/research/NodeWindow.vue'
+import SubjectPicker from '../components/research/SubjectPicker.vue'
+import ItemPicker from '../components/research/ItemPicker.vue'
+import LensRunModal from '../components/research/LensRunModal.vue'
+
+// 案件 id 取自案件 store（与 ConvergenceView / GeoMapView 同范式），
+// 不走路由 props——研判画布是案件级页面，案件切换由顶部选择器统一驱动。
+const cs = useCaseStore()
+const caseId = computed(() => cs.currentCaseId)
 
 const router = useRouter()
 const message = useMessage()
 
-const cs = useCaseStore()
-const caseId = computed(() => cs.currentCaseId ?? '')
-const caseName = computed(() => cs.currentCase?.name ?? cs.currentCaseId)
-
-// ----------------------------------------------------------------------
-// 读面
-// ----------------------------------------------------------------------
 const loading = ref(false)
-const error = ref('')
-const envelope = ref<CaseCanvasEnvelope | null>(null)
-const doc = computed(() => envelope.value?.doc ?? null)
-const version = computed(() => envelope.value?.version ?? 0)
+const loadErr = ref('')
+const saving = ref(false)
+const doc = ref<CanvasDoc & { meta?: Record<string, unknown> | null }>(
+  { nodes: [], edges: [] })
+const version = ref<number | null>(null)
+const dirty = ref(false)
 
-async function load(): Promise<void> {
-  if (!caseId.value) return
-  loading.value = true
-  error.value = ''
-  try {
-    envelope.value = await caseCanvasApi.get(caseId.value)
-  } catch (e) {
-    error.value = presentError(e).title
-  } finally {
-    loading.value = false
-    await nextTick()
-    void renderGraph()
-  }
-}
+// ---- 渐进式揭示（v3 §6）---------------------------------------------
+// 打开画布只见人工层；lens_layer.groups 始终全量枚举（清单），但只有
+// doc.meta.revealed_groups 里的组才会被后端重建进 doc。揭示/隐藏 =
+// 改这份 meta → PATCH 持久 → GET 重取，图上只长/消对应那一组。
+const lensLayer = ref<CaseCanvasLensLayer | null>(null)
+const lensGroups = ref<CaseCanvasLensGroup[]>([])
+const groupSections = computed(() => groupRowsByTarget(lensGroups.value))
+const revealedKeys = computed(() =>
+  readRevealedGroups(doc.value.meta ?? null))
+const revealedTotal = computed(() => lensGroups.value
+  .filter((g) => g.revealed).length)
+const unrevealedMap = computed(() =>
+  unrevealedCountByTarget(lensGroups.value))
+const revealBusy = ref(false)
 
-onMounted(() => void load())
-watch(caseId, () => void load())
+const pickerShow = ref(false)
 
-/** 待裁决主体数（状态条；红线 R2 可视化） */
-const ambiguousCount = computed(
-  () =>
-    doc.value?.nodes.filter((n) => n.props?.person_ambiguous === true).length ?? 0,
+// ---- 节点窗口（WIN-01/02）------------------------------------------
+const winNodeId = ref<string | null>(null)
+/** 画布选中节点：镜头靶心的来源（CAN-15 选中即靶心） */
+const selectedId = ref<string | null>(null)
+const winAnchor = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const winViewport = ref({ width: 960, height: 600 })
+const winSupports = ref<Array<{ obs_id?: string; label?: string; precision?: string; dim?: string }>>([])
+const winLoading = ref(false)
+const winErr = ref('')
+
+const winNode = computed<CanvasNode | null>(
+  () => doc.value.nodes.find((n) => n.id === winNodeId.value) ?? null,
 )
+const nodeById = computed(() => new Map(doc.value.nodes.map((n) => [n.id, n])))
 
-// ----------------------------------------------------------------------
-// G6 成图（动态 import；失败降级节点列表）
-// ----------------------------------------------------------------------
-interface G6Instance {
-  render?: () => Promise<unknown>
-  setData?: (d: unknown) => void
-  destroy?: () => void
-  resize?: () => Promise<unknown> | void
-  on?: (event: string, handler: (ev: unknown) => void) => void
-  off?: (event: string, handler: (ev: unknown) => void) => void
-  zoomTo?: (zoom: number) => Promise<unknown>
-  getZoom?: () => number
-  getSize?: () => [number, number]
-  translateBy?: (offset: [number, number]) => Promise<unknown>
-  getViewportByCanvas?: (point: [number, number]) => [number, number]
-  getElementPosition?: (id: string) => [number, number]
-}
-interface G6Datum {
-  data?: Record<string, unknown>
-}
-interface G6Event {
-  id?: unknown
-  target?: { id?: unknown }
-  originalTarget?: { className?: unknown }
-}
-
-const containerEl = ref<HTMLDivElement | null>(null)
-const graphFailed = ref(false)
-let inst: G6Instance | null = null
-let renderQueued = false
-
-const KIND_GLYPH: Record<NodeKind, string> = {
-  rule: '规', fact: '实', object: '体', source_row: '行', source_file: '档',
-  verify_item: '核', evidence: '证', hypothesis: '假', note: '备',
-  function_result: '查', subject: '人', place: '地', event: '事',
-  analysis_result: '结',
-}
-
-/** 案件时间轴范围（卡内时间条几何的唯一轴口径） */
-const timeAxis = computed(() => timeAxisRangeOf(doc.value?.nodes ?? []))
-
-/** 节点 → G6 data（迷你符号经 canvas-window 纯函数算好传入，R1 单一来源） */
-function toG6Data(): unknown {
-  const d = doc.value
-  if (!d) return { nodes: [], edges: [] }
-  const axis = timeAxis.value
-  const nodes = d.nodes.map((n) => {
-    const p = (n.props ?? {}) as Record<string, unknown>
-    const ambiguous = p.person_ambiguous === true
-    const bar = timeBarSpec(p, axis)
-    const kind = n.kind
-    return {
-      id: n.id,
-      style: { x: n.x, y: n.y },
-      data: {
-        label: n.label,
-        kind,
-        glyph: KIND_GLYPH[kind],
-        chip: canvasTokens.kind[kind].chip,
-        chipInk: canvasTokens.kind[kind].ink,
-        subtitle: subOf(n),
-        pinned: n.pinned === true,
-        manual: n.system !== true,
-        ambiguous,
-        // P2 迷你符号（R1：规格只来自 canvas-window 纯函数）
-        miniDot: precisionSymbol(p.time_precision),
-        miniBar: bar
-          ? { start: bar.start, span: bar.span, symbol: bar.symbol }
-          : null,
-        miniAmbiguous: ambiguous,
-        winnable: hasWindow(kind),
-        deletable: n.system !== true,
-        // P3 回写上图脉冲：新产出的结论节点 3s 内描边高亮
-        fresh: freshIds.value.has(n.id),
-      },
-    }
-  })
-  const edges = d.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    data: {
-      label: e.rel,
-      system: e.system === true,
-      note: e.note ?? '',
-    },
-  }))
-  return { nodes, edges }
-}
-
-function subOf(n: CanvasNode): string {
+/** 节点显示名：顶层 label 与 props 取名链都要认，最后才回退类型中文名。
+ *  缺顶层 label 这一级时，growth 重建层结论节点（名字只在顶层）会被
+ *  显示成裸 kind "analysis_result"。 */
+function nodeLabelOf(n: CanvasNode | undefined): string {
+  if (!n) return ''
   const p = (n.props ?? {}) as Record<string, unknown>
-  switch (n.kind) {
-    case 'subject':
-      return p.person_ambiguous === true ? `${n.label} · 待裁决` : String(p.person_pk ?? '')
-    case 'place':
-      return String(p.std_address ?? p.coord_precision ?? '')
-    case 'event':
-      return String(p.time_start ?? '')
-    case 'analysis_result':
-      return String(p.lens_title ?? p.lens_id ?? '')
-    case 'hypothesis':
-    case 'note':
-      return String(p.content ?? '').slice(0, 40)
-    default:
-      return ''
-  }
+  const raw = String(n.label ?? p.label ?? p.name ?? p.title ?? '').trim()
+  if (raw) return raw
+  return KIND_LABELS[n.kind] ?? String(n.kind ?? '')
 }
 
-/** 案件画布徽标：右上「窗口」（研判 5 类）+ 人工节点「×」删除 */
-function cardBadges(data: Record<string, unknown>): Array<Record<string, unknown>> {
-  const badges: Array<Record<string, unknown>> = []
-  if (data.winnable === true) {
-    badges.push({
-      text: '窗',
-      className: 'badge-window',
-      placement: 'right-top',
-      backgroundFill: canvasTokens.kind.subject.chip,
-      fill: '#FFFFFF',
-      fontSize: 9,
-      padding: [1, 4],
-    })
-  }
-  if (data.deletable === true) {
-    badges.push({
-      text: '×',
-      className: 'badge-delete',
-      placement: 'right-bottom',
-      backgroundFill: '#8A97AC',
-      fill: '#FFFFFF',
-      fontSize: 9,
-      padding: [1, 4],
-    })
-  }
-  return badges
-}
-
-async function mountGraph(): Promise<void> {
-  if (graphFailed.value || !containerEl.value || !doc.value) return
-  let GraphCtor: new (cfg: unknown) => G6Instance
-  try {
-    const mod = await import('@antv/g6')
-    GraphCtor = mod.Graph as unknown as new (cfg: unknown) => G6Instance
-  } catch {
-    graphFailed.value = true
-    return
-  }
-  try {
-    ensureResearchCardNode()
-    inst = new GraphCtor({
-      container: containerEl.value,
-      autoResize: true,
-      data: toG6Data(),
-      node: {
-        type: RESEARCH_CARD_NODE,
-        style: {
-          size: [186, 50],
-          radius: 8,
-          lineWidth: (d: G6Datum) => (d.data?.fresh ? 2.2 : 1.25),
-          // 红线 R2：重名待裁决虚线边框（口径取 AMBIGUOUS_BORDER）；
-          // fresh 脉冲优先（回写上图 3s 高亮，暖橙 = minute 档符号色系）
-          lineDash: (d: G6Datum) =>
-            d.data?.fresh ? [] :
-            d.data?.ambiguous ? AMBIGUOUS_BORDER.lineDash : [],
-          stroke: (d: G6Datum) =>
-            d.data?.fresh
-              ? '#FF7043'
-              : d.data?.ambiguous
-                ? AMBIGUOUS_BORDER.color
-                : d.data?.manual
-                  ? canvasTokens.strokeManual
-                  : canvasTokens.stroke,
-          fill: canvasTokens.surface,
-          cursor: 'pointer',
-          chipText: (d: G6Datum) => d.data?.glyph ?? '',
-          chipFill: (d: G6Datum) => d.data?.chip ?? 'transparent',
-          chipInk: (d: G6Datum) => d.data?.chipInk ?? canvasTokens.title,
-          titleFill: canvasTokens.title,
-          subtitleText: (d: G6Datum) => d.data?.subtitle ?? '',
-          subtitleFill: canvasTokens.subtitle,
-          labelText: (d: G6Datum) => d.data?.label ?? '',
-          labelPlacement: 'left',
-          labelFill: canvasTokens.title,
-          labelFontSize: 12,
-          labelFontWeight: 600,
-          labelMaxWidth: 148,
-          labelWordWrap: true,
-          labelMaxLines: 1,
-          labelTextOverflow: 'ellipsis',
-          miniDot: (d: G6Datum) => d.data?.miniDot ?? null,
-          miniBar: (d: G6Datum) => d.data?.miniBar ?? null,
-          miniAmbiguous: (d: G6Datum) => d.data?.ambiguous === true,
-          badges: (d: G6Datum) => cardBadges(d.data ?? {}),
-        },
-      },
-      edge: {
-        type: 'cubic',
-        style: {
-          stroke: (d: G6Datum) =>
-            d.data?.system === false ? canvasTokens.edgeManual : canvasTokens.edgeSystem,
-          lineWidth: (d: G6Datum) => (d.data?.system === false ? 1.6 : 1.4),
-          lineDash: (d: G6Datum) => (d.data?.system === false ? [6, 4] : []),
-          endArrow: true,
-          labelText: (d: G6Datum) => d.data?.label ?? '',
-          labelFill: canvasTokens.edgeLabelFill,
-          labelFontSize: 10,
-          labelBackground: true,
-          labelBackgroundFill: canvasTokens.edgeLabelBg,
-          labelBackgroundRadius: 4,
-          labelPadding: [2, 5],
-          opacity: 0.9,
-        },
-      },
-      layout: { type: 'preset' },
-      animation: false,
-    })
-    inst.on?.('node:click', onNodeClick)
-    inst.on?.('canvas:click', onCanvasBlankClick)
-    inst.on?.('viewportchange', syncWindowAnchors)
-    // 必须先首帧 render 再调视口 API：G6 v5 构造期 data 不自动出图，
-    // 且 render 前 zoomTo/translateBy 会让拾取矩阵与渲染相机错位（点击不命中）。
-    await inst.render?.()
-    await applyInitialViewport()
-  } catch {
-    failGraph()
-  }
-}
-
-function failGraph(): void {
-  try {
-    inst?.destroy?.()
-  } catch {
-    /* ignore */
-  }
-  inst = null
-  graphFailed.value = true
-}
-
-async function renderGraph(): Promise<void> {
-  if (graphFailed.value || !doc.value) return
-  if (!inst) {
-    await mountGraph()
-    return
-  }
-  try {
-    inst.setData?.(toG6Data())
-    await inst.render?.()
-  } catch {
-    failGraph()
-  }
-}
-
-async function applyInitialViewport(): Promise<void> {
-  if (!inst || !doc.value) return
-  const box = contentBox(doc.value.nodes)
-  const [vw, vh] = inst.getSize?.() ?? [0, 0]
-  const scale = fitScale(box, vw, vh)
-  try {
-    await inst.zoomTo?.(scale)
-    const center = contentCenter(box)
-    const now = inst.getViewportByCanvas?.(center)
-    if (now) await inst.translateBy?.([vw / 2 - now[0], vh / 2 - now[1]])
-  } catch {
-    /* 视口 API 不可用（降级环境）：不影响成图 */
-  }
-}
-
-onBeforeUnmount(() => {
-  stopLensPoll()
-  try {
-    inst?.destroy?.()
-  } catch {
-    /* ignore */
-  }
-  inst = null
-})
-
-// ----------------------------------------------------------------------
-// P2 窗口框架：状态机 + 竞态 + 钉住 + 跟随 + 放大
-// ----------------------------------------------------------------------
-interface WinState {
-  nodeId: string
-  /** 案件级窗口分型（研判 5 类；source 溯源弹层不进案件画布） */
-  kind: Exclude<WindowKind, 'source'>
-  loading: boolean
-  error: string
-}
-/** 未钉住窗口（同时最多 1 个） */
-const activeWin = ref<WinState | null>(null)
-/** 钉住窗口（最多 3 个，PRD 窗口协议） */
-const pinnedWins = reactive<WinState[]>([])
-const PINNED_MAX = 3
-/** 打开中的窗口（渲染序：未钉住在前）；同一窗口只会出现在其中一侧 */
-const openWins = computed<WinState[]>(() =>
-  activeWin.value ? [activeWin.value, ...pinnedWins] : [...pinnedWins],
-)
-/** 节点画布坐标 → 容器像素（浮窗贴附 anchor），viewportchange 同步 */
-const anchorPx = reactive<Record<string, { x: number; y: number }>>({})
-
-function nodeOf(id: string): CanvasNode | null {
-  return doc.value?.nodes.find((n) => n.id === id) ?? null
-}
-
-function syncWindowAnchors(): void {
-  if (!inst) return
-  for (const w of [activeWin.value, ...pinnedWins]) {
-    if (!w) continue
-    const n = nodeOf(w.nodeId)
-    if (!n) continue
-    try {
-      const vp = inst.getViewportByCanvas?.([n.x, n.y])
-      if (vp) anchorPx[w.nodeId] = { x: vp[0], y: vp[1] }
-    } catch {
-      /* G6 内部状态未就绪 */
-    }
-  }
-}
-
-function anchorOf(nodeId: string): { x: number; y: number } {
-  return anchorPx[nodeId] ?? { x: 0, y: 0 }
-}
-
-function viewportSize(): { w: number; h: number } {
-  const size = inst?.getSize?.()
-  if (size && Number.isFinite(size[0]) && size[0] > 0) {
-    return { w: size[0], h: size[1] }
-  }
-  const el = containerEl.value
-  return { w: el?.clientWidth ?? 800, h: el?.clientHeight ?? 600 }
-}
-
-function openWindow(node: CanvasNode): void {
-  const kind = windowFor(node.kind)
-  if (!kind || kind === 'source') return
-  // 未钉住窗口唯一：开新窗即关旧窗（PRD 窗口协议；钉住窗口不受影响）
-  activeWin.value = {
-    nodeId: node.id,
-    kind,
-    loading: false,
-    error: '',
-  }
-  syncWindowAnchors()
-}
-
-function closeWin(w: WinState): void {
-  if (activeWin.value === w) activeWin.value = null
-  const idx = pinnedWins.indexOf(w)
-  if (idx >= 0) pinnedWins.splice(idx, 1)
-}
-
-function togglePin(w: WinState): void {
-  const idx = pinnedWins.indexOf(w)
-  if (idx >= 0) {
-    // 已钉住 → 取消钉住：并入未钉住位（挤掉原 active）
-    pinnedWins.splice(idx, 1)
-    activeWin.value = w
-    return
-  }
-  if (pinnedWins.length >= PINNED_MAX) {
-    message.warning('最多钉住 3 个窗口，请先取消一个')
-    return
-  }
-  if (activeWin.value === w) activeWin.value = null
-  pinnedWins.push(w)
-}
+// ---- 定向镜头调度（CAN-15/16：选中即靶心）--------------------------
+const lrShow = ref(false)
+const lrBusy = ref(false)
+const lrLenses = ref<LensSpecItem[]>([])
+const lrRecommendations = ref<any[]>([])
 
 /**
- * 窗口开/关切换（PRD 关闭协议：再点同一节点=关闭）。
- * 钉住窗口不受此影响——取消钉住是唯一关闭途径（Esc/空白/再点均不关钉住窗）。
+ * 靶心不可用必须**先说清楚**（CAN-20）：静默留空会被读成"可以手填"，
+ * 于是正兵填个名字跑一遍得到一个空结果，还以为是数据里没有。
  */
-function toggleWindow(node: CanvasNode): void {
-  if (activeWin.value?.nodeId === node.id) {
-    activeWin.value = null
-    return
+const lrPrefillBlocked = computed<string>(() => {
+  const id = selectedId.value
+  if (!id) return ''
+  const p = (nodeById.value.get(id)?.props ?? {}) as Record<string, unknown>
+  const nm = nodeLabelOf(nodeById.value.get(id))
+  if (p.person_pk_ambiguous === true) {
+    const c = Array.isArray(p.pk_candidates) ? p.pk_candidates.length : 0
+    return `「${nm}」同名异人（${c} 个候选主键），须先裁决主体再研判；系统不代为选择`
   }
-  if (pinnedWins.some((w) => w.nodeId === node.id)) return
-  openWindow(node)
-}
-
-function onEnlarge(w: WinState): void {
-  const to = windowEnlargeRoute(w.kind)
-  if (!to) return
-  const node = nodeOf(w.nodeId)
-  const n = node
-  // P1 范围仅跳转；筛选参数（主体/地点预设）按 PRD 属 P1 放大带筛选
-  const query: Record<string, string> = {}
-  if (n && n.kind === 'subject') {
-    const pk = String((n.props ?? {}).person_pk ?? '')
-    if (pk) query.subject = pk
-  }
-  if (n && n.kind === 'place') {
-    const loc = String((n.props ?? {}).location_id ?? '')
-    if (loc) query.location = loc
-  }
-  void router.push({ path: to, query })
-}
-
-function onWinRetry(w: WinState): void {
-  w.error = ''
-  w.loading = true
-  // 分型窗口数据自取（RelationWindow 内建重试）；此处仅复位错误态
-  setTimeout(() => {
-    w.loading = false
-  }, 0)
-}
-
-/** 节点点击：窗口徽标 → 开窗；删除徽标 → 删除；否则选中即开窗（研判 5 类） */
-function onNodeClick(ev: unknown): void {
-  const e = ev as G6Event
-  const id = String(e?.id ?? e?.target?.id ?? '')
-  const node = nodeOf(id)
-  if (!node) return
-  const className =
-    typeof e?.originalTarget?.className === 'string' ? e.originalTarget.className : ''
-  if (className === 'badge-window') {
-    toggleWindow(node)
-    return
-  }
-  if (className === 'badge-delete') {
-    void removeNode(node)
-    return
-  }
-  // P3：点选即选靶心（工具箱滑出跟随；连线模式优先消费点击）
-  if (connectArmed.value) {
-    if (!connectSrc.value) {
-      connectSrc.value = node
-      connectTarget.value = null
-      connectRel.value = null
-      message.info(`已选源节点「${node.label}」：点击目标节点`)
-      return
-    }
-    void onConnectTarget(node)
-    return
-  }
-  selectedNode.value = node
-  toolboxShow.value = true
-  // 点击节点体 = 开它自己的窗口（无窗口类型则提示）
-  if (hasWindow(node.kind)) {
-    toggleWindow(node)
-  } else {
-    message.info(`${KIND_LABELS[node.kind]}节点无分型窗口`)
-  }
-}
-
-function onCanvasBlankClick(): void {
-  if (activeWin.value) activeWin.value = null
-  connectArmed.value = false
-  connectSrc.value = null
-}
-
-function onEsc(ev: KeyboardEvent): void {
-  if (ev.key !== 'Escape') return
-  if (activeWin.value) activeWin.value = null
-  else {
-    connectArmed.value = false
-    connectSrc.value = null
-  }
-}
-
-// ----------------------------------------------------------------------
-// 编辑通路：添加节点 + 连线（矩阵先拒）+ 删除
-// ----------------------------------------------------------------------
-const busy = ref(false)
-const nodeModalShow = ref(false)
-const nodeModalRef = ref<InstanceType<typeof CaseNodeModal> | null>(null)
-
-function spawnXY(): { x: number; y: number } {
-  const n = doc.value?.nodes.length ?? 0
-  return { x: 120 + (n % 4) * 240, y: 120 + Math.floor(n / 4) * 110 }
-}
-
-async function onModalSubmit(
-  kind: CaseManualNodeKind,
-  props: Record<string, unknown>,
-): Promise<void> {
-  if (!caseId.value) return
-  const { x, y } = spawnXY()
-  try {
-    const env = await caseCanvasApi.createNode(caseId.value, {
-      kind,
-      props,
-      x,
-      y,
-      version: version.value,
-    })
-    envelope.value = env
-    nodeModalRef.value?.finish(true)
-    await nextTick()
-    void renderGraph()
-  } catch (e) {
-    nodeModalRef.value?.finish(false, presentError(e).title)
-  }
-}
-
-/** 连线模式：true=已点「连线」等待选源；connectSrc 非空=已选源等待目标 */
-const connectArmed = ref(false)
-/** 连线模式：已点源节点，等待目标 */
-const connectSrc = ref<CanvasNode | null>(null)
-const connectTarget = ref<CanvasNode | null>(null)
-const connectRel = ref<string | null>(null)
-
-function startConnect(): void {
-  connectArmed.value = true
-  connectSrc.value = null
-  connectTarget.value = null
-  connectRel.value = null
-  message.info('连线模式：点击源节点')
-}
-
-const connectRels = computed(() => {
-  const s = connectSrc.value
-  const t = connectTarget.value
-  if (!s || !t) return []
-  return caseAllowedRels(s.kind, t.kind)
-})
-
-const connectReject = computed(() => {
-  const s = connectSrc.value
-  const t = connectTarget.value
-  if (!s || !t || s.id === t.id) return ''
-  const rels = connectRels.value
-  if (rels.length === 0) {
-    const probe = caseCanConnect(s.kind, t.kind, '同现')
-    return probe.reason ?? '该两类节点不能建立该关系'
+  if (!p.person_pk) {
+    return (String(p.pk_resolution ?? '').trim()
+      || `「${nm}」未锚定语义层主键，无可用研判`)
   }
   return ''
 })
 
-async function onConnectTarget(node: CanvasNode): Promise<void> {
-  const src = connectSrc.value
-  if (!src) return
-  if (src.id === node.id) {
-    message.warning('不能连接节点自身')
-    return
-  }
-  connectTarget.value = node
-  connectRel.value = null
-}
-
-async function confirmConnect(): Promise<void> {
-  const s = connectSrc.value
-  const t = connectTarget.value
-  const rel = connectRel.value
-  if (!s || !t || !rel || !caseId.value) return
-  // 前端先拒（矩阵），后端 can_connect 兜底
-  const check = caseCanConnect(s.kind, t.kind, rel)
-  if (!check.ok) {
-    message.error(check.reason ?? '该连线不合法')
-    return
-  }
-  busy.value = true
-  try {
-    const env = await caseCanvasApi.createEdge(caseId.value, {
-      source: s.id,
-      target: t.id,
-      rel,
-      version: version.value,
-    })
-    envelope.value = env
-    message.success('连线已保存', { duration: 1500 })
-    connectArmed.value = false
-    connectSrc.value = null
-    connectTarget.value = null
-    connectRel.value = null
-    await nextTick()
-    void renderGraph()
-  } catch (e) {
-    message.error(`保存失败：${presentError(e).title}`)
-  } finally {
-    busy.value = false
-  }
-}
-
-async function removeNode(node: CanvasNode): Promise<void> {
-  if (!caseId.value) return
-  busy.value = true
-  try {
-    const env = await caseCanvasApi.deleteNode(caseId.value, node.id, version.value)
-    envelope.value = env
-    message.success('节点已删除', { duration: 1500 })
-    // 节点删了，窗口跟着关（悬挂窗口无意义）
-    if (activeWin.value?.nodeId === node.id) activeWin.value = null
-    const pi = pinnedWins.findIndex((w) => w.nodeId === node.id)
-    if (pi >= 0) pinnedWins.splice(pi, 1)
-    await nextTick()
-    void renderGraph()
-  } catch (e) {
-    message.error(`删除失败：${presentError(e).title}`)
-  } finally {
-    busy.value = false
-  }
-}
-
-// ----------------------------------------------------------------------
-// P3 镜头工具箱：靶心选中 + 202 轮询 + 回写上图脉冲
-// ----------------------------------------------------------------------
-const selectedNode = ref<CanvasNode | null>(null)
-const toolboxShow = ref(false)
-/** 工具箱轻量节点视图（结构与 CanvasNode 兼容，裁剪为纯函数入参） */
-const toolboxNode = computed<ToolboxNode | null>(() => {
-  const n = selectedNode.value
-  if (!n) return null
-  return {
-    id: n.id,
-    kind: n.kind,
-    label: n.label,
-    props: (n.props ?? {}) as Record<string, unknown>,
-  }
+const lrPrefill = computed<Record<string, unknown>>(() => {
+  if (lrPrefillBlocked.value) return {}
+  const id = selectedId.value
+  if (!id) return {}
+  const p = (nodeById.value.get(id)?.props ?? {}) as Record<string, unknown>
+  const pk = typeof p.person_pk === 'string' ? p.person_pk : ''
+  if (!pk) return {}
+  // 只填主靶心：同时填 subject_a 会让双主体镜头变成"自己与自己同框"
+  return { target_subject: pk }
 })
 
-/** 回写上图脉冲：新产出 analysis_result 节点 id 集（3s 后清除重渲） */
-const freshIds = ref<Set<string>>(new Set())
-
-/** 状态条镜头任务项（轮询中） */
-interface LensTaskState {
-  id: string
-  skillId: string
-  name: string
-  status: string
-}
-const lensTask = ref<LensTaskState | null>(null)
-let lensPollTimer: number | null = null
-
-function stopLensPoll(): void {
-  if (lensPollTimer !== null) {
-    window.clearTimeout(lensPollTimer)
-    lensPollTimer = null
+/** 画布可见主体名（候选规模主力）；object/subject 才算主体 */
+const lrCanvasNodes = computed<string[]>(() => {
+  const out: string[] = []
+  for (const n of doc.value.nodes) {
+    if (n.kind !== 'object' && n.kind !== 'subject') continue
+    const nm = nodeLabelOf(n)
+    if (nm && !out.includes(nm)) out.push(nm)
+    if (out.length >= 100) break
   }
+  return out
+})
+
+const lrSelectedNode = computed<string | null>(() => {
+  const id = selectedId.value
+  return id ? nodeLabelOf(nodeById.value.get(id)) || null : null
+})
+
+async function openLensRun(): Promise<void> {
+  try {
+    const r = await lensesApi.list(caseId.value)
+    // 看的是 canvas_enabled（不是 enabled）：批量自动跑与正兵手动带参跑
+    // 是两个开关——自动跑关了仍可在画布手动跑。
+    lrLenses.value = (r.lenses ?? []).filter(
+      (l) => l.requires_params && l.canvas_enabled
+        && l.pack_enabled && l.mode === 'deterministic')
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+    lrLenses.value = []
+  }
+  if (!lrLenses.value.length) {
+    message.warning('当前案件没有可在画布上调度的定向镜头（需 requires_params 且画布化已启用）')
+  }
+  if (lrPrefillBlocked.value) {
+    message.warning(lrPrefillBlocked.value, { duration: 6000 })
+  }
+  lrShow.value = true
 }
 
-function handleLensSubmitted(taskId: string, skillId: string, name: string): void {
-  stopLensPoll()
-  lensTask.value = { id: taskId, skillId, name, status: 'PENDING' }
-  const started = Date.now()
-  const tick = async (): Promise<void> => {
-    if (!lensTask.value || lensTask.value.id !== taskId) return
-    let t: TaskRow | null = null
+async function submitLensRun(payload: {
+  skill_id: string
+  params: Record<string, unknown>
+}): Promise<void> {
+  lrBusy.value = true
+  // 结果要挂在**发起它的靶心**下（CAN-19），先记下当前选中节点
+  const targetId = selectedId.value || undefined
+  try {
+    // 案件级画布**没有发起线索**，所以 origin 只带 node_id（不带 clue_id）。
+    // 后端据此把观察记上发起节点，重建层才能把结论挂回这个节点下；
+    // 若带空 clue_id，后端会把来源整个丢弃 → 跑完图上什么都不出现。
+    const r = await lensesApi.run(caseId.value, payload.skill_id, {
+      params: payload.params,
+      auto: false,
+      origin: {
+        node_id: targetId,
+        subject: lrSelectedNode.value || undefined,
+        surface: 'case-canvas',
+      },
+    })
+    lrShow.value = false
+    // 202 只代表入队；必须等终态再读，否则读的是旧档案、图上挂不出新结论
     try {
-      t = await tasksApi.get(taskId)
-      if (lensTask.value) lensTask.value.status = t.status
-      if (isTerminal(t.status)) {
-        stopLensPoll()
-        await onLensTaskDone(t)
+      const t = await waitForTerminal(r.task.id, {
+        intervalMs: 500, timeoutMs: 30_000,
+      })
+      if (t.status !== 'SUCCEEDED') {
+        message.error(`定向镜头未成功（${t.status}）：`
+          + `${t.error_message || t.error_code || '无错误详情'}`, { duration: 6000 })
         return
       }
-    } catch {
-      /* 瞬时轮询失败忽略；超时兜底在下方 */
-    }
-    if (Date.now() - started > 120_000) {
-      stopLensPoll()
-      lensTask.value = null
-      message.warning('镜头轮询超时：任务仍在后台执行，可稍后刷新画布查看产出')
+    } catch (err) {
+      if (err instanceof TaskWaitTimeoutError) {
+        // 超时不是失败：任务仍在跑，给正兵一条可自行完成的路径
+        message.info('镜头仍在运行，完成后在「研判结果」面板揭示该组', { duration: 6000 })
+        return
+      }
+      message.error(String((err as Error)?.message ?? err))
       return
     }
-    lensPollTimer = window.setTimeout(() => void tick(), 2000)
+    // 渐进式生成：跑成功只揭示这一组，别把档案里其他组一起长出来。
+    // 揭示集持久后 GET 才会重建对应结论节点（target 取自选中靶心）。
+    if (targetId) {
+      await enqueueReveal(
+        toggleRevealedGroup(revealedKeys.value, targetId, payload.skill_id, true),
+      )
+    } else {
+      await load()
+    }
+    message.success('研判完成，结果已挂到发起节点下')
+  } catch (e) {
+    message.error(String((e as Error)?.message ?? e))
+  } finally {
+    lrBusy.value = false
   }
-  void tick()
 }
 
-/** 镜头任务终态：重拉画布 → diff 新结论节点 → 脉冲高亮 3s */
-async function onLensTaskDone(t: TaskRow): Promise<void> {
-  const before = new Set((doc.value?.nodes ?? []).map((n) => n.id))
-  await load()
-  const fresh = (doc.value?.nodes ?? []).filter(
-    (n) => n.kind === 'analysis_result' && !before.has(n.id),
-  )
-  if (t.status === 'SUCCEEDED' && fresh.length > 0) {
-    freshIds.value = new Set(fresh.map((n) => n.id))
-    await nextTick()
-    void renderGraph()
-    message.success(t.progress_detail || `镜头产出已上图（新增 ${fresh.length} 条结论）`, {
-      duration: 4000,
+// ---- G6 实例 --------------------------------------------------------
+const containerEl = ref<HTMLDivElement | null>(null)
+const g6Failed = ref(false)
+let inst: any = null
+type G6Instance = {
+  render?: () => Promise<void> | void
+  destroy?: () => void
+  setData?: (d: unknown) => void
+  getViewportByCanvas?: (p: [number, number]) => [number, number]
+  getElementPosition?: (id: string) => [number, number] | undefined
+  on?: (evt: string, cb: (e: unknown) => void) => void
+}
+let GraphCtor: (new (cfg: unknown) => G6Instance) | null = null
+
+/** 节点视觉：符号口径统一取 domain，页面不自带一套颜色/线型 */
+function toNodeDatum(n: CanvasNode) {
+  const p = (n.props ?? {}) as Record<string, unknown>
+  const s = nodeSymbol({
+    ambiguous: p.person_pk_ambiguous === true,
+    precision: String(p.precision ?? ''),
+    unanchored: p.person_pk == null && n.kind === 'subject',
+  })
+  const baseLabel = nodeLabelOf(n)
+  // 靶心节点未揭示组数角标：G6 单标签，用紧凑文本后缀（面板有完整清单）
+  const pending = unrevealedMap.value.get(n.id) ?? 0
+  const badge = pending > 0 ? ` ·${pending}组` : ''
+  const label = (p.person_pk_ambiguous === true ? '? ' : '') + baseLabel + badge
+  return {
+    id: n.id,
+    data: {
+      label,
+      // nodeSymbol 只给精度色点/线型（dimDotColor/lineDash）；图节点底色
+      // 维持统一蓝，描边透明——色点语义在卡片/窗口里表达，不在总图重描。
+      color: '#6e9fc1',
+      stroke: 'transparent',
+      lineWidth: 0,
+      lineDash: s.lineDash.length ? s.lineDash : undefined,
+      size: n.kind === 'hypothesis' ? 34 : 26,
+      raw: n,
+    },
+    style: { x: n.x ?? undefined, y: n.y ?? undefined },
+  }
+}
+
+function toEdgeDatum(e: CanvasEdge) {
+  // 重建边把 precision 放 props（类型层未声明，按结构读取）
+  const p = ((e as CanvasEdge & { props?: Record<string, unknown> }).props ?? {})
+  const s = edgeSymbol({ precision: asPrecision(String(p.precision ?? '')) })
+  return {
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    data: {
+      color: s.stroke,
+      width: s.lineWidth,
+      dashed: (s.lineDash?.length ?? 0) > 0,
+      label: String(p.rel ?? e.rel ?? ''),
+    },
+  }
+}
+
+function toDatum() {
+  const ids = new Set(doc.value.nodes.map((n) => n.id))
+  return {
+    nodes: doc.value.nodes.map(toNodeDatum),
+    // 边引用的节点必须存在，否则 G6 渲染失败；镜头层节点被过滤时要连带滤边
+    edges: doc.value.edges
+      .filter((e) => ids.has(e.source) && ids.has(e.target))
+      .map(toEdgeDatum),
+  }
+}
+
+async function initGraph(): Promise<void> {
+  if (!containerEl.value) return
+  try {
+    const mod: any = await import('@antv/g6')
+    GraphCtor = mod.Graph as unknown as new (cfg: unknown) => G6Instance
+  } catch {
+    g6Failed.value = true
+    return
+  }
+  try {
+    inst = new GraphCtor!({
+      container: containerEl.value,
+      autoResize: true,
+      autoFit: 'view',
+      padding: 24,
+      data: toDatum(),
+      layout: { type: 'force', preventOverlap: true, nodeSize: 30 },
+      node: {
+        style: {
+          size: (d: any) => d.data?.size ?? 26,
+          fill: (d: any) => d.data?.color ?? '#6e9fc1',
+          stroke: (d: any) => d.data?.stroke ?? 'transparent',
+          lineWidth: (d: any) => d.data?.lineWidth ?? 0,
+          lineDash: (d: any) => d.data?.lineDash,
+          labelText: (d: any) => d.data?.label ?? '',
+          labelFill: '#e8eef4',
+          labelFontSize: 11,
+          labelPlacement: 'bottom',
+        },
+      },
+      edge: {
+        style: {
+          stroke: (d: any) => d.data?.color ?? '#3a5a72',
+          lineWidth: (d: any) => d.data?.width ?? 1,
+          lineDash: (d: any) => (d.data?.dashed ? [4, 3] : undefined),
+          endArrow: true,
+          labelText: (d: any) => d.data?.label ?? '',
+          labelFill: '#8aa5b8',
+          labelFontSize: 10,
+        },
+      },
+      behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
     })
-    window.setTimeout(() => {
-      freshIds.value = new Set()
-      void renderGraph()
-    }, 3000)
-  } else if (t.status === 'SUCCEEDED') {
-    // 幂等重跑（同观察已上图）或无观察（progress_detail 带降级原因）
-    message.info(t.progress_detail || '镜头完成：无新增画布产出', { duration: 4000 })
-  } else {
-    message.error(`镜头任务失败：${failureSummary(t)}`, { duration: 5000 })
+    inst.on?.('node:click', onNodeClick)
+    inst.on?.('node:dragend', onNodeDragEnd)
+    await inst.render?.()
+  } catch {
+    g6Failed.value = true
   }
-  lensTask.value = null
 }
 
-// ----------------------------------------------------------------------
-// G6 事件绑定前的窗口锚点初始化
-// ----------------------------------------------------------------------
-watch(
-  () => doc.value?.nodes.map((n) => n.id).join(','),
-  () => {
-    void nextTick().then(syncWindowAnchors)
-  },
+/**
+ * G6 render 串行守卫：load()/揭示链/拖拽摆位可能在一个 render() 的 Promise
+ * 还没结束时再次 setData()+render()，旧渲染绘制已被移除的元素会抛
+ * "Node not found for id …"。每次刷新捕获自己的数据并排队，前一次
+ * render 落定后再画最新一版。
+ */
+let renderChain: Promise<void> = Promise.resolve()
+function refreshGraph(): void {
+  const datum = toDatum()
+  renderChain = renderChain.then(async () => {
+    try {
+      inst?.setData?.(datum)
+      await inst?.render?.()
+    } catch {
+      g6Failed.value = true
+    }
+  })
+}
+
+// ---- 加载与保存 -----------------------------------------------------
+async function load(): Promise<void> {
+  loading.value = true
+  loadErr.value = ''
+  try {
+    const env = await canvasApi.getCaseCanvas(caseId.value)
+    doc.value = env.doc ?? { nodes: [], edges: [] }
+    version.value = env.version ?? null
+    // lens_layer 是只读清单（全量枚举所有组 + revealed 标志），不进 doc
+    lensLayer.value = env.lens_layer ?? null
+    lensGroups.value = env.lens_layer?.groups ?? []
+    dirty.value = false
+    refreshGraph()
+  } catch (e) {
+    loadErr.value = `画布读取失败：${String((e as Error)?.message ?? e)}`
+  } finally {
+    loading.value = false
+  }
+}
+
+async function save(opts: { quiet?: boolean } = {}): Promise<boolean> {
+  saving.value = true
+  try {
+    const r = await canvasApi.saveCaseCanvas(caseId.value, doc.value, version.value, true)
+    // 返回不含 doc——只前进 version，绝不用它覆盖本地（会把图抹成空）
+    if (typeof r?.version === 'number') version.value = r.version
+    dirty.value = false
+    if (!opts.quiet) message.success('已保存')
+    return true
+  } catch (e) {
+    message.error(`保存失败：${String((e as Error)?.message ?? e)}`)
+    return false
+  } finally {
+    saving.value = false
+  }
+}
+
+/**
+ * 揭示集写操作：串行 + 飞行中合并 + 最新意图胜出。
+ * - 连点不逐个发 PATCH：保存排空循环（drainRevealQueue）每轮都取
+ *   desiredReveal 最新集合；只有保存期间又来了新意图才追加一轮。
+ * - 意图基线取 desiredReveal（本地最新意图），不取服务端回显——load()
+ *   完成前到达的点击若基于回显集合计算，会丢掉飞行中的修改。
+ * - 行点击一律按本地最新意图"取反"（见 onFlipGroup），不采信受控
+ *   checkbox 在回显翻转瞬间给出的事件布尔。
+ * 保存失败先 GET 刷新版本，再带最新集合重试一次。
+ */
+let revealChain: Promise<void> = Promise.resolve()
+let revealDraining = false
+const desiredReveal = ref<Set<string> | null>(null)
+
+function enqueueReveal(keys: Set<string>): Promise<void> {
+  desiredReveal.value = keys
+  // 当帧同步反映到文档：连点的视觉状态与后续意图基线都立即更新
+  doc.value = withRevealedGroups(doc.value, keys)
+  if (!revealDraining) {
+    revealDraining = true
+    revealChain = revealChain.then(drainRevealQueue)
+  }
+  return revealChain
+}
+
+async function drainRevealQueue(): Promise<void> {
+  revealBusy.value = true
+  try {
+    for (;;) {
+      const latest = desiredReveal.value
+      if (!latest) break
+      doc.value = withRevealedGroups(doc.value, latest)
+      let ok = await save({ quiet: true })
+      if (!ok) {
+        await load()
+        doc.value = withRevealedGroups(doc.value, latest)
+        ok = await save({ quiet: true })
+      }
+      if (!ok) break
+      await load()
+      // 保存期间没有更新的意图：回落到服务端回显作为后续基线，
+      // 避免他人并发修改被本地陈旧意图长期盖住
+      if (desiredReveal.value === latest) {
+        desiredReveal.value = null
+        break
+      }
+    }
+  } finally {
+    revealBusy.value = false
+    revealDraining = false
+  }
+}
+
+async function onFlipGroup(g: CaseCanvasLensGroup): Promise<void> {
+  // 不采信 update:checked 的布尔：保存链中的 load() 回显可能在点击瞬间把
+  // 受控 checkbox 的视觉状态翻回旧值，事件布尔会与用户真实意图相反。
+  // 一次行点击的语义就是"相对本地最新意图取反"。
+  const base = desiredReveal.value ?? revealedKeys.value
+  const on = !base.has(revealKey(g.target_node_id, g.lens_id))
+  await enqueueReveal(
+    toggleRevealedGroup(base, g.target_node_id, g.lens_id, on))
+}
+
+async function onRevealAll(): Promise<void> {
+  await enqueueReveal(allRevealedKeys(lensGroups.value))
+}
+
+function isGroupRevealed(g: CaseCanvasLensGroup): boolean {
+  return revealedKeys.value.has(revealKey(g.target_node_id, g.lens_id))
+}
+
+function precisionLabel(p?: string | null): string {
+  if (!p) return ''
+  return PRECISION_LABEL[asPrecision(String(p))] ?? String(p)
+}
+
+// ---- 拖拽落位：坐标回写 doc（重建层坐标由服务端收割进 meta.lens_layout）----
+let dragSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function onNodeDragEnd(evt: unknown): void {
+  const id = String((evt as any)?.target?.id ?? (evt as any)?.data?.id ?? '')
+  const node = doc.value.nodes.find((n) => n.id === id)
+  if (!node) return
+  const pos = inst?.getElementPosition?.(id)
+  if (!pos || (!Number.isFinite(pos[0]) && !Number.isFinite(pos[1]))) return
+  node.x = pos[0]
+  node.y = pos[1]
+  dirty.value = true
+  // 防抖静默自动保存：拖动摆位是高频动作，不逐条弹「已保存」。
+  // 排在揭示写链之后——与逐组揭示的 PATCH 并发会同基准版本撞 409。
+  if (dragSaveTimer) clearTimeout(dragSaveTimer)
+  dragSaveTimer = setTimeout(() => {
+    dragSaveTimer = null
+    void revealChain.then(() => save({ quiet: true }))
+  }, 1200)
+}
+
+// ---- 节点点击：开专属窗口，其余走抽屉 -------------------------------
+async function onNodeClick(evt: unknown): Promise<void> {
+  const id = String((evt as any)?.target?.id ?? (evt as any)?.data?.id ?? '')
+  if (!id) return
+  const n = nodeById.value.get(id)
+  if (!n) return
+  // 选中即靶心（CAN-15）：先记下选中节点，开镜头面板时据此预填
+  selectedId.value = id
+  const pt = inst?.getViewportByCanvas?.([n.x ?? 0, n.y ?? 0]) ?? [0, 0]
+  const box = containerEl.value?.getBoundingClientRect()
+  winViewport.value = {
+    width: box?.width ?? 960,
+    height: box?.height ?? 600,
+  }
+  winAnchor.value = { x: Number(pt[0]) || 0, y: Number(pt[1]) || 0 }
+  winNodeId.value = id
+  winSupports.value = []
+  winErr.value = ''
+  // 只有研判结论需要回查观察档案；关系/地图/时间三窗口读画布内存数据。
+  // 此前案件画布没接这个请求，证据窗口三维与支撑观察永远为空。
+  if (n.kind === 'analysis_result') {
+    winLoading.value = true
+    try {
+      const res = await canvasApi.nodeWindow(
+        caseId.value, n as unknown as Record<string, unknown>)
+      // 切换/关窗后返回的旧响应不得覆盖当前窗口
+      if (winNodeId.value !== id) return
+      winSupports.value = res.supports ?? []
+      // 定位不到 ≠ 没有支撑，必须把原因说出来，不能静默空列表。
+      if (!res.server_sourced) winErr.value = res.note ?? ''
+      else if (res.match?.mode === 'none') winErr.value = res.match.reason
+    } catch (e) {
+      if (winNodeId.value !== id) return
+      winErr.value = `支撑观察加载失败：${String((e as Error)?.message ?? e)}`
+    } finally {
+      if (winNodeId.value === id) winLoading.value = false
+    }
+  }
+}
+
+async function closeWindow(): Promise<void> {
+  winNodeId.value = null
+  winSupports.value = []
+  winErr.value = ''
+  winLoading.value = false
+}
+
+/** 跳原始档案（WIN-10）：先关浮层，否则窗口会悬空盖在详情页上 */
+async function jumpToObservation(obsId: string): Promise<void> {
+  await closeWindow()
+  void router.push(`/c/observations/${encodeURIComponent(obsId)}`)
+}
+
+// ---- 加主体（CAN-13/14）---------------------------------------------
+function onSubjectSubmit(payload: { props: Record<string, unknown>; sel: unknown }): void {
+  const p = payload.props ?? {}
+  const name = String(p.name ?? p.label ?? '')
+  // id 必须走 case# 命名空间（与后端 case_node_id / 镜头层 target_node_id 对齐）：
+  // person_pk 是裸语义键（person_xxx），直接拿它当画布 id 会让"靶心已在画布"
+  // 永远判否、揭示组连向靶心的边全被悬空边防御剔除。
+  const pk = String(p.person_pk ?? p.ref ?? '')
+  const id = pk
+    ? `case#${caseId.value}:subject:${pk}`
+    : `case#${caseId.value}:subject:manual:${name || Date.now()}`
+  if (doc.value.nodes.some((n) => n.id === id)) {
+    pickerShow.value = false
+    message.warning('该主体已在图上')
+    return
+  }
+  doc.value.nodes.push({
+    id,
+    kind: 'subject',
+    props: p,
+    x: undefined,
+    y: undefined,
+  } as unknown as CanvasNode)
+  pickerShow.value = false
+  dirty.value = true
+  refreshGraph()
+  message.success('已加入画布')
+}
+
+// ---- 加物品（ITM 画布层）-------------------------------------------
+const itemShow = ref(false)
+
+/**
+ * 节点由服务端构造后回传（id 含摘要，前端算就会有两份规则）。
+ * 判重按 id：同一凭证重复登记时提示"已在图上"，不静默建第二个节点——
+ * 两个同 id 节点会让持有链出现分叉，而界面上看不出是同一件物品。
+ */
+function onItemSubmit(node: Record<string, unknown>): void {
+  const id = String((node as { id?: unknown }).id ?? '')
+  if (!id) {
+    message.error('服务端未返回节点 id，未加入画布')
+    return
+  }
+  if (doc.value.nodes.some((n) => n.id === id)) {
+    message.warning('该物品已在图上')
+    return
+  }
+  doc.value.nodes.push(node as unknown as CanvasNode)
+  dirty.value = true
+  refreshGraph()
+  message.success('已加入画布')
+}
+
+onMounted(async () => {
+  await load()
+  await initGraph()
+})
+onBeforeUnmount(() => {
+  if (dragSaveTimer) clearTimeout(dragSaveTimer)
+  try {
+    inst?.destroy?.()
+  } catch {
+    /* 组件卸载时实例可能已失效 */
+  }
+  inst = null
+})
+
+const hypothesisCount = computed(
+  () => doc.value.nodes.filter((n) => n.kind === 'hypothesis').length,
 )
-
-/** 分型窗口组件注册（研判 5 类；key 与 WinState.kind 同域） */
-const windowComponents: Record<Exclude<WindowKind, 'source'>, Component> = {
-  relation: RelationWindow,
-  map: MapWindow,
-  time: TimeWindow,
-  evidence: EvidenceWindow,
-  hypothesis: HypothesisWindow,
-}
 </script>
 
 <template>
-  <div class="canvas-page">
-    <EmptyState v-if="!caseId" type="empty" title="研判画布" desc="请先在顶部选择案件" />
-    <template v-else>
-      <div class="head">
-        <h2 class="head-title">案件研判画布 · {{ caseName }}</h2>
-        <span v-if="envelope" class="head-meta" data-testid="case-canvas-meta">
-          {{ envelope.canvas_domain }} 域 · v{{ envelope.version }} ·
-          {{ envelope.doc.nodes.length }} 节点 ·
-          {{ envelope.doc.edges.length }} 连线
-        </span>
-        <span class="head-spacer" />
-        <NButton size="tiny" :disabled="busy" @click="startConnect">
-          <template #icon><NIcon><GitNetworkOutline /></NIcon></template>
-          连线
-        </NButton>
-        <NButton size="tiny" type="primary" :disabled="busy" @click="nodeModalShow = true">
-          <template #icon><NIcon><AddOutline /></NIcon></template>
-          添加节点
-        </NButton>
-        <NButton size="tiny" quaternary @click="() => load()">
-          <template #icon><NIcon><RefreshOutline /></NIcon></template>
-          刷新
-        </NButton>
+  <div class="canvas-view">
+    <div class="bar">
+      <div class="bar-left">
+        <span class="title">研判层画布</span>
+        <NTag size="small" :bordered="false">节点 {{ doc.nodes.length }}</NTag>
+        <NTag size="small" :bordered="false">连线 {{ doc.edges.length }}</NTag>
+        <NTag size="small" :bordered="false">假设 {{ hypothesisCount }}</NTag>
+        <NTag size="small" :bordered="false">
+          已揭示 {{ revealedTotal }}/{{ lensGroups.length }} 组
+        </NTag>
+        <NTag v-if="lensLayer?.edges_dropped" size="small" type="warning" :bordered="false">
+          {{ lensLayer.edges_dropped }} 条挂边悬空
+        </NTag>
+        <NTag v-if="dirty" size="small" type="warning" :bordered="false">未保存</NTag>
       </div>
+      <div class="bar-right">
+        <NButton size="small" @click="pickerShow = true">加主体</NButton>
+        <NButton size="small" @click="itemShow = true">加物品</NButton>
+        <NButton size="small" @click="openLensRun">研判</NButton>
+        <NButton size="small" :loading="loading" @click="load">重建</NButton>
+        <NButton size="small" type="primary" :loading="saving" @click="save()">保存</NButton>
+      </div>
+    </div>
 
-      <div v-if="loading" class="loading"><NSpin size="small" /></div>
-      <EmptyState
-        v-else-if="error"
-        type="error"
-        title="画布读取失败"
-        :desc="error"
-      />
-      <div
-        v-else-if="envelope"
-        class="board"
-        data-testid="case-canvas-board"
-      >
-        <EmptyState
-          v-if="envelope.doc.nodes.length === 0"
-          class="board-empty"
-          type="empty"
-          title="这是一张空白的作战地图"
-          desc="放置第一个主体节点，开始研判。点右上「添加节点」，或从主体候选摆人、地、事。"
-        >
-          <template #action>
-            <NButton size="small" type="primary" @click="nodeModalShow = true">
-              添加节点
+    <NAlert v-if="loadErr" type="error" :bordered="false" class="alert">{{ loadErr }}</NAlert>
+
+    <div class="stage">
+      <div v-if="loading" class="center"><NSpin /></div>
+      <div v-else-if="g6Failed" class="center">
+        <NAlert type="warning" :bordered="false">
+          图渲染不可用，已降级为结构化列表（不影响数据）。
+        </NAlert>
+        <ul class="fallback">
+          <li v-for="n in doc.nodes" :key="n.id">
+            {{ nodeLabelOf(n) }}
+            <span v-if="(n.props as any)?.precision" class="dim">
+              · {{ PRECISION_LABEL[asPrecision(String((n.props as any).precision))] }}
+            </span>
+          </li>
+        </ul>
+      </div>
+      <div v-else-if="!doc.nodes.length" class="center empty-guide">
+        <template v-if="lensGroups.length">
+          <p class="empty-title">研判画布还是空的</p>
+          <p class="empty-sub">
+            已有 {{ lensGroups.length }} 组镜头结果尚未揭示——全部显示会把结论与假设长到图上；
+            靶心主体也可先「加主体」提升。
+          </p>
+          <div class="empty-actions">
+            <NButton size="small" type="primary" :loading="revealBusy"
+              :disabled="revealBusy" @click="onRevealAll">
+              全部显示（{{ lensGroups.length }} 组）
             </NButton>
-          </template>
-        </EmptyState>
-        <div ref="containerEl" class="g6-container" data-testid="case-g6" />
-        <div v-if="graphFailed && envelope.doc.nodes.length > 0" class="fallback">
-          <div
-            v-for="n in envelope.doc.nodes"
-            :key="n.id"
-            class="fallback-node"
-          >
-            <strong>{{ n.label }}</strong>
-            <span>{{ KIND_LABELS[n.kind] }}</span>
+            <NButton size="small" @click="pickerShow = true">加主体</NButton>
           </div>
-        </div>
-
-        <!-- 贴附浮窗宿主：未钉住 1 个 + 钉住至多 3 个 -->
-        <CanvasNodeWindow
-          v-for="w in openWins"
-          :key="`${w.nodeId}-${pinnedWins.includes(w) ? 'pin' : 'act'}`"
-          :window-kind="w.kind"
-          :title="nodeOf(w.nodeId)?.label ?? ''"
-          :anchor-x="anchorOf(w.nodeId).x"
-          :anchor-y="anchorOf(w.nodeId).y"
-          :viewport-w="viewportSize().w"
-          :viewport-h="viewportSize().h"
-          :pinned="pinnedWins.includes(w)"
-          :loading="w.loading"
-          :error="w.error"
-          :enlarge-to="windowEnlargeRoute(w.kind)"
-          @close="closeWin(w)"
-          @toggle-pin="togglePin(w)"
-          @enlarge="onEnlarge(w)"
-          @retry="onWinRetry(w)"
-          @cancel="closeWin(w)"
-        >
-          <component
-            :is="windowComponents[w.kind]"
-            v-if="nodeOf(w.nodeId)"
-            :node="nodeOf(w.nodeId)!"
-            :case-id="caseId"
-            :doc="doc!"
-          />
-        </CanvasNodeWindow>
-
-        <!-- 连线确认条（连线模式：源→目标 → 选关系） -->
-        <div
-          v-if="connectSrc && connectTarget"
-          class="connect-bar"
-          data-testid="connect-bar"
-        >
-          <span class="connect-endpoints">
-            {{ connectSrc.label }} → {{ connectTarget.label }}
-          </span>
-          <NDropdown
-            v-if="connectRels.length"
-            :options="connectRels.map((r) => ({ label: r, key: r }))"
-            trigger="click"
-            @select="(k: string) => { connectRel = k; void confirmConnect() }"
-          >
-            <NButton size="tiny" type="primary" :loading="busy" data-testid="connect-confirm">
-              选择关系（{{ connectRels.length }}）
-            </NButton>
-          </NDropdown>
-          <span v-else class="connect-reject" data-testid="connect-reject">
-            {{ connectReject || '该两类节点不能建立该关系' }}
-          </span>
-          <NButton
-            size="tiny"
-            quaternary
-            @click="connectArmed = false; connectSrc = null; connectTarget = null"
-          >
-            取消
-          </NButton>
-        </div>
-        <div v-else-if="connectSrc" class="connect-bar" data-testid="connect-src-bar">
-          <span class="connect-endpoints">源：{{ connectSrc.label }}</span>
-          <span class="connect-hint">点击目标节点完成连线</span>
-          <NButton
-            size="tiny"
-            quaternary
-            @click="connectArmed = false; connectSrc = null"
-          >
-            取消
-          </NButton>
-        </div>
-
-        <!-- P3 镜头工具箱：选中节点滑出（提交 202 后宿主轮询回写） -->
-        <CanvasToolbox
-          :show="toolboxShow && !!toolboxNode"
-          :case-id="caseId"
-          :node="toolboxNode"
-          @submitted="handleLensSubmitted"
-          @update:show="toolboxShow = $event"
+        </template>
+        <NEmpty
+          v-else
+          description="画布为空：先「加主体」，或对主体跑定向镜头"
         />
       </div>
+      <div v-show="!loading" ref="containerEl" class="g6" />
 
-      <!-- 底部状态条 -->
-      <footer v-if="envelope" class="statusbar" data-testid="case-canvas-statusbar">
-        <span>节点 {{ envelope.doc.nodes.length }}</span>
-        <span data-testid="statusbar-ambiguous">待裁决 {{ ambiguousCount }}</span>
-        <span>连线 {{ envelope.doc.edges.length }}</span>
-        <span v-if="activeWin || pinnedWins.length" class="statusbar-win">
-          窗口 {{ (activeWin ? 1 : 0) + pinnedWins.length }}（钉住 {{ pinnedWins.length }}/3）
-        </span>
-        <span v-if="lensTask" class="statusbar-lens" data-testid="statusbar-lens">
-          镜头 {{ lensTask.name }} · 运行中
-        </span>
-        <span v-if="graphFailed" class="statusbar-degraded">成图降级：节点列表模式</span>
-      </footer>
+      <!-- 研判结果清单：全量枚举可生长组，逐组揭示（v3 渐进式生成） -->
+      <div v-if="lensGroups.length" class="growth-panel">
+        <div class="growth-head">
+          <span>研判结果</span>
+          <span class="growth-count">{{ revealedTotal }}/{{ lensGroups.length }}</span>
+        </div>
+        <div class="growth-body">
+          <div v-for="sec in groupSections" :key="sec.target" class="growth-sec">
+            <div class="growth-target" :title="sec.target">
+              <span class="growth-target-name">{{ sec.targetLabel }}</span>
+              <NTag v-if="!sec.rows.some(isGroupRevealed) && sec.rows.every(r => !r.on_canvas)"
+                size="tiny" type="warning" :bordered="false">靶心未在画布</NTag>
+            </div>
+            <!-- 用 div 不用 label：label 包 NCheckbox 时点击会被原生转发与组件
+                 各触发一次，update:checked 成对(true,false)抵消，快速连点会丢组 -->
+            <div v-for="g in sec.rows" :key="`${g.target_node_id}|${g.lens_id}`"
+              class="growth-row">
+              <!-- 保存中不禁用：disabled 会直接吞掉连点意图；写入已由
+                   revealChain 串行 + desiredReveal 最新意图合并保证一致 -->
+              <NCheckbox
+                :checked="isGroupRevealed(g)"
+                @update:checked="() => onFlipGroup(g)"
+              />
+              <span class="growth-row-main">
+                <span class="growth-row-name">{{ g.lens_name || g.lens_id }}</span>
+                <span class="growth-row-meta">
+                  {{ g.observation_count }} 条观察
+                  <template v-if="precisionLabel(g.precision)">
+                    · {{ precisionLabel(g.precision) }}
+                  </template>
+                </span>
+                <span v-if="g.assumption" class="growth-row-hyp">{{ g.assumption }}</span>
+                <span v-if="!g.on_canvas" class="growth-row-warn">挂边待靶心提升</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="growth-foot">
+          <NButton size="tiny" block
+            :disabled="revealedTotal === lensGroups.length || revealBusy"
+            :loading="revealBusy" @click="onRevealAll">
+            全部显示
+          </NButton>
+        </div>
+      </div>
 
-      <CaseNodeModal
-        ref="nodeModalRef"
-        v-model:show="nodeModalShow"
-        @submit="onModalSubmit"
+      <NodeWindow
+        v-if="winNode"
+        :node="winNode as any"
+        :anchor="winAnchor"
+        :viewport="winViewport"
+        :edges="doc.edges as any"
+        :node-by-id="nodeById as any"
+        :supports="winSupports"
+        :loading="winLoading"
+        :error="winErr"
+        @close="closeWindow"
+        @open-node="(id: string) => onNodeClick({ target: { id } })"
+        @jump-observation="jumpToObservation"
       />
-    </template>
+    </div>
+
+    <SubjectPicker
+      v-model:show="pickerShow"
+      :case-id="caseId"
+      @submit="onSubjectSubmit"
+    />
+
+    <ItemPicker v-model:show="itemShow" :case-id="caseId" @submit="onItemSubmit" />
+
+    <!-- 定向镜头带参调度（选中主体预填；结果挂回发起节点下） -->
+    <LensRunModal
+      v-model:show="lrShow"
+      :lenses="lrLenses"
+      :busy="lrBusy"
+      :prefill="lrPrefill"
+      :case-id="caseId"
+      :canvas-nodes="lrCanvasNodes"
+      :selected-node="lrSelectedNode"
+      :recommendations="lrRecommendations"
+      @submit="submitLensRun"
+    />
   </div>
 </template>
 
 <style scoped>
-.canvas-page {
+.canvas-view {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  height: calc(100vh - 56px);
-  box-sizing: border-box;
+  height: 100%;
+  min-height: 480px;
 }
-.head {
+.bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex: none;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.head-title {
-  margin: 0;
-  font-size: 15px;
-  color: var(--sun-text-primary);
-}
-.head-meta {
-  font-size: 12px;
-  color: var(--sun-text-tertiary);
-  font-family: var(--sun-font-mono);
-}
-.head-spacer { flex: 1; }
-.loading {
+.bar-left,
+.bar-right {
   display: flex;
-  justify-content: center;
-  padding: 40px 0;
+  align-items: center;
+  gap: 8px;
 }
-.board {
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8eef4;
+}
+.alert {
+  margin: 8px 14px;
+}
+.stage {
   position: relative;
   flex: 1;
-  min-height: 320px;
-  border: 1px solid var(--sun-border, #e2e8f2);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--sun-surface, #fff);
+  min-height: 420px;
 }
-.board-empty {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.g6 {
+  width: 100%;
+  height: 100%;
 }
-.g6-container {
-  position: absolute;
-  inset: 0;
-}
-.fallback {
-  position: absolute;
-  inset: 0;
-  overflow: auto;
-  padding: 12px;
+.center {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: var(--sun-surface, #fff);
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 10px;
 }
-.fallback-node {
+.fallback {
+  max-height: 320px;
+  overflow: auto;
+  color: #c9d6e0;
+  font-size: 12px;
+}
+.dim {
+  color: #8aa5b8;
+}
+
+/* ---- 渐进式揭示：空态引导 ---- */
+.empty-guide {
+  gap: 8px;
+  padding: 0 24px;
+  text-align: center;
+}
+.empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e8eef4;
+}
+.empty-sub {
+  margin: 0;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8aa5b8;
+}
+.empty-actions {
   display: flex;
   gap: 8px;
-  align-items: baseline;
-  padding: 6px 10px;
-  border: 1px solid var(--sun-border, #e2e8f2);
-  border-radius: 6px;
-  font-size: 12px;
+  margin-top: 6px;
 }
-.fallback-node span {
-  color: var(--sun-text-tertiary);
-  font-size: 11px;
-}
-.connect-bar {
+
+/* ---- 研判结果清单（右侧浮层） ---- */
+.growth-panel {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 20;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  background: var(--sun-surface, #fff);
-  border: 1px solid var(--sun-border, #e2e8f2);
+  flex-direction: column;
+  width: 264px;
+  max-height: calc(100% - 24px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(10, 27, 54, 0.12);
+  background: rgba(16, 24, 32, 0.92);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
   font-size: 12px;
 }
-.connect-endpoints { font-weight: 600; color: var(--sun-text-primary); }
-.connect-hint, .connect-reject { color: var(--sun-text-tertiary); }
-.connect-reject { color: var(--sun-danger, #d03050); }
-.statusbar {
-  flex: none;
+.growth-head {
   display: flex;
-  gap: 16px;
   align-items: center;
-  height: 28px;
-  font-size: 11px;
-  color: var(--sun-text-tertiary);
-  border-top: 1px solid var(--sun-border, #e2e8f2);
-  padding-top: 4px;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-weight: 600;
+  color: #e8eef4;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-.statusbar-win { color: var(--sun-primary, #2f6fed); }
-.statusbar-lens { color: var(--sun-primary, #2f6fed); font-weight: 600; }
-.statusbar-degraded { color: #8a5a00; }
+.growth-count {
+  font-weight: 400;
+  color: #8aa5b8;
+}
+.growth-body {
+  overflow: auto;
+  padding: 4px 0;
+}
+.growth-sec + .growth-sec {
+  border-top: 1px dashed rgba(255, 255, 255, 0.07);
+}
+.growth-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 2px;
+  color: #b8c8d4;
+}
+.growth-target-name {
+  overflow: hidden;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.growth-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.growth-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.growth-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: center;
+  min-width: 0;
+}
+.growth-row-name {
+  width: 100%;
+  color: #dce6ee;
+}
+.growth-row-meta {
+  color: #8aa5b8;
+}
+.growth-row-hyp {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(110, 159, 193, 0.22);
+  color: #9fc7e0;
+}
+.growth-row-warn {
+  color: #e0b36b;
+}
+.growth-foot {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
 </style>

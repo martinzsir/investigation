@@ -2,41 +2,409 @@
   "schema_version": 2,
   "_note": "REQ-010 对象级/属性级策略。对象未在本文件声明 → fail-closed 默认拒绝（AC4）；coverage_missing() 保证 objects.json 每个对象都有显式声明（AC5）。角色分级与 core.access.ROLE_RANK 同源。schema_version 必须与其余 ontology 声明一致（REQ-G-016，core/policy.py 装载校验，不符硬失败）。",
   "object_policies": [
-    {"object": "person",       "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "基础情报"},
-    {"object": "person_identity", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "人员建档信息：对象全队可见，身份证号经 property_policy 遮蔽"},
-    {"object": "org",          "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
-    {"object": "account",      "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
-    {"object": "bid_project",  "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0},
-    {"object": "transaction",  "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1, "_note": "资金明细：正兵及以上"},
-    {"object": "call",         "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"object": "trackpoint",   "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "轨迹：行踪信息，偏将及以上"},
-    {"object": "clue",         "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "工作面线索全队可见"},
-    {"object": "decision",     "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "处置决策：偏将及以上"},
-    {"object": "tipoff",       "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "内间举报材料：AC1 演示对象，正兵被拒"},
-    {"object": "osint_article","roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报归档同内间门槛"},
-    {"object": "image_evidence","roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 人验通过图像证据：全队可见（仅人验 Action 可创建）"},
-    {"object": "location",       "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P11 空间研判地点实体：维度信息全队可见（坐标来源 geocode_source 属 metadata_props 审计）"}
+    {
+      "object": "person",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "基础情报"
+    },
+    {
+      "object": "person_identity",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "人员建档信息：对象全队可见，身份证号经 property_policy 遮蔽"
+    },
+    {
+      "object": "org",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0
+    },
+    {
+      "object": "account",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0
+    },
+    {
+      "object": "bid_project",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0
+    },
+    {
+      "object": "transaction",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1,
+      "_note": "资金明细：正兵及以上"
+    },
+    {
+      "object": "call",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "object": "trackpoint",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "轨迹：行踪信息，偏将及以上"
+    },
+    {
+      "object": "clue",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "工作面线索全队可见"
+    },
+    {
+      "object": "decision",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "处置决策：偏将及以上"
+    },
+    {
+      "object": "tipoff",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "内间举报材料：AC1 演示对象，正兵被拒"
+    },
+    {
+      "object": "osint_article",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "公开情报归档同内间门槛"
+    },
+    {
+      "object": "image_evidence",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P8 人验通过图像证据：全队可见（仅人验 Action 可创建）"
+    },
+    {
+      "object": "location",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P11 空间研判地点实体：维度信息全队可见（坐标来源 geocode_source 属 metadata_props 审计）"
+    },
+    {
+      "object": "item",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1,
+      "_note": "R1：重点物品与轨迹同门槛（行踪关联信息，正兵及以上）；见习不开放"
+    },
+    {
+      "object": "hold_record",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1,
+      "_note": "持有登记流水：与 item 同门槛（持有关系即行踪关联）；primary_digest 为摘要非明文，无需属性级遮蔽"
+    }
   ],
   "link_policies": [
-    {"link": "transfers",     "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"link": "calls_to",      "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"link": "co_located",    "roles": ["偏将", "主办", "human"], "min_clearance": 2},
-    {"link": "owns",          "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"link": "involved_in",   "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"link": "time_window",   "roles": ["正兵", "偏将", "主办", "human"], "min_clearance": 1},
-    {"link": "decision_for",  "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "runtime 链接，与 decision 同门槛"},
-    {"link": "tipoff_targets_person", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "举报指向关系，与 tipoff 同门槛"},
-    {"link": "tipoff_from_reporter", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "REQ-P-032 举报来源关系，与 tipoff 同门槛"},
-    {"link": "osint_mentions", "roles": ["偏将", "主办", "human"], "min_clearance": 2, "_note": "公开情报提及关系，与 osint_article 同门槛"},
-    {"link": "image_for_person", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接，与 image_evidence 同门槛"},
-    {"link": "image_for_org", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接"},
-    {"link": "image_for_project", "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P8 图像证据挂接"},
-    {"link": "trackpoint_at",    "roles": ["见习", "正兵", "偏将", "主办", "human"], "min_clearance": 0, "_note": "P11 空间研判事件-地点归属：全队可见（与 location 同门槛）"}
+    {
+      "link": "transfers",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "link": "calls_to",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "link": "co_located",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2
+    },
+    {
+      "link": "owns",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "link": "involved_in",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "link": "time_window",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1
+    },
+    {
+      "link": "decision_for",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "runtime 链接，与 decision 同门槛"
+    },
+    {
+      "link": "tipoff_targets_person",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "举报指向关系，与 tipoff 同门槛"
+    },
+    {
+      "link": "tipoff_from_reporter",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "REQ-P-032 举报来源关系，与 tipoff 同门槛"
+    },
+    {
+      "link": "osint_mentions",
+      "roles": [
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 2,
+      "_note": "公开情报提及关系，与 osint_article 同门槛"
+    },
+    {
+      "link": "image_for_person",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P8 图像证据挂接，与 image_evidence 同门槛"
+    },
+    {
+      "link": "image_for_org",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P8 图像证据挂接"
+    },
+    {
+      "link": "image_for_project",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P8 图像证据挂接"
+    },
+    {
+      "link": "trackpoint_at",
+      "roles": [
+        "见习",
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 0,
+      "_note": "P11 空间研判事件-地点归属：全队可见（与 location 同门槛）"
+    },
+    {
+      "link": "holds",
+      "roles": [
+        "正兵",
+        "偏将",
+        "主办",
+        "human"
+      ],
+      "min_clearance": 1,
+      "_note": "物品持有时态边：与 item 同门槛（持有关系即行踪关联，见习不开放）"
+    }
   ],
   "property_policies": [
-    {"object": "person", "property": "id_card",    "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "身份证号：主办及以上原文，其余部分遮蔽（310****1234）"},
-    {"object": "person_identity", "property": "id_card", "default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "人员建档身份证号：与 person.id_card 同口径（DE_IDCARD sensitive，全域 mask:partial 兜底）"},
-    {"object": "tipoff", "property": "content_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报材料正文：主办及以上原文"},
-    {"object": "tipoff", "property": "reporter_raw","default": "deny", "allow_roles": ["主办", "human"], "mask": "partial", "_note": "举报人身份：主办及以上原文"}
+    {
+      "object": "person",
+      "property": "id_card",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "身份证号：主办及以上原文，其余部分遮蔽（310****1234）"
+    },
+    {
+      "object": "person_identity",
+      "property": "id_card",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "人员建档身份证号：与 person.id_card 同口径（DE_IDCARD sensitive，全域 mask:partial 兜底）"
+    },
+    {
+      "object": "tipoff",
+      "property": "content_raw",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "举报材料正文：主办及以上原文"
+    },
+    {
+      "object": "tipoff",
+      "property": "reporter_raw",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "举报人身份：主办及以上原文"
+    },
+    {
+      "object": "person_identity",
+      "property": "phone",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "D11/R16：手机号标 sensitive 后必须声明遮蔽，否则装载期 fail-closed 硬失败。遮蔽后明文不可用于关联——关系分析 join 键改用 digest（I23）。"
+    },
+    {
+      "object": "item",
+      "property": "identifiers",
+      "default": "deny",
+      "allow_roles": [
+        "主办",
+        "human"
+      ],
+      "mask": "partial",
+      "_note": "R13/R14：identifiers 存 digest，非明文仍按敏感声明——纵深防御，避免未来误存明文时无遮蔽。"
+    }
   ]
 }

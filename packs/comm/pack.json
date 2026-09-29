@@ -1,0 +1,31 @@
+{
+  "pack_id": "comm",
+  "version": "1.0.0",
+  "_note": "PLAN-COMM-001 通讯研判镜头包：经 core.pack_loader 自枚举挂载，零注册代码。计算全部走 ontology Function（call_frequency_spike），镜头只做编排与线索化。\n\n为什么需要这个包：call_frequency_spike 此前是无 Lens 包装的裸 Function，只能经画布 RC-204 白名单直连调用，进不了镜头目录。\n\n假设归属纪律：assumption 由 core.lens_assumption.resolve_function_assumption 从本体反查（R3 → H3 二人密切私下关系），本文件只抄录反查结果供人阅读；tests/test_lens_assumption.py 逐条断言一致，抄错即红。\n\n靶心说明：本 Function 为全局口径（扫描全表通话对，取头部对端），不接受主体参数，故不声明 auto_from——硬加一个不被消费的参数会让正兵误以为选中某人即按他过滤。",
+  "skills": [
+    {
+      "skill_id": "comm_call_frequency",
+      "name": "通话高频镜头",
+      "stage": "用间",
+      "consumes_objects": ["call"],
+      "produces_dims": ["comm"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "absolute_threshold": {
+          "type": "integer",
+          "default": 30,
+          "description": "无对照对端时退化使用的绝对频次阈值（次）；有对照对端时按 ≥2 倍常态中位数判定，此阈值不生效"
+        }
+      },
+      "scope": {
+        "reads": ["call"]
+      },
+      "handler": "impl:call_frequency_lens",
+      "description": "通讯维度：头部对端通话频次 ≥2 倍常态中位数（规则 R3 挂钩）。仅示高频，不声称突增——无时间序列基线时算不出突增",
+      "uses_functions": ["call_frequency_spike"],
+      "assumption": "H3"
+    }
+  ]
+}

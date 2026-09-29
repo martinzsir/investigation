@@ -11,10 +11,11 @@ import { NAlert, NButton, NIcon, NModal, NSpin, useDialog, useMessage } from 'na
 import { RefreshOutline } from '@vicons/ionicons5'
 import { canvasApi } from '../../api/endpoints/canvas'
 import { vlmApi, type VlmMaterialFindings } from '../../api/endpoints/vlm'
-import { waitForTerminal } from '../../api/endpoints/tasks'
+import { TaskWaitTimeoutError, waitForTerminal } from '../../api/endpoints/tasks'
 import { ApiError, presentError } from '../../api/errors'
 import {
   allowedRels,
+  caseAllowedRels,
   defaultDirection,
   findEdge,
   incidentManualEdges,
@@ -29,6 +30,7 @@ import {
   type CanvasMeta,
   type CanvasNode,
   type CanvasSnapshot,
+  type CaseEdgeRel,
   PROVENANCE_LABELS,
   provenanceOf,
   rowTruncation,
@@ -39,7 +41,6 @@ import {
   type FunctionForm,
   type FunctionQuerySkippedEnvelope,
   type ManualNodeKind,
-  type ManualRel,
   type NodeDetail,
   type NodeKind,
   type ObservationLayerPayload,
@@ -107,6 +108,8 @@ import {
 } from '../../domain/canvas-view'
 import { canvasTokens, colors } from '../../design/tokens'
 import CanvasNodeDrawer from './CanvasNodeDrawer.vue'
+import NodeWindow from './NodeWindow.vue'
+import SubjectPicker from './SubjectPicker.vue'
 import CanvasToolbar from './CanvasToolbar.vue'
 import CanvasLegend from './CanvasLegend.vue'
 import CanvasMinimap, { type MinimapNode } from './CanvasMinimap.vue'
@@ -164,6 +167,16 @@ type LoadState = 'loading' | 'ready' | 'error'
 const state = ref<LoadState>('loading')
 const errorMsg = ref('')
 const doc = ref<CanvasDoc | null>(null)
+
+/**
+ * 服务端持久化的节点 ID 集合。
+ *
+ * CAN-19 研判结果层（growth layer）通过 upsertGrowthLayer 并入 doc.value
+ * 供显示，但这些节点不在服务端持久化的画布文档里。PATCH 自动保存时
+ * 必须剥掉它们，否则 validate_patch 会以「M1 不允许新增节点」拒 400。
+ * 每次 absorbReload（GET/expand/CRUD 后）从服务端返回的 doc 更新此集合。
+ */
+const persistedNodeIds = ref<Set<string>>(new Set())
 
 /**
  * 观察图层原始数据（定向深挖结果）。
@@ -281,10 +294,7 @@ const KIND_GLYPH: Record<NodeKind, string> = {
   hypothesis: '假',
   note: '备',
   function_result: '查',
-  // P1 案件级专属四类（case# 域节点在线索画布不出图，仅类型完备）
-  subject: '人',
-  place: '地',
-  event: '事',
+  subject: '主',
   analysis_result: '结',
 }
 
@@ -396,8 +406,22 @@ function cardBadges(data: Record<string, unknown>): BadgeSpec[] {
 function toG6Data(d: CanvasDoc): unknown {
   const model = detailModel.value
   const factDim = factDimension.value
+  // 已提升为研判主体的证据实体不再单独成卡：它已并进对应的那张主体卡，
+  // 由卡上的「源自 N 处证据」标记承担溯源入口。
+  // 只做视图层过滤——节点数据仍留在文档里，不删除，否则溯源链就真断了。
+  const promotedIds = new Set<string>()
+  for (const n of d.nodes) {
+    if (n.kind !== 'subject') continue
+    const refs = (n.props as Record<string, unknown> | undefined)
+      ?.promoted_from_refs
+    if (Array.isArray(refs)) {
+      for (const r of refs) if (r) promotedIds.add(String(r))
+    }
+  }
   return {
-    nodes: d.nodes.map((n) => {
+    nodes: d.nodes
+      .filter((n) => !promotedIds.has(n.id))
+      .map((n) => {
       const group = model.groupByFact.get(n.id)
       const band = eventBands.value.get(n.id) ?? null
       const dimension =
@@ -417,6 +441,9 @@ function toG6Data(d: CanvasDoc): unknown {
           chip: canvasTokens.kind[n.kind].chip,
           chipInk: canvasTokens.kind[n.kind].ink,
           subtitle: subtitleOf(n),
+          // 溯源标记：这张主体卡由几条证据实体提升而来
+          originCount: Number(
+            (n.props as Record<string, unknown> | undefined)?.origin_count ?? 0),
           stale: n.stale === true,
           pinned: n.pinned === true,
           manual: n.system !== true,
@@ -448,7 +475,10 @@ function toG6Data(d: CanvasDoc): unknown {
       }
     }),
     edges: [
-      ...d.edges.map((e) => ({
+      // 源/目标已被并进主体卡的边一并滤掉：G6 不允许边引用不存在的节点
+      ...d.edges
+        .filter((e) => !promotedIds.has(e.source) && !promotedIds.has(e.target))
+        .map((e) => ({
         id: e.id,
         source: e.source,
         target: e.target,
@@ -488,6 +518,88 @@ function cloneDoc(d: CanvasDoc): CanvasDoc {
 // ======================================================================
 const drawerShow = ref(false)
 const drawerNodeId = ref<string | null>(null)
+
+// ------------------------------------------------------------------ //
+// WIN：节点窗口（贴附浮层）
+//
+// 卡片 `research-card` 继承 G6 的 Rect，是 **canvas 图形节点不是 DOM**，
+// 内嵌不了任何 HTML，所以窗口只能是 DOM 浮层，按节点**投影后的屏幕坐标**
+// 定位。有专属窗口的类型开窗；溯源类仍走抽屉，避免两套明细并存。
+// ------------------------------------------------------------------ //
+const WINDOW_KINDS = new Set(['subject', 'place', 'event', 'analysis_result', 'item', 'hypothesis'])
+const windowNodeId = ref<string | null>(null)
+const windowAnchor = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const windowViewport = ref<{ width: number; height: number }>({ width: 0, height: 0 })
+const windowSupports = ref<Array<Record<string, unknown>>>([])
+const windowLoading = ref(false)
+const windowError = ref('')
+
+const windowNode = computed(() => {
+  const id = windowNodeId.value
+  if (!id || !doc.value) return null
+  return doc.value.nodes.find((n) => n.id === id) ?? null
+})
+
+/** 关系窗口读画布内已有的边——谁连谁、什么关系，画布自己就知道。 */
+const windowEdges = computed<Array<{ source: string; target: string; rel?: string; data?: Record<string, unknown> }>>(() =>
+  (doc.value?.edges ?? []).map((e: any) => ({
+    source: String(e.source ?? ''),
+    target: String(e.target ?? ''),
+    rel: e.rel ? String(e.rel) : undefined,
+    data: (e.data ?? e.props ?? {}) as Record<string, unknown>,
+  })),
+)
+
+const windowNodeById = computed(() => {
+  const m = new Map<string, CanvasNode>()
+  for (const n of doc.value?.nodes ?? []) m.set(n.id, n)
+  return m
+})
+
+function closeNodeWindow(): void {
+  windowNodeId.value = null
+  windowSupports.value = []
+  windowError.value = ''
+}
+
+/**
+ * 证据窗口里点支撑观察 → 跳观察详情。
+ *
+ * 先关窗再跳：窗口锚的是节点屏幕坐标，路由切走后锚点失效，会残留一个
+ * 悬空的浮层盖在观察详情页上。
+ */
+function jumpToObservation(obsId: string): void {
+  closeNodeWindow()
+  openOriginLensObservation(obsId)
+}
+
+async function openNodeWindow(node: CanvasNode): Promise<void> {
+  // 屏幕坐标 = 画布数据坐标经 getViewportByCanvas 投影。
+  // 直接用数据坐标会在缩放/平移之后错位。
+  const pt = inst?.getViewportByCanvas?.([node.x ?? 0, node.y ?? 0])
+  const [vw, vh] = viewportSize()
+  windowAnchor.value = pt ? { x: pt[0], y: pt[1] } : { x: 0, y: 0 }
+  windowViewport.value = { width: vw, height: vh }
+  windowNodeId.value = node.id
+  windowSupports.value = []
+  windowError.value = ''
+  // 只有研判结论需要回查观察档案；关系/地图/时间三窗口读画布内存数据，不发请求。
+  if (String(node.kind ?? '') !== 'analysis_result') return
+  windowLoading.value = true
+  try {
+    const res = await canvasApi.nodeWindow(
+      props.caseId, node as unknown as Record<string, unknown>)
+    windowSupports.value = (res.supports ?? []) as unknown as Array<Record<string, unknown>>
+    // 定位不到 ≠ 没有支撑，必须把原因说出来，不能静默空列表。
+    if (!res.server_sourced) windowError.value = res.note ?? ''
+    else if (res.match?.mode === 'none') windowError.value = res.match.reason
+  } catch (err) {
+    windowError.value = `支撑观察加载失败：${String((err as Error)?.message ?? err)}`
+  } finally {
+    windowLoading.value = false
+  }
+}
+
 
 /** 节点展开四态（缺省视为 collapsed） */
 const uiStates = reactive<Record<string, ExpandUiState>>({})
@@ -1130,7 +1242,9 @@ function onNodeClick(ev: unknown, rawId: unknown): void {
     selectedNodeId.value = node.id
     pushTrail(node.id)
     applyFocus(node.id)
-    openNode(node)
+    // WIN：有专属窗口的研判节点开窗（贴附浮层），其余仍开抽屉
+    if (WINDOW_KINDS.has(String(node.kind ?? ''))) void openNodeWindow(node)
+    else openNode(node)
   }, CLICK_DELAY_MS)
 }
 
@@ -1449,6 +1563,8 @@ function absorbReload(env: { doc: CanvasDoc; version: number;
   observationLayerRaw.value = env.observation_layer ?? { nodes: [], edges: [] }
   // 成图规模声明（溯源行截断）；后端缺失即视为未截断
   if (env.meta) canvasMeta.value = env.meta
+  // 记录服务端持久化的节点 ID，供 persistDoc 剥掉 growth layer 节点
+  persistedNodeIds.value = new Set(env.doc.nodes.map((n) => n.id))
 }
 
 function failExpand(nodeId: string, e: unknown): void {
@@ -1532,10 +1648,24 @@ const drawerManualEdges = computed<CanvasEdge[]>(() => {
 // RC-205：坐标/钉住防抖自动保存（仅 x/y/pinned 白名单，结构操作另走端点）
 // ======================================================================
 async function persistDoc(nextDoc: CanvasDoc): Promise<void> {
+  // 剥掉 growth layer 节点：upsertGrowthLayer 把 CAN-19 研判结果并入
+  // doc.value 供显示，但这些节点不在服务端持久化文档里，PATCH 带上会
+  // 触发 validate_patch 400。
+  const ids = persistedNodeIds.value
+  const patchDoc =
+    ids.size > 0
+      ? {
+          ...nextDoc,
+          nodes: nextDoc.nodes.filter((n) => ids.has(n.id)),
+          edges: nextDoc.edges.filter(
+            (e) => ids.has(e.source) && ids.has(e.target),
+          ),
+        }
+      : nextDoc
   const baseVersion = version.value
   try {
     const r = await canvasApi.save(
-      props.caseId, props.clueId, nextDoc, baseVersion)
+      props.caseId, props.clueId, patchDoc, baseVersion)
     absorbReload(r.envelope)
     return
   } catch (e) {
@@ -1954,7 +2084,7 @@ async function doDeleteNode(node: CanvasNode): Promise<void> {
 const pendingEdge = ref<{
   source: CanvasNode
   target: CanvasNode
-  rels: ManualRel[]
+  rels: CaseEdgeRel[]
 } | null>(null)
 
 function rejectReason(src: CanvasNode, tgt: CanvasNode): string {
@@ -1973,7 +2103,11 @@ function handleOnCreate(draft: unknown): undefined {
   const source = findNode(String(d?.source ?? ''))
   const target = findNode(String(d?.target ?? ''))
   if (!source || !target || !doc.value) return undefined
-  const rels = allowedRels(source.kind, target.kind)
+  // 研判画布（无 clueId）用案件级矩阵（含位于/发生于/支撑/反驳/同现），
+  // 线索画布用线索矩阵（仅人工 4 类）——域隔离零回归。
+  const rels = props.clueId
+    ? allowedRels(source.kind, target.kind)
+    : caseAllowedRels(source.kind, target.kind)
   if (rels.length === 0) {
     message.warning(rejectReason(source, target))
     return undefined
@@ -1994,7 +2128,7 @@ function handleOnCreate(draft: unknown): undefined {
 async function submitEdge(
   source: CanvasNode,
   target: CanvasNode,
-  rel: ManualRel,
+  rel: CaseEdgeRel,
   note: string,
 ): Promise<void> {
   pendingEdge.value = null
@@ -2017,7 +2151,7 @@ async function submitEdge(
   }
 }
 
-function onPickPendingEdge(p: { rel: ManualRel; note: string }): void {
+function onPickPendingEdge(p: { rel: CaseEdgeRel; note: string }): void {
   const pe = pendingEdge.value
   if (pe) void submitEdge(pe.source, pe.target, p.rel, p.note)
 }
@@ -2497,26 +2631,61 @@ const lrBusy = ref(false)
 /** 针对当前线索假设的镜头贴合度推荐（空 = 无假设链，按默认顺序） */
 const lrRecommendations = ref<LensRecommendation[]>([])
 
-/** 选中主体标签——只预填**主体类**参数。
- *  旧实现把同一个 label 同时灌进 target_subject/subject_a/project，
- *  导致「查围标时间碰撞」的 project 被填成人名（语义错误）。
- *  项目类参数改由后端 /params 接口按 obj_bid_project 单独给候选。
+/** 选中主体靶心——只预填**主体类**参数，且**填主键不填姓名**。
+ *
+ *  旧实现有两个问题：
+ *  1) 把同一个 label 同时灌进 target_subject/subject_a/project，导致
+ *     「查围标时间碰撞」的 project 被填成人名（语义错误）。项目类参数
+ *     改由后端 /params 接口按 obj_bid_project 单独给候选。
+ *  2) 灌的是 **label（姓名文本）**，而后端 canvas_target 用 person_pk。
+ *     两者不一致的后果在重名时最致命：姓名无法区分两个「张卫国」，
+ *     前端显示"已预填"、后端却可能查到另一个人——且谁都看不出错了。
+ *
+ *  现在统一走后端口径：有唯一 person_pk 才预填；重名/未锚定一律不填，
+ *  由 lrPrefillBlocked 给出可读原因（不静默空转）。
  */
-const lrPrefill = computed<Record<string, unknown>>(() => {
+const lrPrefillBlocked = computed<string>(() => {
   const id = selectedNodeId.value
-  const label = id ? nodeLabel(id) : ''
-  return label ? { target_subject: label, subject_a: label } : {}
+  if (!id) return ''
+  const n = findNode(id)
+  const p = (n?.props ?? {}) as Record<string, unknown>
+  const nm = String(p.name ?? n?.label ?? '').trim()
+  if (p.person_pk_ambiguous === true) {
+    const c = Array.isArray(p.pk_candidates) ? p.pk_candidates.length : 0
+    return `「${nm}」同名异人（${c} 个候选主键），须先裁决主体再研判；系统不代为选择`
+  }
+  if (!p.person_pk) {
+    return (
+      String(p.pk_resolution ?? '').trim() ||
+      `「${nm}」未锚定语义层主键，无可用研判`
+    )
+  }
+  return ''
+})
+
+const lrPrefill = computed<Record<string, unknown>>(() => {
+  if (lrPrefillBlocked.value) return {}
+  const id = selectedNodeId.value
+  const n = id ? findNode(id) : undefined
+  const p = (n?.props ?? {}) as Record<string, unknown>
+  const pk = typeof p.person_pk === 'string' ? p.person_pk : ''
+  if (!pk) return {}
+  // 只填主靶心：同时填 subject_a 会让双主体镜头变成"自己与自己同框"
+  return { target_subject: pk }
 })
 
 /** 画布可见主体名（候选规模主力，典型 20-80）。
- *  只取 kind='object' 的实体节点——rule/fact/source_row 等不是镜头主体，
- *  混进候选会污染下拉（且与 target_subject 语义不符）。
+ *  object（证据实体）与 subject（已提升/已加入的研判主体）都是镜头主体；
+ *  rule/fact/source_row 等不是，混进候选会污染下拉。
+ *
+ *  subject 必须进来——否则把证据提升为研判主体后，这个主体反而在候选里
+ *  消失了，正兵只能手填姓名，而手填姓名在重名时会查错人。
  */
 const lrCanvasNodes = computed<string[]>(() => {
   const out: string[] = []
   const nodes = graphDoc.value?.nodes ?? doc.value?.nodes ?? []
   for (const n of nodes as { kind?: string; label?: string }[]) {
-    if (n?.kind !== 'object') continue
+    if (n?.kind !== 'object' && n?.kind !== 'subject') continue
     const nm = n.label?.trim()
     if (nm && !out.includes(nm)) out.push(nm)
     if (out.length >= 100) break
@@ -2556,6 +2725,11 @@ async function openLensRun(): Promise<void> {
   } catch {
     lrRecommendations.value = []
   }
+  // 靶心不可用必须**先说清楚**（CAN-20）：静默留空会被读成"可以手填"，
+  // 于是正兵填个名字跑一遍，得到一个空结果，还以为是数据里没有。
+  if (lrPrefillBlocked.value) {
+    message.warning(lrPrefillBlocked.value, { duration: 6000 })
+  }
   lrShow.value = true
 }
 
@@ -2582,14 +2756,262 @@ async function submitLensRun(payload: {
       },
     })
     lrShow.value = false
-    message.success(
-      `定向镜头已入队（任务 ${r.task.id}），完成后结果回到本画布的「深挖结果」`,
-      { duration: 5000 },
-    )
+    // CAN-19：结果要挂在**发起它的靶心**下，所以先记下当前选中节点
+    const targetId = selectedNodeId.value || undefined
+    // 202 只代表入队；必须等终态再并入，否则读的是旧档案、图上挂不出新结论
+    try {
+      const t = await waitForTerminal(r.task.id, {
+        intervalMs: 500,
+        timeoutMs: 30_000,
+      })
+      if (t.status !== 'SUCCEEDED') {
+        message.error(
+          `定向镜头未成功（${t.status}）：`
+          + `${t.error_message || t.error_code || '无错误详情'}`,
+          { duration: 6000 },
+        )
+        return
+      }
+    } catch (err) {
+      if (err instanceof TaskWaitTimeoutError) {
+        // 超时不是失败：任务仍在跑，给正兵一条可自行完成的路径
+        message.info('镜头仍在运行，完成后点「刷新研判结果」挂接到图上', {
+          duration: 6000,
+        })
+        return
+      }
+      message.error(presentError(err).title, { duration: 5000 })
+      return
+    }
+    await refreshGrowthLayer(targetId)
   } catch (e) {
     message.error(presentError(e).title, { duration: 5000 })
   } finally {
     lrBusy.value = false
+  }
+}
+
+// ======================================================================
+// CAN-11/12/13：研判主体（加主体 / 证据实体提升）
+//
+// 主体节点是**案件级**语义，而本画布文档目前是线索级持久化，所以这里先
+// 并入本地 doc（随既有自动保存一起落库）。案件级画布持久化到位后，建节点
+// 应改走案件级端点，此处合并逻辑可整段替换。
+// ======================================================================
+const spShow = ref(false)
+const spBusy = ref(false)
+
+/** 往画布文档并入节点/边（幂等：已存在的 id 不重复追加）。
+ *  抽成函数是因为「加主体」与「提升」两处都要做同一件事——
+ *  写两遍就会出现一处判重一处不判重，画布上冒出同名双节点。 */
+function mergeIntoDoc(addN: CanvasNode[], addE: CanvasEdge[]): { n: number; e: number } {
+  const d = (doc.value ?? {}) as unknown as {
+    nodes?: CanvasNode[]
+    edges?: CanvasEdge[]
+    [k: string]: unknown
+  }
+  const haveN = new Set((d.nodes ?? []).map((x) => x?.id))
+  const haveE = new Set((d.edges ?? []).map((x) => x?.id))
+  const nn = addN.filter((x) => x?.id && !haveN.has(x.id))
+  const ee = addE.filter((x) => x?.id && !haveE.has(x.id))
+  doc.value = {
+    ...d,
+    nodes: [...(d.nodes ?? []), ...nn],
+    edges: [...(d.edges ?? []), ...ee],
+  } as unknown as CanvasDoc
+  return { n: nn.length, e: ee.length }
+}
+
+/** 案件级主体 id：与后端 canvas_case.build_subject_node 的键口径一致 */
+function subjectNodeId(name: string, pk: string | null): string {
+  const key = pk || `name:${String(name ?? '').trim()}`
+  return `case#${props.caseId}:subject:${key}`
+}
+
+async function onSubjectPicked(payload: {
+  props: Record<string, unknown>
+  sel: { name: string; person_pk: string | null; ambiguous: boolean; anchored: boolean }
+}): Promise<void> {
+  const p = payload.props ?? {}
+  const nm = String(p.name ?? '').trim()
+  if (!nm) return
+  const id = subjectNodeId(nm, payload.sel.person_pk ?? null)
+  if ((doc.value?.nodes ?? []).some((n) => n.id === id)) {
+    message.warning(`「${nm}」已在画布上，未重复添加`)
+    return
+  }
+  // 落点借人工节点规则（x=480 那一列）。subject 尚未进 NodeKind/RANK_X，
+  // 单开一列要改 NodeKind 类型及其所有消费点；先复用同列、纵向顺延，
+  // 不与既有节点重叠。等案件级画布定稿再给主体单列。
+  const { x, y } = nextSlot('hypothesis' as ManualNodeKind)
+  const node = {
+    id,
+    kind: 'subject',
+    label: payload.sel.ambiguous ? `?${nm}` : nm,
+    props: {
+      ...p,
+      // 未锚定必须写在节点上：否则正兵选中它点研判，得到空结果会以为工具坏了
+      pk_resolution: String(p.pk_resolution ?? ''),
+    },
+    x,
+    y,
+    system: false,
+  } as unknown as CanvasNode
+  mergeIntoDoc([node], [])
+  if (!payload.sel.anchored) {
+    message.warning(`「${nm}」未锚定语义层主键，已加入但无可用研判`, { duration: 6000 })
+  } else {
+    message.success(`已加入研判主体「${nm}」`)
+  }
+}
+
+/** 选中证据实体节点 → 提升为研判主体（原节点保留在溯源层，不移动不删除） */
+async function promoteToSubject(): Promise<void> {
+  const id = selectedNodeId.value
+  const n = id ? findNode(id) : undefined
+  if (!n) {
+    message.warning('请先选中一个证据实体节点')
+    return
+  }
+  spBusy.value = true
+  try {
+    const res = await canvasApi.promoteSubjects(props.caseId, [n as unknown as Record<string, unknown>], {})
+    const nodes = (res.nodes ?? []) as unknown as CanvasNode[]
+    const edges = (res.edges ?? []) as unknown as CanvasEdge[]
+    const s = res.summary ?? { promoted: 0, ambiguous: 0, unanchored: 0, rejected: 0, duplicate: 0 }
+    // 幂等并入：后端已按 ref 判重，前端再兜一次，避免重复点击出双节点
+    mergeIntoDoc(nodes, edges)
+    if (s.rejected > 0) {
+      message.error(res.reports?.find((r) => r.status === 'rejected')?.reason ?? '该节点不支持提升')
+    } else if (s.ambiguous > 0) {
+      message.warning('该主体同名异人，已建出但未锚定——须先裁决再研判', { duration: 6000 })
+    } else if (s.unanchored > 0) {
+      message.warning('已建出但未锚定语义层主键，无可用研判', { duration: 6000 })
+    } else {
+      message.success('已提升为研判主体（原证据节点保留在溯源层）')
+    }
+  } catch (e) {
+    message.error(presentError(e).title)
+  } finally {
+    spBusy.value = false
+  }
+}
+
+// ======================================================================
+// CAN-19：研判结果挂到**发起它的靶心节点**下
+//
+// 结论节点由后端从案件级定向观察档案还原（不挂画布版本，重扫不蒸发），
+// 前端只负责并入本地 doc。两条纪律：
+//   · 重跑同一镜头走**更新**而非跳过——否则精度/条数变了，图上还是旧值；
+//     更新时保留正兵摆好的坐标与钉住状态，不把图抖乱。
+//   · 被排除的观察必须报出（归属与靶心不符），否则正兵会以为镜头跑了个空。
+// ======================================================================
+const growthBusy = ref(false)
+/** 最近一次并入的结果说明（结论组数 / 排除数 / 未登记假设），如实呈现 */
+const growthHint = ref('')
+
+/**
+ * 并入研判结果层（幂等；同 id 视为重跑，更新内容但保留坐标与钉住）。
+ * 返回新增节点/边条数，供提示文案区分"并入了几条"与"确实没有"。
+ */
+function upsertGrowthLayer(addN: CanvasNode[], addE: CanvasEdge[]): { n: number; e: number } {
+  const d = (doc.value ?? {}) as unknown as {
+    nodes?: CanvasNode[]
+    edges?: CanvasEdge[]
+    [k: string]: unknown
+  }
+  const nodeMap = new Map<string, CanvasNode>()
+  for (const x of d.nodes ?? []) if (x?.id) nodeMap.set(x.id, x)
+  // 结论节点/假设节点后端不带坐标（后端不知道画布怎么摆），这里按挂接边
+  // 的起点就地派生：结论落在靶心右侧，落在同一靶心下的多组纵向顺延。
+  const sourceOf = new Map<string, string>()
+  for (const e of addE) if (e?.target && e?.source) sourceOf.set(e.target, e.source)
+  const slots = new Map<string, number>()
+  let nn = 0
+  for (const n of addN) {
+    if (!n?.id) continue
+    const old = nodeMap.get(n.id)
+    if (old) {
+      // 重跑：内容取新，位置与人钉状态取旧（不把正兵摆好的图抖乱）
+      nodeMap.set(n.id, { ...n, x: old.x, y: old.y, pinned: old.pinned })
+      continue
+    }
+    let node = n
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+      const base = nodeMap.get(sourceOf.get(n.id) ?? '')
+      const k = slots.get(sourceOf.get(n.id) ?? '') ?? 0
+      slots.set(sourceOf.get(n.id) ?? '', k + 1)
+      const slot = base
+        ? { x: base.x + 260, y: base.y + 104 * k }
+        : nextSlot('hypothesis' as ManualNodeKind)
+      node = { ...n, x: slot.x, y: slot.y }
+    }
+    nodeMap.set(n.id, node)
+    nn += 1
+  }
+  const edgeMap = new Map<string, CanvasEdge>()
+  for (const x of d.edges ?? []) if (x?.id) edgeMap.set(x.id, x)
+  let ee = 0
+  for (const e of addE) {
+    if (!e?.id) continue
+    const old = edgeMap.get(e.id)
+    if (!old) ee += 1
+    edgeMap.set(e.id, e)
+  }
+  doc.value = {
+    ...d,
+    nodes: [...nodeMap.values()],
+    edges: [...edgeMap.values()],
+  }
+  return { n: nn, e: ee }
+}
+
+/**
+ * 拉取研判结果层并入画布。
+ *
+ * 域收敛（v3 渐进式生成）：线索画布只并入**本线索发起**的观察
+ * （clue_id=props.clueId，服务端 filter_by_clue），且通常带 nodeId
+ * 只取选中靶心下的组——案件级镜头结果归研判画布（CanvasView）按
+ * 揭示集逐组长，不在此跨域整层并入（那会把 case# 节点带进线索文档，
+ * 触发自动保存 400 并污染线索图）。
+ */
+async function refreshGrowthLayer(nodeId?: string, quiet = false): Promise<void> {
+  if (growthBusy.value) return
+  growthBusy.value = true
+  try {
+    const env = await canvasApi.lensResults(props.caseId, nodeId, props.clueId)
+    const nodes = [...(env.nodes ?? []), ...(env.hypothesis_nodes ?? [])] as unknown as CanvasNode[]
+    const edges = [...(env.edges ?? []), ...(env.infer_edges ?? [])] as unknown as CanvasEdge[]
+    const added = upsertGrowthLayer(nodes, edges)
+    const excluded = env.excluded ?? []
+    const missing = env.missing_hypotheses ?? []
+    const parts: string[] = []
+    if (added.n || added.e) {
+      parts.push(`已挂接 ${added.n} 个研判结论、${added.e} 条关系`)
+    } else {
+      // 空结果必须区分"真没有"和"被排除"——后者静默会读成镜头跑空
+      parts.push(env.meta?.reason || '暂无可挂接的定向观察')
+    }
+    if (excluded.length) {
+      parts.push(
+        `${excluded.length} 条观察归属与靶心不符，未并入`
+        + `（${String(excluded[0]?.note ?? excluded[0]?.reason ?? '')}）`,
+      )
+    }
+    if (missing.length) {
+      parts.push(`${missing.length} 个假设未在本体登记，已标未登记不给证伪条件`)
+    }
+    growthHint.value = parts.join('；')
+    if (!quiet && (added.n || added.e)) {
+      message.success(growthHint.value, { duration: 5000 })
+    } else if (!quiet) {
+      message.info(growthHint.value, { duration: 5000 })
+    }
+  } catch (e) {
+    growthHint.value = String(presentError(e).title)
+    if (!quiet) message.error(growthHint.value)
+  } finally {
+    growthBusy.value = false
   }
 }
 
@@ -2647,6 +3069,7 @@ async function load(): Promise<void> {
     version.value = env.version
     semanticReady.value = env.semantic_ready !== false
     observationLayerRaw.value = env.observation_layer ?? { nodes: [], edges: [] }
+    persistedNodeIds.value = new Set(env.doc.nodes.map((n) => n.id))
     // 规则五维懒预取（卡片顶部色点/事实继承色；失败静默）
     for (const n of env.doc.nodes) {
       if (n.kind === 'rule' && (n.ref || n.id) !== 'unlinked')
@@ -2658,6 +3081,11 @@ async function load(): Promise<void> {
       nodeCount: env.doc.nodes.length,
       edgeCount: env.doc.edges.length,
     })
+    // v3 渐进式生成：进入线索画布**不再无条件整层并入**研判结果——
+    // 定向观察是案件级归档，整层并入会把案件级 case# 节点带进线索文档
+    // （跨域污染 + 自动保存 400）。本线索的结果只在两处并线：
+    // 1) 镜头跑完成功（带选中靶心）；2) 手动「刷新研判结果」。
+    // 案件级总图请到研判画布按揭示集逐组查看。
   } catch (e) {
     state.value = 'error'
     errorMsg.value = presentError(e).title
@@ -2745,8 +3173,14 @@ async function mountGraph(): Promise<void> {
           dimDotColor: (d: G6Datum) =>
             (d.data?.dimColor as string | undefined) ?? '',
           titleFill: canvasTokens.title,
-          subtitleText: (d: G6Datum) =>
-            d.data?.band ? '' : (d.data?.subtitle ?? ''),
+          subtitleText: (d: G6Datum) => {
+            if (d.data?.band) return ''
+            const oc = Number(d.data?.originCount ?? 0)
+            // 多来源才让位给溯源标记：单来源不覆盖副标题原有信息，
+            // 而"被几条线索提到"正是判断要不要继续查的依据
+            if (oc > 1) return `源自 ${oc} 处证据`
+            return d.data?.subtitle ?? ''
+          },
           subtitleFill: canvasTokens.subtitle,
           // 轨道带：标签居中、10px、带内省略；卡片：左对齐 12px 粗体
           labelText: (d: G6Datum) => d.data?.label ?? '',
@@ -3111,6 +3545,32 @@ function nodeLabel(id: string): string {
         @collapse-all-details="onCollapseAllDetails"
       />
 
+      <!-- CAN-11/13：研判主体动作条（加主体 / 证据实体提升）。
+           放在这里而不是塞进 CanvasToolbar：主体是案件级语义，
+           与线索级溯源工具混在一排会让正兵分不清作用范围。 -->
+      <div class="subject-actions">
+        <NButton size="tiny" secondary @click="spShow = true">加主体</NButton>
+        <NButton
+          size="tiny"
+          secondary
+          :disabled="!selectedNodeId || spBusy"
+          :loading="spBusy"
+          @click="promoteToSubject"
+        >
+          提升为研判主体
+        </NButton>
+        <!-- CAN-19：手动重建研判结果层（镜头超时仍在跑 / 换节点后回挂） -->
+        <NButton
+          size="tiny"
+          secondary
+          :loading="growthBusy"
+          @click="refreshGrowthLayer(selectedNodeId || undefined)"
+        >
+          刷新研判结果
+        </NButton>
+      </div>
+      <div v-if="growthHint" class="growth-hint">{{ growthHint }}</div>
+
       <!-- 观察图层时间轴：无遮罩浮层（面板外画布照常操作），自带时间口径，不联动主画布视角 -->
       <ObservationTimelinePanel
         :show="observationLayerOn"
@@ -3342,6 +3802,21 @@ function nodeLabel(id: string): string {
       @focus-node="onFocusNode"
     />
 
+    <!-- WIN：节点窗口（贴附浮层）。无专属窗口的类型不弹空窗，写明原因。 -->
+    <NodeWindow
+      :node="windowNode"
+      :anchor="windowAnchor"
+      :viewport="windowViewport"
+      :edges="windowEdges"
+      :node-by-id="windowNodeById"
+      :supports="windowSupports"
+      :loading="windowLoading"
+      :error="windowError"
+      @close="closeNodeWindow"
+      @open-node="(id: string) => { closeNodeWindow(); const n = findNode(id); if (n) openNode(n) }"
+      @jump-observation="jumpToObservation"
+    />
+
     <!-- M4 RC-204 扩展查询（白名单只读 Function） -->
     <FunctionQueryModal
       ref="fqModalRef"
@@ -3351,6 +3826,13 @@ function nodeLabel(id: string): string {
       :source-node-label="fqSourceLabel"
       :busy="fqBusy"
       @submit="submitFunctionQuery"
+    />
+
+    <!-- CAN-13：主体选择器（往研判层加人/加单位） -->
+    <SubjectPicker
+      v-model:show="spShow"
+      :case-id="props.caseId"
+      @submit="onSubjectPicked"
     />
 
     <!-- 定向镜头带参调度（requires_params 镜头；选中主体预填） -->
@@ -3664,5 +4146,33 @@ function nodeLabel(id: string): string {
 .fb-table .rel {
   color: var(--sun-border-active);
   white-space: nowrap;
+}
+.subject-actions {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--sun-border);
+}
+
+/* CAN-19：研判结果并入说明（排除数/未登记假设必须看得见，不能只弹 toast） */
+.growth-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 52px;
+  z-index: 6;
+  max-width: 460px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sun-text-2, #5b6472);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid var(--sun-border);
 }
 </style>

@@ -8,8 +8,9 @@ import type {
   CanvasDoc,
   CanvasEnvelope,
   CanvasNode,
-  CanvasSuggestionEnvelope,
   CaseCanvasEnvelope,
+  CaseCanvasSaveResult,
+  CanvasSuggestionEnvelope,
   EdgeMutateEnvelope,
   ExpandDirection,
   ExpandEnvelope,
@@ -60,6 +61,137 @@ export interface ChatStreamHandlers {
   onErrorEvent?: (error: string, message: string) => void
   onTransportError?: (err: unknown) => void
   onClose?: () => void
+}
+
+/** 节点窗口载荷（WIN）。server_sourced=false 表示用画布内存数据，未查后端。 */
+export interface WindowSupport {
+  obs_id: string
+  label: string
+  /** 观察**自己的**精度档——不继承节点精度，否则精度加权被抹平 */
+  precision: string
+  dim: string
+  skill_id: string
+  lens_name: string
+  basis: string
+  falsification: string
+  degraded: boolean
+  degraded_reason: string
+  facts: Array<Record<string, unknown>>
+  facts_total: number
+}
+
+export interface NodeWindowPayload {
+  available: boolean
+  node_id: string
+  kind: string
+  server_sourced: boolean
+  supports: WindowSupport[]
+  by_dim: Record<string, WindowSupport[]>
+  match?: { mode: string; reason: string }
+  total?: number
+  shown?: number
+  truncated?: boolean
+  weight_model?: Record<string, number>
+  note?: string
+}
+
+/** 名录条目：一个名字可能对应多个主键（同名异人已在后端聚合） */
+export interface SubjectEntry {
+  name: string
+  sub_type?: string
+  relational?: boolean
+  person_pk: string | null
+  person_pk_ambiguous?: boolean
+  pk_status?: string | null
+  pk_candidates?: string[]
+  identity_rows?: number
+  identity_evidence?: string
+  pk_resolution?: string
+}
+
+export interface SubjectDirectoryEnvelope {
+  semantic_ready: boolean
+  reason?: string
+  subjects: SubjectEntry[]
+}
+
+/** 物品构造结果：node 待并入画布；三个布尔位决定界面怎么提示 */
+export interface ItemBuildEnvelope {
+  node: CanvasNode
+  /** 有凭证：可参与消歧与研判 */
+  credentialed: boolean
+  /** 无凭证（D4）：只能作描述性实体，不进消歧、不进打分 */
+  unidentified: boolean
+  /** 有坐标才可在地图落点；false 时绝不塞 0（0 会画到几内亚湾） */
+  mappable: boolean
+  /** 命中敏感标识符种类（手机号/设备码）：界面需提示明文不入库 */
+  sensitive_kinds?: string[]
+}
+
+/** 提升结果：nodes/edges 待并入画布，reports 逐条说明每个节点的处置 */
+export interface SubjectPromoteEnvelope {
+  nodes: CanvasNode[]
+  edges: Record<string, unknown>[]
+  reports: {
+    name?: string
+    status: string
+    reason?: string
+    node_id?: string
+    source_id?: string
+  }[]
+  keeps_source: boolean
+  semantic_ready: boolean
+  summary?: {
+    promoted: number
+    ambiguous: number
+    unanchored: number
+    rejected: number
+    duplicate: number
+  }
+}
+
+/**
+ * CAN-19 研判结果层。
+ *
+ * 定向深挖的观察是**案件级归档**的（不挂画布版本），而结论节点要长在
+ * 「发起它的那个靶心节点」下。本端点把观察还原成画布元素——结论节点、
+ * 挂接边、假设节点与推断边——前端并入画布文档即可。
+ *
+ * 拼装口径（精度木桶、假设反查、按 (靶心×镜头) 分组判重）留在服务端：
+ * 前端换皮或换画布实现都不会长出第二套口径。
+ */
+export interface GrowthGroupMeta {
+  target_node_id: string
+  lens_id: string
+  lens_name?: string
+  target_label?: string
+  on_canvas?: boolean
+  revealed?: boolean
+  observation_count: number
+  precision?: string | null
+  assumption?: string | null
+}
+
+export interface GrowthExcludedItem {
+  observation_id?: string
+  skill_id?: string
+  recorded_node_id?: string
+  reason?: string
+  note?: string
+}
+
+export interface GrowthLayerEnvelope {
+  nodes: CanvasNode[]
+  edges: Record<string, unknown>[]
+  hypothesis_nodes: CanvasNode[]
+  infer_edges: Record<string, unknown>[]
+  missing_hypotheses: { id?: string; reason?: string }[]
+  excluded: GrowthExcludedItem[]
+  meta: {
+    groups: GrowthGroupMeta[]
+    reason?: string
+    node_id_scope?: string
+  }
 }
 
 export const canvasApi = {
@@ -359,6 +491,179 @@ export const canvasApi = {
     return canvasApi.hypothesisToVerify(caseId, clueId, nodeId, text, version)
   },
 
+  /**
+   * 节点窗口载荷（案件级，非线索级）。
+   *
+   * 只有研判结论节点（analysis_result）需要回查观察档案——它只知道自己
+   * 属于哪些维度，不知道"凭哪几条观察成立"。关系/地图/时间三窗口读画布
+   * 内存数据，不该发这个请求。
+   *
+   * 用 POST 是因为案件级画布尚无服务端持久化，服务端无法按 node_id 反查
+   * 节点，须由客户端把节点 props 带过来（lens_id / observation_id / dims）。
+   */
+  async nodeWindow(
+    caseId: string,
+    node: Record<string, unknown>,
+    params: { support_limit?: number; fact_limit?: number } = {},
+  ): Promise<NodeWindowPayload> {
+    const q = new URLSearchParams()
+    if (params.support_limit) q.set('support_limit', String(params.support_limit))
+    if (params.fact_limit) q.set('fact_limit', String(params.fact_limit))
+    const qs = q.toString()
+    const res = await api.post<NodeWindowPayload>(
+      `/cases/${encodeURIComponent(caseId)}/canvas/window${qs ? `?${qs}` : ''}`,
+      { node },
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  // ------------------------------------------------------------------
+  // CAN-11/12：证据实体 → 研判主体（提升）+ 案件主体名录（选择器）
+  // 两个端点都是**案件级**（/cases/{cid}/canvas/...），不挂线索路径——
+  // 研判层画布是案件总图，主体不属于某一条线索。
+  // ------------------------------------------------------------------
+
+  /**
+   * 批量提升证据实体为研判主体。
+   *
+   * `requested` 是人工裁决结果（name → pk），用于同名异人时指定其一。
+   * 不带 requested 时后端遇到同名一律标 ambiguous，**不代为选择**。
+   */
+  async promoteSubjects(
+    caseId: string,
+    nodes: Record<string, unknown>[],
+    requested: Record<string, string> = {},
+  ): Promise<SubjectPromoteEnvelope> {
+    const res = await api.post<SubjectPromoteEnvelope>(
+      `/cases/${encodeURIComponent(caseId)}/canvas/promote`,
+      { nodes, requested },
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /**
+   * 案件主体名录（供选择器下拉）。
+   *
+   * semantic_ready=false 时 subjects 为空且带 reason——此时选不出主体，
+   * 界面必须显示这个原因，不能显示一个空下拉让正兵以为"库里没人"。
+   */
+  async listSubjects(
+    caseId: string,
+    q = '',
+    limit = 50,
+  ): Promise<SubjectDirectoryEnvelope> {
+    const qs = new URLSearchParams()
+    if (q.trim()) qs.set('q', q.trim())
+    qs.set('limit', String(limit))
+    const res = await api.get<SubjectDirectoryEnvelope>(
+      `/cases/${encodeURIComponent(caseId)}/canvas/subjects?${qs.toString()}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /**
+   * 物品登记 → 规范节点（只构造、不落库）。
+   *
+   * 必须由服务端构造：节点 id 含摘要，前端若自己算一遍，摘要规则就成了
+   * 两份，而两份迟早分叉——分叉不报错，只表现为同一辆车登记两次变成两个
+   * 节点，或两件不同物品被合成一个。
+   */
+  async buildItem(
+    caseId: string,
+    body: Record<string, unknown>,
+  ): Promise<ItemBuildEnvelope> {
+    const res = await api.post<ItemBuildEnvelope>(
+      `/cases/${encodeURIComponent(caseId)}/case-canvas/items`,
+      body,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  // ------------------------------------------------------------------
+  // CAN-19：研判结果挂到发起它的靶心节点下
+  // ------------------------------------------------------------------
+
+  /**
+   * 研判结果层（案件级）。
+   *
+   * nodeId 为空 = 重建整层（画布加载时，按观察自带 origin.node_id 归组）；
+   * 传了 = 只取挂在该靶心下的那几组（跑完一次定向镜头后增量并入）。
+   *
+   * 空结果要区分两种：meta.reason 写明是"没有可挂接的定向观察"（真没有），
+   * 而 excluded 非空则是"有、但归属与指定靶心不符被排除"——后者必须报出，
+   * 否则正兵会以为镜头跑了个空。
+   */
+  async lensResults(
+    caseId: string,
+    nodeId?: string,
+    clueId?: string,
+  ): Promise<GrowthLayerEnvelope> {
+    const qs = new URLSearchParams()
+    if (nodeId && nodeId.trim()) qs.set('node_id', nodeId.trim())
+    // 线索域：只看本线索发起的观察；案件级画布不传（见 filter_by_clue）
+    if (clueId && clueId.trim()) qs.set('clue_id', clueId.trim())
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    const res = await api.get<GrowthLayerEnvelope>(
+      `/cases/${encodeURIComponent(caseId)}/canvas/lens-results${suffix}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  // ------------------------------------------------------------------
+  // 案件级研判画布持久化（GET/PATCH /cases/{cid}/case-canvas）
+  //
+  // 与线索级 canvas 刻意分开：节点键不同（case#{cid}: 前缀可跨线索并图），
+  // 保存语义也不同（案件级不做服务端幂等合并，只剥掉镜头层存人工层）。
+  // ------------------------------------------------------------------
+
+  /** GET 案件级画布：库里人工层 + 后端每次重建的镜头层（已并入 doc）。 */
+  async getCaseCanvas(caseId: string, pack = 'default'): Promise<CaseCanvasEnvelope> {
+    const q = new URLSearchParams()
+    if (pack) q.set('pack', pack)
+    const res = await api.get<CaseCanvasEnvelope>(
+      `/cases/${encodeURIComponent(caseId)}/case-canvas?${q.toString()}`,
+    )
+    noteDataVersion(caseId, res.dataVersion)
+    return res.data
+  },
+
+  /**
+   * PATCH 案件级画布：整文档入，服务端剥镜头层后只存人工层，version+1。
+   *
+   * 返回**不含 doc**——案件级不做服务端幂等合并，本地文档即权威。
+   * 调用方只取 version 前进，切忌用返回覆盖本地 doc（会把图抹成空）。
+   */
+  async saveCaseCanvas(
+    caseId: string,
+    doc: CanvasDoc,
+    expectedVersion: number | null,
+    overwrite = false,
+  ): Promise<CaseCanvasSaveResult> {
+    const path = `/cases/${encodeURIComponent(caseId)}/case-canvas`
+    try {
+      const res = await api.patch<CaseCanvasSaveResult>(path, {
+        doc,
+        expected_version: expectedVersion,
+      })
+      noteDataVersion(caseId, res.dataVersion)
+      return res.data
+    } catch (e) {
+      if (!overwrite) throw e
+      const latest = await canvasApi.getCaseCanvas(caseId)
+      const res = await api.patch<CaseCanvasSaveResult>(path, {
+        doc,
+        expected_version: latest.version,
+      })
+      noteDataVersion(caseId, res.dataVersion)
+      return res.data
+    }
+  },
+
   // ------------------------------------------------------------------
   // M4 RC-204：白名单只读 Function 扩展查询
   // ------------------------------------------------------------------
@@ -563,100 +868,5 @@ export const canvasApi = {
     return api.getBlob(
       `${base(caseId, clueId)}/reports/${encodeURIComponent(reportId)}/export.docx`,
     )
-  },
-}
-
-// ---------------------------------------------------------------
-// 案件级研判画布（case# 域，P1 读面 + P2 编辑/开窗；后端 GET /cases/{cid}/canvas）：
-// 惰性 seed 幂等；结构编辑走专用端点（逐动作审计、409 冲突透出）。
-// ---------------------------------------------------------------
-const caseBase = (caseId: string) => `/cases/${encodeURIComponent(caseId)}/canvas`
-
-export const caseCanvasApi = {
-  /** GET .../cases/{cid}/canvas —— 案件画布（首次访问后端惰性 seed 空白图） */
-  async get(caseId: string): Promise<CaseCanvasEnvelope> {
-    const res = await api.get<CaseCanvasEnvelope>(caseBase(caseId))
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
-  },
-
-  /** POST .../canvas/nodes —— 案件级人工节点（subject/place/event/hypothesis/note） */
-  async createNode(
-    caseId: string,
-    body: {
-      kind: CaseManualNodeKind
-      props: CanvasNode['props']
-      x: number
-      y: number
-      version: number
-    },
-  ): Promise<NodeMutateEnvelope & { canvas_domain: 'case' }> {
-    const res = await api.post<
-      NodeMutateEnvelope & { canvas_domain: 'case' }
-    >(caseBase(caseId) + '/nodes', body)
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
-  },
-
-  /** PATCH .../canvas/nodes/{nodeId} —— props 编辑（按 kind 重校验） */
-  async updateNode(
-    caseId: string,
-    nodeId: string,
-    body: { props: CanvasNode['props']; version: number },
-  ): Promise<NodeMutateEnvelope & { canvas_domain: 'case' }> {
-    const res = await api.patch<NodeMutateEnvelope & { canvas_domain: 'case' }>(
-      `${caseBase(caseId)}/nodes/${encodeURIComponent(nodeId)}`,
-      body,
-    )
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
-  },
-
-  /** DELETE .../canvas/nodes/{nodeId} —— 级联删人工边 */
-  async deleteNode(
-    caseId: string,
-    nodeId: string,
-    version: number,
-  ): Promise<NodeDeleteEnvelope & { canvas_domain: 'case' }> {
-    const res = await api.delete<
-      NodeDeleteEnvelope & { canvas_domain: 'case' }
-    >(
-      `${caseBase(caseId)}/nodes/${encodeURIComponent(nodeId)}?version=${version}`,
-    )
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
-  },
-
-  /** POST .../canvas/edges —— 人工 4 类 + 研判 5 类（后端矩阵单一真相） */
-  async createEdge(
-    caseId: string,
-    body: {
-      source: string
-      target: string
-      rel: string
-      note?: string | null
-      version: number
-    },
-  ): Promise<EdgeMutateEnvelope & { canvas_domain: 'case' }> {
-    const res = await api.post<
-      EdgeMutateEnvelope & { canvas_domain: 'case' }
-    >(caseBase(caseId) + '/edges', body)
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
-  },
-
-  /** DELETE .../canvas/edges/{edgeId} */
-  async deleteEdge(
-    caseId: string,
-    edgeId: string,
-    version: number,
-  ): Promise<EdgeMutateEnvelope & { canvas_domain: 'case' }> {
-    const res = await api.delete<
-      EdgeMutateEnvelope & { canvas_domain: 'case' }
-    >(
-      `${caseBase(caseId)}/edges/${encodeURIComponent(edgeId)}?version=${version}`,
-    )
-    noteDataVersion(caseId, res.dataVersion)
-    return res.data
   },
 }

@@ -7,11 +7,33 @@
       "title": "转账关系",
       "from_obj": "account",
       "to_obj": "account",
-      "properties": {"amount": "decimal", "date": "date"},
+      "properties": {
+        "amount": "decimal",
+        "date": "date"
+      },
       "endpoints": {
-        "from": {"col": "from_account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}},
-        "to": {"col": "to_account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}},
-        "extra": ["from_account", "to_account", "amount", "date"]
+        "from": {
+          "col": "from_account_id",
+          "ref": {
+            "object": "account",
+            "key": "account_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "to_account_id",
+          "ref": {
+            "object": "account",
+            "key": "account_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "from_account",
+          "to_account",
+          "amount",
+          "date"
+        ]
       }
     },
     {
@@ -21,9 +43,25 @@
       "to_obj": "person",
       "properties": {},
       "endpoints": {
-        "from": {"col": "from_person", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "to": {"col": "to_person", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "extra": ["call_id"]
+        "from": {
+          "col": "from_person",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "to_person",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "call_id"
+        ]
       }
     },
     {
@@ -33,8 +71,17 @@
       "to_obj": "person",
       "properties": {},
       "endpoints": {
-        "from": {"col": "owner_raw"},
-        "to": {"col": "account_id", "ref": {"object": "account", "key": "account_id", "name": "raw_name"}}
+        "from": {
+          "col": "owner_raw"
+        },
+        "to": {
+          "col": "account_id",
+          "ref": {
+            "object": "account",
+            "key": "account_id",
+            "name": "raw_name"
+          }
+        }
       }
     },
     {
@@ -44,8 +91,22 @@
       "to_obj": "bid_project",
       "properties": {},
       "endpoints": {
-        "from": {"col": "org_id", "ref": {"object": "org", "key": "org_id", "name": "raw_name"}},
-        "to": {"col": "project_id", "ref": {"object": "bid_project", "key": "project_id", "name": "title"}}
+        "from": {
+          "col": "org_id",
+          "ref": {
+            "object": "org",
+            "key": "org_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "project_id",
+          "ref": {
+            "object": "bid_project",
+            "key": "project_id",
+            "name": "title"
+          }
+        }
       }
     },
     {
@@ -53,11 +114,31 @@
       "title": "同地点出现",
       "from_obj": "person",
       "to_obj": "person",
-      "properties": {"location": "string", "date": "date"},
+      "properties": {
+        "location": "string",
+        "date": "date"
+      },
       "endpoints": {
-        "from": {"col": "person_1", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "to": {"col": "person_2", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "extra": ["location", "date"]
+        "from": {
+          "col": "person_1",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "person_2",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "location",
+          "date"
+        ]
       }
     },
     {
@@ -65,11 +146,20 @@
       "title": "时间窗碰撞",
       "from_obj": "bid_project",
       "to_obj": "transaction",
-      "properties": {"amount": "decimal", "offset_days": "integer"},
+      "properties": {
+        "amount": "decimal",
+        "offset_days": "integer"
+      },
       "endpoints": {
-        "from": {"col": "title"},
-        "to": {"col": "owner_raw"},
-        "extra": ["offset_days"]
+        "from": {
+          "col": "title"
+        },
+        "to": {
+          "col": "owner_raw"
+        },
+        "extra": [
+          "offset_days"
+        ]
       },
       "field_labels": {
         "title": "项目名称",
@@ -93,11 +183,32 @@
       "title": "举报针对人员",
       "from_obj": "tipoff",
       "to_obj": "person",
-      "properties": {"tip_type": "string", "submit_date": "date"},
+      "properties": {
+        "tip_type": "string",
+        "submit_date": "date"
+      },
       "endpoints": {
-        "from": {"col": "tipoff_id", "ref": {"object": "tipoff", "key": "tipoff_id", "name": "title"}},
-        "to": {"col": "person_id", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "extra": ["target_raw", "tip_type", "submit_date"]
+        "from": {
+          "col": "tipoff_id",
+          "ref": {
+            "object": "tipoff",
+            "key": "tipoff_id",
+            "name": "title"
+          }
+        },
+        "to": {
+          "col": "person_id",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "target_raw",
+          "tip_type",
+          "submit_date"
+        ]
       }
     },
     {
@@ -105,11 +216,32 @@
       "title": "举报来源指向",
       "from_obj": "tipoff",
       "to_obj": "person",
-      "properties": {"tip_type": "string", "submit_date": "date"},
+      "properties": {
+        "tip_type": "string",
+        "submit_date": "date"
+      },
       "endpoints": {
-        "from": {"col": "tipoff_id", "ref": {"object": "tipoff", "key": "tipoff_id", "name": "title"}},
-        "to": {"col": "person_id", "ref": {"object": "person", "key": "person_id", "name": "raw_name"}},
-        "extra": ["reporter_raw", "tip_type", "submit_date"]
+        "from": {
+          "col": "tipoff_id",
+          "ref": {
+            "object": "tipoff",
+            "key": "tipoff_id",
+            "name": "title"
+          }
+        },
+        "to": {
+          "col": "person_id",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "reporter_raw",
+          "tip_type",
+          "submit_date"
+        ]
       },
       "_note": "REQ-P-032：举报人归一。reporter_raw 常为匿名，LEFT JOIN 未命中则 person_id 为空（边不成立但不丢材料）。"
     },
@@ -118,7 +250,10 @@
       "title": "OSINT提及主体",
       "from_obj": "osint_article",
       "to_obj": "person",
-      "properties": {"source_name": "string", "pub_date": "date"}
+      "properties": {
+        "source_name": "string",
+        "pub_date": "date"
+      }
     },
     {
       "name": "image_for_person",
@@ -153,12 +288,71 @@
       "from_obj": "trackpoint",
       "to_obj": "location",
       "_note": "事件→地点维度归一：轨迹事件经 std_address 关联 location 实体。检测判据在规则层，链接只表达归属关系。",
-      "properties": {"date": "date"},
+      "properties": {
+        "date": "date"
+      },
       "endpoints": {
-        "from": {"col": "track_id", "ref": {"object": "trackpoint", "key": "track_id", "name": "person_raw"}},
-        "to": {"col": "location_id", "ref": {"object": "location", "key": "location_id", "name": "std_address"}},
-        "extra": ["date"]
+        "from": {
+          "col": "track_id",
+          "ref": {
+            "object": "trackpoint",
+            "key": "track_id",
+            "name": "person_raw"
+          }
+        },
+        "to": {
+          "col": "location_id",
+          "ref": {
+            "object": "location",
+            "key": "location_id",
+            "name": "std_address"
+          }
+        },
+        "extra": [
+          "date"
+        ]
       }
+    },
+    {
+      "name": "holds",
+      "title": "持有物品",
+      "from_obj": "person",
+      "to_obj": "item",
+      "properties": {
+        "start_date": "date",
+        "end_date": "date"
+      },
+      "endpoints": {
+        "from": {
+          "col": "person_id",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "item_id",
+          "ref": {
+            "object": "item",
+            "key": "item_id",
+            "name": "title"
+          }
+        },
+        "extra": [
+          "hold_id",
+          "holder_raw",
+          "item_title",
+          "item_type",
+          "primary_digest",
+          "start_date",
+          "end_date",
+          "start_time",
+          "end_time",
+          "reg_order"
+        ]
+      },
+      "_note": "R2/D2 时态边：物品持有必须带时间区间。只画静态边『甲→车、乙→车』会读成『两人共用』，而实际可能是『甲卖给了乙』——性质完全相反的两种事实。start_date/end_date 可缺失，缺失即区间不可判定，由 core/hold_chain.py 按 unknownRange 处理，绝不静默默认为『无约束』。已转物化链接：build_sql 在 bindings.json（obj_hold_record LEFT JOIN obj_person/obj_item，持有数据源经 scripts/prep_item_registry.py 预装配接入）。from_obj 暂只声明 person：组织持有（公车/单位名下房产）待扩，未声明前不猜测——猜错会让单位名下的车被挂到法人个人名下。"
     }
   ]
 }

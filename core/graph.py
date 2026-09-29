@@ -37,6 +37,9 @@ class OverpassPath:
     amount_out: float     # 流出桥的金额
     engine: str           # "cypher" / "sql"
     source_rows: List[str] = field(default_factory=list)   # 溯源到原始行
+    # --- ITM-05 时态能力：两跳之间的时间间隔（天）---
+    gap_days: Optional[float] = None    # 入账→出账相隔天数；None 表示不可判定
+    gap_unknown: bool = False           # True = 日期缺失/不可解析，未做时间判定
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -44,6 +47,49 @@ class OverpassPath:
     def key(self) -> tuple:
         """一致性比对用的规范化键（金额可能因浮点有微小差异，故不参与比对）。"""
         return (self.source, self.bridge, self.dest)
+
+
+# ----------------------------------------------------------------------
+# ITM-05：边的时态能力（过桥两跳间隔）
+# ----------------------------------------------------------------------
+def overpass_gap_days(d_in: Any, d_out: Any) -> Optional[float]:
+    """两跳之间的时间间隔（天），**出账晚于入账**为正。
+
+    不可判定（日期缺失 / 无法解析）时返回 None —— 这是刻意的：
+    与 time_conflict 同款红线，**不静默取舍**。判不出来就如实说判不出来，
+    由调用方决定是保留标注还是过滤，绝不在这里偷偷塞一个 0 或默认值。
+    """
+    from core.time_semantics import _coerce_dt
+
+    a = _coerce_dt(d_in)
+    b = _coerce_dt(d_out)
+    if a is None or b is None:
+        return None
+    return (b - a).total_seconds() / 86400.0
+
+
+def _apply_gap_filter(paths: List[OverpassPath], max_gap_days: Optional[float],
+                      d_in_of, d_out_of) -> List[OverpassPath]:
+    """给过桥路径补算间隔并按阈值过滤（Cypher / SQL 双轨共用，保证口径一致）。
+
+    max_gap_days=None → 不过滤，仅补算 gap（事实先暴露，行为不变）。
+    不可判定的路径**一律保留**并标 gap_unknown=True，不静默丢弃。
+    """
+    out: List[OverpassPath] = []
+    for p, din, dout in zip(paths, d_in_of, d_out_of):
+        gap = overpass_gap_days(din, dout)
+        if gap is None:
+            p.gap_unknown = True
+            out.append(p)
+            continue
+        p.gap_days = gap
+        if max_gap_days is not None and gap > max_gap_days:
+            continue
+        if max_gap_days is not None and gap < -max_gap_days:
+            # 出账早于入账超过阈值：不是"过桥"，是无关的反向流水
+            continue
+        out.append(p)
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -161,10 +207,15 @@ class GraphBackend:
         return {"nodes": len(names), "edges": len(rows), "skipped": False}
 
     # ---- Q2：两跳过桥 ----
-    def overpass_two_hop(self, exclude_self_loop: bool = True) -> List[OverpassPath]:
+    def overpass_two_hop(self, exclude_self_loop: bool = True,
+                         max_gap_days: Optional[float] = None) -> List[OverpassPath]:
         """
         Q2 过桥识别：Cypher 两跳 MATCH。
         上游 → 过桥方 → 下游，三者互不相同（排除自环与直接往返）。
+
+        ITM-05：两跳间隔此前只进 source_rows 文案，未参与判定——相隔三年的
+        两笔转账也会被当成一条"过桥路径"。现补算 gap_days 并支持 max_gap_days
+        过滤；默认 None 不过滤（行为不变），仅把事实暴露出来。
         """
         if not self.available:
             return []
@@ -174,6 +225,8 @@ class GraphBackend:
         """
         res = self.conn.execute(cypher)
         out: List[OverpassPath] = []
+        din_list: List[Any] = []
+        dout_list: List[Any] = []
         while res.has_next():
             row = res.get_next()
             src, mid, dst, amt1, amt2, d1, d2 = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
@@ -185,7 +238,9 @@ class GraphBackend:
                 engine="cypher",
                 source_rows=[f"TRANSFER({src}→{mid}@{d1})", f"TRANSFER({mid}→{dst}@{d2})"],
             ))
-        return out
+            din_list.append(d1)
+            dout_list.append(d2)
+        return _apply_gap_filter(out, max_gap_days, din_list, dout_list)
 
     def neighbors_within(self, subject: str, max_hops: int = 2) -> List[str]:
         """奇兵拓线：取主体的 N 跳内邻域（变长跳）。"""
@@ -256,7 +311,8 @@ def has_semantic_flow(c) -> bool:
 # SQL 对照（同一问题的关系型解法，用于双轨一致性比对）
 # ----------------------------------------------------------------------
 def overpass_two_hop_sql(conn, flow_table: str = "银行流水", *,
-                         allow_unsafe_fallback: bool = True) -> List[OverpassPath]:
+                         allow_unsafe_fallback: bool = True,
+                         max_gap_days: Optional[float] = None) -> List[OverpassPath]:
     """
     Q2 过桥的 SQL 解法：流表自连接。
     与 Cypher 版互为校验 —— 两者结果必须一致，否则说明某一侧口径有误。
@@ -271,6 +327,10 @@ def overpass_two_hop_sql(conn, flow_table: str = "银行流水", *,
       语义层 lnk_transfers 缺失时是否回落直查 L2 业务源表。直查违反 REQ-003，
       故走 query(unsafe=True) 调试通道——具名 operator + 理由 + 行数上限 + 审计落盘。
       py Function 传 False：只读通道不直查源表，由调用方降级留痕。
+
+    max_gap_days（ITM-05）：
+      两跳入账→出账的最大允许间隔（天）。None = 不过滤，仅补算 gap_days。
+      与 Cypher 轨共用 _apply_gap_filter，保证双轨口径一致。
     """
     table, (c_from, c_to, c_amt, c_date), is_semantic = _flow_source(conn, flow_table)
     sql = f"""
@@ -293,7 +353,7 @@ def overpass_two_hop_sql(conn, flow_table: str = "银行流水", *,
     else:
         # 只读通道不直查源表：降级为空，由调用方标 degraded 落健康度
         return []
-    return [
+    paths = [
         OverpassPath(
             source=r["src"], bridge=r["mid"], dest=r["dst"],
             amount_in=float(r["amt1"]), amount_out=float(r["amt2"]),
@@ -303,6 +363,9 @@ def overpass_two_hop_sql(conn, flow_table: str = "银行流水", *,
         )
         for r in rows
     ]
+    return _apply_gap_filter(paths, max_gap_days,
+                             [r.get("d1") for r in rows],
+                             [r.get("d2") for r in rows])
 
 
 # ----------------------------------------------------------------------

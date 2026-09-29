@@ -17,7 +17,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -48,7 +47,9 @@
       "description": "把一个人的轨迹按地点归并，看他常去哪些落脚点、坐标覆盖多少",
       "uses_functions": [
         "geo_subject_sites"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },
     {
       "skill_id": "geo_serial_profile",
@@ -64,7 +65,6 @@
       ],
       "mode": "deterministic",
       "enabled": true,
-      "canvas_enabled": true,
       "params_schema": {
         "target_subject": {
           "type": "string",
@@ -111,7 +111,9 @@
       "description": "对系列案件轨迹点跑 Rossmo CGT 概率面，给优先排查区域网格（不是定址）",
       "uses_functions": [
         "geo_profile_cgt"
-      ]
+      ],
+      "canvas_enabled": true,
+      "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },
     {
       "skill_id": "geo_accompany",
@@ -415,7 +417,10 @@
         },
         "weight_by": {
           "type": "string",
-          "enum": ["count", "uniform"],
+          "enum": [
+            "count",
+            "uniform"
+          ],
           "description": "count=按到访次数加权 / uniform=等权，缺省 count"
         }
       },
@@ -431,6 +436,34 @@
       "uses_functions": [
         "geo_activity_range"
       ]
+    },
+    {
+      "skill_id": "geo_co_located_pairs",
+      "name": "同地点对镜头（旧口径）",
+      "stage": "用间",
+      "consumes_objects": [
+        "co_located"
+      ],
+      "produces_dims": [
+        "space",
+        "time"
+      ],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {},
+      "scope": {
+        "reads": [
+          "co_located"
+        ]
+      },
+      "handler": "impl:co_located_pairs_lens",
+      "description": "行为维度：不同主体同地点 ±1 天内先后出现（规则 R-GEO-3 挂钩）。语义链接 lnk_co_located 直接消费，无空间判据——与 geo_accompany 功能重叠，后者有四级空间判据与精度加权，本镜头保留是为兼容既有画布白名单直连口径",
+      "uses_functions": [
+        "co_located_pairs"
+      ],
+      "assumption": "H6",
+      "_overlaps": "geo_accompany（优先使用后者）"
     }
   ]
 }

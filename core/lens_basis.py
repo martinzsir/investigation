@@ -432,6 +432,115 @@ def _basis_activity_range(out: dict):
     return text, claims
 
 
+# ----------------------------------------------------------------------
+# 裸 Function 包装镜头的判据（PLAN-FUND / PLAN-COMM / 关系包装）
+#
+# 共同纪律：
+#   1. 只陈述函数实际返回的字段，不编造未计算的量；
+#   2. 措辞不越界——聚合事实不称"逐笔"，高频不称"突增"，同地不称"同时"；
+#   3. 降级/受限明说，不装作完整。
+# ----------------------------------------------------------------------
+
+def _basis_fund_integer_transfer(out: dict) -> tuple[str, list[str]]:
+    total = out.get("total")
+    if total is None:
+        return "未检出整数转账聚合结果。", []
+    text = (f"{out.get('from_raw')} → {out.get('to_raw')} 整万元转账合计 {total}"
+            f"（{out.get('round_unit') or 10000} 元整数倍聚合）；"
+            f"成对整万元流向是可识别的过桥结构候选，不声称资金性质")
+    if out.get("unresolved_subjects"):
+        text += f"；主体 {out['unresolved_subjects']} 未匹配到库内主键，未挂实体引用"
+    return text, [
+        f"转账合计 {total}",
+        f"整数单位 {out.get('round_unit') or 10000} 元",
+    ]
+
+
+def _basis_fund_quarter_deposit(out: dict) -> tuple[str, list[str]]:
+    cnt, amt = out.get("cnt"), out.get("amt")
+    if cnt is None and amt is None:
+        return "未检出季末整数现金存入。", []
+    text = (f"{out.get('q')} 季度末窗口（{out.get('window_days')} 天）内"
+            f"整万元现金存入 {cnt} 笔、合计 {amt}；"
+            f"系季度级聚合，未挂逐笔引用")
+    return text, [f"存入笔数 {cnt}", f"存入金额 {amt}",
+                  f"季末窗口 {out.get('window_days')} 天"]
+
+
+def _basis_fund_overpass_two_hop(out: dict) -> tuple[str, list[str]]:
+    text = (f"{out.get('source')} → {out.get('bridge')} → {out.get('dest')} 两跳路径"
+            f"（入 {out.get('amount_in')} / 出 {out.get('amount_out')}，"
+            f"{out.get('engine')} 轨）")
+    if out.get("gap_filtered"):
+        if out.get("gap_unknown"):
+            text += "；两跳间隔日期缺失不可判定，未做时间过滤"
+        elif out.get("gap_days") is not None:
+            text += f"；两跳间隔 {out['gap_days']} 天"
+    else:
+        text += "；未启用间隔过滤，不声称过桥成立"
+    return text, [f"流入 {out.get('amount_in')}",
+                  f"流出 {out.get('amount_out')}"]
+
+
+def _basis_fund_time_window_collision(out: dict) -> tuple[str, list[str]]:
+    text = (f"『{out.get('title')}』公示日 {out.get('pub_date')} 前后，"
+            f"{out.get('owner_raw')} 整数资金 {out.get('amount')}"
+            f"（偏移 {out.get('offset_days')} 天）"
+            f"；碰撞是事实，不声称行贿")
+    if out.get("unresolved_project"):
+        text += "；项目未匹配到库内主键，未挂项目引用"
+    return text, [f"偏移 {out.get('offset_days')} 天",
+                  f"整数资金 {out.get('amount')}"]
+
+
+def _basis_comm_call_frequency(out: dict) -> tuple[str, list[str]]:
+    pairs = out.get("pairs") or []
+    if not pairs:
+        return "未检出高频通话对端。", []
+    top = pairs[0]
+    diag = out.get("diagnostics") or {}
+    text = (f"{top.get('caller_raw')} → {top.get('callee_raw')} 通话 "
+            f"{top.get('times')} 次")
+    if diag.get("median_value"):
+        text += f"，为常态中位数 {diag['median_value']} 的对照判据"
+    if diag.get("threshold_used") and not diag.get("median_value"):
+        text += (f"；无其他对端可比对，退化为绝对频次阈值 "
+                 f"{diag['threshold_used']} 次判据")
+    text += "；**不构成突增判定**（缺时间序列基线）"
+    return text, [f"头部对端通话 {top.get('times')} 次"]
+
+
+def _basis_geo_co_located_pairs(out: dict) -> tuple[str, list[str]]:
+    text = (f"{out.get('person_1')} 与 {out.get('person_2')} 于 "
+            f"{out.get('location')} 同地点 {out.get('count')} 次")
+    dates = out.get("dates") or []
+    if dates:
+        text += f"（{dates[0]} ~ {dates[-1]}）"
+    text += "；本口径无时刻且无空间判据，仅支持同地异时，不支持同时/同行结论"
+    return text, [f"同地点 {out.get('count')} 次"]
+
+
+def _basis_relation_org_interest(out: dict) -> tuple[str, list[str]]:
+    r = out.get("row") or {}
+    matched = r.get("matched_person") or []
+    text = (f"组织『{r.get('raw_name') or r.get('org_name')}』的"
+            f"法人/关联人字段命中案件知识包主体 {matched}"
+            f"（知识包版本 {out.get('knowledge_version')}）；"
+            f"人名只来自知识包，不做全库姓名匹配")
+    return text, [f"命中主体 {matched}"]
+
+
+def _basis_relation_jian_cross_level(out: dict) -> tuple[str, list[str]]:
+    text = (f"五间交叉等级 {out.get('交叉等级')}："
+            f"{out.get('独立源数')} 个独立数据源（{out.get('独立数据源')}），"
+            f"命中间类 {out.get('命中间类')}；"
+            f"规则为单源=观察、双源=线索、三源+=可立案依据候选。"
+            f"这是材料充分度分级，不是证据假设")
+    return text, [f"独立源数 {out.get('独立源数')}",
+                  f"交叉等级 {out.get('交叉等级')}"]
+
+
+
 _BASIS = {
     "timeline_sequence": _basis_sequence,
     "timeline_rhythm": _basis_rhythm,
@@ -446,6 +555,14 @@ _BASIS = {
     "geo_trajectory_segment": _basis_trajectory_segment,
     "geo_anomaly_trajectory": _basis_anomaly_trajectory,
     "geo_activity_range": _basis_activity_range,
+    "fund_integer_transfer": _basis_fund_integer_transfer,
+    "fund_quarter_deposit": _basis_fund_quarter_deposit,
+    "fund_overpass_two_hop": _basis_fund_overpass_two_hop,
+    "fund_time_window_collision": _basis_fund_time_window_collision,
+    "comm_call_frequency": _basis_comm_call_frequency,
+    "geo_co_located_pairs": _basis_geo_co_located_pairs,
+    "relation_org_interest": _basis_relation_org_interest,
+    "relation_jian_cross_level": _basis_relation_jian_cross_level,
 }
 
 # 证伪条件：回答「什么情况下这个判据不成立」。
@@ -476,6 +593,14 @@ _FALSIFICATION = {
                           "椭圆与密度不成立；椭圆倍率决定覆盖比例（1σ≈39%、2σ≈86%、"
                           "3σ≈99%），椭圆外仍可能有活动；热点不等于落脚点，高频地点"
                           "若系职务必经点（司机/外勤/巡线）则不构成私人落脚关联",
+    "fund_integer_transfer": "若转出/转入方为同一单位账户间的正常结算（如材料款、工资代发），则整万元系业务惯例而非过桥；成对流向不等于资金性质",
+    "fund_quarter_deposit": "若该账户本就按季收现（个体工商户营业款、工程款回笼），季末整额存入系经营常态；季度聚合不支持逐笔定性",
+    "fund_overpass_two_hop": "若中间方与上下游均有真实商业背景（供货、分包、代付），两跳系正常业务链路；未启用间隔过滤时，相隔数年的两笔不构成一条过桥路径",
+    "fund_time_window_collision": "若资金为工程尾款/保证金退还且公示前后本就密集，则时间邻近系业务节奏；含对公后缀主体已排除，自然人同名未消歧时存在错配风险",
+    "comm_call_frequency": "若主体为项目负责人/对接人，高频通话系职务性沟通；单一对端无对照组时不构成突增，仅为频次事实",
+    "geo_co_located_pairs": "同地点若系项目现场、办公场所等职务性地点，或两主体本就属同一单位/项目组，则同地异时系工作常态；本口径无时刻，不支持同时/同行结论",
+    "relation_org_interest": "若法人/关联人重名（自然人同名未消歧）或知识包版本过期，命中可能为错配；登记关联不等于实质利益输送",
+    "relation_jian_cross_level": "交叉等级只反映已接入数据源的独立数量；未建模数据源不计入，等级偏低可能源于数据未接入而非材料不足",
 }
 
 

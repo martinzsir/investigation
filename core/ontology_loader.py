@@ -33,7 +33,7 @@ from core.ontology import (
     _render_split_projection,
 )
 from core.registry import ClueStatus
-from core.data_elements import CHECKSUM_ALGOS
+from core.data_elements import CHECKSUM_ALGOS, norm_vocab_alias
 from core import clean_ops as _clean_ops
 
 SCHEMA_VERSION = 2
@@ -957,6 +957,16 @@ def _load_clean_rules(root: Path) -> dict | None:
 # ----------------------------------------------------------------------
 # data_elements（REQ-D-001 数据元标准，第 14 声明文件）
 # ----------------------------------------------------------------------
+# enum_meta 允许的元数据键（fail-closed 白名单；_note 是仓内惯例注释位）：
+#   label           规范中文名（人读，界面显示）
+#   aliases         登记入口认可的表外说法（label 与代码本身隐式参与匹配）
+#   sensitive       属个人信息：按敏感口径遮蔽，明文不可用于关联
+#   identifier_kind 该枚举值的默认凭证种类（引用 DE_ITEM_IDENTIFIER_KIND）
+#   source_labels   中文源表接入词汇（→ ITEM_TYPE_SOURCE_MAP）
+ENUM_META_KEYS = ("label", "aliases", "sensitive", "identifier_kind",
+                  "source_labels", "_note")
+
+
 class _DuplicateKeyError(ValueError):
     pass
 
@@ -1068,6 +1078,44 @@ def _validate_element_spec(eid: str, spec, ctx: str) -> None:
                 or any(not isinstance(x, (str, int, float)) for x in enum_vals)):
             raise ValueError(
                 f"{ctx}['{eid}'] enum 必须是非空数组（代码表）")
+    # enum_meta：逐枚举值词汇元数据（label/别名/敏感/默认凭证种类/源接入词）。
+    # 键必须 ⊆ enum（未知名硬失败，与全仓 loader 同口径）；meta 键白名单
+    # fail-closed 防笔误——"alias" 少写一个 s 不该静默变成一个不生效的键。
+    enum_meta = spec.get("enum_meta")
+    if enum_meta is not None:
+        if not isinstance(enum_meta, dict) or not enum_meta:
+            raise ValueError(
+                f"{ctx}['{eid}'] enum_meta 必须是非空映射 {{枚举值: 元数据}}")
+        if enum_vals is None:
+            raise ValueError(
+                f"{ctx}['{eid}'] 声明了 enum_meta 但没有 enum——无从核对元数据键")
+        enum_strs = {str(v) for v in enum_vals}
+        for ev, meta in enum_meta.items():
+            if str(ev) not in enum_strs:
+                raise ValueError(
+                    f"{ctx}['{eid}'] enum_meta 键 '{ev}' 不在 enum 值域内"
+                    f"（声明与值域必须一致，未知名硬失败）")
+            if not isinstance(meta, dict):
+                raise ValueError(
+                    f"{ctx}['{eid}'] enum_meta['{ev}'] 必须是映射")
+            for mk, mv in meta.items():
+                if mk not in ENUM_META_KEYS:
+                    raise ValueError(
+                        f"{ctx}['{eid}'] enum_meta['{ev}'] 未知键 '{mk}'，"
+                        f"允许 {sorted(ENUM_META_KEYS)}（fail-closed 防笔误）")
+                if mk in ("label", "identifier_kind"):
+                    if not isinstance(mv, str) or not mv.strip():
+                        raise ValueError(
+                            f"{ctx}['{eid}'] enum_meta['{ev}'].{mk} 必须是非空字符串")
+                elif mk in ("aliases", "source_labels"):
+                    if (not isinstance(mv, list)
+                            or not all(isinstance(x, str) and x.strip() for x in mv)):
+                        raise ValueError(
+                            f"{ctx}['{eid}'] enum_meta['{ev}'].{mk} 必须是非空字符串数组")
+                elif mk == "sensitive":
+                    if not isinstance(mv, bool):
+                        raise ValueError(
+                            f"{ctx}['{eid}'] enum_meta['{ev}'].sensitive 必须是 bool")
 
 
 def _load_one_data_elements_file(path: Path, layer_name: str) -> dict:
@@ -1119,6 +1167,21 @@ def load_data_elements(pack: str = "default", base_dir: Path | None = None) -> d
     return merged
 
 
+def _data_elements_layer_paths(
+        pack: str, base_dir: Path | None) -> list[tuple[Path, str]]:
+    """三层数据元路径（全域→行业→案件），装载与词汇指纹共用同一来源。"""
+    base = base_dir or PACK_ROOT
+    industry = _load_pack_industry(pack, base_dir)
+    layer_paths: list[tuple[Path, str]] = [
+        (base / "_shared", "全域基础(_shared)"),
+    ]
+    if industry:
+        layer_paths.append(
+            (base / "_industry" / industry, f"行业叠加(_industry/{industry})"))
+    layer_paths.append((base / pack, f"案件追加({pack})"))
+    return layer_paths
+
+
 def _load_data_elements_detailed(
         pack: str = "default", base_dir: Path | None = None,
 ) -> tuple[dict, list[dict]]:
@@ -1127,22 +1190,10 @@ def _load_data_elements_detailed(
     overrides 每条 {id, winner_layer, loser_layer}——同名 ID 被 override:true
     显式覆盖时记录，供 S3-2 三层视图可视化覆盖链。
     """
-    base = base_dir or PACK_ROOT
-    industry = _load_pack_industry(pack, base_dir)
-
-    # 三层路径与层名（用于错误定位）
-    layer_paths: list[tuple[Path, str]] = [
-        (base / "_shared", "全域基础(_shared)"),
-    ]
-    if industry:
-        layer_paths.append(
-            (base / "_industry" / industry, f"行业叠加(_industry/{industry})"))
-    layer_paths.append((base / pack, f"案件追加({pack})"))
-
     merged: dict = {}
     merged_layer: dict[str, str] = {}   # ID → 当前生效层名（覆盖关系定位用）
     overrides: list[dict] = []
-    for layer_path, layer_name in layer_paths:
+    for layer_path, layer_name in _data_elements_layer_paths(pack, base_dir):
         p = layer_path / "data_elements.json"
         if not p.exists():
             continue   # 该层缺失则跳过（向后兼容；空壳行业目录即此行为）
@@ -1166,6 +1217,146 @@ def _load_data_elements_detailed(
             merged[eid] = spec
             merged_layer[eid] = layer_name
     return merged, overrides
+
+
+# ----------------------------------------------------------------------
+# 物品词汇（enum_meta 派生）：声明是数据，代码只引用 apiName
+# ----------------------------------------------------------------------
+# Palantir 策略在本仓的落点：代码引用稳定代码（plate/vehicle），人读 displayName
+# （label），源系统词汇映射（source_labels/aliases）是本体数据而非代码字面量。
+# core/item.py 的全部词汇常量（ITEM_IDENTIFIER_KINDS/ITEM_KIND_LABELS/
+# IDENTIFIER_KIND_ALIASES/SENSITIVE_IDENTIFIER_KINDS/ITEM_TYPE_SOURCE_MAP/
+# ITEM_TYPE_LABELS）在 import 期从本函数派生——**别在代码里再写一份**，
+# 散在两处迟早分叉，而分叉的症状是同一件车被存成两种凭证，两条链都对不上。
+_ITEM_VOCAB_CACHE: dict[tuple, dict] = {}
+
+
+def _item_vocab_fingerprint(pack: str, base_dir: Path | None) -> float:
+    """三层 data_elements.json（+ pack_meta.json 决定行业层）mtime 最大值。"""
+    base = base_dir or PACK_ROOT
+    cands = [layer / "data_elements.json"
+             for layer, _name in _data_elements_layer_paths(pack, base_dir)]
+    cands.append(base / pack / "pack_meta.json")
+    mtimes = [p.stat().st_mtime for p in cands if p.exists()]
+    return max(mtimes) if mtimes else 0.0
+
+
+def load_item_vocabulary(pack: str = "default", base_dir: Path | None = None) -> dict:
+    """物品域词汇：从 DE_ITEM_TYPE / DE_ITEM_IDENTIFIER_KIND 的 enum_meta 派生。
+
+    返回结构：
+      identifier_kinds            tuple，标识符种类代码（enum 声明序——
+                                  primary_digest 选取稳定性依赖此序）
+      identifier_kind_labels      {代码: 规范中文名}（无 label 回落代码本身，
+                                  同 identifier_kind_label "未知原样返回"口径）
+      sensitive_identifier_kinds  frozenset，属个人信息的种类（R13）
+      identifier_kind_aliases     {归一化别名: 代码}——代码本身/label/别名
+                                  全量参与建索引
+      item_types                  tuple，物品类型代码（enum 声明序）
+      item_type_labels            {代码: 中文名}
+      item_type_source_map        {中文源词: (item_type, identifier_kind)}
+
+    硬失败（fail-closed，宁崩不歧义）：
+      - 两个 DE 未声明 / 无 enum——物品词汇是内核域词汇，缺失即声明破损；
+      - item_type.enum_meta.*.identifier_kind 悬空（不属标识符种类值域）；
+      - 声明了 source_labels 却没给 identifier_kind（源映射是 类型+凭证 二元组）；
+      - 别名抢名：代码/label/别名经 norm_vocab_alias 归一化后跨种类碰撞
+        （比旧 _build_alias_index 更严——label 与代码本身也参与检查）；
+      - source_labels 抢名：同一中文源词指向两个物品类型（dict 覆盖会让
+        预装配静默映射错类型，症状与别名抢名同源）。
+
+    缓存按三层 data_elements.json mtime 失效；enum_space.json code_tables
+    追加的枚举值不进本词汇（无 enum_meta 元数据可派生），若未来纳入，
+    label 口径为回落代码本身。
+    """
+    fp = _item_vocab_fingerprint(pack, base_dir)
+    # 键含解析后的根路径：临时目录测试（同包名同 mtime 刻度）不串缓存。
+    cache_key = (pack, str((base_dir or PACK_ROOT).resolve()), fp)
+    cached = _ITEM_VOCAB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    elements = load_data_elements(pack, base_dir)
+    de_kind = elements.get("DE_ITEM_IDENTIFIER_KIND")
+    if not isinstance(de_kind, dict) or not de_kind.get("enum"):
+        raise ValueError(
+            "物品词汇装载失败：DE_ITEM_IDENTIFIER_KIND 未声明或无 enum"
+            "（标识符种类词汇表是内核域词汇，缺失即声明破损，fail-closed）")
+    de_type = elements.get("DE_ITEM_TYPE")
+    if not isinstance(de_type, dict) or not de_type.get("enum"):
+        raise ValueError(
+            "物品词汇装载失败：DE_ITEM_TYPE 未声明或无 enum（fail-closed）")
+
+    kind_enum = [str(v) for v in de_kind["enum"]]
+    kind_meta = de_kind.get("enum_meta") or {}
+    type_enum = [str(v) for v in de_type["enum"]]
+    type_meta = de_type.get("enum_meta") or {}
+
+    # 跨元素引用：identifier_kind 必须 ∈ 标识符种类值域；source_labels 必配 kind
+    kind_set = set(kind_enum)
+    for t in type_enum:
+        meta = type_meta.get(t) or {}
+        ik = meta.get("identifier_kind")
+        if ik is not None and str(ik) not in kind_set:
+            raise ValueError(
+                f"DE_ITEM_TYPE enum_meta['{t}'].identifier_kind='{ik}' 悬空："
+                f"不在 DE_ITEM_IDENTIFIER_KIND 值域 {kind_enum} 内"
+                f"（跨元素引用未知名硬失败）")
+        if meta.get("source_labels") and not ik:
+            raise ValueError(
+                f"DE_ITEM_TYPE enum_meta['{t}'] 声明了 source_labels 但缺 "
+                f"identifier_kind——源映射是 (物品类型, 凭证种类) 二元组，"
+                f"缺一半会让预装配产出无凭证种类的物品")
+
+    # 标识符种类：label / sensitive / 别名索引（代码+label+别名全量参与）
+    kind_labels: dict[str, str] = {}
+    sensitive: set[str] = set()
+    alias_index: dict[str, str] = {}
+    for k in kind_enum:
+        meta = kind_meta.get(k) or {}
+        label = str(meta.get("label") or k)
+        kind_labels[k] = label
+        if meta.get("sensitive") is True:
+            sensitive.add(k)
+        terms = [k, label] + [str(a) for a in (meta.get("aliases") or [])]
+        for term in terms:
+            key = norm_vocab_alias(term)
+            if not key:
+                continue
+            prev = alias_index.get(key)
+            if prev is not None and prev != k:
+                raise ValueError(
+                    f"标识符种类词汇抢名：{term!r} 归一化后同时指向 "
+                    f"{prev!r} 与 {k!r}——命中结果本会取决于声明顺序，"
+                    f"正兵填同一个词会存成不同凭证（宁崩不歧义）")
+            alias_index[key] = k
+
+    # 物品类型：label + 源接入词映射
+    type_labels: dict[str, str] = {}
+    source_map: dict[str, tuple[str, str]] = {}
+    for t in type_enum:
+        meta = type_meta.get(t) or {}
+        type_labels[t] = str(meta.get("label") or t)
+        for sl in (meta.get("source_labels") or []):
+            sl = str(sl)
+            prev = source_map.get(sl)
+            if prev is not None and prev[0] != t:
+                raise ValueError(
+                    f"物品类型源词汇抢名：{sl!r} 同时指向 {prev[0]!r} 与 {t!r}"
+                    f"（预装配会静默映射错类型，宁崩不歧义）")
+            source_map[sl] = (t, str(meta.get("identifier_kind")))
+
+    out = {
+        "identifier_kinds": tuple(kind_enum),
+        "identifier_kind_labels": kind_labels,
+        "sensitive_identifier_kinds": frozenset(sensitive),
+        "identifier_kind_aliases": alias_index,
+        "item_types": tuple(type_enum),
+        "item_type_labels": type_labels,
+        "item_type_source_map": source_map,
+    }
+    _ITEM_VOCAB_CACHE[cache_key] = out
+    return out
 
 
 # REQ-D-016：合规检查项（AC-6 可经 data_elements.json 顶层 compliance_checks 启停）

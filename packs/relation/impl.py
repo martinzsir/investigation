@@ -234,3 +234,156 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
             },
         ))
     return clues
+
+
+# ----------------------------------------------------------------------
+# 裸 Function 包装：单位利益关联（R5 → H2） / 五间交叉等级（无假设）
+# ----------------------------------------------------------------------
+# 这两个 Function 此前**完全不可达**：既无 Lens 包装，也不在画布 RC-204
+# 白名单里，正兵在任何界面都调不到。包装后与其它关系镜头同构。
+
+def _rows_of(out: dict) -> list:
+    """统一取数：sql 类在 out["rows"]，py 类在 out["result"]（packs/fund 同款注释）。
+
+    org_interest_links 与 jian_cross_level 都是 py 类，按 out["rows"] 取会
+    静默得到零线索——而函数实际算出了 3 条组织关联。
+    """
+    rows = out.get("rows")
+    if rows:
+        return rows
+    r = out.get("result")
+    if isinstance(r, dict):
+        return r.get("rows") or []
+    if isinstance(r, list):
+        return r
+    return []
+
+
+def _note_degraded(ctx, skill_id: str, out: dict, r: dict | None = None) -> None:
+    """零命中/降级留痕到 ctx["lens_notes"]（ctx 是 dict，不是对象）。
+
+    既有 relation 镜头零命中直接 return []，不留痕。这里新增留痕：
+    包装的两个 Function 中 org_interest_links 在无案件知识包时**本就零命中
+    且不报错**（REQ-024），若不留痕，正兵会把「没有知识包可比对」读成
+    「查了，确实没有关联」——两个含义完全不同。
+    """
+    if not isinstance(ctx, dict):
+        return
+    r = r or {}
+    ctx.setdefault("lens_notes", []).append({
+        "skill_id": skill_id,
+        "function": out.get("function"),
+        "degraded": bool(out.get("degraded")),
+        "degraded_reason": (r.get("degraded_reason")
+                            or out.get("degraded_reason")),
+        "zero_hit": True,
+    })
+
+
+def _org_ref(store, raw_name):
+    """raw_name → org node 引用。查不到返回 None，不猜不造。"""
+    name = str(raw_name or "").strip()
+    if not name or store is None:
+        return None
+    try:
+        rows = store.query(
+            "SELECT org_id FROM obj_org WHERE raw_name = ? LIMIT 1", (name,))
+    except Exception:
+        return None
+    if rows:
+        return {"kind": "node", "ref": f"obj_org#{rows[0]['org_id']}",
+                "key_column": "org_id"}
+    return None
+
+
+def org_interest_lens(miao=None, store=None, ctx=None, params=None,
+                      health=None) -> list:
+    """工商登记利益关联 → 每个命中组织一条观察。
+
+    零命中不出线索：函数在无案件知识包时**本就零命中且不报错**（REQ-024），
+    这是设计而非故障。若在此造一条空线索，正兵会读到"查了，没关联"，
+    而实际是"没有知识包可比对"——两个含义完全不同。
+    """
+    params = params or {}
+    fn = "org_interest_links"
+    out = _invoke(store, fn, _clean(params, []), health)
+    rows = _rows_of(out)
+    if not rows:
+        _note_degraded(ctx, "relation_org_interest", out)
+        return []
+
+    from core.lens_assumption import resolve_function_assumption as _rfa
+    hyp, _why = _rfa(fn)
+
+    clues: list = []
+    for r in rows:
+        refs: list[dict] = []
+        for key in ("org_name", "raw_name"):
+            if r.get(key):
+                ref = _org_ref(store, r.get(key))
+                if ref:
+                    refs.append(ref)
+                break
+        _b = basis_for("relation_org_interest", {**out, **r})
+        clues.append(LineageClue(
+            skill_id="relation_org_interest",
+            title=f"组织『{r.get('org_name') or r.get('raw_name') or r.get('org_id')}』"
+                  f"法人/关联人命中案件知识包主体",
+            evidence_refs=refs,
+            detail={
+                "function": fn,
+                "basis": _b["basis"],
+                "falsification": _b["falsification"],
+                "claims": _b["claims"],
+                "source_type": "关系研判",
+                "assumed_hypothesis": hyp,
+                "knowledge_version": out.get("knowledge_version"),
+                "row": r,
+                # 溯源说明：人名只来自知识包，过期断言已自动排除
+                "person_source": "案件知识包（非全库姓名匹配）",
+            },
+        ))
+    return clues
+
+
+def jian_cross_level_lens(miao=None, store=None, ctx=None, params=None,
+                          health=None) -> list:
+    """五间交叉等级 → 一条分级观察（不是证据，是材料充分度）。
+
+    **不声明 assumption**（本体未给该 Function 规则挂钩）：交叉等级回答
+    "材料充分到什么程度"（单源=观察/双源=线索/三源+=可立案依据候选），
+    不回答"在验证哪条假设"。硬挂一个假设等于把分级说成证据，属于越界。
+    """
+    params = params or {}
+    fn = "jian_cross_level"
+    out = _invoke(store, fn, _clean(params, []), health)
+    rows = _rows_of(out)
+    if not rows:
+        _note_degraded(ctx, "relation_jian_cross_level", out)
+        return []
+
+    # py 类 Function：业务字段在 out["result"] 里，不是顶层
+    r = out.get("result") or {}
+    _b = basis_for("relation_jian_cross_level", r)
+    level = r.get("交叉等级")
+    return [LineageClue(
+        skill_id="relation_jian_cross_level",
+        title=f"五间交叉等级：{level}（{r.get('独立源数')} 个独立数据源）",
+        evidence_refs=[{"kind": "aggregate", "metric": "独立源数",
+                        "value": r.get("独立源数")}],
+        detail={
+            "function": fn,
+            "basis": _b["basis"],
+            "falsification": _b["falsification"],
+            "claims": _b["claims"],
+            "source_type": "用间研判",
+            # 明确为 null：不是漏填，是本体未声明且业务上不应挂
+            "assumed_hypothesis": None,
+            "assumption_note": "交叉等级是观察分级（材料充分度），不构成证据假设",
+            "交叉等级": level,
+            "独立源数": r.get("独立源数"),
+            "独立数据源": r.get("独立数据源"),
+            "命中间类": r.get("命中间类"),
+            "规则": r.get("规则"),
+        },
+    )]

@@ -33,11 +33,15 @@
         "raw_name": "string",
         "legal_rep": "string",
         "status": "string",
-        "relation": "string"
+        "relation": "string",
+        "credit_code": {
+          "data_element": "DE_CREDIT_CODE"
+        }
       },
       "metadata_props": [
         "status"
-      ]
+      ],
+      "_note": "R15/D10：新增统一社会信用代码。org 不声明 identity_key——静态复合键无法表达\"有码按码、无码按名\"：写 [\"raw_name\",\"credit_code\"] 会让更名主体（同码不同名）被误分列；只写 [\"credit_code\"] 会让当前无码数据全部坍缩为一个实体（更严重）。条件判定在 core/entity_ref.py 实现。"
     },
     {
       "name": "account",
@@ -190,6 +194,93 @@
         "geocode_confidence",
         "geocoded_at"
       ]
+    },
+    {
+      "name": "item",
+      "title": "重点物品",
+      "pk": "item_id",
+      "key": {
+        "column": "item_id",
+        "strategy": "proxy",
+        "prefix": "item"
+      },
+      "kind": "entity",
+      "name_property": "title",
+      "properties": {
+        "item_type": {
+          "data_element": "DE_ITEM_TYPE"
+        },
+        "title": "string",
+        "identifiers": "json",
+        "primary_digest": "string",
+        "descriptors": "json",
+        "location": "string",
+        "lat": "decimal",
+        "lng": "decimal",
+        "track": "json"
+      },
+      "identity_key": [
+        "item_type",
+        "primary_digest"
+      ],
+      "_note": "R1/D1 统一 item + item_type 子分类；R3 identifiers 为 json（多标识符，仅存 digest 不落明文，R14）；R6 复合身份键 [item_type, primary_digest]——无凭证类（D4）primary_digest 取 descriptors 摘要，天然各成实体，不静默合并。track 为物品轨迹点 json（R6：独立序列化属性，不并入 trackpoint——person_raw 是人）。持有是**多段时态关系**，归 holds 链接 + hold_record 事件对象，不在物品上挂单值属性（单值会把『甲卖给乙』压成『最后持有人』）。数据源：scripts/prep_item_registry.py 预装配的 物品登记.parquet。",
+      "enum_values": {
+        "item_type": [
+          "vehicle",
+          "realestate",
+          "invoice",
+          "drug_batch",
+          "device",
+          "portable",
+          "goods_other"
+        ]
+      }
+    },
+    {
+      "name": "hold_record",
+      "title": "物品持有登记",
+      "pk": "hold_id",
+      "key": {
+        "column": "hold_id",
+        "strategy": "proxy",
+        "prefix": "hold"
+      },
+      "kind": "event",
+      "name_property": "holder_raw",
+      "properties": {
+        "holder_raw": "string",
+        "item_title": "string",
+        "item_type": {
+          "data_element": "DE_ITEM_TYPE"
+        },
+        "primary_digest": "string",
+        "start_date": {
+          "data_element": "DE_DATE"
+        },
+        "end_date": {
+          "data_element": "DE_DATE"
+        },
+        "start_time": {
+          "data_element": "DE_DATETIME"
+        },
+        "end_time": {
+          "data_element": "DE_DATETIME"
+        },
+        "reg_order": "integer"
+      },
+      "enum_values": {
+        "item_type": [
+          "vehicle",
+          "realestate",
+          "invoice",
+          "drug_batch",
+          "device",
+          "portable",
+          "goods_other"
+        ]
+      },
+      "_note": "持有流水事件（一次持有一行），lnk_holds 时态边的物化载体。关联键 (item_type, primary_digest)——R14 不落凭证明文。日期/时刻双列分流与 trackpoint 同口径：纯日期落 start_date/end_date（DE_DATE），含时刻落 start_time/end_time（DE_DATETIME），**缺失留 NULL 不填哨兵、无时刻不补 00:00:00**（R5：起止皆空=区间不可判定，由 hold_chain 落 unknown_overlaps）。reg_order 是台账登记序号，错序（登记序与时间序矛盾）是倒签信号，只标记不重排。",
+      "_note_time": "套牌/共用判定依赖时刻级记录：同一车牌同一时段被两人分别使用是信号不是噪声。判『是否同时』须读 time_precision（由值派生），date 档只判同一天先后、不得声称重叠。"
     },
     {
       "name": "bid_project",

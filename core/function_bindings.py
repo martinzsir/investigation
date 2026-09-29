@@ -59,11 +59,16 @@ def status_label(status: str) -> str:
     return _STATUS_LABELS.get(status, status)
 
 
-def _packs_root(base_dir: Path | None) -> Path:
-    """镜头包根目录（packs/）；base_dir 是 ontology 根，packs 是其兄弟。"""
-    if base_dir is not None:
-        p = Path(base_dir)
-        return p.parent / "packs" if p.name == "ontology" else p / "packs"
+
+
+def _packs_root(base_dir: Path | None = None) -> Path:
+    """镜头包根目录（packs/），**恒定平台根**。
+
+    packs/* 是平台级镜头插件，不随案件 ontology 快照归档；按 base_dir
+    推算兄弟目录在传入案件快照根（cases/<cid>/ontology）时会落到不存在
+    的 cases/<cid>/packs，镜头归属整批扫空。与 core.lens_catalog 同一纪律。
+    base_dir 保留仅为签名兼容，不参与定位。
+    """
     return Path(__file__).resolve().parents[1] / "packs"
 
 
