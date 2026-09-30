@@ -48,6 +48,10 @@ FUNCTION_RULE: Dict[str, str] = {
     "call_frequency_spike": "R3",
     # description: "不同主体同地点 ±1 天内先后出现" → R-GEO-3 异主体时空反复同框
     "co_located_pairs": "R-GEO-3",
+    # rules.json R-GEO-3 显式挂 geo_spatiotemporal_accompany（与 co_located_pairs
+    # 同归 H6 私下接触）。geo_accompany pack.json 也显式声明 H6，但反查表
+    # 仍补 R-GEO-3 作为兜底——pack.json 显式优先，反查为兜底
+    "geo_spatiotemporal_accompany": "R-GEO-3",
     # description: "法人/关联人命中案件知识包主体/关系人即候选" → R5（利益关联）
     "org_interest_links": "R5",
     # description: "...整数资金且主体为个人的碰撞（...规则 R6 挂钩...）"
@@ -61,6 +65,36 @@ FUNCTION_RULE: Dict[str, str] = {
 FUNCTION_ASSUMPTION_PENDING: Dict[str, str] = {
     "jian_cross_level": "五间交叉等级是观察分级（单源/双源/三源），不是证据假设，"
                         "不应挂假设",
+    # geo_anomaly_trajectory 检测的偏离分三类，各自指向不同假设：
+    #   · 非常态地点（off_route）—— 可能指向 H6 私下接触（私下场所），
+    #     也可能只是 H5 系列事件空间聚集（多次重复访问）
+    #   · 非常态时段（off_hours）—— 与 H3 二人密切私下关系部分重叠，
+    #     但语义不同（H3 是通讯频次突增）
+    #   · 非常态通勤（off_path）—— 不直接对应任何已声明假设
+    # 单一 function 取单一假设就是替正兵归因，留给 pack.json 显式声明
+    # 或正兵在画布上手工挂接
+    "geo_anomaly_trajectory": "异常轨迹的非常驻地点/非常态时段/非常态通勤分别"
+                              "对应 H5/H6/H3 不同假设，单一归属会替正兵归因；"
+                              "由 pack.json 显式声明或正兵手工挂接",
+    # 描述统计类镜头：不产出可证伪的命题，只描绘主体活动结构。
+    # 落脚点画像/活动范围/轨迹分段/缓冲区扫描 是描述工具，挂假设就是
+    # 把"这个人常去这些地方"伪装成"这个人在哪里犯罪"——典型过度归因。
+    # 周期节奏/事件序列邻接 同类：聚合时间结构，不挂假设。
+    "geo_subject_sites": "落脚点画像是描述统计（按地点聚合到访次数），"
+                         "不产出可证伪命题，不应挂假设",
+    "geo_profile_cgt": "Rossmo CGT 概率面产出优先排查区域，不是定址结论；"
+                        "假设挂在规则 R-GEO-1（H5）上，由 rules.json 命中触发，"
+                        "不由裸 Function 反查",
+    "geo_buffer_scan": "缓冲区环带扫描是描述工具（谁在锚点附近出现），"
+                       "不产出可证伪命题，不应挂假设",
+    "geo_trajectory_segment": "轨迹分段是描述工具（停留段/移动段切分），"
+                              "不产出可证伪命题，不应挂假设",
+    "geo_activity_range": "活动范围画像是描述统计（平均中心/标准距离/"
+                          "标准差椭圆），不产出可证伪命题，不应挂假设",
+    "timeline_rhythm": "周期节奏是描述统计（聚集簇识别），"
+                       "不产出可证伪命题，不应挂假设",
+    "timeline_event_sequence": "事件序列邻接是描述统计（时间轴排序），"
+                                "不产出可证伪命题，不应挂假设",
 }
 
 

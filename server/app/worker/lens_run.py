@@ -169,35 +169,24 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
     degraded = [str(d.get("skill_id")) for d in ctx.get("degraded", [])
                 if isinstance(d, dict)]
 
-    # P3 案件画布回写（PRD V1.0.0 功能 4）：仅案件画布发起的定向镜头把
-    # 观察回写为 analysis_result 节点（挂靶心 + 按声明挂假设）；线索画布
-    # origin 走读面并线（build_origin_lens_layer），行为不变零回归。
+    # P3 案件画布回写已废弃：worker 不再落 case#ar:* 节点。
+    # 理由：GET /canvas 端点的 load_growth_layer 已每次从
+    # directed_observations.json 重建 analysis_result 节点 + 假设层 +
+    # 推断边（case#demoX:analysis_result:{lens}@{pk} 格式），且节点 id 与
+    # props.generated_by=GENERATED_BY_LENS 标记完整。worker 端写回的
+    # case#ar:{oid} 节点没打标记 → split_persistent 不剥离 → 持久层与
+    # 重建层并存两组节点（同一观察产出两个 id 不同的节点），且 case#ar:*
+    # 不带假设推断边，导致 §6 假设自动连线断裂。
+    # 废弃后：GET 端点重建层完整接管，canvas_writeback.py 保留文件仅为
+    # 既有测试与 import 兼容。
     canvas_summary: dict | None = None
-    if origin and origin.get("surface") == "case_canvas":
-        try:
-            from server.app.canvas_writeback import writeback_observations
-            canvas_summary = writeback_observations(
-                case.id,
-                state_path=factory.case_dir(case.id) / "state.sqlite",
-                observations=observations,
-                assumption_of=lambda s: (reg.skill(s).assumption
-                                         if s in reg else ""),
-                operator=task.created_by)
-        except Exception as e:  # noqa: BLE001
-            # 回写失败不炸任务：观察已持久化（directed_observations.json），
-            # 画布可人工补；留 ops 事件可审计
-            repo.record_ops("canvas_writeback_failed", case.id,
-                            {"run_id": run_id, "skill_id": sid,
-                             "error": f"{type(e).__name__}: {e}"})
 
     # 结果透出（TaskRow 无 result 字段）：写 progress_detail 供前端轮询
     # GET /tasks/{tid} 读取，回写上图/无观察原因不再无声
     if origin and origin.get("surface") == "case_canvas":
-        if observations and canvas_summary:
-            detail = (f"回写画布：新增 {canvas_summary['nodes_added']} 结论"
-                      f"节点、{canvas_summary['edges_added']} 条连线")
-            if canvas_summary["hypothesis_linked"]:
-                detail += f"（挂假设 {canvas_summary['hypothesis_linked']} 条）"
+        if observations:
+            detail = (f"镜头完成：新增 {len(observations)} 条观察，"
+                      f"画布 GET 端点将自动重建研判结论节点")
         else:
             reasons = [str(n.get("degraded_reason") or n.get("note") or "")
                        for n in notes if isinstance(n, dict)]

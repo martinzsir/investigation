@@ -1,0 +1,30 @@
+{
+  "pack_id": "item",
+  "version": "1.0.0",
+  "_note": "P3 物品研判镜头包：经 core.pack_loader 自枚举挂载，零注册代码。计算走 ontology Function（item_duplicate_hold_collision），镜头只做编排与线索化，不自己写 SQL。产出是『同号同时段冲突』的结构事实——同一 (item_type, primary_digest) 在时间区间重叠下被多名持有人登记，**不声称物理不可达**（系统只出事实，定性权属正兵）。\n\n为什么单独立包：hold_record 是事件型对象，其冲突判据与资金/通话/轨迹不同维——挂在 fund 包会污染维度口径。物品维度独立，assumption 暂不强挂钩（H 系列假设尚未覆盖物品冲突场景），后续若补 H-ITEM 系列再走 resolve_function_assumption 反查。",
+  "skills": [
+    {
+      "skill_id": "item_duplicate_hold_collision",
+      "name": "同号同时段冲突镜头",
+      "stage": "xu_shi",
+      "consumes_objects": ["hold_record"],
+      "produces_dims": ["item"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "min_overlap_days": {
+          "type": "integer",
+          "default": 1,
+          "description": "最小重叠天数阈值 1-3650，缺省 1（同日即视为重叠候选）；0=只判 NULL 区间不可判定冲突"
+        }
+      },
+      "scope": {
+        "reads": ["hold_record"]
+      },
+      "handler": "impl:item_duplicate_hold_collision_lens",
+      "description": "物品维度：同一 (item_type, primary_digest) 在时间区间重叠下被多名持有人登记（规则 R-ITEM-1 挂钩）。判据在规则层，本镜头只给冲突事实，不判物理可达性",
+      "uses_functions": ["item_duplicate_hold_collision"]
+    }
+  ]
+}

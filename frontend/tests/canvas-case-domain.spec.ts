@@ -53,10 +53,10 @@ describe('NodeKind 域升级（线索域零回归）', () => {
     expect(isManualNode({ kind: 'note', system: false })).toBe(true)
   })
 
-  it('SYSTEM_RELS 7 / MANUAL_RELS 4 不变；研判边 5 类独立成表且互斥', () => {
+  it('SYSTEM_RELS 7 / MANUAL_RELS 4 不变；研判边 6 类独立成表且互斥', () => {
     expect(SYSTEM_RELS.length).toBe(7)
     expect(MANUAL_RELS.length).toBe(4)
-    expect(RESEARCH_RELS).toEqual(['位于', '发生于', '支撑', '反驳', '同现'])
+    expect(RESEARCH_RELS).toEqual(['位于', '发生于', '支撑', '反驳', '同现', '联系'])
     for (const r of RESEARCH_RELS) {
       expect(MANUAL_RELS).not.toContain(r)
       expect(SYSTEM_RELS).not.toContain(r)
@@ -128,7 +128,7 @@ describe('入口（侧栏）', () => {
 // ======================================================================
 
 describe('caseCanConnect（案件级连线矩阵，与后端真相表对拍）', () => {
-  it('CASE_EDGE_RELS 9 类 = 人工 4 在前 + 研判 5 在后（与后端 allowed_rels 同序）', () => {
+  it('CASE_EDGE_RELS 10 类 = 人工 4 在前 + 研判 6 在后（与后端 allowed_rels 同序）', () => {
     expect(CASE_EDGE_RELS).toEqual([
       '推断为',
       '证实',
@@ -139,6 +139,7 @@ describe('caseCanConnect（案件级连线矩阵，与后端真相表对拍）',
       '支撑',
       '反驳',
       '同现',
+      '联系',
     ])
   })
 
@@ -153,6 +154,13 @@ describe('caseCanConnect（案件级连线矩阵，与后端真相表对拍）',
     expect(caseCanConnect('subject', 'subject', '同现').ok).toBe(true)
     expect(caseCanConnect('subject', 'place', '同现').code).toBe('matrix')
     expect(caseCanConnect('analysis_result', 'analysis_result', '同现').code).toBe('matrix')
+  })
+
+  it('联系：subject↔subject 通话关系专用（与同现同口径，语义不同）', () => {
+    expect(caseCanConnect('subject', 'subject', '联系').ok).toBe(true)
+    expect(caseCanConnect('subject', 'place', '联系').code).toBe('matrix')
+    expect(caseCanConnect('analysis_result', 'analysis_result', '联系').code).toBe('matrix')
+    expect(caseCanConnect('subject', 'hypothesis', '联系').code).toBe('matrix')
   })
 
   it('位于/发生于：subject 与 analysis_result 可指向 place/event', () => {
@@ -190,7 +198,7 @@ describe('caseCanConnect（案件级连线矩阵，与后端真相表对拍）',
   })
 
   it('caseAllowedRels：关系气泡白名单与矩阵一致', () => {
-    expect(caseAllowedRels('subject', 'subject')).toEqual(['同现'])
+    expect(caseAllowedRels('subject', 'subject')).toEqual(['同现', '联系'])
     expect(caseAllowedRels('analysis_result', 'place')).toEqual(['位于'])
     expect(caseAllowedRels('analysis_result', 'hypothesis')).toEqual(['支撑', '反驳'])
     expect(caseAllowedRels('fact', 'hypothesis')).toEqual(['推断为'])

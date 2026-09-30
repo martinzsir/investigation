@@ -4,7 +4,7 @@ REQ-V-018 核查手册建议项（verify_playbooks.json → loader 硬失败 →
 → 采纳/忽略生命周期 → 采纳后路由 → agent 拒绝）。
 
 断言（实施方案 §3.8 REQ-V-018 AC1~AC7 + 计划分步实施计划 步骤 6）：
-  AC1  demoF v8 clue_9446b1bd → 3 条建议（function×2 + external×1），
+  AC1  R6 合并线索（clue_9446b1bd）→ 3 条建议（function×2 + external×1），
        r6_fund_tw_rerun 文本含「张卫国」，{project_count} 按 D1 裁决值锁 8，
        item_id 稳定（vi_ 前缀，二次供给不变）；
   AC2  采纳 → 待核查（origin 保持 suggested、text 保留），忽略 → 已忽略，
@@ -13,9 +13,12 @@ REQ-V-018 核查手册建议项（verify_playbooks.json → loader 硬失败 →
   AC4  agent 会话采纳/忽略 → VERIFY_FORBIDDEN；human 正常；
   AC5  装载校验：未知 rule_id / 未知 function / 槽位越界 / id 重复 /
        schema_version 错 → load_verify_playbooks 硬失败（各一例）；
-       文件缺失 → [] 旧包零破坏；两包（内核 default / demoF）id 集合一致；
+       文件缺失 → [] 旧包零破坏；手册内 playbook 与所引规则/函数一一对齐；
   AC6  采纳后路由按钮 → 前端 spec（verify-workbench.spec.ts）；
   AC7  事实卡永不生成建议项（渲染只消费 rule 关联信息 + source_rows + h 卡）。
+
+用例不依赖任何案件运行态产物（cases/ 不入 Git，见 .gitignore）：线索 raw 一律
+自建 inline fixture，本体/手册一律走内核包（base_dir=None）。
 """
 from __future__ import annotations
 
@@ -51,8 +54,6 @@ from server.app.worker.tasks import (
 )
 from server.app.worker.verify import handle_verify
 
-DEMOF = ROOT / "cases" / "demoF"
-DEMOF_ONTO_BASE = DEMOF / "ontology"
 CLUE = "clue_9446b1bd"
 PACK_ROOT = ROOT / "ontology"
 
@@ -82,7 +83,11 @@ def _write_playbook_pack(base: Path, *, playbooks: list | None = None,
 
 def _synthetic_r6_raw(clue_id: str = "clue_t6", *, rows=None,
                       rule_id: str = "R6", assumption=None) -> dict:
-    """带 rule_id=R6 的合成线索（正常回填直通路径）。"""
+    """带 rule_id=R6 的合成线索（正常回填直通路径）。
+
+    行集用语义层真实列名 owner_raw（rules.json R6 subject_column）+ amount，
+    与 _subject_stats 的过滤口径同源。
+    """
     return {
         "clue_id": clue_id,
         "skill_id": "time_window",
@@ -91,12 +96,36 @@ def _synthetic_r6_raw(clue_id: str = "clue_t6", *, rows=None,
                    "rule_text": "中标公示 ±20 天整数资金，主体为个人。",
                    "级别": "待核实"},
         "source_rows": rows if rows is not None else [
-            {"资金主体": "张卫国", "金额": 100000},
-            {"资金主体": "张卫国", "金额": 200000},
+            {"owner_raw": "张卫国", "amount": 100000},
+            {"owner_raw": "张卫国", "amount": 200000},
         ],
         "assumption_chain": assumption or [],
         "status": "待查",
         "audit_log": [],
+    }
+
+
+def _merged_r6_raw(clue_id: str = CLUE) -> dict:
+    """R6 合并线索：detail 只有 merged_from、无 rule_id（复刻 core/lineage
+    合并段丢规则字段的真实产物形态），靠合并标题里的部件标题反查 rules.json 回填。
+
+    8 行张卫国整数资金 → 手册建议槽位 {subject}=张卫国、{project_count}=8
+    （D1 裁决口径）。
+    """
+    return {
+        "clue_id": clue_id,
+        "skill_id": "time_window",
+        "title": "张卫国 · 中标-资金时间窗碰撞 | 某项目 · 中标-资金时间窗碰撞",
+        "detail": {"merged_from": ["clue_9f21a0", "clue_3b7c44"],
+                   "级别": "待核实"},
+        "source_rows": [{"owner_raw": "张卫国",
+                         "amount": 100000 * (i + 1)} for i in range(8)],
+        "assumption_chain": ["H4"],
+        "jian_types": ["反间"],
+        "needs_human_review": True,
+        "status": "待查",
+        "audit_log": [],
+        "note": "",
     }
 
 
@@ -193,33 +222,57 @@ class VerifyPlaybookLoaderTest(unittest.TestCase):
               "text": "核查 {subject}"}],
             "external.material")
 
-    # ---- 两包一致性（内核 default / demoF）防手工漂移 ----
-    def test_two_packs_consistent(self):
-        core = load_verify_playbooks("default")
-        demo = load_verify_playbooks("default", base_dir=DEMOF_ONTO_BASE)
-        self.assertEqual(
-            [(p["id"], p["text"], p["channel"]) for p in core],
-            [(p["id"], p["text"], p["channel"]) for p in demo])
+    # ---- 手册与本体同源：每条 playbook 的 rule_id / function 均已声明 ----
+    def test_playbooks_align_with_ontology(self):
+        """手册条目所引规则/函数必须在内核本体里存在（loader 已硬失败，此处锁
+        「手册不孤儿」：每条 rule_id 都能在 rules.json 找到、每个 function
+        都能在 functions.json 找到，且 external 条目不带 function）。"""
+        from core.ontology_loader import load_pack
+        spec = load_pack("default")
+        declared_fns = {f["name"] for f in
+                        json.loads((PACK_ROOT / "default" / "functions.json")
+                                   .read_text(encoding="utf-8"))["functions"]}
+        pbs = load_verify_playbooks("default")
+        for pb in pbs:
+            self.assertIn(pb["rule_id"], spec.rules, msg=pb["id"])
+            if pb["channel"] == "function":
+                self.assertIn(pb["function"], declared_fns, msg=pb["id"])
+            else:
+                self.assertEqual(pb["function"], "", msg=pb["id"])
 
     def test_core_pack_shape(self):
-        """内核包 6 条：R6 function×2 + external×1 + R1 function×1 + external×2
-        （r1_image_original_match 为 P8 图像核验 external）；引用的函数均存在
-        （与 demoF/demoW 快照同构，防漂移基准）。"""
+        """内核包 11 条（按声明序）：R6 function×2 + external×1；R1 function×1
+        + external×2（r1_image_original_match 为 P8 图像核验 external）；
+        R-GEO-1 function×1 + external×1；R-GEO-2 external×1；R-GEO-3 external×2。"""
         pbs = load_verify_playbooks("default")
         self.assertEqual([p["id"] for p in pbs],
                          ["r6_fund_tw_rerun", "r6_call_window",
                           "r6_bid_archive", "r1_quarter_end_deposit_rerun",
                           "r1_deposit_slip_archive",
-                          "r1_image_original_match"])
+                          "r1_image_original_match",
+                          "rgeo1_cgt_rerun", "rgeo1_grid_visit",
+                          "rgeo2_site_archive", "rgeo3_site_nature",
+                          "rgeo3_relation_check"])
         self.assertEqual([p["channel"] for p in pbs],
                          ["function", "function", "external",
-                          "function", "external", "external"])
+                          "function", "external", "external",
+                          "function", "external",
+                          "external", "external", "external"])
         self.assertEqual(
             [p["function"] for p in pbs],
             ["time_window_collision", "call_frequency_spike", "",
-             "quarter_end_integer_deposits", "", ""])
+             "quarter_end_integer_deposits", "", "",
+             "geo_profile_cgt", "", "", "", ""])
         self.assertEqual(pbs[2]["external"]["material"],
                          "中标项目招投标底档及资金审批联签单")
+        # 槽位只落在已声明 subject_column 的规则手册条目上（R6=owner_raw、
+        # R1 未声明主体列 → 其 {subject} 槽位在无主体时按 D3 留痕跳过）
+        self.assertEqual([p["id"] for p in pbs
+                          if "{subject}" in p["text"] or
+                          "{project_count}" in p["text"]],
+                         ["r6_fund_tw_rerun", "r6_call_window",
+                          "r6_bid_archive", "r1_image_original_match",
+                          "rgeo2_site_archive"])
 
 
 # ----------------------------------------------------------------------
@@ -229,17 +282,17 @@ class VerifySuggestRenderTest(unittest.TestCase):
     def test_r6_slots_subject_and_count(self):
         """槽位：剔单位 + 金额为正整数倍过滤；并列取名称排序首者。"""
         rows = [
-            {"资金主体": "张卫国", "金额": 100000},
-            {"资金主体": "张卫国", "金额": 100000},
-            {"资金主体": "华清越", "金额": 100000},
-            {"资金主体": "华清越", "金额": 100000},
-            {"资金主体": "某公司", "金额": 100000},   # 单位后缀 → 剔
-            {"资金主体": "李四", "金额": 0},           # 非正 → 剔
-            {"资金主体": "王五", "金额": 12345},       # 非整数倍 → 剔
-            {"资金主体": "赵六", "金额": "abc"},       # 脏值 → 剔
+            {"owner_raw": "张卫国", "amount": 100000},
+            {"owner_raw": "张卫国", "amount": 100000},
+            {"owner_raw": "华清越", "amount": 100000},
+            {"owner_raw": "华清越", "amount": 100000},
+            {"owner_raw": "某公司", "amount": 100000},   # 单位后缀 → 剔
+            {"owner_raw": "李四", "amount": 0},           # 非正 → 剔
+            {"owner_raw": "王五", "amount": 12345},       # 非整数倍 → 剔
+            {"owner_raw": "赵六", "amount": "abc"},       # 脏值 → 剔
         ]
         raw = _synthetic_r6_raw(rows=rows, assumption=["H1"])
-        items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        items, skipped = render_suggested(raw, [])
         self.assertEqual(skipped, [])
         # 并列 2:2 → 名称排序首者 = 华清越（确定性）
         first = next(i for i in items if i["channel"] == "function"
@@ -251,7 +304,7 @@ class VerifySuggestRenderTest(unittest.TestCase):
     def test_rule_without_playbooks_no_suggestions(self):
         """无手册条目的规则（R2）→ 零建议零跳过（确定性空）。"""
         raw = _synthetic_r6_raw(rule_id="R2", assumption=["H1"])
-        items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        items, skipped = render_suggested(raw, [])
         self.assertEqual((items, skipped), ([], []))
 
     def test_r1_rule_renders_quarter_end_suggestions(self):
@@ -260,7 +313,7 @@ class VerifySuggestRenderTest(unittest.TestCase):
         P8 的 r1_image_original_match（external，{subject} 槽位）在无有效
         主体时合法 skip（D3 留痕），不落建议项。"""
         raw = _synthetic_r6_raw(rule_id="R1", assumption=["H1"])
-        items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        items, skipped = render_suggested(raw, [])
         self.assertEqual(skipped, [{"playbook_id": "r1_image_original_match",
                                     "reason": "过滤后无有效主体"}])
         self.assertEqual([i["playbook_id"] for i in items],
@@ -275,13 +328,13 @@ class VerifySuggestRenderTest(unittest.TestCase):
     def test_assumption_gate(self):
         """假设不交集：H1/H4 项不出，无假设约束的 external 项照出。"""
         raw = _synthetic_r6_raw(assumption=["H9"])
-        items, _ = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        items, _ = render_suggested(raw, [])
         self.assertEqual([i["channel"] for i in items], ["external"])
 
     def test_no_subject_skipped_with_reason(self):
-        rows = [{"资金主体": "某某公司", "金额": 100000}]
+        rows = [{"owner_raw": "某某公司", "amount": 100000}]
         raw = _synthetic_r6_raw(rows=rows, assumption=["H1"])
-        items, skipped = render_suggested(raw, [], base_dir=DEMOF_ONTO_BASE)
+        items, skipped = render_suggested(raw, [])
         self.assertEqual(items, [])
         self.assertEqual([s["playbook_id"] for s in skipped],
                          ["r6_fund_tw_rerun", "r6_call_window",
@@ -293,13 +346,13 @@ class VerifySuggestRenderTest(unittest.TestCase):
     def test_fact_card_never_suggested(self):
         raw = _synthetic_r6_raw(assumption=["H1"])
         fact = {"id": "f0", "kind": "fact", "text": "事实卡文本不应成项"}
-        items, _ = render_suggested(raw, [fact], base_dir=DEMOF_ONTO_BASE)
+        items, _ = render_suggested(raw, [fact])
         self.assertNotIn(fact["text"], [i["text"] for i in items])
         self.assertTrue(all(i["origin"] == "suggested" for i in items))
 
 
 # ----------------------------------------------------------------------
-# AC1（读面回归）+ 幂等：demoF v8 assemble_detail 供给建议项
+# AC1（读面回归）+ 幂等：R6 合并线索 assemble_detail 供给建议项
 # ----------------------------------------------------------------------
 def _write_artifact(case_dir: Path, version: int, clues: list[dict]) -> None:
     art_dir = case_dir / "artifacts"
@@ -320,20 +373,15 @@ class VerifySuggestViewTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _demof_raw(self) -> dict:
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        return next(c for c in art["clues"] if c["clue_id"] == CLUE)
-
     def _detail(self, state_store):
         return assemble_detail(
             case_dir=self.case_dir, version=8, clue_id=CLUE,
             state_map={}, access=self.access, pack_id="default",
-            base_dir=DEMOF_ONTO_BASE, state_store=state_store)
+            base_dir=None, state_store=state_store)
 
     # ---- AC1：3 条建议 + 主体/计数槽位 + 稳定键 ----
-    def test_demof_v8_suggested_items(self):
-        _write_artifact(self.case_dir, 8, [self._demof_raw()])
+    def test_merged_r6_suggested_items(self):
+        _write_artifact(self.case_dir, 8, [_merged_r6_raw()])
         with StateStore("c1", self.case_dir / "state.sqlite") as st:
             data = self._detail(st)
         items = data["verify"]["items"]
@@ -363,7 +411,7 @@ class VerifySuggestViewTest(unittest.TestCase):
 
     # ---- 幂等：二次详情 added=0（item_id 不变、不重复供给）----
     def test_second_detail_idempotent(self):
-        _write_artifact(self.case_dir, 8, [self._demof_raw()])
+        _write_artifact(self.case_dir, 8, [_merged_r6_raw()])
         with StateStore("c1", self.case_dir / "state.sqlite") as st:
             first = self._detail(st)
             second = self._detail(st)
@@ -374,25 +422,15 @@ class VerifySuggestViewTest(unittest.TestCase):
 
     # ---- 回填路径：合并线索（无 rule_id）经 backfill 后同样供给建议 ----
     def test_merged_clue_backfilled_then_suggested(self):
-        raw = self._demof_raw()
-        det = dict(raw.get("detail") or {})
-        det.pop("rule_id", None)
-        merged = dict(raw)
-        merged["title"] = (raw.get("title") or "") + " | " \
-            + "中标-资金时间窗碰撞"
-        merged["detail"] = det
-        merged["merged_from"] = ["c-a", "c-b"]
-        _write_artifact(self.case_dir, 1, [merged])
-        backfilled = backfill_rule_fields(
-            merged, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+        raw = _merged_r6_raw()
+        backfilled = backfill_rule_fields(raw, pack_id="default")
         self.assertEqual(backfilled["detail"].get("rule_id"), "R6")
         # 与 clues_view 生产路径同源：证据三栏（含待核实 h 卡文本）先建一次，
         # H1 假设由 evidence 提供（该线索自身 assumption_chain 仅 H4）。
         evidence = build_evidence(
             raw_clue=backfilled, conn=None, pack_id="default",
-            base_dir=DEMOF_ONTO_BASE, access=None)
-        items, _ = render_suggested(
-            backfilled, evidence, base_dir=DEMOF_ONTO_BASE)
+            base_dir=None, access=None)
+        items, _ = render_suggested(backfilled, evidence)
         self.assertEqual(len(items), 3)
 
 

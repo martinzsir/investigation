@@ -5,8 +5,8 @@ tests/test_lens_run.py
 覆盖：
   ① POST run 202 入队 → Worker 对当前版本跑定向镜头 → lens_runs 补充产物
      落盘 + ops 留痕（空库下镜头隔离降级 degraded，任务仍成功）；
-  ② 线索读面并线：lens_runs 产物线索进 GET /clues 列表与详情（主产物
-     D-M3-2 不可变，定向线索挂产生它的版本）；
+  ② 线索读面：lens_runs 产物**不**并线（纯运行审计留痕），认领
+     （promoted）线索进 GET /clues 列表与详情（不挂版本、跨版本持久）；
   ③ 权限与边界：正兵 403；未知镜头 404；内置技能/包级停用/草案镜头/
      案件停用 400；未声明参数/必填缺失 400（路由预检不入队）；
   ④ 幂等：同版本同参数重提返回同任务；
@@ -41,6 +41,7 @@ from server.app.main import create_app
 from server.app.meta.models import TASK_FAILED, TASK_SUCCEEDED, User
 from server.app.meta.repo_sqlite import SqliteMetaRepo
 from server.app.security import hash_password
+from server.app.observation_promote import save_promoted_clue
 from server.app.snapshot_config import lens_overrides_path
 from server.app.store import StoreFactory
 from server.app.worker.pool import WorkerPool
@@ -121,7 +122,10 @@ class LensRunTest(unittest.TestCase):
         runs = load_lens_runs(self.case_dir, 1)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["skill_id"], "relation_neighborhood")
-        self.assertEqual(runs[0]["params"], {"target_subject": "张三"})
+        # params 落盘的是**实际使用的参数**：target_subject 已填但缺 target_type
+        # 时 Worker 会探测真实类型补齐，补齐结果一并写回产物（否则复跑不可重现）
+        self.assertEqual(runs[0]["params"]["target_subject"], "张三")
+        self.assertEqual(runs[0]["params"]["target_type"], "person")
         self.assertEqual(runs[0]["operator"], "张偏将")
         self.assertEqual(runs[0]["version"], 1)
         self.assertIn("clues", runs[0])
@@ -130,8 +134,13 @@ class LensRunTest(unittest.TestCase):
         self.assertGreaterEqual(len(ops), 1)
         self.assertEqual(ops[0]["case_id"], "c1")
 
-    # ---- ② 读面并线 ------------------------------------------------------
-    def test_read_surface_merges_lens_run_clues(self):
+    # ---- ② 读面不并线 lens_runs（定向只产观察，线索靠人认领） -----------
+    def test_read_surface_does_not_merge_lens_run_clues(self):
+        """lens_runs/v{N}/*.json 是纯运行审计留痕，不进读面。
+
+        定向与批量统一产**观察**，观察无命题无从证伪；线索只能由正兵
+        认领（提升 observation_promote）产生，并入读面且不挂版本。
+        """
         self._make_version1(with_clues_artifact=True)
         clue = LineageClue(skill_id="relation_neighborhood",
                            title="定向：张三 关系圈层", detail={"依据": "邻域"})
@@ -139,49 +148,58 @@ class LensRunTest(unittest.TestCase):
                       skill_id="relation_neighborhood",
                       params={"target_subject": "张三"},
                       operator="张偏将", clues=[clue])
-        # 列表并线 + 定向打标（lens_run_id/at/operator 随列表可见，徽标/审计面）
         r = self.client.get("/api/v1/cases/c1/clues", headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)
         items = r.json()["data"]["items"]
-        hit = [x for x in items if x["clue_id"] == clue.clue_id]
+        self.assertNotIn(clue.clue_id, {x["clue_id"] for x in items})
+
+    def test_promoted_clue_enters_read_surface(self):
+        """认领（提升）线索并入读面：跨版本持久 + lens_run_id 打标可见。"""
+        self._make_version1(with_clues_artifact=True)
+        promoted = LineageClue(skill_id="relation_neighborhood",
+                               title="提升：张三 关系圈层",
+                               detail={"依据": "邻域"}).to_dict()
+        promoted["lens_run_id"] = "lensrun_t1"
+        promoted["lens_operator"] = "张偏将"
+        promoted["lens_run_at"] = "2026-01-01T00:00:00"
+        save_promoted_clue(self.case_dir, promoted)
+        r = self.client.get("/api/v1/cases/c1/clues", headers=self.auth_h)
+        self.assertEqual(r.status_code, 200, r.text)
+        items = r.json()["data"]["items"]
+        hit = [x for x in items if x["clue_id"] == promoted["clue_id"]]
         self.assertEqual(len(hit), 1)
-        self.assertEqual(hit[0]["skill_id"], "relation_neighborhood")
         self.assertEqual(hit[0]["status"], "待查")
         self.assertEqual(hit[0]["lens_run_id"], "lensrun_t1")
         self.assertEqual(hit[0]["lens_operator"], "张偏将")
-        self.assertTrue(hit[0]["lens_run_at"])
-        # 详情可见
         r = self.client.get(
-            f"/api/v1/cases/c1/clues/{clue.clue_id}", headers=self.auth_h)
+            f"/api/v1/cases/c1/clues/{promoted['clue_id']}",
+            headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["data"]["title"], "定向：张三 关系圈层")
+        self.assertEqual(r.json()["data"]["title"], "提升：张三 关系圈层")
 
     # ---- ②b 镜头筛选（skill / lens_run） ---------------------------------
     def test_list_filter_by_skill_and_lens_run(self):
         self._make_version1(with_clues_artifact=True)
         lens_clue = LineageClue(skill_id="relation_neighborhood",
                                 title="定向：张三 关系圈层",
-                                detail={"依据": "邻域"})
-        save_lens_run(self.case_dir, 1, run_id="lensrun_t2",
-                      skill_id="relation_neighborhood",
-                      params={"target_subject": "张三"},
-                      operator="张偏将", clues=[lens_clue])
+                                detail={"依据": "邻域"}).to_dict()
+        lens_clue["lens_run_id"] = "lensrun_t2"
+        save_promoted_clue(self.case_dir, lens_clue)
         batch_clue = LineageClue(skill_id="relation_neighborhood",
                                  title="批量：关系汇聚", detail={"依据": "批量"})
         save_case_clues(self.case_dir, 1, [batch_clue])
         base = "/api/v1/cases/c1/clues"
-        # lens_run=true：仅定向并线线索（批量同 skill 线索不混入）
+        # lens_run=true：仅带定向打标的认领线索（批量同 skill 线索不混入）
         r = self.client.get(f"{base}?lens_run=true", headers=self.auth_h)
         self.assertEqual(r.status_code, 200, r.text)
         items = r.json()["data"]["items"]
         self.assertEqual([x["clue_id"] for x in items],
-                         [lens_clue.clue_id])
-        # skill 过滤：主产物 + 定向并线同技能都在（定向镜头批量阶段跳过，
-        # 但过滤语义按产出技能统一口径，不隐含 lens_run）
+                         [lens_clue["clue_id"]])
+        # skill 过滤：主产物 + 认领同技能线索都在
         r = self.client.get(f"{base}?skill=relation_neighborhood",
                             headers=self.auth_h)
         ids = {x["clue_id"] for x in r.json()["data"]["items"]}
-        self.assertEqual(ids, {lens_clue.clue_id, batch_clue.clue_id})
+        self.assertEqual(ids, {lens_clue["clue_id"], batch_clue.clue_id})
         # 未知技能 → 空集（不是 404：筛选语义对任意值返回子集）
         r = self.client.get(f"{base}?skill=ghost", headers=self.auth_h)
         self.assertEqual(r.json()["data"]["items"], [])
@@ -283,7 +301,7 @@ class LensRunTest(unittest.TestCase):
         progress_detail 透出未产生观察的原因（不再无声失败），
         ops 记 surface，零观察不回写、画布无 analysis_result。"""
         self._make_version1()
-        g = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        g = self.client.get("/api/v1/cases/c1/case-canvas", headers=self.auth_h)
         self.assertEqual(g.status_code, 200, g.text)  # 惰性 seed
         r = self._run(origin={"surface": "case_canvas",
                               "node_id": "case#cn_t", "subject": "张三"})
@@ -298,7 +316,7 @@ class LensRunTest(unittest.TestCase):
             self.repo.list_ops(kind="lens_run")[0]["payload"])
         self.assertEqual("case_canvas", payload["surface"])
         self.assertIsNone(payload["canvas_writeback"])  # 零观察不回写
-        g2 = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        g2 = self.client.get("/api/v1/cases/c1/case-canvas", headers=self.auth_h)
         nodes = g2.json()["data"]["doc"]["nodes"]
         self.assertNotIn("analysis_result", [n["kind"] for n in nodes])
 
@@ -306,7 +324,7 @@ class LensRunTest(unittest.TestCase):
         """线索画布 origin 走读面并线（既有行为零回归）：不触发案件画布
         回写，progress 也不写回写文案。"""
         self._make_version1()
-        self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        self.client.get("/api/v1/cases/c1/case-canvas", headers=self.auth_h)
         r = self._run(origin={"clue_id": "clue-1", "surface": "clue_canvas"})
         self.assertEqual(r.status_code, 202, r.text)
         task_id = r.json()["data"]["task"]["id"]
@@ -318,7 +336,7 @@ class LensRunTest(unittest.TestCase):
         payload = json.loads(
             self.repo.list_ops(kind="lens_run")[0]["payload"])
         self.assertEqual("clue_canvas", payload["surface"])
-        g = self.client.get("/api/v1/cases/c1/canvas", headers=self.auth_h)
+        g = self.client.get("/api/v1/cases/c1/case-canvas", headers=self.auth_h)
         self.assertEqual([], g.json()["data"]["doc"]["nodes"])
 
 

@@ -57,6 +57,9 @@ const AMBIG = item({
   ambiguous_candidates: ['person_ecb52c3719fc'],
   score: 3.6,
   dim_hit_count: 3,
+  // 红线2 fixture 自洽：重名锚点的 claims 不能继承自「李志强」item()，
+  // 否则普通主体名会漏进重名区断言（ambList 不应包含 '李志强'）。
+  claims: ['张卫国 于 2020-03-24 在 莫干山路 存在二维锚点'],
 })
 
 function listPayload(over: Record<string, unknown> = {}) {
@@ -242,7 +245,13 @@ describe('三维交汇读面', () => {
   it('展开锚点拉取支撑观察；未命中维度写明"无支撑观察"', async () => {
     const w = await mountView([
       {
-        match: (r) => r.method === 'GET' && r.path.startsWith('/cases/c1/convergence'),
+        // 注意：startsWith('/cases/c1/convergence') 会同时命中详情路径
+        // /cases/c1/convergence/{key}，FakeTransport find 返回首个匹配，
+        // 导致详情请求拿到 listPayload（无 support 字段）→ 全维度显示 0。
+        // 排除含 /convergence/ 的路径，让详情落到第二条路由。
+        match: (r) => r.method === 'GET'
+          && r.path.startsWith('/cases/c1/convergence')
+          && !r.path.includes('/convergence/'),
         respond: () => okEnvelope(listPayload()),
       },
       {

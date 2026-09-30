@@ -526,7 +526,10 @@ const drawerNodeId = ref<string | null>(null)
 // 内嵌不了任何 HTML，所以窗口只能是 DOM 浮层，按节点**投影后的屏幕坐标**
 // 定位。有专属窗口的类型开窗；溯源类仍走抽屉，避免两套明细并存。
 // ------------------------------------------------------------------ //
-const WINDOW_KINDS = new Set(['subject', 'place', 'event', 'analysis_result', 'item', 'hypothesis'])
+// hypothesis 仍走抽屉：M4 RC-105「转为待核实」按钮挂在 CanvasNodeDrawer 里，
+// 进了窗口就看不到。研判四类（subject/place/event/analysis_result）才是有
+// 专属窗口的——它们没有 drawer 专属动作，开窗贴附浮层更顺手。
+const WINDOW_KINDS = new Set(['subject', 'place', 'event', 'analysis_result', 'item'])
 const windowNodeId = ref<string | null>(null)
 const windowAnchor = ref<{ x: number; y: number }>({ x: 0, y: 0 })
 const windowViewport = ref<{ width: number; height: number }>({ width: 0, height: 0 })

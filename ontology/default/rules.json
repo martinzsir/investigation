@@ -194,6 +194,22 @@
         "repeated_only": true
       },
       "hit_when": "result_hit"
+    },
+    {
+      "id": "R-ITEM-1",
+      "stage": "xu_shi",
+      "title": "同号同时段冲突",
+      "dimension": "space",
+      "jian_types": [
+        "生间"
+      ],
+      "rule_text": "同一物品（按 item_type + primary_digest 唯一标识）在时间区间重叠的情况下，被两名以上不同持有人登记持有。物品唯一性决定了其物理上不可同时分身两地——同号同时段被多人持有是套牌、共用、登记错序或利益输送掩盖的强信号。NULL 区间（起止时间缺失）不可判定是否真重叠，标 unknown_overlap 保留待正兵核查，不静默丢弃。物理可达性判断不在数据层——两人所在地距离超阈值属正兵判断，不是数据层判据。本规则只给『同号同时段冲突』的结构事实，不声称物理不可达。维度归 space：同号同时段冲突本质是空间矛盾（物理不可达），与 dimensions.json 不新增 item 维的既定设计一致。",
+      "basis_text": "同一物品在时间区间重叠下被多人持有，与物品唯一性矛盾",
+      "function": "item_duplicate_hold_collision",
+      "params": {
+        "min_overlap_days": 1
+      },
+      "hit_when": "rows_nonempty"
     }
   ]
 }

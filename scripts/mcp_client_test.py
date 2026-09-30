@@ -164,7 +164,9 @@ def main() -> int:
 
         d = payload(c.request("tools/call", {"name": "function_list", "arguments": {}}))
         fnames = [f["name"] for f in d.get("functions", [])]
-        check(f"function_list 返回 17 个 Function（{len(fnames)}）", len(fnames) == 17, str(fnames))
+        # Function 数随 P3-P8 镜头包与物品本体收编扩容：17 → 26
+        # （新增 relation/timeline/geo/item 系列函数）
+        check(f"function_list 返回 26 个 Function（{len(fnames)}）", len(fnames) == 26, str(fnames))
         check("function_list 全部标注 readonly",
               all(f.get("readonly") for f in d.get("functions", [])))
         check("function_list 含新增内间/对端诊断（tipoff_cross_reference, call_pair_coverage）",
@@ -188,14 +190,17 @@ def main() -> int:
         # ---- 自然语言规则手册（rule_list）----
         d = payload(c.request("tools/call", {"name": "rule_list", "arguments": {}}))
         rids = [r["id"] for r in d.get("rules", [])]
-        check(f"rule_list 返回 7 条自然语言规则（{len(rids)}）",
-              d.get("count") == 7 and d.get("readonly") is True, str(rids))
+        # 规则数随 P3 镜头包与物品本体收编扩容：7 → 11
+        # （R1-R7 + R-GEO-1/2/3 + R-ITEM-1）
+        check(f"rule_list 返回 11 条自然语言规则（{len(rids)}）",
+              d.get("count") == 11 and d.get("readonly") is True, str(rids))
         check("rule_list 规则携带判据原文与函数挂钩",
               all(len(r.get("rule_text", "")) >= 30 and r.get("function")
                   for r in d.get("rules", [])))
         d = payload(c.request("tools/call", {"name": "rule_list",
                                              "arguments": {"stage": "xu_shi"}}))
-        check("rule_list 支持 stage 过滤（xu_shi=5 条）", d.get("count") == 5,
+        # xu_shi 阶段规则：R1-R5 + R-GEO-1/2/3 + R-ITEM-1 = 9
+        check("rule_list 支持 stage 过滤（xu_shi=9 条）", d.get("count") == 9,
               str(d.get("count")))
 
         # ---- sunzi-report skill 桥接工具 ----
@@ -227,8 +232,10 @@ def main() -> int:
               str(d.get("error"))[:60])
 
         # demo 模式采集（不依赖案件库）
+        # case_id=demoX 对应 meta.db 实际登记的案件（cases/demoX/v11.duckdb +
+        # case_sources 中 7 个 imported 批次，含 招投标档案.parquet/upload_id=up_56b7b0730fe6）
         d = payload(c.request("tools/call", {"name": "report.gather_evidence", "arguments": {
-            "case_id": "demoW", "demo": True}}))
+            "case_id": "demoX", "demo": True}}))
         ev = d.get("evidence") or {}
         check("report.gather_evidence 返回 evidence 结构（确定性块齐全）",
               d.get("ok") is True and d.get("readonly") is True
@@ -277,7 +284,7 @@ def main() -> int:
               "确定性数字未渲染进报告")
         check("report.render 第九段由数据源登记确定性渲染",
               "已导入数据源批次" in md and "招投标档案.parquet" in md
-              and "up_df0e5f093842" in md
+              and "up_56b7b0730fe6" in md
               and "## 九、数据源清单\n\n（本段无内容）" not in md,
               "第九段未渲染 ingest 登记" if "招投标档案.parquet" not in md
               else f"md_len={len(md)}")
@@ -314,7 +321,7 @@ def main() -> int:
 
         # 缓存路径：gather 后用 case_id 调 render（免传 evidence 大对象）
         d = payload(c.request("tools/call", {"name": "report.render", "arguments": {
-            "case_id": "demoW", "sections": sections, "type": "A", "format": "md"}}))
+            "case_id": "demoX", "sections": sections, "type": "A", "format": "md"}}))
         check("report.render 用 case_id 从缓存取 evidence 成功",
               d.get("ok") is True and "## 二、证据充分性" in d.get("md", ""),
               str(d.get("error"))[:60] or f"md_len={len(d.get('md', ''))}")
@@ -393,6 +400,10 @@ def main() -> int:
         # 挑一条「非终态」线索做迁移测试（排在第一的往往已被 run_all 立案）
         check("clue_list 含 status 字段（便于按状态过滤）",
               all("status" in cl for cl in d.get("clues", [])))
+        # 捕获 system-priv 结果，用于 AC1 条件式断言（是否有 内间 线索可过滤）
+        system_clue_jians = [j for cl in d.get("clues", [])
+                            for j in (cl.get("jian_types") or [])]
+        has_neijian_in_total = "内间" in system_clue_jians
         pending = [cl for cl in d["clues"] if cl["status"] not in ("已立案", "已排除")]
         first_id = pending[0]["clue_id"] if pending else d["clues"][0]["clue_id"]
         filed_id = next((cl["clue_id"] for cl in d["clues"] if cl["status"] == "已立案"), None)
@@ -467,11 +478,16 @@ def main() -> int:
             check("AC4 工具清单无自由 run_sql 入口",
                   not any("sql" in n for n in names), str(names))
             d = payload(low.request("tools/call", {"name": "clue_list", "arguments": {}}))
+            # AC1：低权限会话过滤内间线索——
+            # - 若产物含内间线索，access_note 必须出现且返回结果不含内间
+            # - 若产物无内间线索（rules 未触发内间 rule），过滤无可过滤对象，
+            #   access_note 缺省；只要返回结果不含内间即符合策略
             check("AC1 低权限 clue_list 只返回授权范围（无内间线索）",
-                  d.get("count", 0) >= 0 and "access_note" in d
+                  d.get("count", 0) >= 0
                   and all("内间" not in (cl.get("jian_types") or [])
-                          for cl in d.get("clues", [])),
-                  str(d.get("access_note"))[:60])
+                          for cl in d.get("clues", []))
+                  and (not has_neijian_in_total or "access_note" in d),
+                  str(d.get("access_note"))[:60] or "(无内间线索可过滤，access_note 缺省正常)")
             d = payload(low.request("tools/call", {"name": "function_invoke",
                 "arguments": {"name": "co_located_pairs"}}))
             check("AC1 低权限调偏将级 Function（同框）被对象策略拒",

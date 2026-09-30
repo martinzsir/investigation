@@ -245,7 +245,9 @@ GROUPS = {
     # ---- 画布定向镜头带参调度（LENS_RUN 补充产物 + 读面并线） ----
     "lensrun":     ("画布定向镜头带参调度（202 入队/参数预检/权限边界/lens_runs 补充产物/线索读面并线）", [sys.executable, "-m", "unittest", "tests.test_lens_run"]),
     # ---- P1 案件级研判画布（case# 域种子/研判节点 props/连线矩阵扩展/API 域隔离） ----
-    "canvascase":  ("案件级研判画布（case# 域种子幂等/研判节点 props 校验/研判边矩阵/API 域隔离/红线 R2 重名留空）", [sys.executable, "-m", "unittest", "tests.test_canvas_case"]),
+    # test_canvas_case.py 是 pytest 函数式风格（import pytest + def test_），
+    # unittest 不识别函数式测试会 Ran 0 tests；改用 pytest 调用。
+    "canvascase":  ("案件级研判画布（case# 域种子幂等/研判节点 props 校验/研判边矩阵/API 域隔离/红线 R2 重名留空）", [sys.executable, "-m", "pytest", "tests/test_canvas_case.py", "-v"]),
     # ---- CAN-19+ 研判结果层：渐进式揭示/线索域/坐标收割/悬空边防御 ----
     "canvasgrowth": ("研判结果挂靶心（CAN-19 分组/精度/假设自动入图 + 渐进式揭示集/线索 clue 域/meta.lens_layout 坐标收割复活/合并悬空边剔除/HTTP 揭示链路）", [sys.executable, "-m", "unittest", "tests.test_canvas_growth", "tests.test_canvas_case_store", "tests.test_canvas_case_http"]),
     # ---- 物品本体收编（方案 A：prep 预装配 digest 口径 + 语义层单轨物品层） ----

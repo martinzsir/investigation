@@ -302,28 +302,134 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
         "note": f"由该节点发起的「{name if lens_name else '研判'}」"
                 f"研判得出（精度档 {st['precision']}）",
     }
-    # --- §2/§4：从观察 detail 提取地点和共现人物，创建独立画布节点 ---
+    # --- §2/§4：从观察 detail 提取地点、共现人物、组织主体，上画布 ---
+    # detail 在不同镜头下分支不同，五种取数路径并存：
+    # · geo_accompany.detail.companion.person_a/person_b/locations
+    # · geo_site_profile.detail.sites[].location_id/std_address
+    # · geo_anomaly.detail.anomalies[].location_id/std_address + co_present[]
+    # · relation_neighborhood.detail.nodes[].type/name + edges[]
+    # · relation_org_interest.detail.row.raw_name(组织) + legal_rep/matched_person(人)
+    #
+    # 原版只取 companion 分支，导致 sites/anomalies 跑出 10 个地点、3 个偏离
+    # 地点全不上图，邻域节点也整体丢失。本节按分支逐项归并到三桶：
+    # locations（location_id → std_address，键去重）、companions（人物名）、
+    # orgs（组织名）。
+    #
+    # locations_seen 用 dict 不用 set：value 存 detail 自带的 std_address
+    # （中文地名），交给 build_place_node 作 label 优先值。若只存 location_id
+    # 集合，build_place_node 会被传 label=loc_xxx 哈希，跳过 row.std_address
+    # 中文 fallback（label 优先级 label or row.std_address or lid），画布上
+    # 地点节点就显示成 loc_25e5a2764348 这种机器编号。
     extra_nodes: list[dict[str, Any]] = []
     extra_edges: list[dict[str, Any]] = []
-    locations_seen: set[str] = set()
+    locations_seen: dict[str, str] = {}
     companions_seen: set[str] = set()
+    orgs_seen: set[str] = set()
     for o in obs:
         d = o.get("detail") if isinstance(o.get("detail"), dict) else {}
+
+        # 分支 1：geo_accompany → companion.person_a/person_b + companion.locations
         comp = d.get("companion") if isinstance(d.get("companion"), dict) else {}
-        if not comp:
-            continue
-        for loc in (comp.get("locations") or []):
-            if isinstance(loc, str) and loc.strip():
-                locations_seen.add(loc.strip())
-        for key in ("person_a", "person_b"):
-            p = comp.get(key)
-            if isinstance(p, str) and p.strip():
-                companions_seen.add(p.strip())
+        if comp:
+            for loc in (comp.get("locations") or []):
+                if isinstance(loc, str) and loc.strip():
+                    # str 形态：地名文本既是 id 也是 label，自洽
+                    locations_seen.setdefault(loc.strip(), loc.strip())
+                elif isinstance(loc, dict):  # 兼容 locations 内嵌对象的形态
+                    lid = str(loc.get("location_id")
+                              or loc.get("std_address") or "").strip()
+                    addr = str(loc.get("std_address") or "").strip()
+                    if lid:
+                        # 已存且新 addr 更全则覆盖（detail 多次出现时取最全）
+                        if lid not in locations_seen or (
+                                addr and not locations_seen[lid]):
+                            locations_seen[lid] = addr
+            for key in ("person_a", "person_b"):
+                p = comp.get(key)
+                if isinstance(p, str) and p.strip():
+                    companions_seen.add(p.strip())
+
+        # 分支 2：geo_site_profile → sites[].location_id/std_address
+        for site in (d.get("sites") or []):
+            if not isinstance(site, dict):
+                continue
+            lid = str(site.get("location_id") or "").strip()
+            addr = str(site.get("std_address") or "").strip()
+            if lid:
+                if lid not in locations_seen or (
+                        addr and not locations_seen[lid]):
+                    locations_seen[lid] = addr
+            elif addr:
+                # 无 location_id 时用 addr 作 key（build_place_node 查不到
+                # row，但 label 会 fallback 到 addr 本身，仍是中文）
+                locations_seen.setdefault(addr, addr)
+
+        # 分支 3：geo_anomaly → anomalies[].location_id/std_address + co_present[]
+        for anom in (d.get("anomalies") or []):
+            if not isinstance(anom, dict):
+                continue
+            lid = str(anom.get("location_id") or "").strip()
+            addr = str(anom.get("std_address") or "").strip()
+            if lid:
+                if lid not in locations_seen or (
+                        addr and not locations_seen[lid]):
+                    locations_seen[lid] = addr
+            elif addr:
+                locations_seen.setdefault(addr, addr)
+            for p in (anom.get("co_present") or []):
+                if isinstance(p, str) and p.strip():
+                    companions_seen.add(p.strip())
+                elif isinstance(p, dict):  # co_present_refs 嵌套对象
+                    nm = str(p.get("name") or "").strip()
+                    if nm:
+                        companions_seen.add(nm)
+
+        # 分支 4：relation_neighborhood → nodes[].type/name + edges[]
+        # type=person 走人物桶；type=account/org 走组织桶；其他兜底当人物
+        for n in (d.get("nodes") or []):
+            if not isinstance(n, dict):
+                continue
+            ntype = str(n.get("type") or "").strip().lower()
+            nname = str(n.get("name") or "").strip()
+            if not nname:
+                continue
+            if ntype in ("account", "org", "organization", "company"):
+                orgs_seen.add(nname)
+            else:
+                companions_seen.add(nname)
+
+        # 分支 5：relation_org_interest → row.raw_name(组织) + 法人/关联人
+        # matched_person 可能是 list（一人挂多个候选主体）或 str，
+        # 直接 str(list) 会把 ['张卫国'] 当字符串字面量上画布，必须分类型。
+        row = d.get("row") if isinstance(d.get("row"), dict) else {}
+        if row:
+            org_name = str(row.get("raw_name") or "").strip()
+            if org_name:
+                orgs_seen.add(org_name)
+            for nm_key in ("legal_rep", "matched_person"):
+                v = row.get(nm_key)
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str) and item.strip():
+                            companions_seen.add(item.strip())
+                        elif isinstance(item, dict):
+                            nm_s = str(item.get("name") or "").strip()
+                            if nm_s:
+                                companions_seen.add(nm_s)
+                elif isinstance(v, str) and v.strip():
+                    companions_seen.add(v.strip())
 
     # 地点 → place 节点 + 靶心→place 的「位于」边
-    for loc in sorted(locations_seen):
-        pnode = build_place_node(case_id=case_id, location_id=loc,
-                                 label=loc)
+    # label 传 detail 自带 std_address（中文地名）；为空时 build_place_node
+    # 内部走 row.std_address fallback（语义层查到的中文），都查不到才退化到
+    # lid（loc_xxx 哈希）。这条 fallback 链保证 label 优先取中文，不取机器 id。
+    for lid, addr in sorted(locations_seen.items()):
+        # conn 必须传：不传则 build_place_node 查不到 obj_location 行，
+        # lat/lng 恒 None、mappable 恒 False，连有真实门牌坐标的地点
+        # （古墩路 30.29/120.11）也上不了地图，coord_degraded 更判不出
+        # 质心档——区划质心会被当成门牌精确位置，正是 R-2 反伪精确红线。
+        pnode = build_place_node(case_id=case_id, location_id=lid,
+                                 label=addr or "", conn=conn)
         # 重建层标记必须打在节点上（边已有）：split_persistent 按
         # props.generated_by 剥离，漏标会让地点在首次 PATCH 时被当人工层留存
         pnode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
@@ -358,6 +464,30 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
             "system": True,
             "generated_by": GENERATED_BY_LENS,
             "note": f"「{name if lens_name else '研判'}」时空同框",
+        })
+
+    # 组织主体 → subject·org 节点 + 靶心→组织的「同现」边
+    # 业务文档（v3 §7）明确：组织是 subject·org（复用 subject kind + sub_type）
+    # 不新增独立 kind，避免 14→15 类四处映射同步。
+    # 边类型暂复用「同现」语义（同案出现）；正兵若需精确表达可手工改边
+    #
+    # 跳过逻辑：靶心是 person，组织桶里同名账户/单位**不是同人**——
+    # relation_neighborhood 里常见 person "张卫国" + account "张卫国"，
+    # 若按 target_label 一刀切会把同名账户也跳掉，丢一类主体。
+    # 所以组织桶一律不跳过，让正兵看到"同名异主体"。
+    for org_name in sorted(orgs_seen):
+        snode = build_subject_node(case_id=case_id, name=org_name,
+                                   sub_type="organization", conn=conn)
+        snode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
+        extra_nodes.append(snode)
+        extra_edges.append({
+            "id": case_edge_id(target_node_id, "同现", snode["id"]),
+            "source": target_node_id,
+            "target": snode["id"],
+            "rel": "同现",
+            "system": True,
+            "generated_by": GENERATED_BY_LENS,
+            "note": f"「{name if lens_name else '研判'}」相关单位",
         })
 
     return {"node": node, "edge": edge, "reason": "",

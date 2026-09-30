@@ -184,21 +184,24 @@ export function allowedRels(
 //
 // 核心红线「域隔离零回归」：NodeKind 扩至 14 类，但线索域口径
 // （NODE_KINDS 前 10 / MANUAL_RELS 4 / canConnect 矩阵）不变。
-// 研判画布在此扩充：研判关系 5 类、案件级人工节点 5 类、
+// 研判画布在此扩充：研判关系 6 类、案件级人工节点 5 类、
 // 案件级连线矩阵 caseCanConnect（与后端 canvas_edit.can_connect 案件分支对拍）。
 // ======================================================================
 
-/** 研判关系 5 类（与线索域 MANUAL_RELS / SYSTEM_RELS 互斥） */
+/** 研判关系 6 类（与线索域 MANUAL_RELS / SYSTEM_RELS 互斥）。
+ * 「联系」是 P1 新增：通话关系镜头产出 subject↔subject 边，与「同现」
+ * （时空同框）区分——远程通话不属于"同框"，但同样是主体↔主体关系。 */
 export const RESEARCH_RELS = [
   '位于',
   '发生于',
   '支撑',
   '反驳',
   '同现',
+  '联系',
 ] as const
 export type ResearchRel = (typeof RESEARCH_RELS)[number]
 
-/** 案件级边关系全集 = 人工 4 + 研判 5（与后端 allowed_rels 同序） */
+/** 案件级边关系全集 = 人工 4 + 研判 6（与后端 allowed_rels 同序） */
 export const CASE_EDGE_RELS = [...MANUAL_RELS, ...RESEARCH_RELS] as const
 export type CaseEdgeRel = (typeof CASE_EDGE_RELS)[number]
 
@@ -285,7 +288,10 @@ export function caseCanConnect(
   }
   // 6. 研判关系
   if (RESEARCH_RELS.includes(rel as ResearchRel)) {
-    if (rel === '同现') {
+    // 同现 / 联系：均走 subject↔subject，但语义不同——
+    // · 同现 = 时空同框（geo_accompany 镜头产出）
+    // · 联系 = 远程通讯（通话关系镜头产出，不含空间同框）
+    if (rel === '同现' || rel === '联系') {
       return srcKind === 'subject' && tgtKind === 'subject'
         ? { ok: true }
         : { ok: false, code: 'matrix', reason: '该两类节点不能建立该关系' }

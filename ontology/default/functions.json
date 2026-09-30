@@ -1059,6 +1059,25 @@
       "impl_ref": "geo_activity_range",
       "description": "主体活动范围的描述统计：频率加权平均中心、标准距离、标准差椭圆（含主轴方位角与覆盖面积）、高斯核密度网格与热点排名。不推断落脚点、不作行为定性。坐标为区划质心时距离为区级推算；去重后位置不足 3 个时椭圆与密度不成立",
       "display_name": "活动范围画像"
+    },
+    {
+      "name": "item_duplicate_hold_collision",
+      "title": "同号同时段冲突检测",
+      "inputs": [
+        "obj_hold_record"
+      ],
+      "parameters": {
+        "min_overlap_days": {
+          "type": "integer",
+          "default": 1,
+          "description": "最小重叠天数阈值；0=只判 NULL 区间不可判定冲突"
+        }
+      },
+      "output_type": "rows",
+      "impl": "sql",
+      "sql": "SELECT a.item_type, a.primary_digest, a.holder_raw AS holder_a, b.holder_raw AS holder_b, a.start_date AS a_start, a.end_date AS a_end, b.start_date AS b_start, b.end_date AS b_end, a.hold_id AS hold_a_id, b.hold_id AS hold_b_id, CASE WHEN a.end_date IS NULL OR b.end_date IS NULL OR a.start_date IS NULL OR b.start_date IS NULL THEN 'unknown_overlap' ELSE 'overlap' END AS overlap_kind, CASE WHEN a.end_date IS NULL OR b.start_date IS NULL OR a.end_date < b.start_date THEN 0 WHEN b.end_date IS NULL OR a.start_date IS NULL OR b.end_date < a.start_date THEN 0 ELSE LEAST(LEAST(a.end_date, b.end_date) - GREATEST(a.start_date, b.start_date), b.end_date - a.start_date) END AS overlap_days FROM obj_hold_record a JOIN obj_hold_record b ON a.item_type = b.item_type AND a.primary_digest = b.primary_digest AND a.hold_id < b.hold_id WHERE a.holder_raw <> b.holder_raw AND ( (a.end_date IS NULL OR b.start_date IS NULL OR a.end_date >= b.start_date) AND (b.end_date IS NULL OR a.start_date IS NULL OR b.end_date >= a.start_date) ) AND ( {{min_overlap_days}} = 0 OR a.end_date IS NULL OR b.end_date IS NULL OR a.start_date IS NULL OR b.start_date IS NULL OR (LEAST(a.end_date, b.end_date) - GREATEST(a.start_date, b.start_date)) >= {{min_overlap_days}} )",
+      "_note_sql": "时间区间重叠判据：a.start <= b.end AND b.start <= a.end。NULL 区间（起止皆空=不可判定）保守视为重叠并标 unknown_overlap，不静默丢弃——『查了但区间不可判定』与『确实不重叠』必须区分。overlap_days 在 NULL 区间返回 0 是兼容旧行为，前端按 overlap_kind 区分。",
+      "description": "物品维度：同一 (item_type, primary_digest) 在时间区间重叠下被多名持有人登记（规则 R-ITEM-1 挂钩）。判据只给冲突事实，不判物理可达性——那是正兵判断，不是数据。NULL 区间标 unknown_overlap 保留"
     }
   ]
 }

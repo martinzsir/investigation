@@ -336,6 +336,24 @@ CREATE TABLE IF NOT EXISTS case_canvas (
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT ''
 );
+-- P2 案件级核查项：与 clue_verify_item 同 schema 但无 clue_id 列——
+-- 案件级画布上的 hypothesis 节点不属于任何线索，转核查时落到本表。
+-- worker TASK_VERIFY 强依赖 clue_id，本表不走 worker，直接落表 + 202。
+CREATE TABLE IF NOT EXISTS case_verify_item (
+    item_id     TEXT PRIMARY KEY,            -- cvi_{item_key}
+    case_id     TEXT NOT NULL,
+    item_key    TEXT NOT NULL,               -- sha1(case_id|kind|text)[:16]
+    kind        TEXT NOT NULL,               -- pending_hypothesis|manual（案件级只人工触发）
+    text        TEXT NOT NULL,
+    origin      TEXT NOT NULL DEFAULT 'manual',
+    status      TEXT NOT NULL DEFAULT '待核查',
+    conclusion  TEXT NOT NULL DEFAULT '',
+    operator    TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    node_id     TEXT NOT NULL DEFAULT '',    -- 触发核查的画布节点 id（溯源）
+    UNIQUE(case_id, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_cvi_case ON case_verify_item(case_id);
 """
 
 # 旧库幂等迁移：clue_verify_item 在 REQ-V-018 字段加入前可能已存在，
@@ -844,6 +862,78 @@ class StateStore:
         except _json.JSONDecodeError:
             d["replay"] = None
         return d
+
+    # ---- P2 案件级核查项（case_verify_item 表；不走 worker）----
+    # 案件级画布的 hypothesis 节点没有 clue_id，无法走 TASK_VERIFY（强依赖
+    # clue_id 直接抛 CLUE_REQUIRED）。这里走独立写通道：直接落表 + 202，
+    # 与线索级 verify_items 完全分离，避免污染既有 clue_verify_item 查询。
+    @staticmethod
+    def case_verify_item_key(case_id: str, kind: str, text: str) -> str:
+        """案件级 item_key = sha1('{case_id}|{kind}|{text}')[:16]。"""
+        import hashlib
+        raw = f"{case_id}|{kind}|{text}".encode("utf-8")
+        return hashlib.sha1(raw).hexdigest()[:16]
+
+    def add_case_verify_item(self, *, case_id: str, text: str,
+                             kind: str = "manual",
+                             node_id: str = "",
+                             operator: str = "",
+                             updated_at: str = "") -> dict:
+        """人工添加案件级核查项；同文本幂等（INSERT OR IGNORE）。
+
+        返回行 dict（含 item_id、added 标记）。origin 固定 manual——
+        案件级核查项只有人工通道，供给生成的 pending_* 都落线索级。
+        """
+        key = self.case_verify_item_key(case_id, kind, text)
+        item_id = f"cvi_{key}"
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO case_verify_item "
+                "(item_id, case_id, item_key, kind, text, origin, "
+                " status, conclusion, operator, updated_at, node_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                [item_id, case_id, key, kind, text, "manual",
+                 "待核查", "", operator, updated_at, node_id])
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        row = self.get_case_verify_item(item_id) or {}
+        row["added"] = int(cur.rowcount)
+        return row
+
+    def list_case_verify_items(self, case_id: str) -> list[dict]:
+        """按状态排序：待办在前（与线索级 _VERIFY_STATUS_RANK_SQL 同口径）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM case_verify_item WHERE case_id=? "
+            f"ORDER BY {_VERIFY_STATUS_RANK_SQL}, rowid",
+            [case_id]).fetchall()
+        return [self._case_verify_item_dict(r) for r in rows]
+
+    def get_case_verify_item(self, item_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM case_verify_item WHERE item_id=?",
+            [item_id]).fetchone()
+        return self._case_verify_item_dict(row) if row is not None else None
+
+    def transition_case_verify_item(self, item_id: str, *, status: str,
+                                    conclusion: str = "",
+                                    operator: str = "",
+                                    updated_at: str = "") -> dict | None:
+        """案件级核查项状态转移。合法转移校验在路由层，本方法只覆写。"""
+        cur = self._conn.execute(
+            "UPDATE case_verify_item SET status=?, conclusion=?, "
+            "operator=?, updated_at=? WHERE item_id=?",
+            [status, conclusion, operator, updated_at, item_id])
+        self._conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_case_verify_item(item_id)
+
+    @staticmethod
+    def _case_verify_item_dict(row) -> dict:
+        return dict(row)
 
     # ---- 证据材料（REQ-V-009/P2 书证元数据；文件落 cases/<cid>/evidence/
     # 由 server/app/evidence_store.save_evidence_file 承担，本层只管库）----

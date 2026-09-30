@@ -8,7 +8,7 @@ tests/test_verify_item.py
   1. 同批 items 两次 upsert：第二次 added=0、total 不变（INSERT OR IGNORE 幂等）；
   2. 已有结论的项重跑 upsert：conclusion/status/operator 不被覆盖；
   3. verify_item_key 对 (clue_id,kind,text) 稳定，不同 text 不同键；
-     并锁死演示案例（demoF v8 clue_9446b1bd）两个真实 item_id；
+     并锁死演示案例（clue_9446b1bd 合并 R6 线索）两个真实 item_id；
   4. verify_progress：终态三态计入 concluded，待核查/核查中计入 pending，
      建议/已忽略独立计数、不进门禁；
   5. 旧案件 state.sqlite（无核查三表/核查表缺 REQ-V-018 四列）打开即迁移可用。
@@ -68,9 +68,12 @@ CLUE = "clue_9446b1bd"
 INFERENCE_TEXT = "中标公示 ±20 天邻接边上出现整数资金、且资金主体为个人（非对公单位）"
 HYPOTHESIS_TEXT = "待验证假设：H1（收受财物（异常整数现金存入））"
 
-# demoF v8 双规则合并线索：R3 通话频次突增 + R4 轨迹同框
+# 双规则合并线索（clue_365275f8）：R3 通话频次突增 + R4 轨迹同框。
+# 依据文本取自 ontology/default/rules.json 的 basis_text（回填来源），
+# 锁定「声明序第一条为主字段、全列表逐条渲染」。
 CLUE_R3R4 = "clue_365275f8"
-R3_BASIS = "头部对端通话频次达常态中位数 2 倍（无对照对端时降级为绝对阈值 ≥30 次）"
+R3_BASIS = ("单一对端通话总量达常态中位数 2 倍；无可比对端时按绝对频次 "
+            "≥{阈值} 次（无基线，仅示高频，非突增）")
 R4_BASIS = "不同主体在相同地点 ±1 天内先后出现"
 
 
@@ -100,7 +103,11 @@ class VerifyItemCRUDTest(unittest.TestCase):
                                            INFERENCE_TEXT))
 
     def test_item_id_matches_demo_script(self):
-        """锁死 .trae/documents/核查工作区/演示案例-张卫国R6时间窗.md 的真实键。"""
+        """锁死 .trae/documents/核查工作区/演示案例-张卫国R6时间窗.md 的真实键。
+
+        键只由 (clue_id, kind, text) 决定，与线索来源无关——因此本测试
+        不依赖任何案件运行态产物（cases/ 不入 Git，见 .gitignore）。
+        """
         k_inf = StateStore.verify_item_key(CLUE, "inference", INFERENCE_TEXT)
         k_hyp = StateStore.verify_item_key(
             CLUE, "pending_hypothesis", HYPOTHESIS_TEXT)
@@ -702,25 +709,28 @@ class VerifyWorkerTest(unittest.TestCase):
 # ----------------------------------------------------------------------
 # REQ-V-002：核查项惰性供给（读面组装）
 # ----------------------------------------------------------------------
-DEMOF = ROOT / "cases" / "demoF"
-DEMOF_ONTO_BASE = DEMOF / "ontology"
 _DEGRADE_REASON = ("只有一个通话对端（其他对端未入库），中位数判据不可用 → "
                    "降级到绝对频次阈值")
 
-# 方案 B：jian_cross_level Function 在 demoF v8.duckdb 上的真实行集快照
-# （obj_tipoff=13 行、lnk_time_window=44 行，2026-09-13 核对）
-_DEMOF_CROSS_ROWS = [
+# jian_cross_level Function 的行集快照（obj_tipoff=13 行、lnk_time_window=44 行）。
+# 与生产 Function 的行结构同构即可——本组只验证「表级汇总行回填 → 推断回栏」
+# 的读侧语义，不消费真实 COUNT 结果。
+_CROSS_ROWS = [
     {"间": "内间", "数据源": ["举报材料"],
      "依据": ["举报材料→obj_tipoff(13行)"],
      "命中明细": [{"source": "举报材料", "table": "obj_tipoff",
-                  "obj_name": "tipoff", "n": 13}],
+                   "obj_name": "tipoff", "n": 13}],
      "命中": True, "缺口": []},
     {"间": "反间", "数据源": ["银行流水(过桥)"],
      "依据": ["银行流水(过桥)→lnk_time_window(44行)"],
      "命中明细": [{"source": "银行流水(过桥)", "table": "lnk_time_window",
-                  "obj_name": "time_window", "n": 44}],
+                   "obj_name": "time_window", "n": 44}],
      "命中": True, "缺口": []},
 ]
+
+#: 聚合线索（用间交叉）两例：无行级溯源，detail.依据 只是数据源名。
+AGG_TIPOFF = ("clue_f27dcdab", "内间", "举报材料")
+AGG_BRIDGE = ("clue_3e36f911", "反间", "银行流水(过桥)")
 
 
 def _write_artifact(case_dir: Path, version: int,
@@ -749,6 +759,69 @@ def _synthetic_r1_raw(clue_id: str = "clue_t1") -> dict:
                          "summary": "现金存入"}],
         "assumption_chain": ["H1"],
         "jian_types": ["生间"],
+        "needs_human_review": True,
+        "status": "待查",
+        "audit_log": [],
+        "note": "",
+    }
+
+
+def _synthetic_merged_r6_raw(clue_id: str = CLUE) -> dict:
+    """R6 合并线索：detail 只有 merged_from、无 rule_id（复刻 core/lineage 合并段
+    丢规则字段的真实产物形态），靠合并标题里的部件标题反查 rules.json 回填。
+
+    行集用语义层真实列名 owner_raw（rules.json R6 subject_column），8 行张卫国
+    整数资金——锁定手册建议槽位 {project_count}=8（D1 裁决口径）。
+    """
+    return {
+        "clue_id": clue_id,
+        "skill_id": "time_window",
+        "title": "张卫国 · 中标-资金时间窗碰撞 | 某项目 · 中标-资金时间窗碰撞",
+        "detail": {"merged_from": ["clue_9f21a0", "clue_3b7c44"],
+                   "级别": "待核实"},
+        "source_rows": [{"owner_raw": "张卫国",
+                         "amount": 100000 * (i + 1)} for i in range(8)],
+        "assumption_chain": ["H4"],
+        "jian_types": ["反间"],
+        "needs_human_review": True,
+        "status": "待查",
+        "audit_log": [],
+        "note": "",
+    }
+
+
+def _synthetic_r3_r4_raw(clue_id: str = CLUE_R3R4) -> dict:
+    """R3 + R4 双规则合并线索：标题保留两个部件标题，行集含 R4 主体列 person_1。"""
+    return {
+        "clue_id": clue_id,
+        "skill_id": "xu_shi",
+        "title": "张卫国 · 单一对端通话高频 | 王五 · 二人公示期轨迹同框",
+        "detail": {"merged_from": ["clue_1a2b3c", "clue_4d5e6f"],
+                   "级别": "待核实"},
+        "source_rows": [
+            {"person_1": "张卫国", "person_2": "王五", "call_count": 42},
+            {"person_1": "张卫国", "person_2": "王五", "call_count": 51},
+        ],
+        "assumption_chain": ["H3"],
+        "jian_types": ["生间"],
+        "needs_human_review": True,
+        "status": "待查",
+        "audit_log": [],
+        "note": "",
+    }
+
+
+def _synthetic_yong_jian_raw(spec=AGG_TIPOFF) -> dict:
+    """用间交叉聚合线索：source_rows 为空（生产端只有表级摘要、无行级证据）。"""
+    clue_id, jian, dataset = spec
+    return {
+        "clue_id": clue_id,
+        "skill_id": "yong_jian",
+        "title": f"{jian}·{dataset}",
+        "detail": {"依据": dataset, "数据源": [dataset], "级别": "待核实"},
+        "source_rows": [],
+        "assumption_chain": [],
+        "jian_types": [jian],
         "needs_human_review": True,
         "status": "待查",
         "audit_log": [],
@@ -801,8 +874,8 @@ class VerifyProvisionTest(unittest.TestCase):
             "source_rows": [{"foo": 1}],
         }
         self.assertIs(backfill_rule_fields(
-            merged, pack_id="default", base_dir=DEMOF_ONTO_BASE), merged)
-        # 标题含 R6 但行集无 R6 subject_column（资金主体）→ 排除
+            merged, pack_id="default", base_dir=None), merged)
+        # 标题含 R6 但行集无 R6 subject_column（owner_raw）→ 排除
         mismatch = {
             "clue_id": "clue_my",
             "title": "奇正分工方案 · 某人 | 某人 · 中标-资金时间窗碰撞",
@@ -810,17 +883,14 @@ class VerifyProvisionTest(unittest.TestCase):
             "source_rows": [{"foo": 1}],
         }
         self.assertIs(backfill_rule_fields(
-            mismatch, pack_id="default", base_dir=DEMOF_ONTO_BASE), mismatch)
+            mismatch, pack_id="default", base_dir=None), mismatch)
 
-    # ---- AC5：demoF v8 合并线索经规则目录反查回填 R6，供出 2 个 auto 项 ----
-    def test_backfill_demof_v8_merged_r6(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        raw = next(c for c in art["clues"] if c["clue_id"] == CLUE)
+    # ---- AC5：合并线索经规则目录反查回填 R6，供出 2 个 auto 项 ----
+    def test_backfill_merged_r6(self):
+        raw = _synthetic_merged_r6_raw()
         self.assertNotIn("rule_id", raw["detail"])  # 前提：现状产物丢字段
 
-        filled = backfill_rule_fields(
-            raw, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+        filled = backfill_rule_fields(raw, pack_id="default", base_dir=None)
         self.assertIsNot(filled, raw)
         # artifact 原对象不被改写（ADR-V-5）
         self.assertNotIn("rule_id", raw["detail"])
@@ -828,8 +898,7 @@ class VerifyProvisionTest(unittest.TestCase):
         self.assertEqual(filled["detail"]["依据"], INFERENCE_TEXT)
         self.assertIn("lnk_time_window", filled["detail"]["rule_text"])
 
-        items = provision_for_clue(
-            raw, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+        items = provision_for_clue(raw, pack_id="default", base_dir=None)
         self.assertEqual(
             [(i["kind"], i["text"]) for i in items],
             [("inference", INFERENCE_TEXT),
@@ -839,17 +908,13 @@ class VerifyProvisionTest(unittest.TestCase):
         self.assertEqual(ids, ["vi_6a7a9feea147f413",
                                "vi_d0577e14036a1c2e"])
 
-    # ---- 多规则合并线索：demoF v8 clue_365275f8 = R3 + R4 ----
-    def test_backfill_demof_v8_merged_r3_r4(self):
+    # ---- 多规则合并线索：clue_365275f8 = R3 + R4 ----
+    def test_backfill_merged_r3_r4(self):
         """双规则合并线索必须逐条回填：2 张推断卡 + 仅 1 张 H3 假设卡（R4 无 assumption）。"""
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        raw = next(c for c in art["clues"]
-                   if c["clue_id"] == CLUE_R3R4)
+        raw = _synthetic_r3_r4_raw()
         self.assertNotIn("rule_id", raw["detail"])  # 前提：现状产物丢字段
 
-        filled = backfill_rule_fields(
-            raw, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+        filled = backfill_rule_fields(raw, pack_id="default", base_dir=None)
         self.assertIsNot(filled, raw)
         self.assertNotIn("rule_id", raw["detail"])  # artifact 不被改写
         # 主字段=声明序第一条 R3（兼容旧消费方），全列表 R3+R4
@@ -861,8 +926,7 @@ class VerifyProvisionTest(unittest.TestCase):
 
         # 三栏证据：事实行 + 2 推断（带溯源）+ 1 H3 假设 + 2 规则留痕
         evidence = build_evidence(
-            raw_clue=filled, pack_id="default",
-            base_dir=DEMOF_ONTO_BASE)
+            raw_clue=filled, pack_id="default", base_dir=None)
         facts = [e for e in evidence if e["kind"] == "fact"]
         infs = [e for e in evidence if e["kind"] == "inference"]
         pens = [e for e in evidence if e["kind"] == "pending"]
@@ -878,8 +942,7 @@ class VerifyProvisionTest(unittest.TestCase):
             [f"r{CLUE_R3R4}-0", f"r{CLUE_R3R4}-1"])
 
         # 供给：r 卡不成项 → 3 个 auto 核查项（2 inference + 1 hypothesis）
-        items = provision_for_clue(
-            raw, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+        items = provision_for_clue(raw, pack_id="default", base_dir=None)
         self.assertEqual(
             [(i["kind"], i["text"]) for i in items],
             [("inference", R3_BASIS),
@@ -888,16 +951,13 @@ class VerifyProvisionTest(unittest.TestCase):
 
     # ---- 方案 A：用间聚合线索无行级溯源 → 不供推断/假设核查项 ----
     def test_yong_jian_aggregate_no_inference_item(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-
-        def _check(cid: str):
-            raw = next(c for c in art["clues"] if c["clue_id"] == cid)
+        def _check(spec):
+            raw = _synthetic_yong_jian_raw(spec)
             self.assertEqual(raw["source_rows"], [])  # 前提：用间线索无行集
             evidence = build_evidence(
                 raw_clue=backfill_rule_fields(
-                    raw, pack_id="default", base_dir=DEMOF_ONTO_BASE),
-                pack_id="default", base_dir=DEMOF_ONTO_BASE)
+                    raw, pack_id="default", base_dir=None),
+                pack_id="default", base_dir=None)
             self.assertFalse([e for e in evidence if e["kind"] == "inference"])
             self.assertFalse(
                 [e for e in evidence
@@ -907,24 +967,20 @@ class VerifyProvisionTest(unittest.TestCase):
                    and "无行级溯源" in e["text"]]
             self.assertEqual(len(agg), 1)
             # 聚合卡（id 前缀 a）不成核查项，不卡固证门禁
-            items = provision_for_clue(
-                raw, pack_id="default", base_dir=DEMOF_ONTO_BASE)
+            items = provision_for_clue(raw, pack_id="default", base_dir=None)
             self.assertFalse([i for i in items
                               if i["kind"] in ("inference",
                                                "pending_hypothesis")])
 
-        _check("clue_f27dcdab")          # 内间·举报材料
-        _check("clue_3e36f911")          # 反间·银行流水(过桥)：防"过桥"误匹配 H4
+        _check(AGG_TIPOFF)   # 内间·举报材料
+        _check(AGG_BRIDGE)   # 反间·银行流水(过桥)：防"过桥"误匹配 H4
 
     # ---- 方案 B：用间聚合线索读侧回填表级汇总行 → 推断回栏、可核查 ----
-    def test_backfill_aggregate_rows_demof_v8(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-
-        def _check(cid: str, table: str, n: int):
-            raw = next(c for c in art["clues"] if c["clue_id"] == cid)
-            self.assertEqual(raw["source_rows"], [])  # 前提：v8 产物无行集
-            filled = backfill_aggregate_rows(raw, _DEMOF_CROSS_ROWS)
+    def test_backfill_aggregate_rows(self):
+        def _check(spec, table: str, n: int):
+            raw = _synthetic_yong_jian_raw(spec)
+            self.assertEqual(raw["source_rows"], [])  # 前提：产物无行集
+            filled = backfill_aggregate_rows(raw, _CROSS_ROWS)
             self.assertIsNot(filled, raw)
             self.assertEqual(raw["source_rows"], [])      # artifact 不被改写
             self.assertNotIn("行集口径", raw["detail"])
@@ -937,8 +993,7 @@ class VerifyProvisionTest(unittest.TestCase):
 
             # 三栏：1 事实（表级汇总）+ 1 推断（挂溯源）+ 无假设卡
             ev = build_evidence(
-                raw_clue=filled, pack_id="default",
-                base_dir=DEMOF_ONTO_BASE)
+                raw_clue=filled, pack_id="default", base_dir=None)
             self.assertEqual(
                 len([e for e in ev if e["kind"] == "fact"]), 1)
             infs = [e for e in ev if e["kind"] == "inference"]
@@ -953,20 +1008,17 @@ class VerifyProvisionTest(unittest.TestCase):
 
             # 供给：仅 1 个 inference 核查项（聚合线索不出 hypothesis 项）
             items = provision_for_clue(
-                raw, pack_id="default", base_dir=DEMOF_ONTO_BASE,
-                cross_rows=_DEMOF_CROSS_ROWS)
+                raw, pack_id="default", base_dir=None,
+                cross_rows=_CROSS_ROWS)
             self.assertEqual(
                 [(i["kind"], i["text"]) for i in items],
                 [("inference", raw["detail"]["依据"])])
 
-        _check("clue_f27dcdab", "obj_tipoff", 13)
-        _check("clue_3e36f911", "lnk_time_window", 44)
+        _check(AGG_TIPOFF, "obj_tipoff", 13)
+        _check(AGG_BRIDGE, "lnk_time_window", 44)
 
     def test_backfill_aggregate_rows_failsafe(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        raw = next(c for c in art["clues"]
-                   if c["clue_id"] == "clue_f27dcdab")
+        raw = _synthetic_yong_jian_raw()
         # 无 stats / 间类对不上 → 原对象返回（落 a 卡降级，读面不造数）
         self.assertIs(backfill_aggregate_rows(raw, None), raw)
         self.assertIs(backfill_aggregate_rows(raw, []), raw)
@@ -976,11 +1028,11 @@ class VerifyProvisionTest(unittest.TestCase):
             raw)
         # 非聚合技能不动
         other = dict(raw, skill_id="xu_shi")
-        self.assertIs(backfill_aggregate_rows(other, _DEMOF_CROSS_ROWS), other)
+        self.assertIs(backfill_aggregate_rows(other, _CROSS_ROWS), other)
         # 已有行集不覆盖（新产物适配器已挂行）
         with_rows = dict(raw, source_rows=[{"数据源": "举报材料", "n": 1}])
         self.assertIs(
-            backfill_aggregate_rows(with_rows, _DEMOF_CROSS_ROWS), with_rows)
+            backfill_aggregate_rows(with_rows, _CROSS_ROWS), with_rows)
 
 
 class VerifyProvisionViewTest(unittest.TestCase):
@@ -1053,17 +1105,14 @@ class VerifyProvisionViewTest(unittest.TestCase):
 
     # ---- 方案 B：cross_rows 注入 → 聚合线索详情回显推断 + 供 inference 项 ----
     def test_detail_aggregate_backfill_via_cross_rows(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        raw = next(c for c in art["clues"]
-                   if c["clue_id"] == "clue_f27dcdab")
+        raw = _synthetic_yong_jian_raw()
         _write_artifact(self.case_dir, 8, [raw])
         with StateStore("c1", self.case_dir / "state.sqlite") as st:
             data = assemble_detail(
                 case_dir=self.case_dir, version=8,
-                clue_id="clue_f27dcdab", state_map={}, access=self.access,
-                pack_id="default", base_dir=DEMOF_ONTO_BASE,
-                state_store=st, cross_rows=_DEMOF_CROSS_ROWS)
+                clue_id=raw["clue_id"], state_map={}, access=self.access,
+                pack_id="default", base_dir=None,
+                state_store=st, cross_rows=_CROSS_ROWS)
         # 视图层 source_rows 被回填（artifact 仍不可变）
         self.assertEqual(len(data["source_rows"]), 1)
         self.assertEqual(data["source_rows"][0]["语义表"], "obj_tipoff")
@@ -1076,16 +1125,13 @@ class VerifyProvisionViewTest(unittest.TestCase):
 
     # ---- 方案 B 缺省：不注入 cross_rows 时聚合线索仍是 a 卡、不供核查项 ----
     def test_detail_aggregate_without_cross_rows_stays_degraded(self):
-        art = json.loads(
-            (DEMOF / "artifacts" / "clues_v8.json").read_text(encoding="utf-8"))
-        raw = next(c for c in art["clues"]
-                   if c["clue_id"] == "clue_f27dcdab")
+        raw = _synthetic_yong_jian_raw()
         _write_artifact(self.case_dir, 8, [raw])
         with StateStore("c1", self.case_dir / "state.sqlite") as st:
             data = assemble_detail(
                 case_dir=self.case_dir, version=8,
-                clue_id="clue_f27dcdab", state_map={}, access=self.access,
-                pack_id="default", base_dir=DEMOF_ONTO_BASE,
+                clue_id=raw["clue_id"], state_map={}, access=self.access,
+                pack_id="default", base_dir=None,
                 state_store=st, cross_rows=None)
         self.assertTrue(
             [e for e in data["evidence"] if e["id"].startswith("a")])
@@ -1093,19 +1139,16 @@ class VerifyProvisionViewTest(unittest.TestCase):
             [i for i in data["verify"]["items"]
              if i["kind"] in ("inference", "pending_hypothesis")])
 
-    # ---- AC5：demoF v8 合并线索读面回归（2 个 auto 项 + item_id 锁定）----
+    # ---- AC5：R6 合并线索读面回归（2 个 auto 项 + item_id 锁定）----
     # REQ-V-018：R6 线索同批供给 3 个手册建议项（function×2 + external×1），
     # 状态展示序 auto（待核查）在前、建议垫后（list_verify_items 状态序+rowid）。
-    def test_detail_demof_v8_merged_regression(self):
-        art_dir = self.case_dir / "artifacts"
-        art_dir.mkdir(parents=True)
-        shutil.copy(DEMOF / "artifacts" / "clues_v8.json",
-                    art_dir / "clues_v8.json")
+    def test_detail_merged_r6_regression(self):
+        _write_artifact(self.case_dir, 8, [_synthetic_merged_r6_raw()])
         with StateStore("c1", self.case_dir / "state.sqlite") as st:
             data = assemble_detail(
                 case_dir=self.case_dir, version=8, clue_id=CLUE,
                 state_map={}, access=self.access, pack_id="default",
-                base_dir=DEMOF_ONTO_BASE, state_store=st)
+                base_dir=None, state_store=st)
         items = data["verify"]["items"]
         auto, sugg = items[:2], items[2:]
         self.assertEqual(

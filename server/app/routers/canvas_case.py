@@ -37,7 +37,8 @@ from server.app import canvas_case_doc, canvas_growth
 from server.app import canvas_item_source
 from server.app.canvas_case import build_item_node
 from server.app.deps import WebContext, get_ctx, get_principal
-from server.app.envelope import APIError, ERR_CONFLICT, ERR_VALIDATION, ok
+from server.app.envelope import (APIError, ERR_CONFLICT, ERR_NOT_FOUND,
+                                 ERR_VALIDATION, ok)
 from server.app.routers.cases import _get_owned_case
 from server.app.security import Principal
 from server.app.store.state_store import (
@@ -240,6 +241,132 @@ def patch_case_canvas(case_id: str, body: CaseCanvasPatch,
         # 剥离统计如实回传：跑过镜头却剥离 0 个，说明标记没打上（缺陷信号）
         "stripped": stripped,
     })
+
+
+class CaseCanvasToVerifyIn(BaseModel):
+    """案件级 hypothesis → 待核查：文本（默认带入假设内容）+ 期望版本。"""
+    text: str = ""
+    expected_version: int | None = None
+
+
+@router.post(
+    "/cases/{case_id}/case-canvas/nodes/{node_id}/to-verify",
+    status_code=202)
+def case_canvas_to_verify(case_id: str, node_id: str,
+                          body: CaseCanvasToVerifyIn,
+                          p: Principal = Depends(get_principal),
+                          ctx: WebContext = Depends(get_ctx)):
+    """案件级画布 hypothesis 节点 → 案件级核查项（P2）。
+
+    与线索级 ``/clues/{clue_id}/canvas/nodes/{node_id}/to-verify`` 对应：
+    线索级走 TASK_VERIFY（强依赖 clue_id），案件级画布节点没有 clue_id，
+    走独立写通道：直接落 case_verify_item 表 + 202。
+
+    校验：节点存在 + kind=hypothesis + 非 system；text 非空。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    # 与线索级 _reject_agent_canvas 同口径：agent 身份不得触发案件级核查写
+    if p.operator.startswith("agent:"):
+        raise APIError(
+            ERR_VALIDATION,
+            f"Agent 身份 {p.operator!r} 不得将假设转为待核实"
+            "（核查写操作须由具名人工触发）", 403)
+    state = _state(ctx, case_id)
+    try:
+        row = state.get_case_canvas(case_id)
+        if row is None:
+            raise APIError(ERR_NOT_FOUND,
+                           "案件画布不存在，请先打开画布", 404)
+        doc = row.get("doc") if isinstance(row.get("doc"), dict) else {}
+        nodes = doc.get("nodes") or []
+        node = next((n for n in nodes if isinstance(n, dict)
+                     and n.get("id") == node_id), None)
+        if node is None:
+            raise APIError(ERR_NOT_FOUND,
+                           f"画布节点不存在：{node_id}", 404)
+        if node.get("kind") != "hypothesis":
+            raise APIError(ERR_VALIDATION,
+                           "仅假设节点可转为待核实（当前节点类型："
+                           f"{node.get('kind')}）", 400)
+        if bool(node.get("system")):
+            raise APIError(ERR_VALIDATION,
+                           "系统节点不可转为待核实（系统假设由镜头产出，"
+                           "应通过线索级核查通道）", 400)
+        text = (body.text or "").strip()
+        if not text:
+            # 默认带入假设标题/内容，避免正兵多填一次
+            props = node.get("props") if isinstance(
+                node.get("props"), dict) else {}
+            text = str(props.get("title") or node.get("label")
+                       or props.get("content") or "").strip()
+        if not text:
+            raise APIError(ERR_VALIDATION,
+                           "核查项文本不能为空（text 或节点标题）", 400)
+        item = state.add_case_verify_item(
+            case_id=case_id, text=text, kind="manual",
+            node_id=node_id, operator=p.operator, updated_at=_now())
+        _audit(state, case_id=case_id, version=row.get("version"),
+               operator=p.operator,
+               action=f"case_canvas.to_verify:{node_id}")
+        return ok({
+            "item": item,
+            "node_id": node_id,
+            "effective_text": text,
+            "mode": "case_manual",
+        }, data_version=ctx.repo.current_version(case_id))
+    finally:
+        state.close()
+
+
+@router.get("/cases/{case_id}/case-verify-items")
+def list_case_verify_items(case_id: str,
+                          p: Principal = Depends(get_principal),
+                          ctx: WebContext = Depends(get_ctx)):
+    """案件级核查项列表（P2）。"""
+    _get_owned_case(case_id, p, ctx.cases)
+    state = _state(ctx, case_id)
+    try:
+        items = state.list_case_verify_items(case_id)
+    finally:
+        state.close()
+    return ok({"items": items, "total": len(items)})
+
+
+class CaseVerifyTransitionIn(BaseModel):
+    status: str
+    conclusion: str = ""
+
+
+@router.patch(
+    "/cases/{case_id}/case-verify-items/{item_id}")
+def transition_case_verify_item(case_id: str, item_id: str,
+                               body: CaseVerifyTransitionIn,
+                               p: Principal = Depends(get_principal),
+                               ctx: WebContext = Depends(get_ctx)):
+    """案件级核查项状态转移（待核查→核查中→已证实/已查否/无法核实）。
+
+    与线索级 transition_verify_item 同口径，合法转移校验在路由层简化
+    （status 非空即可），不引入 state machine 复杂度——案件级核查项
+    是人工写通道，由正兵负责状态合法性。
+    """
+    _get_owned_case(case_id, p, ctx.cases)
+    status = (body.status or "").strip()
+    if not status:
+        raise APIError(ERR_VALIDATION, "status 不能为空", 400)
+    state = _state(ctx, case_id)
+    try:
+        item = state.transition_case_verify_item(
+            item_id, status=status, conclusion=body.conclusion or "",
+            operator=p.operator, updated_at=_now())
+        if item is None:
+            raise APIError(ERR_NOT_FOUND,
+                           f"案件级核查项不存在：{item_id}", 404)
+        _audit(state, case_id=case_id, version=None,
+               operator=p.operator,
+               action=f"case_verify.transition:{item_id}")
+        return ok({"item": item})
+    finally:
+        state.close()
 
 
 class CaseCanvasItemIn(BaseModel):

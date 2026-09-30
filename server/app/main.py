@@ -80,6 +80,13 @@ def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> Fas
         discover_packs()
     except Exception:
         pass  # 词汇/镜头缺失时各读面降级为缺口，不阻断服务启动
+    # 内置五技能（xu_shi/qi_zheng/yong_jian/miaosuan/zhi_ji_zhi_bi）导入即注册
+    # 到 DEFAULT_REGISTRY（register_all 幂等）。不注册则镜头目录读面查不到它们，
+    # run_lens 的「内置不接受定向调度」400 分支永不可达（退化成 404 镜头不存在）。
+    try:
+        from skills import registry_bootstrap  # noqa: F401
+    except Exception:
+        pass  # 内置技能缺失时镜头目录降级为仅 packs/*，不阻断服务启动
     # S2：CORS 默认关闭；白名单仅来自显式参数或 SUNZI_CORS_ORIGINS
     if cors_origins is None:
         cors_origins = [

@@ -931,8 +931,8 @@ def _r6_clue() -> LineageClue:
         assumption_chain=["H1"],
         jian_types=["反间"],
         source_rows=[
-            {"资金主体": "张卫国", "金额": 100000},
-            {"资金主体": "张卫国", "金额": 200000},
+            {"owner_raw": "张卫国", "amount": 100000},
+            {"owner_raw": "张卫国", "amount": 200000},
         ])
 
 
