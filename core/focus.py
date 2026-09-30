@@ -652,10 +652,15 @@ def _ranked_subjects(store, canvas_nodes, selected_node, ctx, pack,
             if f.name in seen:
                 continue
             seen.add(f.name)
-            out.append(FocusSubject(name=f.name,
-                                    type=(f.type if f.type != "auto"
-                                          else _probe_type(store, f.name, pack,
-                                                           object_types, base_dir)),
+            probed = (f.type if f.type != "auto"
+                      else _probe_type(store, f.name, pack,
+                                       object_types, base_dir))
+            # 类型白名单过滤：声明了 object_types 的镜头只接受匹配类型，
+            # 「auto」（无法识别）直接丢弃——否则 place 节点 label 会被
+            # 误当 person 靶心灌进 target_subject，镜头降级成 0 线索。
+            if object_types and probed not in object_types:
+                continue
+            out.append(FocusSubject(name=f.name, type=probed,
                                     score=f.score, source=tag or f.source,
                                     evidence=f.evidence))
 

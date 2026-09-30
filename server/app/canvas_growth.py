@@ -325,8 +325,21 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
     locations_seen: dict[str, str] = {}
     companions_seen: set[str] = set()
     orgs_seen: set[str] = set()
+    primary_subjects: dict[str, dict] = {}
     for o in obs:
         d = o.get("detail") if isinstance(o.get("detail"), dict) else {}
+
+        # 提取主主体（detail.subject）：place 靶心发起的 geo_* 镜头，
+        # 观察 detail 里 subject 才是"谁在行动"。共现人物和地点的边
+        # 应该挂到主主体上，而不是挂在 place 节点自身（否则产生自环）。
+        subj = d.get("subject")
+        if isinstance(subj, dict):
+            pk = str(subj.get("pk") or subj.get("person_pk") or "").strip()
+            nm = str(subj.get("name") or "").strip()
+            if pk and nm:
+                primary_subjects[nm] = {"pk": pk, "name": nm}
+            elif nm:
+                primary_subjects.setdefault(nm, {"pk": "", "name": nm})
 
         # 分支 1：geo_accompany → companion.person_a/person_b + companion.locations
         comp = d.get("companion") if isinstance(d.get("companion"), dict) else {}
@@ -419,76 +432,95 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
                 elif isinstance(v, str) and v.strip():
                     companions_seen.add(v.strip())
 
-    # 地点 → place 节点 + 靶心→place 的「位于」边
-    # label 传 detail 自带 std_address（中文地名）；为空时 build_place_node
-    # 内部走 row.std_address fallback（语义层查到的中文），都查不到才退化到
-    # lid（loc_xxx 哈希）。这条 fallback 链保证 label 优先取中文，不取机器 id。
+    # --- §6：确定 位于/同现 边的源端 ---
+    # 靶心是 person → 源端 = 靶心（兼容既有行为）
+    # 靶心是 place/event → 源端 = 观察的主主体（detail.subject）
+    target_kind = (parse_case_node_id(target_node_id) or {}).get("kind", "")
+    target_is_person = target_kind in ("subject", "person")
+    edge_sources: list[tuple[str, str]] = []
+    if target_is_person:
+        edge_sources.append((target_node_id, target_label or ""))
+
+    # --- 先创建所有节点（避免边引用不到节点 ID） ---
+    place_nodes: dict[str, dict] = {}
     for lid, addr in sorted(locations_seen.items()):
-        # conn 必须传：不传则 build_place_node 查不到 obj_location 行，
-        # lat/lng 恒 None、mappable 恒 False，连有真实门牌坐标的地点
-        # （古墩路 30.29/120.11）也上不了地图，coord_degraded 更判不出
-        # 质心档——区划质心会被当成门牌精确位置，正是 R-2 反伪精确红线。
         pnode = build_place_node(case_id=case_id, location_id=lid,
                                  label=addr or "", conn=conn)
-        # 重建层标记必须打在节点上（边已有）：split_persistent 按
-        # props.generated_by 剥离，漏标会让地点在首次 PATCH 时被当人工层留存
         pnode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
         extra_nodes.append(pnode)
-        extra_edges.append({
-            "id": case_edge_id(target_node_id, "位于", pnode["id"]),
-            "source": target_node_id,
-            "target": pnode["id"],
-            "rel": "位于",
-            "system": True,
-            "generated_by": GENERATED_BY_LENS,
-            "note": f"「{name if lens_name else '研判'}」观察地点",
-        })
+        place_nodes[lid] = pnode
 
-    # 共现人物 → subject 节点 + 靶心→subject 的「同现」边
-    # 跳过靶心本人（target_label 匹配），避免同一个人产出两个节点
+    primary_nodes: dict[str, dict] = {}
+    for name, info in sorted(primary_subjects.items()):
+        if target_label and name == target_label:
+            continue
+        snode = build_subject_node(case_id=case_id, name=name,
+                                   sub_type="person", conn=conn)
+        if info.get("pk"):
+            snode.setdefault("props", {})["person_pk"] = info["pk"]
+        snode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
+        extra_nodes.append(snode)
+        primary_nodes[name] = snode
+        if not target_is_person:
+            edge_sources.append((snode["id"], name))
+
+    companion_nodes: dict[str, dict] = {}
     for person in sorted(companions_seen):
         if target_label and person == target_label:
             continue
-        # 传语义层 conn：按名字解析出 person_/org_ 主键，id 才能与人工提升的
-        # 靶心节点同键（merge 时按 R-4 去重）。不传 conn 会退化成名字哈希 id
-        # （case#...:subject:<sha1[:12]>）——演示数据里哈希恰好撞主键长相，
-        # 排查时极易误判。
         snode = build_subject_node(case_id=case_id, name=person, conn=conn)
         snode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
         extra_nodes.append(snode)
-        extra_edges.append({
-            "id": case_edge_id(target_node_id, "同现", snode["id"]),
-            "source": target_node_id,
-            "target": snode["id"],
-            "rel": "同现",
-            "system": True,
-            "generated_by": GENERATED_BY_LENS,
-            "note": f"「{name if lens_name else '研判'}」时空同框",
-        })
+        companion_nodes[person] = snode
 
-    # 组织主体 → subject·org 节点 + 靶心→组织的「同现」边
-    # 业务文档（v3 §7）明确：组织是 subject·org（复用 subject kind + sub_type）
-    # 不新增独立 kind，避免 14→15 类四处映射同步。
-    # 边类型暂复用「同现」语义（同案出现）；正兵若需精确表达可手工改边
-    #
-    # 跳过逻辑：靶心是 person，组织桶里同名账户/单位**不是同人**——
-    # relation_neighborhood 里常见 person "张卫国" + account "张卫国"，
-    # 若按 target_label 一刀切会把同名账户也跳掉，丢一类主体。
-    # 所以组织桶一律不跳过，让正兵看到"同名异主体"。
+    org_nodes: dict[str, dict] = {}
     for org_name in sorted(orgs_seen):
         snode = build_subject_node(case_id=case_id, name=org_name,
                                    sub_type="organization", conn=conn)
         snode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
         extra_nodes.append(snode)
-        extra_edges.append({
-            "id": case_edge_id(target_node_id, "同现", snode["id"]),
-            "source": target_node_id,
-            "target": snode["id"],
-            "rel": "同现",
-            "system": True,
-            "generated_by": GENERATED_BY_LENS,
-            "note": f"「{name if lens_name else '研判'}」相关单位",
-        })
+        org_nodes[org_name] = snode
+
+    # --- 再创建所有边（源端按 target kind 路由） ---
+    for lid, pnode in place_nodes.items():
+        for src_id, src_label in edge_sources:
+            if src_id == pnode["id"]:
+                continue  # 自环跳过
+            extra_edges.append({
+                "id": case_edge_id(src_id, "位于", pnode["id"]),
+                "source": src_id,
+                "target": pnode["id"],
+                "rel": "位于",
+                "system": True,
+                "generated_by": GENERATED_BY_LENS,
+                "note": f"「{name if lens_name else '研判'}」观察地点",
+            })
+
+    for person, snode in companion_nodes.items():
+        for src_id, src_label in edge_sources:
+            if person == src_label:
+                continue  # 自己不同现自己
+            extra_edges.append({
+                "id": case_edge_id(src_id, "同现", snode["id"]),
+                "source": src_id,
+                "target": snode["id"],
+                "rel": "同现",
+                "system": True,
+                "generated_by": GENERATED_BY_LENS,
+                "note": f"「{name if lens_name else '研判'}」时空同框",
+            })
+
+    for org_name, snode in org_nodes.items():
+        for src_id, src_label in edge_sources:
+            extra_edges.append({
+                "id": case_edge_id(src_id, "同现", snode["id"]),
+                "source": src_id,
+                "target": snode["id"],
+                "rel": "同现",
+                "system": True,
+                "generated_by": GENERATED_BY_LENS,
+                "note": f"「{name if lens_name else '研判'}」相关单位",
+            })
 
     return {"node": node, "edge": edge, "reason": "",
             "extra_nodes": extra_nodes, "extra_edges": extra_edges}
