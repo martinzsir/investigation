@@ -1414,7 +1414,7 @@ class CanvasM4ApiTest(unittest.TestCase):
             last = None
 
             def __init__(self, store, pack="default", access=None,
-                         base_dir=None):
+                         base_dir=None, graph_path=None):
                 # 只读护栏：经 read 模式版本库进入
                 self.assertEqual("read", store.mode)
                 self.store = store

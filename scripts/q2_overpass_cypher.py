@@ -46,8 +46,14 @@ def main() -> int:
         print("❌ 未安装 ladybug，请先：pip install ladybug")
         return 1
 
-    # 1. 建图
+    # 1. 建图（通用图只消费 obj_*/lnk_* 语义表）
     stat = g.build_from_duckdb(store)
+    if stat.get("skipped") or not stat.get("edges"):
+        print(f"⚠ 语义图未就绪（{stat.get('reason') or 'lnk_* 为空'}）："
+              "先跑 python -m scripts.build_ontology --graph")
+        g.close()
+        store.close()
+        return 1
     print(f"建图：节点 {stat['nodes']} 个，边 {stat['edges']} 条")
 
     # 2. Cypher 两跳过桥

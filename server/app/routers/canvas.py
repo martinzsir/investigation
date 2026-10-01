@@ -1430,8 +1430,13 @@ def canvas_function_query(case_id: str, clue_id: str, body: FunctionQueryIn,
                        "function": fname, "params": merged},
                       data_version=version)
         access = access_for(p, case_id=case_id, purpose="画布扩展查询")
+        # 版本级属性图：关系类 Function 经 GraphGateway 走 Cypher 主轨；
+        # 图缺失/陈旧由 Gateway 自动回落语义轨。
+        graph_path = (ctx.factory.case_dir(case_id) / "graph"
+                      / f"v{version}.lbug")
         executor = FunctionExecutor(
-            ro_store, pack=case.pack_id, access=access, base_dir=base_dir)
+            ro_store, pack=case.pack_id, access=access, base_dir=base_dir,
+            graph_path=str(graph_path))
         try:
             out = executor.invoke(fname, merged)
         except PermissionError as exc:

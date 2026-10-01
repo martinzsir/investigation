@@ -164,9 +164,10 @@ def main() -> int:
 
         d = payload(c.request("tools/call", {"name": "function_list", "arguments": {}}))
         fnames = [f["name"] for f in d.get("functions", [])]
-        # Function 数随 P3-P8 镜头包与物品本体收编扩容：17 → 26
-        # （新增 relation/timeline/geo/item 系列函数）
-        check(f"function_list 返回 26 个 Function（{len(fnames)}）", len(fnames) == 26, str(fnames))
+        # Function 数随 P3-P8 镜头包与物品本体收编扩容：17 → 26 → 27
+        # （新增 relation/timeline/geo/item 系列函数；item_track_segment
+        # 物品轨迹分段收编后为第 27 个）
+        check(f"function_list 返回 27 个 Function（{len(fnames)}）", len(fnames) == 27, str(fnames))
         check("function_list 全部标注 readonly",
               all(f.get("readonly") for f in d.get("functions", [])))
         check("function_list 含新增内间/对端诊断（tipoff_cross_reference, call_pair_coverage）",

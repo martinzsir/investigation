@@ -122,10 +122,16 @@ class TestSchemas(unittest.TestCase):
             self.skipTest("pyarrow 未安装（WSL 环境才有），跳过全量回归")
         env = dict(os.environ)
         env["SUNZI_AC5_NESTED"] = "1"
+        # 超时预算：600（初始）→1200（M1 增 5 组）→3000（套件已扩至 148 组：
+        # geo/item/canvas/server 新增大量 HTTP/e2e 用例；WSL 访问 /mnt/d 的 9P
+        # 慢盘跑完整含 e2e 全量实测约 2520s，3000 留余量；原生 Linux/CI 盘更快，
+        # 而 timeout 只是上限——全量提前跑完即返回，快环境不会被拖慢，仅在真失败/
+        # 真卡死时才等满）。可用 SUNZI_AC5_TIMEOUT 覆盖（慢机调大、CI 收紧）。
+        timeout_s = int(os.environ.get("SUNZI_AC5_TIMEOUT", "3000"))
         r = subprocess.run(
             [sys.executable, "run_tests.py"],
             capture_output=True, text=True, cwd=str(ROOT),
-            timeout=1200, env=env)  # M1 新增 5 组（约 90s），预算 600→1200s
+            timeout=timeout_s, env=env)
         self.assertEqual(r.returncode, 0,
                          f"run_tests.py 失败：\n{r.stdout}\n{r.stderr}")
 

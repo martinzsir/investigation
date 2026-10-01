@@ -92,7 +92,10 @@ def handle_lens_run(task, *, repo, factory, **_: Any) -> dict:
 
     det = CoreStore(db_path=str(factory.version_path(case.id, version)))
     try:
-        ctx: dict = {}
+        # 版本级属性图（随版本不可变）：显式注入，GraphGateway 校验 manifest
+        # 对账后走 Cypher 主轨；图缺失/陈旧自动回落语义轨，不阻断镜头。
+        ctx: dict = {"graph_path": str(
+            factory.case_dir(case.id) / "graph" / f"v{version}.lbug")}
         # 零填写（auto）/必填缺失：按 auto_from 推导补齐后再跑。
         # 先补齐再落盘，保证 lens_runs 产物与 ops 事件记录的是**实际使用的
         # 参数**（而非空壳），自动推荐了什么依然可审计。

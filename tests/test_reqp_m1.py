@@ -190,10 +190,11 @@ class NormalizeValidationTests(unittest.TestCase):
         _, lb = _load_bindings(_write_bindings(data), _mini_objects(), _mini_link())
         self.assertEqual(lb["tip_from_reporter"].normalize, ())
 
-    def test_ac9_default包八条链接全声明(self):
+    def test_ac9_default包归一链接全声明(self):
         pack = load_pack("default")
         declared = [n for n, b in pack.link_bindings.items() if b.normalize]
-        self.assertEqual(len(declared), 8)
+        # 8 基础 + holds(P-ITEM 物品持有) + osint_mentions(P-OSINT)
+        self.assertEqual(len(declared), 10)
         self.assertNotIn("time_window", declared)   # 业务条件连接，无归一
 
 

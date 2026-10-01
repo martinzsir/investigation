@@ -12,6 +12,7 @@
         "date": "date"
       },
       "endpoints": {
+        "edge_key": "txn_id",
         "from": {
           "col": "from_account_id",
           "ref": {
@@ -43,6 +44,7 @@
       "to_obj": "person",
       "properties": {},
       "endpoints": {
+        "edge_key": "call_id",
         "from": {
           "col": "from_person",
           "ref": {
@@ -71,18 +73,28 @@
       "to_obj": "person",
       "properties": {},
       "endpoints": {
+        "edge_key": "account_id",
         "from": {
-          "col": "owner_raw"
-        },
-        "to": {
           "col": "account_id",
           "ref": {
             "object": "account",
             "key": "account_id",
             "name": "raw_name"
           }
-        }
-      }
+        },
+        "to": {
+          "col": "owner_person",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "owner_raw"
+        ]
+      },
+      "_note": "方向纠偏：账户 → 持有自然人。endpoints 与 bindings.build_sql 输出列对齐（account_id/owner_person，owner_raw 仅作 extra 透传，不再充当端点）。"
     },
     {
       "name": "involved_in",
@@ -91,6 +103,7 @@
       "to_obj": "bid_project",
       "properties": {},
       "endpoints": {
+        "edge_key": "org_id",
         "from": {
           "col": "org_id",
           "ref": {
@@ -119,6 +132,7 @@
         "date": "date"
       },
       "endpoints": {
+        "edge_key": "track_id_1",
         "from": {
           "col": "person_1",
           "ref": {
@@ -152,12 +166,25 @@
       },
       "endpoints": {
         "from": {
-          "col": "title"
+          "col": "project_id",
+          "ref": {
+            "object": "bid_project",
+            "key": "project_id",
+            "name": "title"
+          }
         },
         "to": {
-          "col": "owner_raw"
+          "col": "txn_id",
+          "ref": {
+            "object": "transaction",
+            "key": "txn_id",
+            "name": "from_raw"
+          }
         },
         "extra": [
+          "title",
+          "owner_raw",
+          "amount",
           "offset_days"
         ]
       },
@@ -188,6 +215,7 @@
         "submit_date": "date"
       },
       "endpoints": {
+        "edge_key": "tipoff_id",
         "from": {
           "col": "tipoff_id",
           "ref": {
@@ -221,6 +249,7 @@
         "submit_date": "date"
       },
       "endpoints": {
+        "edge_key": "tipoff_id",
         "from": {
           "col": "tipoff_id",
           "ref": {
@@ -253,6 +282,30 @@
       "properties": {
         "source_name": "string",
         "pub_date": "date"
+      },
+      "endpoints": {
+        "edge_key": "article_id",
+        "from": {
+          "col": "article_id",
+          "ref": {
+            "object": "osint_article",
+            "key": "article_id",
+            "name": "raw_name"
+          }
+        },
+        "to": {
+          "col": "person_id",
+          "ref": {
+            "object": "person",
+            "key": "person_id",
+            "name": "raw_name"
+          }
+        },
+        "extra": [
+          "subject_raw",
+          "source_name",
+          "pub_date"
+        ]
       }
     },
     {
@@ -292,6 +345,7 @@
         "date": "date"
       },
       "endpoints": {
+        "edge_key": "track_id",
         "from": {
           "col": "track_id",
           "ref": {
@@ -323,6 +377,7 @@
         "end_date": "date"
       },
       "endpoints": {
+        "edge_key": "hold_id",
         "from": {
           "col": "person_id",
           "ref": {

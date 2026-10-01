@@ -139,9 +139,9 @@ def _lens_readiness(case_id: str, ctx) -> dict[str, dict]:
     """
     try:
         from core.lens_advisory import advisories
-        from core.store import Store
+        from core.store import Store as CoreStore
         vf = ctx.factory.version_file(case_id, ctx.repo.current_version(case_id))
-        st = Store(db_path=str(vf))
+        st = CoreStore(db_path=str(vf))
         try:
             obj = {r["table_name"][4:] for r in st.query(
                 "SELECT table_name FROM information_schema.tables "
@@ -294,14 +294,20 @@ def switch_lens(case_id: str, skill_id: str, body: LensSwitchIn,
     # 不必让正兵白等一次 RESCAN。
     prev_enabled = entry.get("enabled") if isinstance(entry, dict) else None
     batch_changed = prev_enabled != bool(body.enabled)
-    task = None
+    rescan_idem = (f"rescan:lens:{skill_id}:"
+                   f"{ctx.repo.current_version(case_id)}")
     if batch_changed:
         task = enqueue_task(
             ctx.repo, case_id=case_id, task_type=TASK_RESCAN,
             params={"skill_id": skill_id, "changed": ["lens_switch"]},
-            idem_key=f"rescan:lens:{skill_id}:"
-                     f"{ctx.repo.current_version(case_id)}",
+            idem_key=rescan_idem,
             created_by=p.operator)
+    else:
+        # 同值重复 PUT：配置未变、文件不重写、不重复入队；但幂等的完整
+        # 语义是"重复请求拿回同一结果"——回捞本版本首次开关入队的 RESCAN
+        # 句柄返回，调用方重试/断网重发后仍能凭同一任务 id 轮询。
+        # 人工预置/旧版迁移的 lenses.json 可能从无任务行，此时为 None。
+        task = ctx.repo.get_task_by_idem(case_id, TASK_RESCAN, rescan_idem)
     return ok({"skill_id": skill_id, "enabled": bool(body.enabled),
                "canvas_enabled": bool(canvas_val),
                "batch_changed": batch_changed,

@@ -18,14 +18,14 @@ scripts/export_ladybug.py
     文件清单（AC3）。
 
 产物（data/ladybug/）：
-  nodes.csv              全部节点（name, type）：person/org/account/bid_project
+  nodes.csv              全部节点（name, type）：links.json endpoints 引用到的
+                         全部对象类型（人/组织/账户/项目/事件/地点/物品…，声明驱动）
   transfer_edges.csv     转账边（lnk_transfers，兼容旧字段名 from_id/to_id）
   overpass_paths.csv     过桥两跳路径（lnk_transfers 自连接，兼容旧字段名）
   calls_edges.csv        通话边（lnk_calls_to，代理键回连 obj_person 取 raw_name）
-  co_located_edges.csv   同框边（lnk_co_located）
-  owns_edges.csv         持有账户边（lnk_owns）
-  involved_in_edges.csv  中标参与边（lnk_involved_in）
-  time_window_edges.csv  时间窗碰撞边（lnk_time_window）
+  {link}_edges.csv       其余边按 endpoints 声明通用导出（owns/time_window/
+                         holds/trackpoint_at/osint_mentions/tipoff_* …），
+                         新增 link 零改动
 
 LadybugDB 可通过 ATTACH DuckDB 直接读（WSL/Linux 可用）；Windows 原生扩展为
 坏二进制不可用，走 CSV 中转。COPY 路径一律正斜杠（反斜杠会被当转义序列）。
@@ -121,12 +121,17 @@ def main(store: Store | None = None) -> int:
         raise SystemExit(f"语义层缺失 {missing}：先跑 python -m scripts.build_ontology")
 
     # ---- 对象级策略检查（fail-closed；AC5 越权落审计+告警）----
+    # 检查范围声明驱动：endpoints 引用到的全部节点对象 + 全部编译期边，
+    # 新增 link/对象自动纳入（漏策略即 fail-closed 被自身拦住）。
+    from core.ontology_loader import load_pack
+    from core.semantic_graph_export import edge_decls, graph_object_types
+    pack = load_pack("default")
+    export_objs = graph_object_types(pack)
+    export_links = [d.link for d in edge_decls(pack) if not d.runtime]
     try:
-        for obj in ("person", "org", "account", "bid_project",
-                    "transaction", "call", "trackpoint"):
+        for obj in export_objs:
             engine.check_object(ctx, obj)
-        for lnk in ("transfers", "calls_to", "co_located", "owns",
-                    "involved_in", "time_window"):
+        for lnk in export_links:
             engine.check_link(ctx, lnk)
     except PolicyDeniedError as e:
         # AC5：越权尝试必须被审计记录并告警
@@ -151,22 +156,15 @@ def main(store: Store | None = None) -> int:
         masked += [f"{obj}.{c}" for c in _masked_columns(engine, ctx, obj, cols)
                    if c in ("id_card", "content_raw", "reporter_raw")]
 
-    # ---- 节点：person ∪ org ∪ account ∪ bid_project（raw_name/title 即图上名称）----
-    exported["nodes.csv"] = _copy(store, """
-        SELECT raw_name AS name, 'person' AS type FROM obj_person
-        UNION ALL
-        SELECT raw_name, 'org' FROM obj_org
-        UNION ALL
-        SELECT raw_name, 'account' FROM obj_account
-        UNION ALL
-        SELECT title, 'bid_project' FROM obj_bid_project
-    """, "nodes.csv")
+    # ---- 节点：endpoints 引用到的全部对象类型（声明驱动，name_property 即点名）----
+    from core.semantic_graph_export import declared_node_union_sql
+    exported["nodes.csv"] = _copy(
+        store, declared_node_union_sql(pack), "nodes.csv")
 
     # ---- 边：按 links.json 的 endpoints 声明通用导出（REQ-G-015）----
     # 新增链接只需在 links.json 声明 endpoints，本脚本零改动即导出；
     # 历史产物文件名经 _EDGE_FILE_OVERRIDE 保持（golden 兼容）。
-    from core.ontology_loader import load_pack
-    for link in load_pack("default").links:
+    for link in pack.links:
         if not link.endpoints:
             continue
         lnk_table = f"lnk_{link.name}"

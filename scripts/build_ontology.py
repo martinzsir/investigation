@@ -22,6 +22,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--pack", default="default", help="ontology 案件包名（ontology/<pack>/）")
     ap.add_argument("--actions", action="store_true", help="只打印 Action 注册表")
     ap.add_argument("--functions", action="store_true", help="只打印 Function 目录")
+    ap.add_argument("--graph", dest="graph", action="store_true", default=True,
+                    help="编译后重建 Ladybug 属性图（默认开，缺 ladybug 自动跳过）")
+    ap.add_argument("--no-graph", dest="graph", action="store_false",
+                    help="只编译语义层，不重建属性图")
+    ap.add_argument("--graph-path", default="data/ladybug/investigation.lbug",
+                    help="属性图产物路径（本地 CLI 默认 data/ladybug/investigation.lbug）")
     args = ap.parse_args(argv)
 
     if args.actions:
@@ -67,6 +73,18 @@ def main(argv: list[str] | None = None) -> None:
 
     print(f"  声明：{len(pack.objects)} 对象 / {len(pack.links)} 链接 / "
           f"{len(pack.actions)} 动作 / {len(pack.functions)} 函数")
+
+    # Ladybug 属性图（声明驱动通用建图；缺 ladybug / COPY 失败只跳过不阻断）
+    if args.graph:
+        from core.ladybug_builder import build_case_graph
+        gres = build_case_graph(store, pack, args.graph_path)
+        if gres.get("skipped"):
+            print(f"=== 属性图跳过：{gres.get('reason', '')} ===")
+        else:
+            print(f"=== 属性图构建完成：{gres['graph_path']} ===")
+            print(f"  节点 {gres['nodes']}（{', '.join(gres['node_types'])}）")
+            for name, n in gres["links"].items():
+                print(f"  REL {name:<24} {n} 行")
 
 
 if __name__ == "__main__":

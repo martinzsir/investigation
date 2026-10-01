@@ -8,6 +8,7 @@
   "properties": {
     "schema_version": {"const": 2},
     "_note": {"type": "string"},
+    "_compat": {"type": "string"},
     "dimensions": {
       "type": "array",
       "items": {

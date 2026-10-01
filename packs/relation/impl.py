@@ -24,8 +24,16 @@ _COMMON_NODE_LIMIT = 10
 _SOURCE_TYPE = "关系研判"
 
 
-def _invoke(store, fn_name: str, fn_params: dict, health) -> dict:
-    return FunctionExecutor(store, health=health).invoke(fn_name, fn_params)
+def _invoke(store, fn_name: str, fn_params: dict, health,
+            graph_path: str | None = None) -> dict:
+    # graph_path 由 worker（detect/lens_run）按 case_dir+version 显式注入
+    # ctx["graph_path"]；None 时 GraphGateway 走保守推导/纯语义轨。
+    return FunctionExecutor(
+        store, health=health, graph_path=graph_path).invoke(fn_name, fn_params)
+
+
+def _graph_path(ctx) -> str | None:
+    return ctx.get("graph_path") if isinstance(ctx, dict) else None
 
 
 def _clean(params: dict, keys: list[str]) -> dict:
@@ -50,7 +58,8 @@ def neighborhood_lens(miao=None, store=None, ctx=None, params=None,
     params = params or {}
     fn_params = _clean(params, ["target_type", "depth", "edge_kinds"])
     fn_params["target"] = params.get("target_subject", "")
-    out = _invoke(store, "relation_neighborhood", fn_params, health)
+    out = _invoke(store, "relation_neighborhood", fn_params, health,
+                  _graph_path(ctx))
     r = out.get("result") or {}
     if not r.get("hit"):
         return []
@@ -106,7 +115,8 @@ def common_neighbors_lens(miao=None, store=None, ctx=None, params=None,
     fn_params = _clean(params, ["edge_kinds", "target_type_a", "target_type_b"])
     fn_params["subject_a"] = params.get("subject_a", "")
     fn_params["subject_b"] = params.get("subject_b", "")
-    out = _invoke(store, "relation_common_neighbors", fn_params, health)
+    out = _invoke(store, "relation_common_neighbors", fn_params, health,
+                  _graph_path(ctx))
     r = out.get("result") or {}
     if not r.get("hit"):
         return []
@@ -165,7 +175,8 @@ def paths_lens(miao=None, store=None, ctx=None, params=None,
                                 "target_type_a", "target_type_b"])
     fn_params["subject_a"] = params.get("subject_a", "")
     fn_params["subject_b"] = params.get("subject_b", "")
-    out = _invoke(store, "relation_paths", fn_params, health)
+    out = _invoke(store, "relation_paths", fn_params, health,
+                  _graph_path(ctx))
     r = out.get("result") or {}
     if not r.get("hit"):
         return []

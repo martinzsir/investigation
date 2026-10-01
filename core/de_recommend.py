@@ -113,11 +113,19 @@ def recommend_for_column(col_name: str, values: list, elements: dict,
             "match_rate": round(rate, 3),
             "match_by": by,
             "confidence": confidence,
+            "name_hit": _name_hit(col_name, spec),
             "sensitive": bool(spec.get("sensitive")),
             "needs_confirmation": confidence != "high",
         }
         rec.update(_rule_hints(ana, vals))
         recs.append(rec)
+
+    # 同形多候选消歧：值 format 无法区分时（如 18 位身份证号 vs 18 位统一
+    # 社会信用代码），列名别名是人工给定的强语义信号——列名命中者首选；
+    # 其余候选仍保留（推荐只进 draft，不丢可能性）。再按命中率、ID 稳定排序。
+    recs.sort(key=lambda r: (not r.get("name_hit"),
+                             -float(r.get("match_rate") or 0.0),
+                             str(r.get("data_element") or "")))
 
     # 无数据元命中但值模式明确（手机/日期/账号）→ 仍给规则建议，标需人工确认
     if not recs:

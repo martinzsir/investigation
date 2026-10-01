@@ -451,12 +451,15 @@ class M6BoardTest(unittest.TestCase):
         self.assertTrue(d["available"])
         self.assertEqual({e["type"] for e in d["edges"]}, {"transfers"})
         self.assertEqual(len(d["edges"]), 1)
-        # 目录仍列全部可入图类型（供前端过滤勾选），present 标记表是否已物化
+        # 目录列全部非 runtime 链接（供前端过滤勾选），present 标记表是否已物化：
+        # 8 基础（含 owns/time_window，二者 endpoints 已补齐）+
+        # osint_mentions(P-OSINT) + trackpoint_at(P-GEO) + holds(P-ITEM)
         catalog = {k["name"]: k["present"] for k in d["edge_kinds"]}
         self.assertEqual(set(catalog),
-                         {"transfers", "calls_to", "involved_in",
-                          "co_located", "tipoff_targets_person",
-                          "tipoff_from_reporter"})
+                         {"transfers", "calls_to", "owns", "involved_in",
+                          "co_located", "time_window",
+                          "tipoff_targets_person", "tipoff_from_reporter",
+                          "osint_mentions", "trackpoint_at", "holds"})
         self.assertTrue(catalog["transfers"])
         self.assertTrue(catalog["calls_to"])
         self.assertFalse(catalog["involved_in"])

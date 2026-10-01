@@ -195,6 +195,46 @@ def handle_build(task: TaskRow, *, repo: MetaRepo, factory: StoreFactory,
                              "error": f"{type(e).__name__}: {e}"})
             progress(94.0, "enrich", "地点富化失败（已放行）", str(e)[:200])
 
+    # Ladybug 案件版本级属性图（cases/<cid>/graph/vN.lbug）：语义层编译成功后
+    # 按 links.json endpoints 声明驱动重建，**先于检测**——run_detection 内的
+    # 关系镜头经 GraphGateway 走 Cypher 主轨时需要同版本图。图只依赖 obj_/lnk_*
+    # 语义表（此时已编译完成），不依赖检测产物。ladybug 缺失/COPY 失败只返回
+    # skipped，镜头侧回落内存语义轨——图是增强不是前提，绝不阻断版本切换。
+    try:
+        from core.store import Store as CoreStore
+        from core.ontology_loader import load_pack
+        from core.ladybug_builder import build_case_graph
+        graph_path = (factory.case_dir(case.id) / "graph" / f"v{nxt}.lbug")
+        pack_spec = load_pack(case.pack_id,
+                              base_dir=snapshot_base_for(case.id))
+        gstore = CoreStore(db_path=str(target))
+        try:
+            # 守卫：版本库没有任何 lnk_* 语义表（fake builder / 未编译语义层）
+            # 时不建空图，避免在案件目录留无意义图产物。
+            n_lnk = int(gstore.query(
+                "SELECT COUNT(*) AS n FROM information_schema.tables "
+                "WHERE starts_with(table_name, 'lnk_')")[0]["n"])
+            if n_lnk == 0:
+                progress(94.5, "graph_skipped", "属性图构建跳过（语义层为空）",
+                         "版本库无 lnk_* 表")
+            else:
+                gres = build_case_graph(gstore, pack_spec, graph_path)
+                if isinstance(result, dict):
+                    result["graph"] = {k: gres.get(k) for k in
+                                       ("skipped", "nodes", "edges", "reason")}
+                if gres.get("skipped"):
+                    progress(94.5, "graph_skipped", "属性图构建跳过（语义轨可用）",
+                             str(gres.get("reason", ""))[:200])
+                else:
+                    progress(94.5, "graph", "属性图构建完成",
+                             f"节点 {gres['nodes']} / 边 {gres['edges']} → {graph_path.name}")
+        finally:
+            gstore.close()
+    except Exception as e:  # noqa: BLE001
+        repo.record_ops("case_graph_build_failed", case.id,
+                        {"version": nxt,
+                         "error": f"{type(e).__name__}: {e}"})
+
     # D-M3-2：线索检测 + 报告产物（cases/<cid>/artifacts/clues_v<nxt>.json，
     # 随版本不可变；线索读面/处置均消费它）。检测失败视同 BUILD 失败：
     # 版本指针不前进，v<nxt> 残留由下次重试清理（H3 同语义）。

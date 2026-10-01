@@ -225,7 +225,7 @@ class M6InsightTest(unittest.TestCase):
         # 覆盖诊断双路透传
         decl = d["coverage"]["declared"][0]
         self.assertEqual(decl["missing"], ["死间", "生间"])
-        self.assertEqual(decl["total"], 5)
+        self.assertEqual(decl["total"], 6)  # dimensions 声明已扩为 6 维（见 e2e_acceptance 维度断言）
         self.assertEqual(d["coverage"]["empirical"][0]["missing"], ["反间"])
         # human：内间可见、restricted 空
         d2 = self.client.get("/api/v1/cases/c1/hypotheses",

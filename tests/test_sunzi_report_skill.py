@@ -486,6 +486,8 @@ class TestClueRefs(unittest.TestCase):
     _imrow = {
         "image_evidence_id": "imgev_a1", "case_id": "c1",
         "clue_id": "clue_x", "image_uri": "evidence/mat_01/invoide.png",
+        "model": "qwen-vl-max", "prompt_version": "pvlm-3",
+        "subject_type": "", "subject_id": "", "draft_id": "",
         "verify_conclusion": "确认", "verifier": "正兵-张三",
         "created_at": "2026-09-20T10:00:00",
     }

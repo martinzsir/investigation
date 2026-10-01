@@ -15,7 +15,7 @@
         "required": ["name", "type"],
         "properties": {
           "name": {"type": "string", "minLength": 1},
-          "type": {"enum": ["string", "integer", "decimal", "date", "boolean"]},
+          "type": {"enum": ["string", "integer", "decimal", "date", "boolean", "timestamp", "enum"]},
           "length": {"type": "integer", "minimum": 0},
           "format": {"type": "string"},
           "checksum": {"type": "string"},

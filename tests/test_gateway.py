@@ -234,7 +234,10 @@ class EntityLinkExplorerTests(unittest.TestCase):
         """string − metadata_props − runtime 对象；全排除对象不出现。"""
         got = self.ex.connectable_props()
         self.assertEqual(got["person"], ["raw_name", "id_card"])
-        self.assertEqual(got["org"], ["raw_name", "legal_rep", "relation"])  # status 排除
+        # status 排除；credit_code（R15/D10 统一社会信用代码，data_element 型）
+        # 同为 string 可连属性
+        self.assertEqual(got["org"],
+                         ["raw_name", "legal_rep", "relation", "credit_code"])
         self.assertEqual(got["transaction"],
                          ["from_raw", "to_raw", "currency"])
         self.assertNotIn("clue", got)        # 全列 metadata → 不出现

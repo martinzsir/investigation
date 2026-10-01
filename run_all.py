@@ -279,12 +279,30 @@ def main():
 
     # ===== 7-8. 侦查主流程（skill_invoke 驱动）=====
     step("7-8. 侦查主流程：庙算→知己→虚实/奇正/用间 + 血缘去重 + 优先级")
+
+    # L4 属性图先于镜头批量构建：关系镜头经 GraphGateway 走 Cypher 主轨
+    # （8b 仍会重建并做 Q2 双轨比对；此处提前建是为镜头供轨）。
+    # 缺 ladybug/COPY 失败只跳过，镜头自动回落语义轨，不阻断主线。
+    graph_path = "data/ladybug/investigation.lbug"
+    try:
+        from core.ladybug_builder import build_case_graph
+        from core.ontology_loader import load_pack
+        _gres = build_case_graph(
+            store, load_pack("default"), graph_path)
+        if _gres.get("skipped"):
+            print(f"  ⚠ 属性图构建跳过（镜头走语义轨）：{_gres.get('reason', '')}")
+        else:
+            print(f"  属性图：节点 {_gres['nodes']} / 边 {_gres['edges']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠ 属性图构建异常（镜头走语义轨）：{e}")
+
     registry = get_registry()
     ctx = {
         "可用数据": ["银行流水", "通话记录", "招投标档案", "工商信息", "轨迹出行", "公开OSINT", "举报材料"],
         "未调取": ["房产车辆"],
         "证据缺口": ["现金来源无法溯源", "A公司流水缺口95万"],
         "授权边界": ["不可查房产车辆", "不可直接接触对象"],
+        "graph_path": graph_path,
     }
     miao = _build_miaosuan(store, ctx, health=health)
 
@@ -372,6 +390,17 @@ def main():
     from core.ontology import build_ontology as _rebuild_ontology
     _rebuild_ontology(store.conn)
     print(f"  处置状态落 DuckDB：{written} 行（语义层 obj_clue 已同步刷新）")
+    # 语义表已重建，8b 的图即刻陈旧（manifest 行数清单不再对账）——
+    # 用通用构建器刷新一次，保持 L4 图与当前版本库一致（缺 ladybug 自动跳过）。
+    try:
+        from core.ladybug_builder import build_case_graph
+        from core.ontology_loader import load_pack
+        _gres = build_case_graph(
+            store, load_pack("default"), "data/ladybug/investigation.lbug")
+        if not _gres.get("skipped"):
+            print(f"  属性图已刷新：节点 {_gres['nodes']} / 边 {_gres['edges']}")
+    except Exception as e:  # noqa: BLE001
+        print(f"  ⚠ 属性图刷新跳过：{e}")
     board.print_report()
 
     # ===== 10. 导出操作台数据 =====
@@ -562,7 +591,11 @@ def _run_graph_overpass(store) -> dict | None:
 
     try:
         stat = g.build_from_duckdb(store)
-        print(f"  建图：节点 {stat['nodes']} 个，边 {stat['edges']} 条")
+        if stat.get("skipped"):
+            print(f"  ⚠ 通用建图跳过：{stat.get('reason', '')}（仅保留 SQL 轨）")
+            return None
+        per_link = ", ".join(f"{k}={v}" for k, v in (stat.get("links") or {}).items())
+        print(f"  建图：节点 {stat['nodes']} 个，边 {stat['edges']} 条（{per_link}）")
         cypher_paths = g.overpass_two_hop()
         sql_paths = overpass_two_hop_sql(store)
         cmp_res = compare_engines(cypher_paths, sql_paths)

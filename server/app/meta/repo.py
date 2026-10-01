@@ -93,6 +93,15 @@ class MetaRepo(ABC):
     def get_task(self, task_id: str) -> TaskRow | None: ...
 
     @abstractmethod
+    def get_task_by_idem(self, case_id: str, task_type: str,
+                         idem_key: str) -> TaskRow | None:
+        """按业务幂等键取既有任务（无行/空键返回 None）。
+
+        供同值重复写请求回捞首次入队的任务句柄——幂等不仅是"不重复
+        干活"，重试/重复提交还必须拿回**同一个任务**供调用方轮询。
+        """
+
+    @abstractmethod
     def list_tasks(self, *, case_id: str | None = None,
                    status: str | None = None, limit: int = 100) -> list[TaskRow]: ...
 

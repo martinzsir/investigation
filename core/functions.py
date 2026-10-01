@@ -13,6 +13,7 @@ Ontology Function 层：只读、类型化、可枚举的计算单元（Palantir
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from typing import Callable
 
@@ -543,10 +544,24 @@ def _org_interest_links(store, params: dict, ctx=None) -> dict:
     except Exception:
         return {"rows": [], "knowledge_version": kn.get("knowledge_version")}
 
+    # interest 断言直查：断言 (from=org, to=person) 的关联不落在 org 行的
+    # legal_rep/relation 列文本里（如「宏业建设→张卫国 interest·招投标档案」），
+    # 只做列文本匹配会把这类断言整个丢掉——画布上「两人→同一集团」的间接
+    # 路径就断了。按组织名归并进 matched。
+    asserted_by_org: dict[str, set[str]] = {}
+    for a in valid:
+        frm = str(a.get("from") or "").strip()
+        to = str(a.get("to") or "").strip()
+        if frm and to and (not rel_types or a.get("type") in rel_types):
+            asserted_by_org.setdefault(frm, set()).add(to)
+
     rows = []
     for o in orgs:
         fields = [str(o.get("legal_rep") or ""), str(o.get("relation") or "")]
-        matched = sorted(p for p in persons if any(p in f for f in fields))
+        matched = sorted(
+            {p for p in persons if any(p in f for f in fields)}
+            | (asserted_by_org.get(str(o.get("raw_name") or "").strip())
+               or set()))
         if not matched:
             continue
         sources = sorted({a.get("source", "") for a in valid
@@ -593,8 +608,8 @@ def _overpass_two_hop(store, params: dict) -> dict:
 # graph.resolve_subject 内做标识符白名单 + 参数化查询。
 from core.graph import (  # noqa: E402
     EDGE_KINDS as _EDGE_KINDS,
+    GraphGateway as _GraphGateway,
     load_node_names as _load_node_names,
-    load_semantic_graph as _load_semantic_graph,
     node_type_of as _node_type_of,
     resolve_subject as _resolve_subject,
 )
@@ -620,16 +635,18 @@ def _edge_brief(e) -> dict:
     return d
 
 
-def _gap_diagnostic(g) -> dict:
-    return {
-        "engine": "semantic",
-        "loaded_links": list(g.loaded_links),
-        "gaps": g.gaps,
-        "is_degraded": bool(g.gaps),
-    }
+def _make_gateway(store, ctx) -> _GraphGateway:
+    """关系图双轨入口：图路径由 RuntimeContext 显式携带（worker 注入）。"""
+    return _GraphGateway(
+        store,
+        pack=getattr(ctx, "pack", "default") if ctx is not None else "default",
+        ctx=ctx,
+        graph_path=getattr(ctx, "graph_path", None),
+        base_dir=getattr(ctx, "base_dir", None),
+    )
 
 
-def _missing_subject(target, g) -> dict:
+def _missing_subject(target, gw: _GraphGateway, g) -> dict:
     return {
         "hit": False,
         "subject": None,
@@ -637,7 +654,7 @@ def _missing_subject(target, g) -> dict:
         "edges": [],
         "degraded": True,
         "degraded_reason": f"主体 {target!r} 在语义层实体中不存在（未建档或未归一）",
-        "diagnostics": _gap_diagnostic(g),
+        "diagnostics": gw.diagnostic(g),
     }
 
 
@@ -647,32 +664,36 @@ def _relation_neighborhood(store, params: dict, ctx=None) -> dict:
     depth, edge_kinds = _graph_query_params(params)
     target = params.get("target") or params.get("target_subject") or ""
     target_type = params.get("target_type", "auto")
-    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
-    subject = _resolve_subject(store, target, target_type, ctx)
-    if subject is None:
-        return _missing_subject(target, g)
-    hops, first_path = g.neighborhood(subject["pk"], depth)
-    names = _load_node_names(store, set(hops), ctx)
-    tree_edges: dict[tuple, object] = {}
-    for pk, chain in first_path.items():
-        for e in chain:
-            # BFS 树：每个节点只有一条首达链，同一物理边行至多出现一次
-            tree_edges.setdefault((e.edge, e.edge_pk), e)
-    nodes = [
-        {**_node_brief(pk, names), "hops": h}
-        for pk, h in sorted(hops.items(), key=lambda kv: (kv[1], kv[0]))
-    ]
-    diag = _gap_diagnostic(g)
-    return {
-        "hit": len(hops) > 1,
-        "subject": subject,
-        "nodes": nodes,
-        "edges": [_edge_brief(e) for e in tree_edges.values()],
-        "degraded": diag["is_degraded"],
-        "degraded_reason": ("部分关系数据源未接入，圈层不完整："
-                            + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
-        "diagnostics": diag,
-    }
+    gw = _make_gateway(store, ctx)
+    try:
+        g = gw.view(edge_kinds)
+        subject = _resolve_subject(store, target, target_type, ctx)
+        if subject is None:
+            return _missing_subject(target, gw, g)
+        hops, first_path = g.neighborhood(subject["pk"], depth)
+        names = _load_node_names(store, set(hops), ctx)
+        tree_edges: dict[tuple, object] = {}
+        for pk, chain in first_path.items():
+            for e in chain:
+                # BFS 树：每个节点只有一条首达链，同一物理边行至多出现一次
+                tree_edges.setdefault((e.edge, e.edge_pk), e)
+        nodes = [
+            {**_node_brief(pk, names), "hops": h}
+            for pk, h in sorted(hops.items(), key=lambda kv: (kv[1], kv[0]))
+        ]
+        diag = gw.diagnostic(g)
+        return {
+            "hit": len(hops) > 1,
+            "subject": subject,
+            "nodes": nodes,
+            "edges": [_edge_brief(e) for e in tree_edges.values()],
+            "degraded": diag["is_degraded"],
+            "degraded_reason": ("部分关系数据源未接入，圈层不完整："
+                                + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
+            "diagnostics": diag,
+        }
+    finally:
+        gw.close()
 
 
 @register_function("relation_common_neighbors")
@@ -680,37 +701,41 @@ def _relation_common_neighbors(store, params: dict, ctx=None) -> dict:
     """两主体的共同邻居（跨类型混合关系圈层的交集）。"""
     _depth, edge_kinds = _graph_query_params(params)
     ta, tb = params.get("subject_a") or "", params.get("subject_b") or ""
-    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
-    sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
-    sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
-    if sa is None or sb is None:
-        missing = ta if sa is None else tb
-        out = _missing_subject(missing, g)
-        out["subject_a"] = sa
-        out["subject_b"] = sb
-        return out
-    if sa["pk"] == sb["pk"]:
-        raise ValueError("subject_a 与 subject_b 指向同一主体，共同邻居无意义")
-    common = g.common_neighbors(sa["pk"], sb["pk"])
-    pks = set(common) | {sa["pk"], sb["pk"]}
-    names = _load_node_names(store, pks, ctx)
-    items = [{
-        **_node_brief(pk, names),
-        "via_a": _edge_brief(ea),
-        "via_b": _edge_brief(eb),
-    } for pk, (ea, eb) in sorted(common.items())]
-    diag = _gap_diagnostic(g)
-    return {
-        "hit": bool(items),
-        "subject_a": sa,
-        "subject_b": sb,
-        "common": items,
-        "count": len(items),
-        "degraded": diag["is_degraded"],
-        "degraded_reason": ("部分关系数据源未接入："
-                            + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
-        "diagnostics": diag,
-    }
+    gw = _make_gateway(store, ctx)
+    try:
+        g = gw.view(edge_kinds)
+        sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
+        sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
+        if sa is None or sb is None:
+            missing = ta if sa is None else tb
+            out = _missing_subject(missing, gw, g)
+            out["subject_a"] = sa
+            out["subject_b"] = sb
+            return out
+        if sa["pk"] == sb["pk"]:
+            raise ValueError("subject_a 与 subject_b 指向同一主体，共同邻居无意义")
+        common = g.common_neighbors(sa["pk"], sb["pk"])
+        pks = set(common) | {sa["pk"], sb["pk"]}
+        names = _load_node_names(store, pks, ctx)
+        items = [{
+            **_node_brief(pk, names),
+            "via_a": _edge_brief(ea),
+            "via_b": _edge_brief(eb),
+        } for pk, (ea, eb) in sorted(common.items())]
+        diag = gw.diagnostic(g)
+        return {
+            "hit": bool(items),
+            "subject_a": sa,
+            "subject_b": sb,
+            "common": items,
+            "count": len(items),
+            "degraded": diag["is_degraded"],
+            "degraded_reason": ("部分关系数据源未接入："
+                                + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None,
+            "diagnostics": diag,
+        }
+    finally:
+        gw.close()
 
 
 @register_function("relation_paths")
@@ -721,48 +746,52 @@ def _relation_paths(store, params: dict, ctx=None) -> dict:
     if not 1 <= max_paths <= 100:
         raise ValueError(f"max_paths 允许 1-100，得到 {max_paths}")
     ta, tb = params.get("subject_a") or "", params.get("subject_b") or ""
-    g = _load_semantic_graph(store, ctx=ctx, edge_kinds=edge_kinds)
-    sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
-    sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
-    if sa is None or sb is None:
-        missing = ta if sa is None else tb
-        out = _missing_subject(missing, g)
-        out["subject_a"] = sa
-        out["subject_b"] = sb
-        out["paths"] = []
-        return out
-    if sa["pk"] == sb["pk"]:
-        raise ValueError("subject_a 与 subject_b 指向同一主体，路径枚举无意义")
-    chains = g.paths(sa["pk"], sb["pk"], depth, max_paths)
-    pks = {sa["pk"], sb["pk"]}
-    for chain in chains:
-        for e in chain:
-            pks.update((e.src, e.dst))
-    names = _load_node_names(store, pks, ctx)
-    paths_out = []
-    for chain in chains:
-        node_seq = [sa["pk"]] + [e.dst for e in chain]
-        paths_out.append({
-            "length": len(chain),
-            "nodes": [_node_brief(pk, names) for pk in node_seq],
-            "edges": [_edge_brief(e) for e in chain],
-        })
-    truncated = len(chains) >= max_paths
-    diag = _gap_diagnostic(g)
-    diag["truncated_at_max_paths"] = truncated
-    return {
-        "hit": bool(paths_out),
-        "subject_a": sa,
-        "subject_b": sb,
-        "paths": paths_out,
-        "count": len(paths_out),
-        "degraded": diag["is_degraded"] or truncated,
-        "degraded_reason": (
-            ("部分关系数据源未接入："
-             + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None)
-            or ("路径数达到 max_paths 上限被截断" if truncated else None),
-        "diagnostics": diag,
-    }
+    gw = _make_gateway(store, ctx)
+    try:
+        g = gw.view(edge_kinds)
+        sa = _resolve_subject(store, ta, params.get("target_type_a", "auto"), ctx)
+        sb = _resolve_subject(store, tb, params.get("target_type_b", "auto"), ctx)
+        if sa is None or sb is None:
+            missing = ta if sa is None else tb
+            out = _missing_subject(missing, gw, g)
+            out["subject_a"] = sa
+            out["subject_b"] = sb
+            out["paths"] = []
+            return out
+        if sa["pk"] == sb["pk"]:
+            raise ValueError("subject_a 与 subject_b 指向同一主体，路径枚举无意义")
+        chains = g.paths(sa["pk"], sb["pk"], depth, max_paths)
+        pks = {sa["pk"], sb["pk"]}
+        for chain in chains:
+            for e in chain:
+                pks.update((e.src, e.dst))
+        names = _load_node_names(store, pks, ctx)
+        paths_out = []
+        for chain in chains:
+            node_seq = [sa["pk"]] + [e.dst for e in chain]
+            paths_out.append({
+                "length": len(chain),
+                "nodes": [_node_brief(pk, names) for pk in node_seq],
+                "edges": [_edge_brief(e) for e in chain],
+            })
+        truncated = len(chains) >= max_paths
+        diag = gw.diagnostic(g)
+        diag["truncated_at_max_paths"] = truncated
+        return {
+            "hit": bool(paths_out),
+            "subject_a": sa,
+            "subject_b": sb,
+            "paths": paths_out,
+            "count": len(paths_out),
+            "degraded": diag["is_degraded"] or truncated,
+            "degraded_reason": (
+                ("部分关系数据源未接入："
+                 + "; ".join(x["link"] for x in g.gaps)) if g.gaps else None)
+                or ("路径数达到 max_paths 上限被截断" if truncated else None),
+            "diagnostics": diag,
+        }
+    finally:
+        gw.close()
 
 
 # ----------------------------------------------------------------------
@@ -1210,7 +1239,7 @@ class FunctionExecutor:
     """按 functions.json 声明执行只读计算。"""
 
     def __init__(self, store, pack: str = "default", access=None, health=None,
-                 base_dir=None):
+                 base_dir=None, graph_path=None):
         self.store = store
         # REQ-R1：py 函数只读护栏——所有 py 实现通过此代理访问数据
         from core.runtime_context import ReadOnlyStore
@@ -1218,6 +1247,8 @@ class FunctionExecutor:
         self.pack = pack
         # 案件快照基目录（Web 案件包隔离）：None=共享 ontology/（CLI/MCP 现状）
         self.base_dir = base_dir
+        # 案件版本级 Ladybug 图路径（None=Gateway 保守推导/纯语义轨）
+        self.graph_path = graph_path
         # REQ-009：access=None → system 旁路（既有调用行为不变）
         from core.access import system_context
         self.access = access if access is not None else system_context()
@@ -1269,6 +1300,7 @@ class FunctionExecutor:
             policy=self.policy,
             health=self.health,
             base_dir=self.base_dir,
+            graph_path=self.graph_path,
         )
 
     def _call_py(self, impl_ref: str, params: dict):
@@ -1370,3 +1402,120 @@ register_function("geo_spatiotemporal_accompany")(_geo.geo_spatiotemporal_accomp
 register_function("geo_trajectory_segment")(_geo.geo_trajectory_segment)
 register_function("geo_anomaly_trajectory")(_geo.geo_anomaly_trajectory)
 register_function("geo_activity_range")(_geo.geo_activity_range)
+
+
+# ----------------------------------------------------------------------
+# 物品维度：轨迹分段（场景八）
+# ----------------------------------------------------------------------
+@register_function("item_track_segment")
+def _item_track_segment(store, params: dict, ctx=None) -> dict:
+    """物品轨迹分段：全量扫描 obj_item.track，按地点关键词 + 下午时段过滤。
+
+    参数
+    ----
+    location_keyword : str 可选（enum: 莫干山路/文三路）
+    afternoon_start : int 默认 12
+    afternoon_end : int 默认 18
+
+    返回
+    ----
+    rows: [{item_id, title, date, location, hit, time_precision, reason}]
+    hit_days / unknown_days / other_days 三分（按物品聚合）
+    """
+    loc_kw = str(params.get("location_keyword") or "").strip()
+    a_start = int(params.get("afternoon_start", 12))
+    a_end = int(params.get("afternoon_end", 18))
+
+    tbl = ctx.table("item") if ctx is not None else "obj_item"
+    rows = store.query(
+        f"SELECT item_id, title, track FROM {tbl} WHERE track IS NOT NULL")
+    if not rows:
+        return {"hit": False, "basis": "无带轨迹的物品",
+                "degraded": True, "degraded_reason": "obj_item.track 全空",
+                "rows": [], "hit_days": [], "unknown_days": [], "other_days": []}
+
+    all_rows = []
+    item_summaries = []
+
+    for row in rows:
+        item_id = row.get("item_id")
+        title = row.get("title") or item_id
+        track_str = row.get("track") or "[]"
+        try:
+            track = json.loads(track_str) if isinstance(track_str, str) else (track_str or [])
+        except Exception:
+            track = []
+
+        hits = []
+        unknowns = []
+        others = []
+
+        for pt in track:
+            if not isinstance(pt, dict):
+                continue
+            date = str(pt.get("date") or "").strip()
+            ts = str(pt.get("timestamp") or "").strip()
+            loc = str(pt.get("location") or "").strip()
+            prec = str(pt.get("time_precision") or "").strip()
+
+            if loc_kw and loc_kw not in loc:
+                continue
+
+            if not ts or prec in ("date", "day", "week", "month", "year"):
+                unknowns.append(date)
+                all_rows.append({"item_id": item_id, "title": title, "date": date,
+                                 "location": loc, "hit": False,
+                                 "time_precision": prec, "reason": "日期级精度，无法判定时段"})
+                continue
+
+            try:
+                hour = int(ts.split()[1].split(":")[0])
+            except Exception:
+                unknowns.append(date)
+                all_rows.append({"item_id": item_id, "title": title, "date": date,
+                                 "location": loc, "hit": False,
+                                 "time_precision": prec, "reason": "时间格式无法解析"})
+                continue
+
+            if a_start <= hour < a_end:
+                hits.append(date)
+                all_rows.append({"item_id": item_id, "title": title, "date": date,
+                                 "location": loc, "hit": True,
+                                 "time_precision": prec, "reason": f"{hour}:00 落在下午时段"})
+            else:
+                others.append(date)
+                all_rows.append({"item_id": item_id, "title": title, "date": date,
+                                 "location": loc, "hit": False,
+                                 "time_precision": prec,
+                                 "reason": f"{hour}:00 不在下午时段（{a_start}-{a_end}）"})
+
+        if hits or unknowns or others:
+            item_summaries.append({
+                "item_id": item_id, "title": title,
+                "hit_days": sorted(set(hits)),
+                "unknown_days": sorted(set(unknowns)),
+                "other_days": sorted(set(others)),
+            })
+
+    hit = any(s["hit_days"] for s in item_summaries)
+    hit_days = sorted({d for s in item_summaries for d in s["hit_days"]})
+
+    if not hit:
+        if not item_summaries:
+            degraded_reason = f"经地点过滤（{loc_kw or '无'}）后无匹配轨迹"
+        else:
+            degraded_reason = "有轨迹但无下午命中记录"
+    else:
+        degraded_reason = None
+
+    return {
+        "hit": hit,
+        "basis": (f"共 {len(item_summaries)} 件带轨迹物品，"
+                  f"下午命中 {len([s for s in item_summaries if s['hit_days']])} 件"
+                  f"（地点={loc_kw or '全部'}）"),
+        "degraded": not hit,
+        "degraded_reason": degraded_reason,
+        "rows": all_rows,
+        "item_summaries": item_summaries,
+        "hit_days": hit_days,
+    }

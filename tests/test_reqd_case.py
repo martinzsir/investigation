@@ -440,10 +440,13 @@ class TestGovernance(ReqdCaseBase):
     def test_d23_health_section_four_quality_kinds(self):
         """D-23（022 AC-1/5）：健康度四类质量结果齐现且 source 可区分。"""
         by_kind = self.rh.summary()["by_kind"]
+        # sensitive_column_suspect=2：person.phone/id_card、call.phone_raw、
+        # cp_split.cp_idcard 已在 policies 声明遮蔽（AC-2 去重不报），真正漏
+        # 声明的只剩 transaction.card（银行卡）与 cp_whole.cp_info（复合身份证）。
         for kind, least in (("source_value_cast_failed", 1),
                             ("source_column_missing", 1),
                             ("clean_drop_rate", 3),
-                            ("sensitive_column_suspect", 4),
+                            ("sensitive_column_suspect", 2),
                             ("compliance_violation", 22)):
             self.assertGreaterEqual(by_kind.get(kind, 0), least, kind)
         by_source = self.rh.summary()["by_source"]

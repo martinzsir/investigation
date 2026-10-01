@@ -25,6 +25,44 @@
       "handler": "impl:item_duplicate_hold_collision_lens",
       "description": "物品维度：同一 (item_type, primary_digest) 在时间区间重叠下被多名持有人登记（规则 R-ITEM-1 挂钩）。判据在规则层，本镜头只给冲突事实，不判物理可达性",
       "uses_functions": ["item_duplicate_hold_collision"]
+    },
+    {
+      "skill_id": "item_track_segment",
+      "name": "物品轨迹分段镜头",
+      "stage": "用间",
+      "consumes_objects": ["item"],
+      "produces_dims": ["item"],
+      "mode": "deterministic",
+      "enabled": true,
+      "canvas_enabled": true,
+      "params_schema": {
+        "item_id": {
+          "type": "string",
+          "description": "物品 ID（obj_item.item_id），必填"
+        },
+        "location_keyword": {
+          "type": "string",
+          "enum": ["莫干山路", "文三路"],
+          "description": "地点关键词过滤"
+        },
+        "afternoon_start": {
+          "type": "integer",
+          "default": 12,
+          "description": "下午时段起始小时（含）"
+        },
+        "afternoon_end": {
+          "type": "integer",
+          "default": 18,
+          "description": "下午时段结束小时（不含）"
+        }
+      },
+      "scope": {
+        "reads": ["item"]
+      },
+      "handler": "impl:item_track_segment_lens",
+      "description": "物品维度：按地点关键词 + 下午时段过滤物品轨迹，判断各日是否下午出现。返回 hit_days/unknown_days/other_days 三分，不判共现——共现由人判",
+      "uses_functions": ["item_track_segment"],
+      "assumption": "H6"
     }
   ]
 }

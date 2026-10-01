@@ -119,32 +119,40 @@ class L0TopologyTests(unittest.TestCase):
         declared = {o["name"] for o in json.loads(
             (ROOT / "ontology/default/objects.json").read_text(encoding="utf-8"))["objects"]}
         self.assertEqual(set(self.inv), declared)
-        self.assertEqual(len(self.inv), 13)  # + image_evidence(P8)
+        self.assertEqual(len(self.inv), 16)  # 13 + item/hold_record(P-ITEM) + osint_article(P-OSINT)
 
     def test_ac02_语义度为非runtime链接端点计数(self):
-        # M1 新增 tipoff_from_reporter 后 person=8（沙盒基线 7 为修复前口径）
-        self.assertEqual(self.inv["person"]["semantic_degree"], 8)
+        # person=9：8 基础上 +holds(P-ITEM 物品持有)
+        self.assertEqual(self.inv["person"]["semantic_degree"], 9)
         self.assertEqual(self.inv["account"]["semantic_degree"], 3)
         self.assertEqual(self.inv["bid_project"]["semantic_degree"], 2)
         self.assertEqual(self.inv["transaction"]["semantic_degree"], 1)
         self.assertEqual(self.inv["call"]["semantic_degree"], 0)
-        self.assertEqual(self.inv["trackpoint"]["semantic_degree"], 0)
+        # trackpoint_at(P-GEO) 后 trackpoint 有了语义边，不再是 0
+        self.assertEqual(self.inv["trackpoint"]["semantic_degree"], 1)
+        self.assertEqual(self.inv["location"]["semantic_degree"], 1)
+        self.assertEqual(self.inv["item"]["semantic_degree"], 1)
+        self.assertEqual(self.inv["osint_article"]["semantic_degree"], 1)
         self.assertEqual(self.inv["clue"]["semantic_degree"], 0)  # decision_for 是 runtime 不计
 
     def test_ac03_物理度为引用该对象的链接绑定数(self):
-        self.assertEqual(self.inv["person"]["physical_degree"], 6)
+        self.assertEqual(self.inv["person"]["physical_degree"], 7)  # +holds
         self.assertEqual(self.inv["account"]["physical_degree"], 2)   # transfers(M1)/owns
         self.assertEqual(self.inv["transaction"]["physical_degree"], 2)
         self.assertEqual(self.inv["call"]["physical_degree"], 1)
-        self.assertEqual(self.inv["trackpoint"]["physical_degree"], 1)
+        # co_located + trackpoint_at(P-GEO)
+        self.assertEqual(self.inv["trackpoint"]["physical_degree"], 2)
         self.assertEqual(self.inv["clue"]["physical_degree"], 0)
 
     def test_ac04_隐形枢纽不因孤儿判定丢失(self):
-        # 缺陷 1：物理度累计在孤儿判定之前——call/trackpoint 是隐形枢纽而非孤立
-        for name in ("call", "trackpoint"):
-            self.assertTrue(self.inv[name]["hidden_hub"])
+        # 缺陷 1：物理度累计在孤儿判定之前——语义度 0 却有物理边的对象是
+        # 隐形枢纽而非孤立。trackpoint 经 trackpoint_at 升格为正常枢纽后，
+        # hold_record（P-ITEM 时态持有事件）接替成为隐形枢纽。
+        for name in ("call", "hold_record"):
+            self.assertTrue(self.inv[name]["hidden_hub"], name)
             self.assertIn("隐形枢纽", self.inv[name]["verdict"])
             self.assertFalse(self.inv[name]["orphan"])
+        self.assertFalse(self.inv["trackpoint"]["hidden_hub"])
         self.assertEqual(self.inv["person"]["verdict"], "核心枢纽")
 
     def test_ac05_孤立对象(self):
@@ -319,7 +327,9 @@ class RenderTests(unittest.TestCase):
         mer = self.dm.render_mermaid()
         self.assertTrue(mer.startswith("graph"))
         self.assertIn("★ call", mer)
-        self.assertIn("★ trackpoint", mer)
+        self.assertIn("★ hold_record", mer)
+        # trackpoint 经 trackpoint_at 有了语义边，不再挂隐形枢纽星标
+        self.assertNotIn("★ trackpoint", mer)
         self.assertIn("（runtime）", mer)
         self.assertNotIn("-.->", mer)   # M1 修复后无断链
 

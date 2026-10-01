@@ -360,7 +360,8 @@
       "description": "在主体自身常驻基线之上识别偏离：非常驻地点 / 非常态时段 / 非常态通勤，并在异常停留点上附加同日同地共现主体。偏离是结构事实，不等于可疑",
       "uses_functions": [
         "geo_anomaly_trajectory"
-      ]
+      ],
+      "assumption": "H6"
     },
     {
       "skill_id": "geo_activity_range",

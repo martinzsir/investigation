@@ -14,7 +14,9 @@ relation_paths，语义层统一图，研判能力插件化 v3 §4-P4）。
 """
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,6 +25,14 @@ sys.path.insert(0, str(ROOT))
 
 from core import Store
 from core.functions import FunctionExecutor
+
+try:
+    import ladybug  # noqa: F401
+    HAS_LADYBUG = True
+except ImportError:
+    HAS_LADYBUG = False
+
+skip_no_graph = unittest.skipUnless(HAS_LADYBUG, "未安装 ladybug（可选依赖）")
 
 
 def make_graph_store() -> Store:
@@ -85,6 +95,35 @@ def make_graph_store() -> Store:
     c.execute("INSERT INTO lnk_co_located VALUES "
               "('track_001', 'track_002', 'person_li', 'person_sun', "
               "'江滨路', '2021-10-02')")
+    return s
+
+
+def make_graph_build_store() -> Store:
+    """make_graph_store + 补齐建图 edge_sql 依赖的边属性/透传列。
+
+    build_case_graph 的边投影完全由 links.json 声明驱动
+    （properties + endpoints.extra），手造夹具只建了图算法用列；
+    缺失列按声明补 NULL（VARCHAR）——不改变拓扑与物理边集，
+    仅让 COPY 投影 SQL 可执行（缺列值进图即为 NULL）。
+    """
+    s = make_graph_store()
+    from core.ontology_loader import load_pack
+    from core.semantic_graph_export import edge_decls
+    for d in edge_decls(load_pack("default")):
+        n = int(s.query(
+            "SELECT COUNT(*) AS n FROM information_schema.tables "
+            "WHERE table_name = ?", (d.table,))[0]["n"])
+        if not n:
+            continue
+        have = {r["column_name"] for r in s.query(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = ?", (d.table,))}
+        need = list(d.attr_cols) + [d.src_col, d.dst_col]
+        if d.edge_key:
+            need.append(d.edge_key)
+        for col in need:
+            if col not in have:
+                s.execute(f'ALTER TABLE "{d.table}" ADD COLUMN "{col}" VARCHAR')
     return s
 
 
@@ -262,6 +301,94 @@ class RelationFunctionTests(unittest.TestCase):
         self.assertIn("account_zwp", hops)
         self.assertNotIn("person_zhang", hops)  # owns 属 org 类被收窄
         self.assertEqual(r["diagnostics"]["loaded_links"], ["transfers"])
+
+
+@skip_no_graph
+class TestRelationFunctionsDualTrack(unittest.TestCase):
+    """Function 层双轨对拍：同一语义层分别走 ladybug 主轨 / 语义轨，
+    三函数结果（nodes/edges/subject/common/paths）必须逐字一致。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from core.ladybug_builder import build_case_graph
+        from core.ontology_loader import load_pack
+        cls.store = make_graph_build_store()
+        cls.tmp = tempfile.mkdtemp(prefix="lbug_fn_")
+        cls.graph_path = str(Path(cls.tmp) / "case.lbug")
+        r = build_case_graph(cls.store, load_pack("default"),
+                             cls.graph_path)
+        assert not r.get("skipped"), r.get("reason")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.store.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _invoke(self, fname, params, *, graph):
+        ex = FunctionExecutor(self.store, graph_path=self.graph_path
+                              if graph else None)
+        return ex.invoke(fname, params)["result"]
+
+    def _assert_parity(self, fname, params):
+        r_lb = self._invoke(fname, params, graph=True)
+        r_sm = self._invoke(fname, params, graph=False)
+        self.assertEqual(r_lb["diagnostics"]["engine"], "ladybug",
+                         msg=f"{fname} 应走 ladybug 主轨：{r_lb['diagnostics']}")
+        self.assertEqual(r_sm["diagnostics"]["engine"], "semantic")
+        for key in ("hit", "subject", "nodes", "edges", "common",
+                    "paths", "degraded"):
+            self.assertEqual(r_lb.get(key), r_sm.get(key),
+                             msg=f"{fname} 双轨结果不一致（{key}）")
+        return r_lb
+
+    def test_neighborhood(self):
+        r = self._assert_parity(
+            "relation_neighborhood",
+            {"target": "张三", "depth": 2})
+        self.assertTrue(r["hit"])
+
+    def test_common_neighbors(self):
+        r = self._assert_parity(
+            "relation_common_neighbors",
+            {"subject_a": "张三", "subject_b": "李四"})
+        self.assertTrue(r["hit"])
+        self.assertEqual({c["pk"] for c in r["common"]}, {"person_wang"})
+
+    def test_paths(self):
+        r = self._assert_parity(
+            "relation_paths",
+            {"subject_a": "张三", "subject_b": "张卫国配偶",
+             "depth": 3, "max_paths": 50})
+        self.assertTrue(r["hit"])
+        self.assertEqual(len(r["paths"]), 1)
+
+    def test_ladybug_track_survives_stale_fallback(self):
+        """图被语义层甩开（manifest 对账失败）：自动回落，结果不变。"""
+        s = make_graph_build_store()
+        try:
+            tmp = tempfile.mkdtemp(prefix="lbug_fn_stale_")
+            gp = str(Path(tmp) / "case.lbug")
+            from core.ladybug_builder import build_case_graph
+            from core.ontology_loader import load_pack
+            build_case_graph(s, load_pack("default"), gp)
+            s.conn.execute(
+                "INSERT INTO lnk_transfers "
+                "(txn_id, from_account_id, to_account_id, amount, date) "
+                "VALUES ('txn_x', 'account_hy', 'account_zwp', 1, "
+                "'2021-12-01')")
+            ex = FunctionExecutor(s, graph_path=gp)
+            r = ex.invoke("relation_neighborhood",
+                          {"target": "宏业建设", "depth": 2})["result"]
+            self.assertEqual(r["diagnostics"]["engine"], "semantic")
+            self.assertTrue(
+                r["diagnostics"]["engine_fallback_reason"]
+                .startswith("graph_stale"))
+            # 新边应可见（语义轨读的是最新语义层）
+            hops = {n["pk"] for n in r["nodes"]}
+            self.assertIn("account_zwp", hops)
+        finally:
+            s.close()
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

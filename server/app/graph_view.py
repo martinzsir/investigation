@@ -169,7 +169,7 @@ def assemble_graph(*, conn, pack: str, base_dir: str | Path,
         f_ep, t_ep = eps.get("from") or {}, eps.get("to") or {}
         f_ref, t_ref = f_ep.get("ref"), t_ep.get("ref")
         if not f_ref or not t_ref:
-            continue  # 端点无对象引用（如 time_window/owns 单侧）→ 跳过
+            continue  # 端点无对象引用（runtime 边或未声明端点）→ 跳过
         tbl = f"lnk_{lk.name}"
         present = _table_exists(conn, tbl)
         edge_kind_catalog.append({"name": lk.name, "title": lk.title,

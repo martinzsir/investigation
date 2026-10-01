@@ -519,12 +519,21 @@ def tool_graph_overpass(args: dict) -> dict:
         return _redline(out)
 
     try:
-        g.build_from_duckdb(store)
-        cy = g.overpass_two_hop()
-        sq = overpass_two_hop_sql(store)
-        cmp_res = compare_engines(cy, sq)
-        out = {"degraded": False, "engine": "cypher+sql", "comparison": cmp_res,
-               "paths": [p.to_dict() for p in cy]}
+        stat = g.build_from_duckdb(store)
+        if stat.get("skipped") or not stat.get("edges"):
+            # 语义层未建/建图跳过：通用图只消费 obj_*/lnk_*，不做裸流表直建，
+            # 此时 Cypher 轨无意义——直接降级 SQL 单轨，不制造双轨"假不一致"。
+            paths = overpass_two_hop_sql(store)
+            out = {"degraded": True,
+                   "reason": f"语义图未就绪（{stat.get('reason') or 'lnk_* 为空'}，"
+                             "先跑 build_ontology），降级为 SQL 单轨",
+                   "engine": "sql", "paths": [p.to_dict() for p in paths]}
+        else:
+            cy = g.overpass_two_hop()
+            sq = overpass_two_hop_sql(store)
+            cmp_res = compare_engines(cy, sq)
+            out = {"degraded": False, "engine": "cypher+sql", "comparison": cmp_res,
+                   "paths": [p.to_dict() for p in cy]}
     except Exception as e:
         paths = overpass_two_hop_sql(store)
         out = {"degraded": True, "reason": f"图库执行失败：{e}", "engine": "sql",

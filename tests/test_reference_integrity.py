@@ -21,7 +21,9 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.ontology_loader import _load_rules, load_pack       # noqa: E402
+from core.ontology_loader import (                          # noqa: E402
+    _known_hypothesis_ids, _load_rules, load_pack,
+)
 from core.ontology import FunctionSpec                        # noqa: E402
 
 
@@ -122,8 +124,14 @@ class TestReferenceIntegrity(unittest.TestCase):
         self.assertEqual(rules["R1"].assumption, "")
 
     def test_assumption_known_allowed(self):
-        """assumption 引用已知假设（H1~H4）合法"""
-        for h in ["H1", "H2", "H3", "H4"]:
+        """assumption 引用本体已声明假设（当前 H1~H6）合法
+
+        白名单与本体同源（hypothesis_patterns.json），P-GEO 扩 H5/H6、
+        未来再扩 H7 均无需改本测试。
+        """
+        known = _known_hypothesis_ids()
+        self.assertTrue(known, "本体假设集合不应为空（仅隔离场景为空）")
+        for h in sorted(known):
             path = _write_rules(self.tmpdir, [_make_rule(id=f"R_{h}", assumption=h)])
             rules = _load_rules(path, self.functions, required=True)
             self.assertEqual(rules[f"R_{h}"].assumption, h)
@@ -131,7 +139,7 @@ class TestReferenceIntegrity(unittest.TestCase):
     def test_default_pack_assumptions_valid(self):
         """default pack 的所有 assumption 引用合法"""
         pack = load_pack("default")
-        known = {"H1", "H2", "H3", "H4", ""}
+        known = _known_hypothesis_ids("default") | {""}
         for rid, r in pack.rules.items():
             self.assertIn(r.assumption, known,
                           f"{rid} assumption={r.assumption} 不在已知集合")

@@ -214,3 +214,67 @@ def item_duplicate_hold_collision_lens(miao=None, store=None, ctx=None,
             "item_duplicate_hold_collision", fn, title,
             {**out, **r}, refs, detail_extra))
     return clues
+
+
+# ----------------------------------------------------------------------
+# 镜头：物品轨迹分段（场景八）
+# ----------------------------------------------------------------------
+def item_track_segment_lens(miao=None, store=None, ctx=None,
+                            params=None, health=None) -> list:
+    """按地点关键词 + 下午时段过滤物品轨迹，判断各日是否下午出现。
+
+    物品轨迹挂在 obj_item.track（json 属性），不并入 trackpoint——
+    轨迹模型从未规定"必须是人在走"（R-6）。
+    """
+    params = params or {}
+    fn = "item_track_segment"
+    out = _invoke(store, fn, _clean(params, [
+        "location_keyword", "afternoon_start", "afternoon_end"
+    ]), health)
+    summaries = out.get("item_summaries") or []
+    if not summaries:
+        _note_degraded(ctx, "item_track_segment", out,
+                       {"degraded_reason": out.get("degraded_reason")})
+        return []
+
+    clues: list = []
+    for s in summaries:
+        item_id = s.get("item_id")
+        title = s.get("title") or item_id
+        hit_days = s.get("hit_days") or []
+
+        if not hit_days:
+            continue  # 只出有下午命中的物品
+
+        # 按日出观察（同一天合并）
+        for date in hit_days:
+            obs_title = f"{title} {date} 下午出现在莫干山路"
+
+            refs: list[dict] = []
+            if item_id:
+                refs.append({"kind": "node",
+                             "ref": f"obj_item#{item_id}",
+                             "key_column": "item_id"})
+            # 挂地点引用（若 obj_location 有匹配）
+            try:
+                loc_rows = store.query(
+                    "SELECT location_id FROM obj_location WHERE raw_name LIKE ? LIMIT 1",
+                    (f"%莫干山路%",))
+                if loc_rows:
+                    refs.append({"kind": "node",
+                                 "ref": f"obj_location#{loc_rows[0]['location_id']}",
+                                 "key_column": "location_id"})
+            except Exception:
+                pass
+
+            detail_extra = {
+                "item_id": item_id,
+                "title": title,
+                "date": date,
+                "hit": True,
+                "hit_days": hit_days,
+            }
+            clues.append(_mk_clue(
+                "item_track_segment", fn, obs_title,
+                {**out, **s}, refs, detail_extra))
+    return clues

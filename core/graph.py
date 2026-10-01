@@ -14,9 +14,8 @@ L4 图库层：LadybugDB 真实集成（第 2 步：Q2 过桥 Cypher 化 + SQL �
 """
 from __future__ import annotations
 
-import csv
+import os
 import re
-import tempfile
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -144,67 +143,36 @@ class GraphBackend:
 
     # ---- 建图 ----
     def build_from_duckdb(self, conn, flow_table: str = "银行流水",
-                          rebuild: bool = True) -> Dict[str, int]:
+                          rebuild: bool = True, pack: str = "default") -> Dict[str, Any]:
         """
-        从 DuckDB 建图（导出 CSV → COPY 进图库）。
+        语义层 → LadybugDB 通用建图的瘦封装（委托 core.ladybug_builder）。
 
-        数据入口语义层优先：存在 lnk_transfers（obj/lnk 语义表）则从语义层取边，
-        否则回落 flow_table（L2 银行流水，列 主体/对方/金额/日期）。
+        图模型（统一节点表 + 每条 lnk_* 一张 REL 表，声明驱动）：
+          Entity(pk, type, name) 主键为对象代理键；
+          TRANSFERS / CALLS_TO / OWNS / ... 边端点为代理键，边携带 edge_pk
+          （lnk_<name>#<edge_pk> 证据引用）与声明属性。
+        先 COPY 节点后 COPY 边、暂存原子替换、缺 ladybug/COPY 失败只 skipped
+        不抛——全部纪律在 build_case_graph 内统一实现。
 
-        坑位记录（实测）：COPY 边表时若引用了节点表中不存在的节点，
-        会抛 "Unable to find primary key value X" —— 因此必须
-        ① 先导入全部节点（主体 ∪ 对方），② 再导入边。
+        历史参数 flow_table / rebuild 保留仅为向后兼容（旧裸流表直建路径已删除：
+        图库只消费 obj_*/lnk_* 语义表，与检测器/MCP 同源同纪律）。
+        pack 可传已装载的 OntologyPack 或包名。
         """
         if not self.available:
             return {"nodes": 0, "edges": 0, "skipped": True}
 
-        c = getattr(conn, "conn", conn)
-        table, (c_from, c_to, c_amt, c_date), _ = _flow_source(c, flow_table)
-        rows = _query_rows(
-            c, f'SELECT "{c_from}", "{c_to}", "{c_amt}", "{c_date}" FROM "{table}"'
-        )
-
-        # 节点 = 主体 ∪ 对方（去重，保证边表引用的节点全部存在）
-        names = sorted({r[c_from] for r in rows} | {r[c_to] for r in rows})
-        tmp = Path(tempfile.mkdtemp(prefix="lbug_import_"))
-        node_csv = tmp / "nodes.csv"
-        edge_csv = tmp / "edges.csv"
-
-        with open(node_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["name"])
-            for n in names:
-                w.writerow([n])
-        with open(edge_csv, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["frm", "to", "amount", "tdate"])
-            for r in rows:
-                w.writerow([r[c_from], r[c_to], float(r[c_amt]), str(r[c_date])])
-
-        if rebuild:
-            # 重建表（DDL 不支持 IF NOT EXISTS 语义下的幂等清理，先 DROP）
-            for stmt in ["DROP TABLE IF EXISTS TRANSFER", "DROP TABLE IF EXISTS Entity"]:
-                try:
-                    self.conn.execute(stmt)
-                except Exception:
-                    pass
-
-        self.conn.execute(
-            "CREATE NODE TABLE Entity(name STRING, PRIMARY KEY(name))"
-        )
-        self.conn.execute(
-            "CREATE REL TABLE TRANSFER(FROM Entity TO Entity, amount DOUBLE, tdate STRING)"
-        )
-        # Windows 反斜杠路径会被 Cypher parser 当转义序列，COPY 语句必须用正斜杠
-        self.conn.execute(f"COPY Entity FROM '{node_csv.as_posix()}' (HEADER=true)")
-        self.conn.execute(f"COPY TRANSFER FROM '{edge_csv.as_posix()}' (HEADER=true)")
-
-        # 清理临时 CSV
-        node_csv.unlink(missing_ok=True)
-        edge_csv.unlink(missing_ok=True)
-        tmp.rmdir()
-
-        return {"nodes": len(names), "edges": len(rows), "skipped": False}
+        from core.ladybug_builder import build_case_graph
+        from core.ontology_loader import load_pack
+        spec = load_pack(pack) if isinstance(pack, str) else pack
+        store = _RawConnAdapter(conn) if isinstance(
+            conn, duckdb.DuckDBPyConnection) else conn
+        res = build_case_graph(store, spec, self.db_path)
+        if res.get("skipped"):
+            return {"nodes": 0, "edges": 0, "skipped": True,
+                    "reason": res.get("reason", "")}
+        return {"nodes": res["nodes"], "edges": res["edges"], "skipped": False,
+                "node_types": res.get("node_types", []),
+                "links": res.get("links", {})}
 
     # ---- Q2：两跳过桥 ----
     def overpass_two_hop(self, exclude_self_loop: bool = True,
@@ -219,9 +187,13 @@ class GraphBackend:
         """
         if not self.available:
             return []
+        # 通用图：Entity 统一节点表（代理键主键 + name 展示名），资金边为
+        # TRANSFERS REL（端点账户代理键；amount/date 为声明边属性）。
+        # 路径点名回退到节点 name（账户原始名），与 SQL 轨输出契约保持一致。
         cypher = """
-            MATCH (a:Entity)-[e1:TRANSFER]->(m:Entity)-[e2:TRANSFER]->(b:Entity)
-            RETURN a.name, m.name, b.name, e1.amount, e2.amount, e1.tdate, e2.tdate
+            MATCH (a:Entity)-[e1:TRANSFERS]->(m:Entity)-[e2:TRANSFERS]->(b:Entity)
+            RETURN a.name, m.name, b.name, e1.`amount`, e2.`amount`,
+                   e1.`date`, e2.`date`, e1.edge_pk, e2.edge_pk
         """
         res = self.conn.execute(cypher)
         out: List[OverpassPath] = []
@@ -236,7 +208,7 @@ class GraphBackend:
                 source=src, bridge=mid, dest=dst,
                 amount_in=float(amt1), amount_out=float(amt2),
                 engine="cypher",
-                source_rows=[f"TRANSFER({src}→{mid}@{d1})", f"TRANSFER({mid}→{dst}@{d2})"],
+                source_rows=[f"lnk_transfers#{row[7]}", f"lnk_transfers#{row[8]}"],
             ))
             din_list.append(d1)
             dout_list.append(d2)
@@ -259,6 +231,26 @@ class GraphBackend:
 # ----------------------------------------------------------------------
 # 只读查询通道（兼容 Store / ReadOnlyStore / 裸 duckdb 连接）
 # ----------------------------------------------------------------------
+class _RawConnAdapter:
+    """裸 duckdb 连接 → 构建器所需的最小 store 形态（query 参数化 + execute）。
+
+    build_case_graph 只用两处：information_schema 计数（带参数）与 COPY TO
+    临时 CSV；生产路径（CLI/worker/MCP）传的都是 core.store.Store，适配器
+    仅服务直传裸连接的测试/脚本。
+    """
+
+    def __init__(self, c: duckdb.DuckDBPyConnection):
+        self._c = c
+
+    def query(self, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        cur = self._c.execute(sql, tuple(params or ()))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def execute(self, sql: str):
+        return self._c.execute(sql)
+
+
 def _query_rows(c, sql: str, **kw) -> List[Dict[str, Any]]:
     """统一只读查询，返回 dict 列表。
 
@@ -677,3 +669,265 @@ def resolve_subject(store, target: str, target_type: str = "auto",
                 f"主体 {target!r} 在多类实体中同名命中 {kinds}，"
                 f"请用 target_type 显式消歧")
     return candidates[0]
+
+
+# ----------------------------------------------------------------------
+# GraphGateway：Ladybug Cypher 主轨 + SemanticGraph 语义兜底（阶段 1）
+# ----------------------------------------------------------------------
+class GraphGateway:
+    """关系三镜头（neighborhood/common_neighbors/paths）的统一双轨入口。
+
+    主轨 ladybug
+      边集由白名单 Cypher 从案件版本级 .lbug 的 REL 表**定向扫描**取得：
+      ``MATCH (a:Entity)-[r:REL]->(b:Entity) RETURN a.pk, b.pk, r.edge_pk``。
+      REL 名只来自 SEMANTIC_EDGE_SPECS 常量（无用户输入插值），证据边引用
+      即 REL 的 edge_pk 列；多跳算法（无向 BFS/共同邻居/简单路径 DFS）复用
+      同一套 SemanticGraph。
+
+      不复用 Cypher 变长 walk 做枚举的原因（实测 demoZ）：114 条平行通话边
+      会让 3 跳 walk 爆出 262 万条且允许重节点，规模与简单路径语义均不可控
+      （方案 §七：图轨做模式匹配、算法在 py 侧）。双轨因此**仅边来源不同**：
+      ladybug 轨边来自 Cypher 扫 REL，semantic 轨边来自 lnk_* 表，图算法是
+      同一份实现，结果严格同构——这正是双轨对拍可信的基础。
+
+    回落 semantic（任何一关不过即回落，只降级不失败）
+      ladybug 未安装 / 无图路径 / 图文件缺失 / manifest 行数对账陈旧 /
+      开图或扫描异常 → load_semantic_graph 内存轨，diagnostics 标
+      engine="semantic" + engine_fallback_reason。图缺失/陈旧**不**计入
+      g.gaps（关系数据未必缺），degraded 仍只由语义边表结构缺口决定。
+
+    图路径纪律（不靠猜）
+      ① 显式 graph_path 优先：worker 按 case_dir+version 传
+      cases/<cid>/graph/vN.lbug（lens_run/detect 同一口径）；
+      ② 无显式路径时仅按 store.db_path 保守推导：cases/ 旁路同名版本图，
+      或全库 investigation.duckdb → data/ladybug/investigation.lbug；
+      ③ 推导不出（:memory: 等）→ 纯语义轨。
+    """
+
+    FALLBACK_GRAPH = Path("data/ladybug/investigation.lbug")
+    _EDGE_SCAN_LIMIT = 200_000
+
+    def __init__(self, store, pack: str = "default", *, ctx=None,
+                 graph_path: Optional[str | Path] = None, base_dir=None,
+                 cross_check: Optional[bool] = None):
+        self.store = store
+        if pack is None:
+            pack = getattr(ctx, "pack", None) or "default"
+        self.pack = pack
+        self.ctx = ctx
+        self.base_dir = (base_dir if base_dir is not None
+                         else getattr(ctx, "base_dir", None))
+        self.explicit_path = Path(graph_path) if graph_path else None
+        # 线上对拍闸（方案 §1.3）：默认关；SUNZI_GRAPH_CROSSCHECK=1 开启抽样
+        # 对拍。对拍只比**物理边集**（(link, edge_pk) 去重，反向邻接副本不算），
+        # 不一致即弃图轨、以 semantic 为准并落 engine_mismatch 诊断。
+        if cross_check is None:
+            cross_check = os.environ.get("SUNZI_GRAPH_CROSSCHECK", "") == "1"
+        self.cross_check = bool(cross_check)
+        self._cache: Dict[str, SemanticGraph] = {}
+        self.engine = "semantic"
+        self.graph_path: Optional[Path] = None
+        self.rel_tables: List[str] = []
+        self.fallback_reason: Optional[str] = None
+        self.edge_scan_error: Optional[str] = None
+        self.mismatch: Optional[dict] = None
+        self._lb_conn = None
+        self._lb_db = None
+        self._opened = False
+        self._usable = False
+
+    @staticmethod
+    def _physical_edge_sigs(g: SemanticGraph) -> set:
+        """图的物理边签名集合（邻接反向副本排除）。"""
+        return {
+            (e.edge, e.edge_pk)
+            for edges in g.adj.values()
+            for e in edges
+            if not e.reversed_traversal
+        }
+
+    # ---- 开图四连闸（ladybug 可用 → 路径 → 文件 → manifest 对账）----
+    def _ensure_graph(self) -> bool:
+        if self._opened:
+            return self._usable
+        self._opened = True
+        try:
+            import ladybug as lb  # noqa: F401
+        except ImportError:
+            self.fallback_reason = "ladybug 未安装（仅 WSL/Linux 可用）"
+            return False
+        path = self.explicit_path or self._derive_path()
+        if path is None:
+            self.fallback_reason = "no_graph_path（未显式传图且无法从库路径推导）"
+            return False
+        self.graph_path = path
+        if not path.exists():
+            self.fallback_reason = f"graph_missing: {path}"
+            return False
+        try:
+            from core.ladybug_builder import is_graph_current, load_manifest
+            from core.ontology_loader import load_pack
+            spec = load_pack(self.pack, base_dir=self.base_dir)
+            ok, reason = is_graph_current(self.store, spec, path)
+            if not ok:
+                self.fallback_reason = f"graph_stale: {reason}"
+                return False
+            self.rel_tables = list(
+                (load_manifest(path) or {}).get("rel_tables") or [])
+            import ladybug as lb
+            # 版本图不可变，只读打开，避免与重建/其他读会话互斥。
+            self._lb_db = lb.Database(str(path), read_only=True)
+            self._lb_conn = lb.Connection(self._lb_db)
+            self._usable = True
+            self.engine = "ladybug"
+            return True
+        except Exception as e:  # noqa: BLE001
+            # 开图任何异常：回落语义轨，留原因（坏图不阻断研判）
+            self.fallback_reason = (
+                f"graph_open_failed: {type(e).__name__}: {str(e)[:160]}")
+            self._close_lb()
+            return False
+
+    def _derive_path(self) -> Optional[Path]:
+        """无显式路径时按 store.db_path 保守推导；推导不出返回 None。"""
+        raw = getattr(self.store, "db_path", None)
+        if not raw or raw == ":memory:":
+            return None
+        p = Path(str(raw))
+        parts = p.parts
+        if "cases" in parts:
+            # /…/cases/<cid>/vN.duckdb → /…/cases/<cid>/graph/vN.lbug
+            i = parts.index("cases")
+            if len(parts) >= i + 3:
+                return Path(*parts[:i + 2]) / "graph" / (p.stem + ".lbug")
+        if p.name == "investigation.duckdb":
+            if str(p.parent) in ("", "."):
+                return self.FALLBACK_GRAPH
+            return p.parent / "ladybug" / "investigation.lbug"
+        return None
+
+    def _allowed_links(self, edge_kinds: str) -> List[str]:
+        return [
+            name for name, (_s, _d, _k, kind) in SEMANTIC_EDGE_SPECS.items()
+            if edge_kinds == "all" or kind == edge_kinds
+        ]
+
+    def _load_edges_via_cypher(self, edge_kinds: str) -> SemanticGraph:
+        """白名单 REL 定向扫描 → 与语义轨同构的 SemanticGraph。
+
+        白名单 REL 在图中缺表（构建时源 lnk_ 表缺失）按结构降级进 gaps，
+        与 load_semantic_graph 的缺表语义逐字对齐（对拍时 gaps 也一致）。
+        """
+        g = SemanticGraph()
+        for name in self._allowed_links(edge_kinds):
+            rel = name.upper()
+            if rel not in self.rel_tables:
+                g.gaps.append({
+                    "link": name, "table": f"lnk_{name}",
+                    "reason": "graph_missing_rel: 版本图无该 REL 表"
+                              "（构建时源语义表缺失）",
+                })
+                continue
+            _src_col, _dst_col, key_col, kind = SEMANTIC_EDGE_SPECS[name]
+            # REL 名为模块常量、LIMIT 为整型常量；入参只有开图时的代理键
+            # 解析（resolve_subject 在调用方完成），Cypher 无主体名插值。
+            res = self._lb_conn.execute(
+                f"MATCH (a:Entity)-[r:{rel}]->(b:Entity) "
+                f"RETURN a.pk, b.pk, r.edge_pk LIMIT {self._EDGE_SCAN_LIMIT}")
+            while res.has_next():
+                row = res.get_next()
+                src, dst, edge_pk = row[0], row[1], row[2]
+                if not src or not dst or not edge_pk:
+                    continue
+                g.add_edge(SEdge(
+                    src=src, dst=dst, edge=name, edge_pk=str(edge_pk),
+                    key_column=key_col, kind=kind))
+            g.loaded_links.append(name)
+        return g
+
+    def view(self, edge_kinds: str = "all") -> SemanticGraph:
+        """取本次查询的关系图（ladybug 主轨；任何一关失败回落语义轨）。"""
+        if edge_kinds not in EDGE_KINDS:
+            raise ValueError(f"edge_kinds={edge_kinds!r}，允许 {EDGE_KINDS}")
+        if edge_kinds in self._cache:
+            return self._cache[edge_kinds]
+        g: Optional[SemanticGraph] = None
+        if self._ensure_graph():
+            try:
+                g = self._load_edges_via_cypher(edge_kinds)
+                if self.cross_check:
+                    # 线上抽样对拍（方案 §1.3）：物理边集必须一致；不一致
+                    # 弃图轨，以 semantic 轨结果为准并落 engine_mismatch。
+                    g_sm = load_semantic_graph(
+                        self.store, ctx=self.ctx, edge_kinds=edge_kinds)
+                    sig_lb = self._physical_edge_sigs(g)
+                    sig_sm = self._physical_edge_sigs(g_sm)
+                    if sig_lb != sig_sm:
+                        self.mismatch = {
+                            "edge_kinds": edge_kinds,
+                            "ladybug_only": sorted(sig_lb - sig_sm)[:20],
+                            "semantic_only": sorted(sig_sm - sig_lb)[:20],
+                            "ladybug_edge_count": len(sig_lb),
+                            "semantic_edge_count": len(sig_sm),
+                        }
+                        self.fallback_reason = (
+                            "engine_mismatch: 双轨物理边集不一致，"
+                            "已以 semantic 轨为准"
+                            f"（图独有 {len(sig_lb - sig_sm)}、"
+                            f"语义独有 {len(sig_sm - sig_lb)}）")
+                        self.engine = "semantic"
+                        self._usable = False
+                        self._close_lb()
+                        g = g_sm
+            except Exception as e:  # noqa: BLE001
+                # 扫描期异常：本轨作废，回落语义轨（不抛给研判镜头）
+                self.edge_scan_error = (
+                    f"{type(e).__name__}: {str(e)[:160]}")
+                self.engine = "semantic"
+                self._usable = False
+                self._close_lb()
+                g = None
+        if g is None:
+            self.engine = "semantic"
+            g = load_semantic_graph(self.store, ctx=self.ctx,
+                                    edge_kinds=edge_kinds)
+        self._cache[edge_kinds] = g
+        return g
+
+    def diagnostic(self, g: SemanticGraph) -> dict:
+        """关系 Function diagnostics 载体（键与旧 _gap_diagnostic 兼容）。"""
+        d: Dict[str, Any] = {
+            "engine": self.engine,
+            "loaded_links": list(g.loaded_links),
+            "gaps": g.gaps,
+            "is_degraded": bool(g.gaps),
+        }
+        if self.engine == "ladybug":
+            d["graph_path"] = str(self.graph_path)
+            d["rel_tables"] = list(self.rel_tables)
+        else:
+            d["engine_fallback_reason"] = (
+                self.fallback_reason or "semantic_default")
+        if self.edge_scan_error:
+            d["edge_scan_error"] = self.edge_scan_error
+        if self.mismatch is not None:
+            d["engine_mismatch"] = self.mismatch
+        return d
+
+    def close(self) -> None:
+        self._close_lb()
+
+    def _close_lb(self) -> None:
+        if self._lb_conn is not None:
+            try:
+                self._lb_conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._lb_conn = None
+        self._lb_db = None
+
+    def __enter__(self) -> "GraphGateway":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()

@@ -4,6 +4,7 @@ run_tests.py —— 统一测试入口
 测试组（--only 可选）：
   mcp         MCP server 端到端（scripts.mcp_client_test）
   graph       图库层 Q2 过桥双轨（tests.test_graph）
+  ladybugbuild 通用语义层→Ladybug 全量建图（tests.test_ladybug_build）
   miaosuan    庙算假设引擎（tests.test_miaosuan）
   org         组织层级对齐（tests.test_org_alignment）
   review      人工确认工作台（tests.test_review_queue）
@@ -63,6 +64,7 @@ ROOT = Path(__file__).parent
 GROUPS = {
     "mcp":         ("MCP Server 端到端", [sys.executable, "-m", "scripts.mcp_client_test"]),
     "graph":       ("图库层 Q2 过桥双轨", [sys.executable, "-m", "unittest", "tests.test_graph"]),
+    "ladybugbuild":("通用语义层→Ladybug 全量建图（声明驱动+manifest 对账）", [sys.executable, "-m", "unittest", "tests.test_ladybug_build"]),
     "miaosuan":    ("庙算假设引擎 三层机制", [sys.executable, "-m", "unittest", "tests.test_miaosuan"]),
     "org":         ("组织层级对齐", [sys.executable, "-m", "unittest", "tests.test_org_alignment"]),
     "review":      ("人工确认工作台", [sys.executable, "-m", "unittest", "tests.test_review_queue"]),

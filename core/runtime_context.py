@@ -69,6 +69,9 @@ class RuntimeContext:
     policy: Any = None          # PolicyEngine
     health: Any = None          # RunHealth
     base_dir: Any = None        # 案件快照基目录
+    # 案件版本级 Ladybug 图路径（cases/<cid>/graph/vN.lbug）：由 worker 按
+    # case_dir+version 显式注入；None = GraphGateway 自行保守推导或纯语义轨。
+    graph_path: Any = None
     _objects: dict = field(default_factory=dict, repr=False)   # 声明的对象名集合
     _links: dict = field(default_factory=dict, repr=False)     # 声明的链接名集合
 

@@ -12,6 +12,7 @@ FastAPI 应用工厂（M1 骨架，S1~S6 落点）。
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -69,24 +70,31 @@ from server.app.store import StoreFactory
 API_PREFIX = "/api/v1"
 SERVICE_VERSION = "M1"
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(ctx: WebContext, *, cors_origins: list[str] | None = None) -> FastAPI:
     app = FastAPI(title="孙武侦查官 Web 服务", version=SERVICE_VERSION)
     app.state.ctx = ctx
 
     # P3/P6：启动时自枚举 packs/*——挂载 wujian 五间词汇与 relation/timeline 镜头。
+    # 注意：discover() 内 ontology_type_names() 在逐包容错循环之外，本体声明
+    # （functions.json 等）校验失败会整体抛错，若静默吞掉，症状是镜头注册表
+    # **全空**（不止单个包），且前端只显示"暂无可定向调度的镜头"无从排查。
+    # 保持"不阻断启动"的降级语义，但必须把原因打进日志。
     try:
         from core.pack_loader import discover as discover_packs
         discover_packs()
     except Exception:
-        pass  # 词汇/镜头缺失时各读面降级为缺口，不阻断服务启动
+        logger.exception("packs/* 镜头自枚举失败：镜头注册表为空，"
+                         "请检查 ontology 声明（functions.json 等）")
     # 内置五技能（xu_shi/qi_zheng/yong_jian/miaosuan/zhi_ji_zhi_bi）导入即注册
     # 到 DEFAULT_REGISTRY（register_all 幂等）。不注册则镜头目录读面查不到它们，
     # run_lens 的「内置不接受定向调度」400 分支永不可达（退化成 404 镜头不存在）。
     try:
         from skills import registry_bootstrap  # noqa: F401
     except Exception:
-        pass  # 内置技能缺失时镜头目录降级为仅 packs/*，不阻断服务启动
+        logger.exception("内置五技能注册失败：镜头目录仅余 packs/*")
     # S2：CORS 默认关闭；白名单仅来自显式参数或 SUNZI_CORS_ORIGINS
     if cors_origins is None:
         cors_origins = [

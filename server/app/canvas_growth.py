@@ -176,6 +176,29 @@ def _catalog():
 # ----------------------------------------------------------------------
 # 单组 → 结论节点 + 挂接边
 # ----------------------------------------------------------------------
+def _node_name_from_pk(nodes: list, pk: str, conn=None) -> str | None:
+    """从 detail.nodes 或语义层反查代理键对应的人名。
+
+    nodes 列表是镜头 detail 自带的（relation_neighborhood 的 nodes[]），
+    优先从这里查；查不到再下语义层 obj_person 按 person_id 反查 raw_name。
+    """
+    for n in (nodes or []):
+        if not isinstance(n, dict):
+            continue
+        if str(n.get("pk") or "") == pk:
+            return str(n.get("name") or "").strip() or None
+    if conn is not None and pk:
+        try:
+            rows = conn.execute(
+                "SELECT raw_name FROM obj_person WHERE person_id = ?",
+                [pk]).fetchall()
+            if rows:
+                return str(rows[0][0]).strip() or None
+        except Exception:
+            pass
+    return None
+
+
 def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
                        observations: list[dict], lens_name: str | None = None,
                        function_id: str | None = None,
@@ -326,6 +349,11 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
     companions_seen: set[str] = set()
     orgs_seen: set[str] = set()
     primary_subjects: dict[str, dict] = {}
+    # 组织↔人物定向关联（relation_org_interest）：只建有断言/命中记录的边，
+    # 避免所有 companion 与所有 org 的完全图。
+    org_person_links: dict[str, set[str]] = {}
+    # 通话关系边（relation_neighborhood / relation_paths 的 detail.edges 提取）
+    call_links: list[dict] = []
     for o in obs:
         d = o.get("detail") if isinstance(o.get("detail"), dict) else {}
 
@@ -397,8 +425,10 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
                     if nm:
                         companions_seen.add(nm)
 
-        # 分支 4：relation_neighborhood → nodes[].type/name + edges[]
-        # type=person 走人物桶；type=account/org 走组织桶；其他兜底当人物
+        # 分支 4：relation_neighborhood / relation_paths → nodes[].type/name + edges[]
+        # type=person 走人物桶；type=org/company 走组织桶；account 是「物」不是
+        # 主体——跳过（账户上画布归物品层 canvas_item_source 管），否则账户名
+        # （=户主姓名）会被当组织画出与人物同名的幽灵节点。
         for n in (d.get("nodes") or []):
             if not isinstance(n, dict):
                 continue
@@ -406,10 +436,39 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
             nname = str(n.get("name") or "").strip()
             if not nname:
                 continue
-            if ntype in ("account", "org", "organization", "company"):
+            if ntype == "account":
+                continue
+            if ntype in ("org", "organization", "company"):
                 orgs_seen.add(nname)
             else:
                 companions_seen.add(nname)
+
+        # 提取 calls_to 边 → subject↔subject「联系」边（P1 新增）
+        # detail.edges 是图算法返回的边列表，含 src/dst/edge/edge_pk 等。
+        # 只取 edge=="calls_to" 且两端都是 person 的边，避免把 owns 等
+        # 组织边也当通话关系。src/dst 是代理键（person_xxx），需反查名字。
+        for e in (d.get("edges") or []):
+            if not isinstance(e, dict):
+                continue
+            if str(e.get("edge") or "") != "calls_to":
+                continue
+            src_pk = str(e.get("src") or "").strip()
+            dst_pk = str(e.get("dst") or "").strip()
+            if not src_pk or not dst_pk:
+                continue
+            # 反查人名：先查 nodes 列表（同 detail 里已有），再查语义层
+            src_name = _node_name_from_pk(d.get("nodes"), src_pk, conn)
+            dst_name = _node_name_from_pk(d.get("nodes"), dst_pk, conn)
+            if not src_name or not dst_name:
+                continue
+            # 跳过靶心自己（自己打给自己不算关系）
+            if target_label and src_name == target_label and dst_name == target_label:
+                continue
+            call_links.append({
+                "src": src_name, "dst": dst_name,
+                "src_pk": src_pk, "dst_pk": dst_pk,
+                "edge_pk": str(e.get("edge_pk") or ""),
+            })
 
         # 分支 5：relation_org_interest → row.raw_name(组织) + 法人/关联人
         # matched_person 可能是 list（一人挂多个候选主体）或 str，
@@ -425,12 +484,17 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
                     for item in v:
                         if isinstance(item, str) and item.strip():
                             companions_seen.add(item.strip())
+                            # 记录组织↔人物的定向关联（用于创建双向边）
+                            org_person_links.setdefault(org_name, set()).add(
+                                item.strip())
                         elif isinstance(item, dict):
                             nm_s = str(item.get("name") or "").strip()
                             if nm_s:
                                 companions_seen.add(nm_s)
+                                org_person_links.setdefault(org_name, set()).add(nm_s)
                 elif isinstance(v, str) and v.strip():
                     companions_seen.add(v.strip())
+                    org_person_links.setdefault(org_name, set()).add(v.strip())
 
     # --- §6：确定 位于/同现 边的源端 ---
     # 靶心是 person → 源端 = 靶心（兼容既有行为）
@@ -511,7 +575,24 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
             })
 
     for org_name, snode in org_nodes.items():
-        for src_id, src_label in edge_sources:
+        # 单位利益关联的边源端：按 org_person_links 连每个命中人（靶心命中
+        # 用靶心节点，其他命中人走 companion_nodes），不再只连靶心——
+        # 「张卫国→某单位←李志强」这条间接路径需要两条边都画出来。
+        # 无命中人信息时保底维持靶心→组织边（旧行为）。
+        linked_persons = org_person_links.get(org_name, set())
+        linked_ids: list[str] = []
+        for pname in sorted(linked_persons):
+            if target_label and pname == target_label:
+                linked_ids.append(target_node_id)
+            elif pname in companion_nodes:
+                linked_ids.append(companion_nodes[pname]["id"])
+            # 命中人既非靶心也无 companion 节点（如 detail.nodes 未提取）：
+            # 跳过，不为其新造节点——生长层只把"已知的人"连到组织上。
+        if not linked_ids:
+            linked_ids = [src_id for src_id, _ in edge_sources]
+        for src_id in linked_ids:
+            if src_id == snode["id"]:
+                continue
             extra_edges.append({
                 "id": case_edge_id(src_id, "同现", snode["id"]),
                 "source": src_id,
@@ -519,8 +600,75 @@ def build_result_layer(*, case_id: str, target_node_id: str, lens_id: str,
                 "rel": "同现",
                 "system": True,
                 "generated_by": GENERATED_BY_LENS,
-                "note": f"「{name if lens_name else '研判'}」相关单位",
+                "note": f"「{name if lens_name else '研判'}」单位利益关联",
             })
+
+    # --- 通话关系边（联系）：从 relation_neighborhood/relation_paths 的
+    # detail.edges 提取 calls_to，创建 subject↔subject 的「联系」边。
+    # 与「同现」（时空同框）区分：远程通话不属于同框，但同样是主体间关系。
+    # 按无向人对合并（A→B 与 B→A 是同一条联系），通话次数取语义层
+    # lnk_calls_to 的真实边数——detail.edges 是图算法去重后的类型级边，
+    # 条数恒为 1，拿它当次数会把「通话 20 次」画成「通话 1 次」。
+    link_agg: dict[tuple[str, str], dict] = {}
+    for cl in call_links:
+        key = tuple(sorted((cl["src_pk"], cl["dst_pk"])))
+        agg = link_agg.setdefault(key, {"src": cl["src"], "dst": cl["dst"],
+                                        "src_pk": cl["src_pk"],
+                                        "dst_pk": cl["dst_pk"],
+                                        "edge_pks": []})
+        if cl.get("edge_pk"):
+            agg["edge_pks"].append(cl["edge_pk"])
+
+    # 语义层真实通话计数（双向合计）；无连接时退化为 detail 边条数
+    pair_counts: dict[tuple[str, str], int] = {}
+    if conn is not None and link_agg:
+        try:
+            for fp, tp, cnt in conn.execute(
+                    "SELECT from_person, to_person, COUNT(*) "
+                    "FROM lnk_calls_to GROUP BY 1, 2").fetchall():
+                k = tuple(sorted((str(fp), str(tp))))
+                pair_counts[k] = pair_counts.get(k, 0) + int(cnt)
+        except Exception:
+            pair_counts = {}
+
+    # 为通话关系创建节点（若尚未因 nodes 提取而创建）
+    call_persons: dict[str, dict] = {}
+    for key, agg in sorted(link_agg.items()):
+        for pname in (agg["src"], agg["dst"]):
+            if pname in call_persons:
+                continue
+            if target_label and pname == target_label:
+                # 靶心本人是通话一端：直接用靶心节点，不另建——否则
+                # 「李志强↔张卫国」这种靶心参与的通话永远缺端点、边被丢弃
+                call_persons[pname] = {"id": target_node_id}
+            elif pname in companion_nodes:
+                call_persons[pname] = companion_nodes[pname]
+            else:
+                snode = build_subject_node(case_id=case_id, name=pname, conn=conn)
+                snode.setdefault("props", {})["generated_by"] = GENERATED_BY_LENS
+                extra_nodes.append(snode)
+                call_persons[pname] = snode
+
+    # 创建「联系」边
+    for key, agg in sorted(link_agg.items()):
+        src_node = call_persons.get(agg["src"]) or companion_nodes.get(agg["src"])
+        dst_node = call_persons.get(agg["dst"]) or companion_nodes.get(agg["dst"])
+        if not src_node or not dst_node:
+            continue
+        if src_node["id"] == dst_node["id"]:
+            continue  # 自环跳过
+        cnt = pair_counts.get(key, 0) or max(len(agg["edge_pks"]), 1)
+        note = f"「{name if lens_name else '研判'}」通话 {cnt} 次"
+        extra_edges.append({
+            "id": case_edge_id(src_node["id"], "联系", dst_node["id"]),
+            "source": src_node["id"],
+            "target": dst_node["id"],
+            "rel": "联系",
+            "system": True,
+            "generated_by": GENERATED_BY_LENS,
+            "note": note,
+            "call_count": cnt,
+        })
 
     return {"node": node, "edge": edge, "reason": "",
             "extra_nodes": extra_nodes, "extra_edges": extra_edges}

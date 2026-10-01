@@ -414,6 +414,9 @@ class TestPersistImageEvidence(unittest.TestCase):
 
     def test_legacy_table_columns_added(self):
         """旧库 obj_image_evidence 缺文案三列 → persist 幂等补列后可写。"""
+        # build_ontology 已按当前 runtime 声明建好含 title/detail/severity 的
+        # 新表；先移除，再手工造一张缺三列的旧版表以复现历史库结构。
+        self.store.conn.execute("DROP TABLE obj_image_evidence")
         self.store.conn.execute(
             "CREATE TABLE obj_image_evidence (image_evidence_id VARCHAR, "
             "image_uri VARCHAR, model VARCHAR, prompt_version VARCHAR, "

@@ -1078,6 +1078,33 @@
       "sql": "SELECT a.item_type, a.primary_digest, a.holder_raw AS holder_a, b.holder_raw AS holder_b, a.start_date AS a_start, a.end_date AS a_end, b.start_date AS b_start, b.end_date AS b_end, a.hold_id AS hold_a_id, b.hold_id AS hold_b_id, CASE WHEN a.end_date IS NULL OR b.end_date IS NULL OR a.start_date IS NULL OR b.start_date IS NULL THEN 'unknown_overlap' ELSE 'overlap' END AS overlap_kind, CASE WHEN a.end_date IS NULL OR b.start_date IS NULL OR a.end_date < b.start_date THEN 0 WHEN b.end_date IS NULL OR a.start_date IS NULL OR b.end_date < a.start_date THEN 0 ELSE LEAST(LEAST(a.end_date, b.end_date) - GREATEST(a.start_date, b.start_date), b.end_date - a.start_date) END AS overlap_days FROM obj_hold_record a JOIN obj_hold_record b ON a.item_type = b.item_type AND a.primary_digest = b.primary_digest AND a.hold_id < b.hold_id WHERE a.holder_raw <> b.holder_raw AND ( (a.end_date IS NULL OR b.start_date IS NULL OR a.end_date >= b.start_date) AND (b.end_date IS NULL OR a.start_date IS NULL OR b.end_date >= a.start_date) ) AND ( {{min_overlap_days}} = 0 OR a.end_date IS NULL OR b.end_date IS NULL OR a.start_date IS NULL OR b.start_date IS NULL OR (LEAST(a.end_date, b.end_date) - GREATEST(a.start_date, b.start_date)) >= {{min_overlap_days}} )",
       "_note_sql": "时间区间重叠判据：a.start <= b.end AND b.start <= a.end。NULL 区间（起止皆空=不可判定）保守视为重叠并标 unknown_overlap，不静默丢弃——『查了但区间不可判定』与『确实不重叠』必须区分。overlap_days 在 NULL 区间返回 0 是兼容旧行为，前端按 overlap_kind 区分。",
       "description": "物品维度：同一 (item_type, primary_digest) 在时间区间重叠下被多名持有人登记（规则 R-ITEM-1 挂钩）。判据只给冲突事实，不判物理可达性——那是正兵判断，不是数据。NULL 区间标 unknown_overlap 保留"
+    },
+    {
+      "name": "item_track_segment",
+      "title": "物品轨迹分段",
+      "inputs": ["obj_item"],
+      "parameters": {
+        "location_keyword": {
+          "type": "string",
+          "enum": ["莫干山路", "文三路"],
+          "description": "地点关键词过滤（如 莫干山路）"
+        },
+        "afternoon_start": {
+          "type": "integer",
+          "default": 12,
+          "description": "下午时段起始小时（含），缺省 12"
+        },
+        "afternoon_end": {
+          "type": "integer",
+          "default": 18,
+          "description": "下午时段结束小时（不含），缺省 18"
+        }
+      },
+      "output_type": "rows",
+      "impl": "py",
+      "impl_ref": "item_track_segment",
+      "description": "物品轨迹分段：全量扫描 obj_item.track，按地点关键词 + 下午时段过滤，判断各日是否下午出现。返回含 item_id/title 的行级结果，不判共现——共现由人判。",
+      "display_name": "物品轨迹分段"
     }
   ]
 }

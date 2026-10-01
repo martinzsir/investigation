@@ -573,6 +573,20 @@ class SqliteMetaRepo(MetaRepo):
         finally:
             conn.close()
 
+    def get_task_by_idem(self, case_id: str, task_type: str,
+                         idem_key: str) -> TaskRow | None:
+        if not idem_key:
+            return None
+        conn = self._connect()
+        try:
+            r = conn.execute(
+                "SELECT * FROM tasks WHERE case_id=? AND task_type=? "
+                "AND idem_key=?",
+                (case_id, task_type, idem_key)).fetchone()
+            return self._task(r) if r else None
+        finally:
+            conn.close()
+
     def list_tasks(self, *, case_id: str | None = None,
                    status: str | None = None, limit: int = 100) -> list[TaskRow]:
         sql = "SELECT * FROM tasks WHERE 1=1"

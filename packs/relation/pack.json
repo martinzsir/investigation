@@ -70,6 +70,7 @@
       "uses_functions": [
         "relation_neighborhood"
       ],
+      "assumption": "H6",
       "canvas_enabled": true,
       "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },
@@ -244,6 +245,7 @@
       "uses_functions": [
         "relation_paths"
       ],
+      "assumption": "H6",
       "canvas_enabled": true,
       "_canvas_enabled_note": "CAN-16：可在研判画布内调度；靶心由画布选中节点带入"
     },

@@ -22,40 +22,49 @@ from core.access import AccessContext, system_context          # noqa: E402
 from core.policy import PolicyEngine                           # noqa: E402
 from core import Store                                         # noqa: E402
 
-# 最小语义层 DDL（导出仅涉及节点/边标识列，够 main() 走通）
+# 最小语义层 DDL：与当前 ontology/default 声明对齐——
+#   节点表列 = objects.json 的 key.column + name_property；
+#   边表列 = links.json endpoints 的 from/to.col + extra（导出对其做 JOIN）。
+# 新增图节点/边端点后需在此同步（导出走声明驱动，缺列即 Binder Error）。
 _DDL = [
+    # ---- 图节点（graph_object_types，13）----
     "CREATE TABLE obj_person (person_id VARCHAR, raw_name VARCHAR)",
     "CREATE TABLE obj_org (org_id VARCHAR, raw_name VARCHAR)",
     "CREATE TABLE obj_account (account_id VARCHAR, raw_name VARCHAR)",
+    "CREATE TABLE obj_transaction (txn_id VARCHAR, from_raw VARCHAR)",
+    "CREATE TABLE obj_trackpoint (track_id VARCHAR, person_raw VARCHAR)",
+    "CREATE TABLE obj_location (location_id VARCHAR, std_address VARCHAR)",
+    "CREATE TABLE obj_item (item_id VARCHAR, title VARCHAR)",
     "CREATE TABLE obj_bid_project (project_id VARCHAR, title VARCHAR)",
-    "CREATE TABLE obj_transaction (transaction_id VARCHAR)",
-    "CREATE TABLE obj_call (call_id VARCHAR)",
-    "CREATE TABLE obj_trackpoint (track_id VARCHAR)",
-    """CREATE TABLE lnk_transfers (from_account VARCHAR, to_account VARCHAR,
-       from_account_id VARCHAR, to_account_id VARCHAR,
+    "CREATE TABLE obj_clue (clue_id VARCHAR)",
+    "CREATE TABLE obj_decision (decision_id VARCHAR)",
+    "CREATE TABLE obj_tipoff (tipoff_id VARCHAR, title VARCHAR)",
+    "CREATE TABLE obj_osint_article (article_id VARCHAR, raw_name VARCHAR)",
+    "CREATE TABLE obj_image_evidence (image_evidence_id VARCHAR)",
+    # ---- 编译期边（列 = endpoints col + extra）----
+    """CREATE TABLE lnk_transfers (from_account_id VARCHAR, to_account_id VARCHAR,
+       from_account VARCHAR, to_account VARCHAR,
        amount DOUBLE, date VARCHAR)""",
     "CREATE TABLE lnk_calls_to (from_person VARCHAR, to_person VARCHAR, call_id VARCHAR)",
+    "CREATE TABLE lnk_owns (account_id VARCHAR, owner_person VARCHAR, owner_raw VARCHAR)",
+    "CREATE TABLE lnk_involved_in (org_id VARCHAR, project_id VARCHAR)",
     """CREATE TABLE lnk_co_located (person_1 VARCHAR, person_2 VARCHAR,
        location VARCHAR, date VARCHAR)""",
-    "CREATE TABLE lnk_owns (owner_raw VARCHAR, account_id VARCHAR)",
-    "CREATE TABLE lnk_involved_in (org_id VARCHAR, project_id VARCHAR)",
-    """CREATE TABLE lnk_time_window (title VARCHAR, owner_raw VARCHAR,
-       offset_days BIGINT)""",
+    """CREATE TABLE lnk_time_window (project_id VARCHAR, txn_id VARCHAR,
+       title VARCHAR, owner_raw VARCHAR, amount DOUBLE, offset_days BIGINT)""",
 ]
 _SEED = [
     "INSERT INTO obj_person VALUES ('p1','张卫国'),('p2','李志强')",
     "INSERT INTO obj_org VALUES ('o1','宏业建设')",
     "INSERT INTO obj_account VALUES ('a1','尾号8848'),('a2','尾号1201')",
     "INSERT INTO obj_bid_project VALUES ('b1','某市政道路工程')",
-    "INSERT INTO obj_transaction VALUES ('t1'),('t2')",
-    "INSERT INTO obj_call VALUES ('c1')",
-    "INSERT INTO obj_trackpoint VALUES ('k1')",
-    "INSERT INTO lnk_transfers VALUES ('尾号8848','尾号1201','a1','a2',1000000.0,'2022-12-29')",
+    "INSERT INTO obj_transaction VALUES ('t1','张三'),('t2','李四')",
+    "INSERT INTO lnk_transfers VALUES ('a1','a2','尾号8848','尾号1201',1000000.0,'2022-12-29')",
     "INSERT INTO lnk_calls_to VALUES ('p1','p2','c1')",
-    "INSERT INTO lnk_co_located VALUES ('p1','p2','某宾馆','2022-12-29')",
-    "INSERT INTO lnk_owns VALUES ('张卫国','a1')",
+    "INSERT INTO lnk_owns VALUES ('a1','p1','张卫国')",
     "INSERT INTO lnk_involved_in VALUES ('o1','b1')",
-    "INSERT INTO lnk_time_window VALUES ('某市政道路工程','张卫国',-2)",
+    "INSERT INTO lnk_co_located VALUES ('p1','p2','某宾馆','2022-12-29')",
+    "INSERT INTO lnk_time_window VALUES ('b1','t1','某市政道路工程','张卫国',50000.0,-2)",
 ]
 
 

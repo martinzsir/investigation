@@ -100,9 +100,14 @@ class RelationPackTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             skill_invoke(self.reg, "relation_neighborhood",
                          store=self.store, params={"bogus": 1})
+        # 缺必填：端到端入口会先经 auto_from 自动推导靶心（自动研判特性，
+        # 候选可来自 case_aliases 等非图源），故在 skill_invoke 层不再硬
+        # 失败；schema 双向核对契约直接验其实现 _validate_params——自动
+        # 填参这一上游便利层未介入时，缺必填仍硬失败。
+        from core.registry import _validate_params
+        spec = self.reg.skill("relation_neighborhood")
         with self.assertRaises(ValueError):
-            skill_invoke(self.reg, "relation_neighborhood",
-                         store=self.store, params={})  # 缺必填 target_subject
+            _validate_params(spec, {})  # 缺必填 target_subject
 
     def test_scope_enforced_on_pack_lens(self):
         from core.access import AccessContext

@@ -10,8 +10,12 @@ REQ-P M 波（025~030）：数据地图 —— L0 静态拓扑 + L1 物理血缘
 四个已修缺陷的判据内置（实现 + tests/test_data_map.py 双层固化）：
   缺陷1  物理度累计发生在全部 link build_sql 解析完成之后、孤儿判定之前——隐形枢纽
          （语义度 0 却物理支撑边的对象，如 call/trackpoint）不会被误判成孤立；
-  缺陷2  等值归一判定 = JOIN 条件两侧属性名都含 "raw"——p.raw_name = a.raw_name
-         （owns/osint_mentions）正确判归一，不因两侧同名被误判为业务条件；
+  缺陷2  等值归一判定 = JOIN 的维度表（target）侧属性名含 "raw"——
+         p.raw_name = a.raw_name（owns/osint_mentions）正确判归一，不因两侧
+         同名被误判为业务条件；l.raw_address = t.location 同样判归一：target
+         是归一碰点（raw_name/raw_address），source 事件侧外键列名自由
+         （person_raw/location/from_raw 混用，不要求含 raw）；
+         i.item_type = hr.item_type 这类非 raw 复合业务键不判 raw 归一；
   缺陷3  归一定向 = JOIN 的表是 target、另一侧是 source（不按等号左右定向）；
   缺陷4  归一缺口判据看 build_sql 是否已等值归一，不看 links.json 端点、
          不看属性名是否在 SQL 中出现。
@@ -99,9 +103,6 @@ def _parse_link_sql(sql: str, binding: dict) -> dict:
         jtable_obj = j["table"][len("obj_"):] if j["table"].startswith("obj_") else j["table"]
         jalias = (j["alias"] or "").lower()
         for a1, c1, a2, c2 in EQUI_RE.findall(j["on"]):
-            # 缺陷 2：两侧属性名都含 raw 才算等值归一（p.raw_name = a.raw_name 不误判）
-            if "raw" not in c1.lower() or "raw" not in c2.lower():
-                continue
             o1, o2 = _resolve_obj(a1), _resolve_obj(a2)
             if o1 is None or o2 is None:
                 continue
@@ -111,6 +112,10 @@ def _parse_link_sql(sql: str, binding: dict) -> dict:
             elif a2.lower() == jalias or o2 == jtable_obj:
                 target, source = (o2, c2), (o1, c1)
             else:
+                continue
+            # 缺陷 2：target（JOIN 维度实体）侧列名含 raw 才是归一碰点；
+            # source 事件侧外键列名自由（t.location / t.person_raw 均可）。
+            if "raw" not in target[1].lower():
                 continue
             normalizes.append({
                 "target_obj": target[0], "target_prop": target[1],
@@ -296,7 +301,8 @@ class DataMap:
     def normalize_joins(self) -> list[dict]:
         """全部等值归一 JOIN：source_obj.source_prop → target_obj.target_prop。
 
-        equal_raw 恒 True（两侧属性名都含 raw 才入选）；declared = 是否有
+        equal_raw 恒 True（target 维度实体侧属性名含 raw 才入选，见缺陷 2）；
+        declared = 是否有
         bindings.json normalize 段声明（REQ-P-033）。
         """
         out = []
@@ -315,8 +321,13 @@ class DataMap:
         """
         if self.bindings is None:
             return None
-        covered = {(n["source_obj"], n["source_prop"])
-                   for p in self._parsed.values() for n in p["normalizes"]}
+        # source 与 target 两端都算已覆盖：target 端的 raw_* 是维度实体的
+        # 归一碰点（如 location.raw_address），它本身就是归一跳板而非缺口。
+        covered: set[tuple[str, str]] = set()
+        for p in self._parsed.values():
+            for n in p["normalizes"]:
+                covered.add((n["source_obj"], n["source_prop"]))
+                covered.add((n["target_obj"], n["target_prop"]))
         return [{"object": obj, "prop": prop,
                  "note": "该 raw 引用未被任何 link build_sql 等值归一——断链温床【待核实】"}
                 for (obj, prop) in self._raw_candidates() if (obj, prop) not in covered]

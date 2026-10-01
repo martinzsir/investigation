@@ -74,7 +74,7 @@ class TestDeRecommend(unittest.TestCase):
         self.assertGreaterEqual(r["match_rate"], 0.9)
         self.assertEqual(r["confidence"], "high")
         self.assertFalse(r["needs_confirmation"])
-        self.assertFalse(r["sensitive"])   # DE_PHONE 非敏感
+        self.assertTrue(r["sensitive"])    # 全域化 _shared：DE_PHONE 属 PIPL 个人信息（D11 遮蔽+digest）
 
     def test_masked_account_reject_hint(self):
         """遮蔽卡号列 → clean reject_if:contains_mask + digits_only（双通道拒行建议）。"""

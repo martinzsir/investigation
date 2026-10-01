@@ -1770,6 +1770,13 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str],
             if ref["object"] not in obj_names:
                 raise ValueError(
                     f"{ctx} endpoints.{side}.ref.object='{ref['object']}' 未在 objects 声明")
+            # 端点 ref 对象类型必须等于链接声明的 from_obj/to_obj——防 owns 式
+            # 方向错位复发（端点声明成文本列/反向对象，图导出语义整体反转）。
+            side_obj = l.get("from_obj") if side == "from" else l.get("to_obj")
+            if side_obj and ref["object"] != side_obj:
+                raise ValueError(
+                    f"{ctx} endpoints.{side}.ref.object='{ref['object']}' 与链接声明 "
+                    f"{side}_obj='{side_obj}' 不一致（端点 ref 对象必须等于声明端点类型）")
             # P1：ref.key 与 objects[ref.object].key.column 联动校验
             expected_key = obj_key_map.get(ref["object"])
             if expected_key and ref["key"] != expected_key:
@@ -1785,6 +1792,11 @@ def _parse_endpoints(l: dict, ctx: str, obj_names: set[str],
         if not isinstance(extra, list) or not all(isinstance(x, str) and x for x in extra):
             raise ValueError(f"{ctx} endpoints.extra 必须是非空字符串数组")
         out["extra"] = list(extra)
+    edge_key = ep.get("edge_key")
+    if edge_key is not None:
+        if not isinstance(edge_key, str) or not edge_key.strip():
+            raise ValueError(f"{ctx} endpoints.edge_key 必须是非空字符串")
+        out["edge_key"] = edge_key.strip()
     return out
 
 
@@ -2163,6 +2175,73 @@ _RAW_EQUAL_JOIN_RE = re.compile(
     r"(?:LEFT\s+)?JOIN\s+(obj_\w+)\s+(\w+)\s+ON\s+\w+\.raw_name\s*=", re.I)
 
 
+def _top_level_alias(expr: str) -> str | None:
+    """取投影表达式最后一个顶层 `` AS alias`` 的别名（括号内 AS 不算）。
+
+    ``CAST(x AS DATE)`` 的 AS 在括号深度 >0 处，不会被误当列别名。
+    """
+    depth = 0
+    last: int | None = None
+    up = expr.upper()
+    i = 0
+    while i < len(expr) - 3:
+        ch = expr[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and up.startswith(" AS ", i):
+            last = i
+        i += 1
+    if last is None:
+        return None
+    tail = expr[last + 4:].strip()
+    m = re.match(r'"?([A-Za-z_]\w*)"?', tail)
+    return m.group(1) if m else None
+
+
+def _select_output_columns(build_sql: str) -> set[str]:
+    """静态解析 build_sql 顶层 SELECT 的输出列名集合（装载期防漂移，不开库）。
+
+    取顶层 ``expr AS alias`` 的别名，或裸列（``a.col`` / ``col``）的列名；
+    无别名复杂表达式无法静态取名则跳过。案件包 build_sql 均为单层 SELECT
+    （无标量子查询）；解析不到（非 SELECT 形态）返回空集，由调用方决定
+    是否跳过对账，不阻断装载。
+    """
+    s = build_sql.strip()
+    m = re.match(r"(?is)^SELECT\s+(.*?)\s+FROM\s+", s)
+    if not m:
+        return set()
+    parts: list[str] = []
+    depth = 0
+    buf = ""
+    for ch in m.group(1):
+        if ch == "(":
+            depth += 1
+            buf += ch
+        elif ch == ")":
+            depth -= 1
+            buf += ch
+        elif ch == "," and depth == 0:
+            parts.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf)
+    cols: set[str] = set()
+    bare_re = re.compile(r'^(?:"?[A-Za-z_]\w*"?\.)?"?([A-Za-z_]\w*)"?$')
+    for part in parts:
+        alias = _top_level_alias(part)
+        if alias:
+            cols.add(alias)
+            continue
+        mm = bare_re.match(part.strip())
+        if mm:
+            cols.add(mm.group(1))
+    return cols
+
+
 def _validate_normalize(items: list, build_sql: str, ctx: str) -> tuple:
     sql_flat = re.sub(r"\s+", " ", build_sql)
     declared: set[tuple[str, str]] = set()
@@ -2346,6 +2425,29 @@ def _load_bindings(path: Path, objects: list[ObjectType],
                     f"{ctx} normalize[{j}] 的 ON 条件引用对象 '{obj_name}' 的复合列 "
                     f"{hit}（REQ-D-013 AC-3：composite 属性不得作为归一 JOIN 键——"
                     f"复合列拆分前不可参与实体关联）")
+        # endpoints 防漂移：端点列与 extra 列必须出现在 build_sql 顶层输出列中，
+        # 否则按声明导出 CSV / 建属性图会读到不存在的列（装载期静态对账，免开库）。
+        ltype = link_map[name]
+        ep = ltype.endpoints
+        if ep:
+            out_cols = _select_output_columns(b["build_sql"])
+            if out_cols:
+                missing: list[str] = []
+                for side in ("from", "to"):
+                    col = ep[side]["col"]
+                    if col not in out_cols:
+                        missing.append(f"endpoints.{side}.col={col}")
+                for col in ep.get("extra", []):
+                    if col not in out_cols:
+                        missing.append(f"endpoints.extra={col}")
+                edge_key = ep.get("edge_key")
+                if edge_key and edge_key not in out_cols:
+                    missing.append(f"endpoints.edge_key={edge_key}")
+                if missing:
+                    raise ValueError(
+                        f"{ctx}（{name}）端点声明列 {missing} 不在 build_sql 输出列 "
+                        f"{sorted(out_cols)} 中（endpoints 与 build_sql 漂移，"
+                        f"请同步 links.json / bindings.json）")
         link_out[name] = LinkBinding(link=name, build_sql=b["build_sql"],
                                      normalize=normalize)
 

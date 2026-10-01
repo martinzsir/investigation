@@ -46,6 +46,20 @@ class EndpointDeclTests(unittest.TestCase):
                 self.assertIn(side, ep)
                 self.assertTrue(ep[side]["col"])
 
+    def test_owns_endpoints_direction_corrected(self):
+        """owns 方向纠偏：from=账户(account_id) → to=自然人(owner_person)。"""
+        links = {l.name: l for l in load_pack("default").links}
+        ep = links["owns"].endpoints
+        self.assertEqual(ep["from"]["col"], "account_id")
+        self.assertEqual(ep["from"]["ref"]["object"], "account")
+        self.assertEqual(ep["to"]["col"], "owner_person")
+        self.assertEqual(ep["to"]["ref"]["object"], "person")
+        self.assertIn("owner_raw", ep.get("extra", []))
+        # time_window 端点为项目 → 交易事件（不再是账户裸名）
+        tw = links["time_window"].endpoints
+        self.assertEqual(tw["from"]["ref"]["object"], "bid_project")
+        self.assertEqual(tw["to"]["ref"]["object"], "transaction")
+
     def test_loader_malformed_endpoints_hard_fail(self):
         objs = [ObjectType(name="person", title="人", pk="person_id",
                            kind="entity", name_property="raw_name",

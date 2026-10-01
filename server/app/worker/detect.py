@@ -119,6 +119,10 @@ def run_detection(*, version_file: Path, case_dir: Path, version: int,
         #     与命令行两套线索集。ctx["clues"] 前置入：靶心三级源含
         #     「前序线索反推」，与 run_all 同路径。
         ctx_lens: dict[str, Any] = {"clues": list(all_clues)}
+        # 版本级属性图（tasks.py 在检测前按同版本构建）：显式注入给关系镜头，
+        # GraphGateway 开图前做 manifest 对账，陈旧/缺失自动回落语义轨。
+        ctx_lens["graph_path"] = str(
+            case_dir / "graph" / f"v{version}.lbug")
         lens_tasks, lens_unresolved, case_disabled = case_batch_lens_tasks(
             reg, load_lens_overrides(case_dir),
             store=det, ctx=ctx_lens, pack=pack, base_dir=snapshot_base)
